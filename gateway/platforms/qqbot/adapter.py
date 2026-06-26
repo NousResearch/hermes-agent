@@ -23,7 +23,7 @@ Configuration in config.yaml:
             model: "glm-asr"               # glm-asr, whisper-1, etc.
 
     Voice transcription priority:
-      1. QQ's built-in ``asr_refer_text`` (Tencent ASR — free, always tried first)
+      1. QQ's built-in ``asr_refer_text`` (Tencent ASR â€” free, always tried first)
       2. Configured STT provider via ``stt`` config or ``QQ_STT_*`` env vars
 
 Reference: https://bot.q.qq.com/wiki/develop/api-v2/
@@ -88,7 +88,7 @@ class QQCloseError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Constants — imported from the shared constants module.
+# Constants â€” imported from the shared constants module.
 # ---------------------------------------------------------------------------
 
 from gateway.platforms.qqbot.constants import (
@@ -226,15 +226,15 @@ class QQAdapter(BasePlatformAdapter):
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
-        self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
+        self._chat_type_map: Dict[str, str] = {}  # chat_id â†’ "c2c"|"group"|"guild"|"dm"
 
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
 
-        # Last inbound message ID per chat — used by send_typing
+        # Last inbound message ID per chat â€” used by send_typing
         self._last_msg_id: Dict[str, str] = {}
-        # Typing debounce: chat_id → last send_typing timestamp
+        # Typing debounce: chat_id â†’ last send_typing timestamp
         self._typing_sent_at: Dict[str, float] = {}
 
         # Token cache
@@ -278,7 +278,7 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Authenticate, obtain gateway URL, and open the WebSocket."""
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
@@ -447,7 +447,7 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _open_ws(self, gateway_url: str) -> None:
         """Open a WebSocket connection to the QQ Bot gateway."""
-        # Only clean up WebSocket resources — keep _http_client alive for REST API calls.
+        # Only clean up WebSocket resources â€” keep _http_client alive for REST API calls.
         if self._ws and not self._ws.closed:
             await self._ws.close()
         self._ws = None
@@ -480,11 +480,11 @@ class QQAdapter(BasePlatformAdapter):
         """Read WebSocket events and reconnect on errors.
 
         Close code handling follows the OpenClaw qqbot reference implementation:
-          4004 → invalid token, refresh and reconnect
-          4006/4007/4009 → session invalid, clear session and re-identify
-          4008 → rate limited, back off 60s
-          4914 → bot offline/sandbox, stop reconnecting
-          4915 → bot banned, stop reconnecting
+          4004 â†’ invalid token, refresh and reconnect
+          4006/4007/4009 â†’ session invalid, clear session and re-identify
+          4008 â†’ rate limited, back off 60s
+          4914 â†’ bot offline/sandbox, stop reconnecting
+          4915 â†’ bot banned, stop reconnecting
         """
         backoff_idx = 0
         connect_time = 0.0
@@ -528,7 +528,7 @@ class QQAdapter(BasePlatformAdapter):
                         )
                         self._set_fatal_error(
                             "qq_quick_disconnect",
-                            "Too many quick disconnects — check bot permissions",
+                            "Too many quick disconnects â€” check bot permissions",
                             retryable=True,
                         )
                         return
@@ -588,7 +588,7 @@ class QQAdapter(BasePlatformAdapter):
                         backoff_idx += 1
                     continue
 
-                # Token invalid → clear cached token so _ensure_token() refreshes
+                # Token invalid â†’ clear cached token so _ensure_token() refreshes
                 if code == 4004:
                     logger.info(
                         "[%s] Invalid token (4004), will refresh and reconnect",
@@ -597,8 +597,8 @@ class QQAdapter(BasePlatformAdapter):
                     self._access_token = None
                     self._token_expires_at = 0.0
 
-                # Session invalid → clear session, will re-identify on next Hello
-                # Note: 4009 (connection timeout) is NOT included here — it is
+                # Session invalid â†’ clear session, will re-identify on next Hello
+                # Note: 4009 (connection timeout) is NOT included here â€” it is
                 # resumable per the QQ protocol and should preserve session state.
                 if code in {
                         4006,
@@ -683,7 +683,7 @@ class QQAdapter(BasePlatformAdapter):
             raise RuntimeError("WebSocket not connected")
         if self._ws.closed:
             # A closed-but-non-None ws makes the while-condition false on entry,
-            # so this would return normally — which _listen_loop treats as a
+            # so this would return normally â€” which _listen_loop treats as a
             # clean read and immediately retries with backoff reset to 0,
             # producing a 100% CPU spin. Raise so the reconnect/backoff path runs.
             raise RuntimeError("WebSocket closed")
@@ -813,7 +813,7 @@ class QQAdapter(BasePlatformAdapter):
         if isinstance(s, int) and (self._last_seq is None or s > self._last_seq):
             self._last_seq = s
 
-        # op 10 = Hello (heartbeat interval) — must reply with Identify/Resume
+        # op 10 = Hello (heartbeat interval) â€” must reply with Identify/Resume
         if op == 10:
             d_data = d if isinstance(d, dict) else {}
             interval_ms = d_data.get("heartbeat_interval", 30000)
@@ -857,7 +857,7 @@ class QQAdapter(BasePlatformAdapter):
         if op == 11:
             return
 
-        # op 7 = Server Reconnect — server asks client to reconnect (e.g.
+        # op 7 = Server Reconnect â€” server asks client to reconnect (e.g.
         # load-balancing, maintenance).  Close the WS so _read_events raises
         # and the outer loop triggers a reconnect with Resume.
         if op == 7:
@@ -866,7 +866,7 @@ class QQAdapter(BasePlatformAdapter):
                 self._create_task(self._ws.close())
             return
 
-        # op 9 = Invalid Session — d=True means session is resumable,
+        # op 9 = Invalid Session â€” d=True means session is resumable,
         # d=False means we must re-identify from scratch.
         if op == 9:
             resumable = bool(d) if d is not None else False
@@ -886,7 +886,7 @@ class QQAdapter(BasePlatformAdapter):
         logger.debug("[%s] Unknown op: %s", self._log_tag, op)
 
     def _handle_ready(self, d: Any) -> None:
-        """Handle the READY event — store session_id for resume."""
+        """Handle the READY event â€” store session_id for resume."""
         if isinstance(d, dict):
             self._session_id = d.get("session_id")
             logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
@@ -991,7 +991,7 @@ class QQAdapter(BasePlatformAdapter):
             )
             return
 
-        # ACK the interaction promptly — per the QQ docs the client will show
+        # ACK the interaction promptly â€” per the QQ docs the client will show
         # an error icon on the button if we don't respond quickly.
         try:
             await self._acknowledge_interaction(event.id)
@@ -1034,7 +1034,7 @@ class QQAdapter(BasePlatformAdapter):
         :param code: Response code (``0`` = success).
         """
         if not self._http_client:
-            raise RuntimeError("HTTP client not initialized — not connected?")
+            raise RuntimeError("HTTP client not initialized â€” not connected?")
         token = await self._ensure_token()
         headers = {
             "Authorization": f"QQBot {token}",
@@ -1053,7 +1053,7 @@ class QQAdapter(BasePlatformAdapter):
                 f"{resp.text[:200]}"
             )
 
-    # Mapping from QQ keyboard button decisions → the ``choice`` vocabulary
+    # Mapping from QQ keyboard button decisions â†’ the ``choice`` vocabulary
     # accepted by ``tools.approval.resolve_gateway_approval``. QQ's 3-button
     # layout (mobile-space constraint) collapses "session" and "always" into
     # a single "always" button; users wanting session-only approval can fall
@@ -1110,10 +1110,10 @@ class QQAdapter(BasePlatformAdapter):
     ) -> None:
         """Route ``INTERACTION_CREATE`` button clicks to the right subsystem.
 
-        - ``approve:<session_key>:<decision>`` →
+        - ``approve:<session_key>:<decision>`` â†’
           :func:`tools.approval.resolve_gateway_approval`
           (unblocks the agent thread waiting on a dangerous-command approval).
-        - ``update_prompt:<answer>`` →
+        - ``update_prompt:<answer>`` â†’
           writes the answer to ``~/.hermes/.update_response`` for the
           detached ``hermes update --gateway`` process to consume.
         - Anything else is logged at DEBUG and ignored.
@@ -1270,7 +1270,7 @@ class QQAdapter(BasePlatformAdapter):
             len(voice_transcripts),
         )
 
-        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        # Merge any quoted-message context (message_type=103 â†’ msg_elements[0]).
         quoted = await self._process_quoted_context(d)
         text = self._merge_quote_into(text, quoted["quote_block"])
         if quoted["image_urls"]:
@@ -1335,7 +1335,7 @@ class QQAdapter(BasePlatformAdapter):
                 else attachment_info
             )
 
-        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        # Merge any quoted-message context (message_type=103 â†’ msg_elements[0]).
         quoted = await self._process_quoted_context(d)
         text = self._merge_quote_into(text, quoted["quote_block"])
         if quoted["image_urls"]:
@@ -1375,7 +1375,7 @@ class QQAdapter(BasePlatformAdapter):
         if not channel_id:
             return
 
-        # Apply group_policy ACL — guild channels are group-like contexts.
+        # Apply group_policy ACL â€” guild channels are group-like contexts.
         # Without this check any member of any guild the bot is in could
         # bypass the configured allowlist.
         guild_id = str(d.get("guild_id", ""))
@@ -1409,7 +1409,7 @@ class QQAdapter(BasePlatformAdapter):
                 else attachment_info
             )
 
-        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        # Merge any quoted-message context (message_type=103 â†’ msg_elements[0]).
         quoted = await self._process_quoted_context(d)
         text = self._merge_quote_into(text, quoted["quote_block"])
         if quoted["image_urls"]:
@@ -1450,7 +1450,7 @@ class QQAdapter(BasePlatformAdapter):
         if not guild_id:
             return
 
-        # Apply dm_policy ACL — guild DMs were previously unauthenticated.
+        # Apply dm_policy ACL â€” guild DMs were previously unauthenticated.
         # Without this check any member of any guild the bot is in could
         # bypass the configured allowlist via direct messages.
         author_id = str(author.get("id", ""))
@@ -1480,7 +1480,7 @@ class QQAdapter(BasePlatformAdapter):
                 else attachment_info
             )
 
-        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        # Merge any quoted-message context (message_type=103 â†’ msg_elements[0]).
         quoted = await self._process_quoted_context(d)
         text = self._merge_quote_into(text, quoted["quote_block"])
         if quoted["image_urls"]:
@@ -1523,7 +1523,7 @@ class QQAdapter(BasePlatformAdapter):
         ``msg_elements`` entirely, so:
 
         - Quoted text was surfaced only when the user typed something of
-          their own — bare quote-replies showed nothing.
+          their own â€” bare quote-replies showed nothing.
         - Quoted attachments (images, voice, files) were never downloaded
           or described.
         - Quoted voice messages specifically produced no transcript, so the
@@ -1644,14 +1644,14 @@ class QQAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """Process inbound attachments (all message types).
 
-        Mirrors OpenClaw's ``processAttachments`` — handles images, voice, and
+        Mirrors OpenClaw's ``processAttachments`` â€” handles images, voice, and
         other files uniformly.
 
         Returns a dict with:
-        - image_urls: list[str]  — cached local image paths
-        - image_media_types: list[str] — MIME types of cached images
-        - voice_transcripts: list[str] — STT transcripts for voice messages
-        - attachment_info: str — text description of non-image, non-voice attachments
+        - image_urls: list[str]  â€” cached local image paths
+        - image_media_types: list[str] â€” MIME types of cached images
+        - voice_transcripts: list[str] â€” STT transcripts for voice messages
+        - attachment_info: str â€” text description of non-image, non-voice attachments
         """
         if not isinstance(attachments, list):
             return {
@@ -1714,7 +1714,7 @@ class QQAdapter(BasePlatformAdapter):
                     logger.debug("[%s] Voice transcript: %s", self._log_tag, transcript)
                 else:
                     logger.warning("[%s] Voice STT failed for %s", self._log_tag, url[:60])
-                    voice_transcripts.append("[Voice] [语音识别失败]")
+                    voice_transcripts.append("[Voice] [è¯­éŸ³è¯†åˆ«å¤±è´¥]")
             elif ct.startswith("image/"):
                 # Image: download and cache locally.
                 try:
@@ -1841,9 +1841,9 @@ class QQAdapter(BasePlatformAdapter):
         """Download a voice attachment, convert to wav, and transcribe.
 
         Priority:
-        1. QQ's built-in ``asr_refer_text`` (Tencent's own ASR — free, no API call).
+        1. QQ's built-in ``asr_refer_text`` (Tencent's own ASR â€” free, no API call).
         2. Self-hosted STT on ``voice_wav_url`` (pre-converted WAV from QQ, avoids SILK decoding).
-        3. Self-hosted STT on the original attachment URL (requires SILK→WAV conversion).
+        3. Self-hosted STT on the original attachment URL (requires SILKâ†’WAV conversion).
 
         Returns the transcript text, or None on failure.
         """
@@ -1854,7 +1854,7 @@ class QQAdapter(BasePlatformAdapter):
             )
             return asr_refer_text
 
-        # Determine which URL to download (prefer voice_wav_url — already WAV)
+        # Determine which URL to download (prefer voice_wav_url â€” already WAV)
         download_url = url
         is_pre_wav = False
         if voice_wav_url:
@@ -2038,7 +2038,7 @@ class QQAdapter(BasePlatformAdapter):
             import pilk
         except ImportError:
             logger.warning(
-                "[%s] pilk not installed — cannot decode SILK audio. Run: pip install pilk",
+                "[%s] pilk not installed â€” cannot decode SILK audio. Run: pip install pilk",
                 self._log_tag,
             )
             return None
@@ -2086,7 +2086,7 @@ class QQAdapter(BasePlatformAdapter):
         """Last resort: try writing audio data as raw PCM 16-bit mono 16kHz WAV.
 
         This will produce garbage if the data isn't raw PCM, but at least
-        the ASR engine won't crash — it'll just return empty.
+        the ASR engine won't crash â€” it'll just return empty.
         """
         try:
             import wave
@@ -2150,7 +2150,7 @@ class QQAdapter(BasePlatformAdapter):
         """Resolve STT backend configuration from config/environment.
 
         Priority:
-        1. Plugin-specific: ``channels.qqbot.stt`` in config.yaml → ``self.config.extra["stt"]``
+        1. Plugin-specific: ``channels.qqbot.stt`` in config.yaml â†’ ``self.config.extra["stt"]``
         2. QQ-specific env vars: ``QQ_STT_API_KEY`` / ``QQ_STT_BASE_URL`` / ``QQ_STT_MODEL``
         3. Return None if nothing is configured (STT will be skipped, QQ built-in ASR still works).
         """
@@ -2315,7 +2315,7 @@ class QQAdapter(BasePlatformAdapter):
             return None
 
     # ------------------------------------------------------------------
-    # Outbound messaging — REST API
+    # Outbound messaging â€” REST API
     # ------------------------------------------------------------------
 
     async def _api_request(
@@ -2327,7 +2327,7 @@ class QQAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """Make an authenticated REST API request to QQ Bot API."""
         if not self._http_client:
-            raise RuntimeError("HTTP client not initialized — not connected?")
+            raise RuntimeError("HTTP client not initialized â€” not connected?")
 
         token = await self._ensure_token()
         headers = {
@@ -2415,7 +2415,7 @@ class QQAdapter(BasePlatformAdapter):
 
         Returns True if reconnected, False if still disconnected.
         """
-        logger.info("[%s] Not connected — waiting for reconnection (up to %.0fs)",
+        logger.info("[%s] Not connected â€” waiting for reconnection (up to %.0fs)",
                     self._log_tag, self._RECONNECT_WAIT_SECONDS)
         waited = 0.0
         while waited < self._RECONNECT_WAIT_SECONDS:
@@ -2485,13 +2485,13 @@ class QQAdapter(BasePlatformAdapter):
             except Exception as exc:
                 last_exc = exc
                 err = str(exc).lower()
-                # Permanent errors — don't retry
+                # Permanent errors â€” don't retry
                 if any(
                         k in err
                         for k in ("invalid", "forbidden", "not found", "bad request")
                 ):
                     break
-                # Transient — back off and retry
+                # Transient â€” back off and retry
                 if attempt < 2:
                     delay = 1.0 * (2 ** attempt)
                     logger.warning(
@@ -2581,7 +2581,7 @@ class QQAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a single text message with an inline keyboard attached.
 
-        Unlike :meth:`send`, this does NOT split long content into chunks —
+        Unlike :meth:`send`, this does NOT split long content into chunks â€”
         a keyboard message has exactly one interactive surface, and splitting
         would orphan the buttons from the first chunk. Callers should keep
         approval/update-prompt bodies short.
@@ -2632,7 +2632,7 @@ class QQAdapter(BasePlatformAdapter):
         The rendered text comes from :func:`build_approval_text`; callers can
         override by passing a custom :class:`ApprovalRequest`.
 
-        Users click the button → ``INTERACTION_CREATE`` fires → the adapter's
+        Users click the button â†’ ``INTERACTION_CREATE`` fires â†’ the adapter's
         registered :meth:`set_interaction_callback` handler decodes
         ``button_data`` via :func:`parse_approval_button_data`.
         """
@@ -2645,7 +2645,7 @@ class QQAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
-    # Cross-adapter gateway contract — send_exec_approval + send_update_prompt
+    # Cross-adapter gateway contract â€” send_exec_approval + send_update_prompt
     # ------------------------------------------------------------------
     #
     # These mirror the signatures that gateway/run.py detects on the adapter
@@ -2665,7 +2665,7 @@ class QQAdapter(BasePlatformAdapter):
 
         Called by ``gateway/run.py``'s ``_approval_notify_sync`` when the
         agent is blocked waiting for approval. Button clicks resolve via
-        :func:`tools.approval.resolve_gateway_approval` — dispatched by the
+        :func:`tools.approval.resolve_gateway_approval` â€” dispatched by the
         adapter's interaction callback (:meth:`_default_interaction_dispatch`).
         """
         del metadata  # QQ doesn't have thread_id / DM targeting overrides.
@@ -2709,7 +2709,7 @@ class QQAdapter(BasePlatformAdapter):
         del session_key, metadata  # present for contract parity only.
 
         default_hint = f" (default: {default})" if default else ""
-        content = f"⚕ **Update Needs Your Input**\n\n{prompt}{default_hint}"
+        content = f"âš• **Update Needs Your Input**\n\n{prompt}{default_hint}"
         msg_id = self._last_msg_id.get(chat_id)
         return await self.send_with_keyboard(
             chat_id,
@@ -2851,10 +2851,10 @@ class QQAdapter(BasePlatformAdapter):
 
         Upload strategy:
 
-        - **HTTP(S) URLs** → single ``POST /v2/{users|groups}/{id}/files``
+        - **HTTP(S) URLs** â†’ single ``POST /v2/{users|groups}/{id}/files``
           with ``url=...``. The QQ platform fetches the URL directly; fastest
           path when the source is already hosted.
-        - **Local files** → three-step chunked upload (prepare / PUT parts /
+        - **Local files** â†’ three-step chunked upload (prepare / PUT parts /
           complete). Handles files up to the platform's ~100 MB per-file
           limit without the ~10 MB inline-base64 cap of the old adapter.
         """
@@ -2872,7 +2872,7 @@ class QQAdapter(BasePlatformAdapter):
 
         try:
             if self._is_url(media_source):
-                # URL upload — let the platform fetch it directly.
+                # URL upload â€” let the platform fetch it directly.
                 resolved_name = (
                     file_name
                     or Path(urlparse(media_source).path).name
@@ -2887,7 +2887,7 @@ class QQAdapter(BasePlatformAdapter):
                     file_name=resolved_name if file_type == MEDIA_TYPE_FILE else None,
                 )
             else:
-                # Local file — chunked upload (prepare / PUT parts / complete).
+                # Local file â€” chunked upload (prepare / PUT parts / complete).
                 resolved_name, upload = await self._upload_local_file(
                     chat_type,
                     chat_id,
@@ -2983,7 +2983,7 @@ class QQAdapter(BasePlatformAdapter):
         :raises RuntimeError: If the HTTP client is not initialized.
         """
         if not self._http_client:
-            raise RuntimeError("HTTP client not initialized — not connected?")
+            raise RuntimeError("HTTP client not initialized â€” not connected?")
 
         local_path = Path(media_source).expanduser()
         if not local_path.is_absolute():
@@ -3026,7 +3026,7 @@ class QQAdapter(BasePlatformAdapter):
             resolved_name = file_name or Path(parsed.path).name or "media"
             return source, content_type, resolved_name
 
-        # Local file — encode as raw base64 for QQ Bot API file_data field.
+        # Local file â€” encode as raw base64 for QQ Bot API file_data field.
         # The QQ API expects plain base64, NOT a data URI.
         local_path = Path(source).expanduser()
         if not local_path.is_absolute():
@@ -3057,7 +3057,7 @@ class QQAdapter(BasePlatformAdapter):
         """Send an input notify to a C2C user (only supported for C2C).
 
         Debounced to one request per ~50s (the API sets a 60s indicator).
-        The QQ API requires the originating message ID — retrieved from
+        The QQ API requires the originating message ID â€” retrieved from
         ``_last_msg_id`` which is populated by ``_on_message``.
         """
         if not self.is_connected:
@@ -3071,7 +3071,7 @@ class QQAdapter(BasePlatformAdapter):
         if not msg_id:
             return
 
-        # Debounce — skip if we sent recently
+        # Debounce â€” skip if we sent recently
         now = time.time()
         last_sent = self._typing_sent_at.get(chat_id, 0.0)
         if now - last_sent < self._TYPING_DEBOUNCE_SECONDS:

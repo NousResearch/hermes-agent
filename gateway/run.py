@@ -8414,9 +8414,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 quick_commands = self.config.get("quick_commands", {}) or {}
             else:
                 quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if isinstance(quick_commands, dict) and command in quick_commands:
-                qcmd = quick_commands[command]
-                if qcmd.get("type") == "alias":
+            if isinstance(quick_commands, dict):
+                qcmd = quick_commands.get(command) or quick_commands.get(f"/{command}")
+            else:
+                qcmd = None
+            if qcmd is not None:
+                if isinstance(qcmd, str):
+                    qcmd = {"type": "alias", "target": qcmd}
+                if isinstance(qcmd, dict) and qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
@@ -8797,8 +8802,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 quick_commands = getattr(self.config, "quick_commands", {}) or {}
             if not isinstance(quick_commands, dict):
                 quick_commands = {}
-            if command in quick_commands:
-                qcmd = quick_commands[command]
+            qcmd = quick_commands.get(command) or quick_commands.get(f"/{command}")
+            if qcmd is not None:
+                if isinstance(qcmd, str):
+                    qcmd = {"type": "alias", "target": qcmd}
+                if not isinstance(qcmd, dict):
+                    return f"Quick command '/{command}' has unsupported definition (expected mapping or alias string)."
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:

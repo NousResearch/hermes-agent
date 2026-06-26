@@ -9258,6 +9258,87 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    async def _ask_retry_or_discard(
+        self, event, source, session_key: str, stale_content: str,
+    ) -> str:
+        """Ask the user whether to retry or discard a stale user turn.
+
+        Returns "retry", "discard", or "" (timeout / no response).
+        Uses the clarify system so it works across all gateway platforms
+        with button UI where available.
+        """
+        import uuid as _uuid
+        from tools.clarify_gateway import (
+            register as _clarify_register,
+            wait_for_response as _clarify_wait,
+            get_clarify_timeout as _clarify_timeout,
+            clear_session as _clarify_clear,
+        )
+
+        _adapter = self.adapters.get(source.platform)
+        if not _adapter or not hasattr(_adapter, "send_clarify"):
+            return "discard"
+
+        _preview = stale_content.strip()
+        if len(_preview) > 100:
+            _preview = _preview[:100] + "..."
+
+        _question = (
+            f"Your previous message didn't get a response:\n\n"
+            f"\"{_preview}\"\n\n"
+            f"Retry it or discard it?"
+        )
+        _choices = ["Retry", "Discard"]
+        _clarify_id = _uuid.uuid4().hex[:10]
+        _loop = asyncio.get_running_loop()
+        _reply_anchor = self._reply_anchor_for_event(event)
+        _metadata = self._thread_metadata_for_source(source, _reply_anchor)
+
+        _clarify_register(
+            clarify_id=_clarify_id,
+            session_key=session_key,
+            question=_question,
+            choices=_choices,
+        )
+
+        try:
+            _adapter.pause_typing_for_chat(source.chat_id)
+        except Exception:
+            pass
+
+        _send_ok = False
+        try:
+            _fut = safe_schedule_threadsafe(
+                _adapter.send_clarify(
+                    chat_id=source.chat_id,
+                    question=_question,
+                    choices=_choices,
+                    clarify_id=_clarify_id,
+                    session_key=session_key,
+                    metadata=_metadata,
+                ),
+                _loop,
+                logger=logger,
+                log_message="retry/discard clarify send failed",
+            )
+            if _fut is not None:
+                _result = _fut.result(timeout=15)
+                _send_ok = bool(getattr(_result, "success", False))
+        except Exception as exc:
+            logger.warning("retry/discard clarify send failed: %s", exc)
+
+        if not _send_ok:
+            _clarify_clear(session_key)
+            return "discard"
+
+        _timeout = _clarify_timeout()
+        _response = await asyncio.to_thread(
+            _clarify_wait, _clarify_id, float(_timeout),
+        )
+        if not _response:
+            return ""
+        return _response.strip().lower()
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -9501,6 +9582,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+
+        # ── Stale-turn detection (#45110) ──────────────────────────
+        # If the previous turn's user message was persisted on receipt but
+        # the assistant response never completed (stall, disconnect, crash),
+        # the transcript ends with a user message and no following assistant
+        # message. Instead of loading it as history (which would create a
+        # double-user-message sequence on the next turn), offer the user a
+        # choice: retry the failed message or discard it.
+        if (
+            history
+            and len(history) >= 1
+            and history[-1].get("role") == "user"
+        ):
+            _stale_msg = history[-1]
+            _stale_content = _stale_msg.get("content", "")
+            if isinstance(_stale_content, str) and _stale_content.strip():
+                # Ask the user what to do with the orphaned turn
+                _stale_choice = await self._ask_retry_or_discard(
+                    event, source, _quick_key, _stale_content[:200],
+                )
+                if _stale_choice == "discard":
+                    # Soft-delete the stale user message
+                    self.session_store.rewind_session(
+                        session_entry.session_id, n=1,
+                    )
+                    # Reload history without the discarded message
+                    history = self.session_store.load_transcript(
+                        session_entry.session_id,
+                    )
+                    logger.info(
+                        "Discarded stale user turn for session %s",
+                        session_entry.session_id,
+                    )
+                elif _stale_choice == "retry":
+                    # Use the stale message as this turn's input
+                    message_text = _stale_content
+                    persist_user_message = _stale_content
+                    # Soft-delete the stale copy so it doesn't appear twice
+                    self.session_store.rewind_session(
+                        session_entry.session_id, n=1,
+                    )
+                    history = self.session_store.load_transcript(
+                        session_entry.session_id,
+                    )
+                    logger.info(
+                        "Retrying stale user turn for session %s",
+                        session_entry.session_id,
+                    )
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts

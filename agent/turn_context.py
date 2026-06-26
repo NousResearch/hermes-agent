@@ -302,6 +302,15 @@ def build_turn_context(
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 
+    # Persist the inbound user turn to state.db on receipt, BEFORE any model
+    # call (#45110). A stall, streaming client disconnect, or process crash
+    # can prevent the first assistant response from completing — without this,
+    # the prompt vanishes from the session history.
+    try:
+        agent._persist_inbound_user_message(user_msg)
+    except Exception:
+        logger.debug("_persist_inbound_user_message raised", exc_info=True)
+
     if not agent.quiet_mode:
         _print_preview = summarize_user_message_for_log(user_message)
         agent._safe_print(

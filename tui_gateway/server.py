@@ -7978,11 +7978,20 @@ def _(rid, params: dict) -> dict:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+            if ordinal < 0:
+                return _err(rid, 4004, "truncate_before_user_ordinal must be non-negative")
             history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            if ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
+            if not user_indices:
+                truncated = []
+            elif ordinal >= len(user_indices):
+                # The requested ordinal exceeds available user messages —
+                # context compression may have shrunk the history since the
+                # frontend computed the ordinal.  Clamp to the last user
+                # message so the restore still produces a usable turn.
+                truncated = history[: user_indices[-1]]
+            else:
+                truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
             if (db := _get_db()) is not None:

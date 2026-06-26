@@ -62,7 +62,14 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
-import { $newChatProfile, $profiles, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import {
+  $activeProfile,
+  $newChatProfile,
+  $profiles,
+  $profileScope,
+  ALL_PROFILES,
+  normalizeProfileKey
+} from '@/store/profile'
 import {
   $activeProjectId,
   $projects,
@@ -214,6 +221,14 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     message_count: 0,
     model: result.model ?? null,
     output_tokens: 0,
+    // Forward profile from the backend so the row component's branch /
+    // drag / context-menu handlers (which read session.profile) route to
+    // the correct profile backend instead of falling back to the default.
+    // Absent when the backend doesn't echo it (legacy single-profile
+    // responses), which the UI treats as the default profile per the
+    // contract on SessionInfo.profile. `SessionInfo.profile?: string` is
+    // strict-undefined-only, so coerce null → undefined.
+    ...(result.profile != null ? { profile: result.profile } : {}),
     preview: result.snippet?.trim() || null,
     source: result.source ?? null,
     started_at: ts,
@@ -436,6 +451,13 @@ export function ChatSidebar({
   // Full-text search across *all* sessions (not just the loaded page) so 699
   // sessions stay findable. Debounced; loaded sessions are matched instantly
   // client-side and merged ahead of the server hits.
+  //
+  // We hoist the cancel flag into a ref (instead of a per-effect closure) so
+  // that even if a previous render's fetch resolves *after* the current
+  // render's cleanup fires, the stale resolution is dropped deterministically.
+  // The renderer's IPC layer also forwards the active profile so cross-profile
+  // setups search the right state.db (issue #52833).
+  const inFlightSearchRef = useRef(0)
   useEffect(() => {
     if (!trimmedQuery) {
       setServerMatches([])
@@ -444,30 +466,36 @@ export function ChatSidebar({
       return
     }
 
-    let cancelled = false
-
+    const myToken = ++inFlightSearchRef.current
     setSearchPending(true)
 
     const id = window.setTimeout(() => {
-      void searchSessions(trimmedQuery)
+      void searchSessions(trimmedQuery, activeProfile)
         .then(res => {
-          if (!cancelled) {
+          if (myToken === inFlightSearchRef.current) {
             setServerMatches(res.results)
           }
         })
-        .catch(() => undefined)
+        .catch(err => {
+          if (myToken === inFlightSearchRef.current) {
+            // Dev-only diagnostic: silent swallow is house style but
+            // hides the next regression of this exact symptom.
+            if (import.meta.env.DEV) {
+              console.warn('[sidebar search] IPC failed:', err)
+            }
+          }
+        })
         .finally(() => {
-          if (!cancelled) {
+          if (myToken === inFlightSearchRef.current) {
             setSearchPending(false)
           }
         })
     }, 200)
 
     return () => {
-      cancelled = true
       window.clearTimeout(id)
     }
-  }, [trimmedQuery])
+  }, [trimmedQuery, activeProfile])
 
   const searchResults = useMemo(() => {
     if (!trimmedQuery) {

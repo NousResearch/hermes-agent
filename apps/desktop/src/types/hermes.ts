@@ -765,6 +765,13 @@ export interface SessionSearchResult {
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null
   model: string | null
+  /** Owning profile (set by the backend when the request carries `?profile=`
+   *  or when the IPC routes to a profile-specific pool). The sidebar
+   *  synthesizes a SessionInfo from this result and the row component reads
+   *  `session.profile` at four sites (branch / drag / context-menu), so the
+   *  field needs to round-trip. Absent on legacy single-profile responses,
+   *  which the UI treats as the default profile. */
+  profile?: string | null
   role: string | null
   /** Live compression tip of the matched conversation — resume by this id. */
   session_id: string

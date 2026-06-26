@@ -29,6 +29,21 @@ from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
 
+def _is_aggregator_profile(provider: str | None) -> bool:
+    """Return True when *provider* has a registered ProviderProfile.
+
+    Used by doctor to avoid hardcoding aggregator names in vendor-prefix
+    and unknown-provider checks.
+    """
+    if not provider:
+        return False
+    try:
+        from providers import get_provider_profile
+        return get_provider_profile(provider) is not None
+    except Exception:
+        return False
+
+
 _PROVIDER_ENV_HINTS = (
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
@@ -788,6 +803,14 @@ def run_doctor(args):
                     provider_ids_to_accept.add(catalog_provider)
 
             if provider and provider != "auto":
+                # Profile-registered providers (Polza, Novita, etc.) are always valid
+                try:
+                    from providers import get_provider_profile as _check_profile
+                    if provider and _check_profile(provider) is not None:
+                        catalog_provider = provider
+                        provider_ids_to_accept.add(provider)
+                except Exception:
+                    pass
                 if catalog_provider is None or (
                     known_providers
                     and not (provider_ids_to_accept & valid_provider_ids)
@@ -824,6 +847,7 @@ def run_doctor(args):
                 provider_policy_id in providers_accepting_vendor_slugs
                 or provider_policy_id == "custom"
                 or provider_policy_id.startswith("custom:")
+                or _is_aggregator_profile(provider_raw)
             )
             if (
                 default_model

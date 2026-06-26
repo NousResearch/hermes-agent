@@ -38,6 +38,7 @@ _log = logging.getLogger(__name__)
 # to flush a WS frame before we mark the transport dead. Protects handler
 # threads from a wedged socket.
 _WS_WRITE_TIMEOUT_S = 10.0
+_MAX_WS_MESSAGE_BYTES = 1 * 1024 * 1024
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
 # Keep starlette optional at import time; handle_ws uses the real class when
@@ -219,6 +220,22 @@ async def handle_ws(ws: Any) -> None:
             except Exception:
                 disconnect_reason = "receive_failed"
                 _log.exception("ws receive failed peer=%s", peer)
+                break
+
+            raw_bytes = len(raw.encode("utf-8"))
+            if raw_bytes > _MAX_WS_MESSAGE_BYTES:
+                disconnect_reason = "oversized_message"
+                _log.warning(
+                    "ws oversized message rejected peer=%s size=%d limit=%d payload=%r",
+                    peer,
+                    raw_bytes,
+                    _MAX_WS_MESSAGE_BYTES,
+                    raw[:_WS_LOG_PAYLOAD_PREVIEW],
+                )
+                try:
+                    await ws.close(code=1009, reason="Message too large")
+                except Exception as exc:
+                    _log.debug("ws oversized close failed peer=%s error=%s", peer, exc)
                 break
 
             line = raw.strip()

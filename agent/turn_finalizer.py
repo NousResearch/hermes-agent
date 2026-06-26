@@ -33,13 +33,14 @@ def _build_turn_summary(
     api_call_count: int,
     turn_exit_reason: str,
     messages: list,
+    session_id: str = "",
 ) -> str:
-    """Build a one-sentence turn summary, preferring Ollama (qwen3.5:9b).
+    """Build a 2-3 sentence turn summary, preferring Ollama.
 
     Falls back to a mechanical format if Ollama is unreachable or the
     model returns nothing useful.
     """
-    _llm_line = _try_ollama_summary(final_response, messages)
+    _llm_line = _try_ollama_summary(final_response, messages, session_id)
     if _llm_line:
         return _llm_line
 
@@ -85,12 +86,17 @@ def _get_auto_summary_model() -> str:
     return "llama3.2:1b"
 
 
-def _try_ollama_summary(final_response: str, messages: list) -> str | None:
-    """Ask a local Ollama model for a one-sentence turn summary.
+def _try_ollama_summary(final_response: str, messages: list, session_id: str = "") -> str | None:
+    """Ask a local Ollama model for a 2-3 sentence turn summary.
 
     Model is read from ``agent.auto_summary_model`` config (default
     ``llama3.2:1b``).  Returns ``None`` on any failure — callers fall
     back to the mechanical format.
+
+    When ``session_id`` is provided, the last ~500 chars of the running
+    session summary are injected into the prompt so the model knows what
+    happened in prior turns — this prevents near-identical summaries for
+    consecutive turns on the same topic.
     """
     import json
     import urllib.request
@@ -100,7 +106,7 @@ def _try_ollama_summary(final_response: str, messages: list) -> str | None:
         return None
 
     # Build a compact prompt from the turn's output.
-    _resp_preview = (final_response or "").strip()[:400]
+    _resp_preview = (final_response or "").strip()[:600]
 
     # Extract the user's message for context.
     _user_msg = ""
@@ -108,13 +114,28 @@ def _try_ollama_summary(final_response: str, messages: list) -> str | None:
         if isinstance(_m, dict) and _m.get("role") == "user":
             _content = _m.get("content")
             if isinstance(_content, str) and _content.strip():
-                _user_msg = _content.strip()[:300]
+                _user_msg = _content.strip()[:600]
                 break
+
+    # Read the running session summary for prior-turn context.
+    _prior_context = ""
+    if session_id:
+        try:
+            _summary_path = os.path.expanduser(
+                f"~/.hermes/sessions/{session_id}/running_summary.md"
+            )
+            if os.path.isfile(_summary_path):
+                with open(_summary_path, "r") as _f:
+                    _raw = _f.read()
+                # Take the last ~500 chars — enough for 2-3 recent entries.
+                _prior_context = _raw.strip()[-500:]
+        except Exception:
+            pass  # Best-effort — never block the summary on a file read.
 
     # Collect tool names, file paths, and tool result snippets.
     _tool_names = []
     _paths = set()
-    _tool_results = []  # (tool_name, first 200 chars of result)
+    _tool_results = []  # (tool_name, first 300 chars of result)
     for _m in messages:
         if isinstance(_m, dict) and _m.get("role") == "assistant" and _m.get("tool_calls"):
             for _tc in _m["tool_calls"]:
@@ -134,23 +155,36 @@ def _try_ollama_summary(final_response: str, messages: list) -> str | None:
             _tname = _m.get("name") or _m.get("tool_name") or ""
             _tcontent = _m.get("content")
             if isinstance(_tcontent, str) and _tcontent.strip():
-                _snippet = _tcontent.strip()[:200]
+                _snippet = _tcontent.strip()[:300]
                 _tool_results.append(f"{_tname}: {_snippet}")
 
     _tool_str = ", ".join(list(dict.fromkeys(_tool_names))[:8]) if _tool_names else "none"
     _path_str = ", ".join(sorted(_paths)[:10]) if _paths else "none"
     _results_str = "\n".join(_tool_results[:6]) if _tool_results else "none"
 
-    _prompt = (
-        "Summarize what was accomplished this turn in one sentence. "
-        "Focus on what was done, not how. Be specific and concise.\n\n"
-        f"User asked: {_user_msg}\n"
-        f"Files: {_path_str}\n"
-        f"Tools used: {_tool_str}\n"
-        f"Tool results:\n{_results_str}\n"
-        f"Response: {_resp_preview}\n\n"
-        "One-sentence summary:"
-    )
+    _prompt_parts = [
+        "Summarize what was accomplished this turn in 1-2 sentences. "
+        "Focus on what was done, not how. Be specific and concise.",
+    ]
+    if _prior_context:
+        _prompt_parts.append(
+            f"Prior turns (for context — do NOT summarize these):\n{_prior_context}"
+        )
+        _prompt_parts.append(
+            "If the prior turns show similar work to this turn, describe what was "
+            "different or refined this turn — do NOT repeat the same summary. "
+            "Focus on what changed or advanced."
+        )
+    _prompt_parts.extend([
+        f"User asked: {_user_msg}",
+        f"Files: {_path_str}",
+        f"Tools used: {_tool_str}",
+        f"Tool results:\n{_results_str}",
+        f"Response: {_resp_preview}",
+        "",
+        "Summary:",
+    ])
+    _prompt = "\n\n".join(_prompt_parts)
 
     _body = json.dumps({
         "model": _model,
@@ -649,6 +683,7 @@ def finalize_turn(
 
             _line = _build_turn_summary(
                 final_response, api_call_count, _turn_exit_reason, messages,
+                session_id=agent.session_id,
             )
 
             _ss(

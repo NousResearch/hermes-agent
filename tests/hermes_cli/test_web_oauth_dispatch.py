@@ -889,3 +889,48 @@ def test_status_unknown_provider_degrades_to_logged_out():
     with patch("hermes_cli.auth.get_auth_status", return_value={"logged_in": False}):
         out = ws._resolve_provider_status("totally-unknown", None)
     assert out["logged_in"] is False
+
+
+def test_status_codex_surfaces_quota_exhaustion():
+    """Dashboard provider status must surface codex quota exhaustion.
+
+    Regression: the openai-codex branch kept ``logged_in`` but dropped the
+    ``rate_limited``/``reset_at``/``error`` that ``get_codex_auth_status``
+    returns when every credential is frozen — so the dashboard showed a clean
+    "connected" while ``hermes auth list`` showed exhausted.
+    """
+    import hermes_cli.web_server as ws
+
+    codex_status = {
+        "logged_in": True,
+        "rate_limited": True,
+        "error_code": "codex_rate_limited",
+        "error": "The usage limit has been reached",
+        "reset_at": time.time() + 3600,
+        "source": "pool:codex@example.com",
+        "auth_mode": "chatgpt",
+    }
+    with patch("hermes_cli.auth.get_codex_auth_status", return_value=codex_status):
+        out = ws._resolve_provider_status("openai-codex", None)
+
+    assert out["logged_in"] is True
+    assert out["rate_limited"] is True
+    assert out.get("reset_at")
+    assert "usage limit" in (out.get("error") or "").lower()
+
+
+def test_status_codex_healthy_has_no_rate_limit_flag():
+    """A usable codex credential must not report a spurious rate-limit."""
+    import hermes_cli.web_server as ws
+
+    codex_status = {
+        "logged_in": True,
+        "source": "pool:codex@example.com",
+        "auth_mode": "chatgpt",
+        "api_key": "sk-test",
+    }
+    with patch("hermes_cli.auth.get_codex_auth_status", return_value=codex_status):
+        out = ws._resolve_provider_status("openai-codex", None)
+
+    assert out["logged_in"] is True
+    assert out.get("rate_limited") is False

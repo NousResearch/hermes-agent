@@ -5905,6 +5905,12 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "expires_at": None,
                 "has_refresh_token": False,
                 "last_refresh": raw.get("last_refresh"),
+                # Surface quota exhaustion so the dashboard agrees with
+                # `hermes auth list` / `hermes status` instead of showing a
+                # clean "connected" while every codex credential is frozen.
+                "rate_limited": bool(raw.get("rate_limited")),
+                "reset_at": raw.get("reset_at"),
+                "error": raw.get("error"),
             }
         if provider_id == "qwen-oauth":
             raw = hauth.get_qwen_auth_status()

@@ -3199,19 +3199,26 @@ class SessionDB:
                     best = current
 
                 # Walk to the most-recently-started child — but skip explicit
-                # branch (`_branched_from`), delegate/subagent (`_delegate_from`),
-                # and tool children. They also carry a ``parent_session_id`` yet
-                # are NOT compression continuations; following them would hijack
-                # the resume target to an unrelated session (e.g. a subagent
-                # run). This mirrors the child-exclusion in ``get_compression_tip``.
+                # branch, delegate/subagent (`_delegate_from`), and tool
+                # children. They also carry a ``parent_session_id`` yet are NOT
+                # compression continuations; following them would hijack the
+                # resume target to an unrelated session (e.g. a subagent run).
+                # Branch children are excluded via the canonical
+                # ``_BRANCH_CHILD_SQL`` (both the ``_branched_from`` marker and
+                # the ``end_reason='branched'`` heuristic arm) so this exclusion
+                # can never drift from ``get_compression_tip`` /
+                # ``_LISTABLE_CHILD_SQL``. An api_server fork
+                # (``end_session(id, "branched")`` + a child created with no
+                # marker) carries only the heuristic, so the marker arm alone
+                # would let it slip through and hijack the resume.
                 try:
                     child_row = self._conn.execute(
-                        "SELECT id FROM sessions "
-                        "WHERE parent_session_id = ? "
-                        "  AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL "
-                        "  AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
-                        "  AND COALESCE(source, '') != 'tool' "
-                        "ORDER BY started_at DESC, id DESC LIMIT 1",
+                        "SELECT c.id FROM sessions c "
+                        "WHERE c.parent_session_id = ? "
+                        f"  AND NOT ({_BRANCH_CHILD_SQL.format(a='c')}) "
+                        "  AND json_extract(COALESCE(c.model_config, '{}'), '$._delegate_from') IS NULL "
+                        "  AND COALESCE(c.source, '') != 'tool' "
+                        "ORDER BY c.started_at DESC, c.id DESC LIMIT 1",
                         (current,),
                     ).fetchone()
                 except Exception:

@@ -135,6 +135,33 @@ def test_compression_tip_not_confused_with_delegation_child(db):
     assert db.resolve_resume_session_id("conv") == "conv"
 
 
+def test_does_not_redirect_into_branched_fork_child(db):
+    # An api_server /branch fork (gateway/platforms/api_server.py:1598) ends the
+    # original with end_reason='branched' and creates a child carrying the
+    # transcript forward — but, unlike the TUI /branch path, it does NOT set the
+    # `_branched_from` model_config marker. The child is therefore a branch only
+    # by the `end_reason='branched'` heuristic arm of `_BRANCH_CHILD_SQL`.
+    # Resuming the original must stay on the original transcript, never get
+    # hijacked into the divergent fork.
+    base = int(time.time()) - 10_000
+    db.create_session("orig", source="cli")
+    db.append_message("orig", role="user", content="parent turn")
+    db.end_session("orig", "branched")
+    # No model_config marker — mirrors api_server.create_session(..., parent_session_id=...).
+    db.create_session("fork", source="api_server", parent_session_id="orig")
+    db.append_message("fork", role="assistant", content="divergent fork turn")
+    conn = db._conn
+    assert conn is not None
+    conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'orig'",
+        (base, base + 50),
+    )
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'fork'", (base + 100,))
+    conn.commit()
+
+    assert db.resolve_resume_session_id("orig") == "orig"
+
+
 def test_prefers_most_recent_child_when_fork_exists(db):
     # If a session was somehow forked (two children), pick the latest one.
     # In practice, compression only produces single-chain shape, but the helper

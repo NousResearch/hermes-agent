@@ -337,6 +337,19 @@ def init_agent(
         # use a URL convention ending in /anthropic. Auto-detect these so the
         # Anthropic Messages API adapter is used instead of chat completions.
         agent.api_mode = "anthropic_messages"
+    elif (
+        agent._base_url_hostname == "api.kimi.com"
+        and "/coding" in agent._base_url_lower
+    ):
+        # Kimi Code's api.kimi.com/coding endpoint speaks the Anthropic
+        # Messages protocol (it accepts Claude Code's native request shape),
+        # even on URLs like .../coding/v1 that do NOT carry the /anthropic
+        # suffix matched above. Mirror determine_api_mode() so a directly
+        # constructed AIAgent routes to the Anthropic adapter instead of
+        # falling through to chat_completions and sending the wrong wire
+        # protocol. See hermes_cli.providers.determine_api_mode and
+        # hermes_cli.runtime_provider._detect_api_mode_for_url.
+        agent.api_mode = "anthropic_messages"
     elif agent.provider == "bedrock" or (
         agent._base_url_hostname.startswith("bedrock-runtime.")
         and base_url_host_matches(agent._base_url_lower, "amazonaws.com")

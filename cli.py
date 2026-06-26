@@ -3605,26 +3605,9 @@ def _get_plugin_cmd_handler_names() -> set:
 
 def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> list[str]:
     """Normalize a CLI skills flag into a deduplicated list of skill identifiers."""
-    if not skills:
-        return []
+    from agent.skill_commands import normalize_skill_identifiers
 
-    if isinstance(skills, str):
-        raw_values = [skills]
-    elif isinstance(skills, (list, tuple)):
-        raw_values = [str(item) for item in skills if item is not None]
-    else:
-        raw_values = [str(skills)]
-
-    parsed: list[str] = []
-    seen: set[str] = set()
-    for raw in raw_values:
-        for part in raw.split(","):
-            normalized = part.strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            parsed.append(normalized)
-    return parsed
+    return normalize_skill_identifiers(skills)
 
 
 def save_config_value(key_path: str, value: any) -> bool:
@@ -16094,7 +16077,7 @@ def main(
             from hermes_cli.tools_config import _get_platform_tools
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
-    parsed_skills = _parse_skills_argument(skills)
+    explicit_skills = _parse_skills_argument(skills)
 
     # Create CLI instance
     cli = HermesCLI(
@@ -16112,27 +16095,51 @@ def main(
         ignore_rules=ignore_rules,
     )
 
+    from agent.skill_commands import (
+        config_default_skill_identifiers,
+        merge_preloaded_skill_identifiers,
+    )
+
+    default_skills = (
+        []
+        if cli.ignore_rules
+        else config_default_skill_identifiers(CLI_CONFIG)
+    )
+    parsed_skills = merge_preloaded_skill_identifiers(
+        default_skills,
+        explicit_skills,
+    )
+
     if parsed_skills:
         skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
             parsed_skills,
             task_id=cli.session_id,
         )
         if missing_skills:
-            missing_display = ", ".join(missing_skills)
-            # If at least one skill loaded, degrade gracefully: skip the
-            # unknown ones and continue. A typo'd skill name should not crash
-            # the worker (which auto-blocks the Kanban task after retries).
-            # Only when EVERY requested skill is missing do we hard-fail, so a
-            # fully-misconfigured worker fails loudly instead of running blind.
-            if loaded_skills:
+            explicit_set = set(explicit_skills)
+            missing_explicit = [name for name in missing_skills if name in explicit_set]
+            missing_defaults = [name for name in missing_skills if name not in explicit_set]
+            if missing_defaults:
+                missing_display = ", ".join(missing_defaults)
                 logger.warning(
-                    "Unknown skill(s) requested, skipping: %s. "
+                    "Profile default skill(s) not found and skipped: %s",
+                    missing_display,
+                )
+                if not quiet:
+                    _cprint(
+                        f"⚠️  Profile default skill(s) not found and skipped: {missing_display}"
+                    )
+            loaded_explicit = any(name not in missing_explicit for name in explicit_skills)
+            if missing_explicit and loaded_explicit:
+                logger.warning(
+                    "Unknown explicit skill(s) requested, skipping: %s. "
                     "Continuing with: %s. "
                     "List available skills with `hermes skills list`.",
-                    missing_display,
+                    ", ".join(missing_explicit),
                     ", ".join(loaded_skills),
                 )
-            else:
+            elif missing_explicit:
+                missing_display = ", ".join(missing_explicit)
                 raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             cli.system_prompt = "\n\n".join(

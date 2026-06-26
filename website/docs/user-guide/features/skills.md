@@ -312,6 +312,19 @@ complete quarantined bundle and records the source URL, exact content hash,
 scanner version, findings, timestamp, and fresh-or-cached status in
 `skills/.hub/lock.json`.
 
+## Profile Default Skills
+
+Profiles can preload a stable set of skills for every new session. Add them to that profile's `config.yaml`:
+
+```yaml
+skills:
+  defaults:
+    - obsidian-markdown
+    - obsidian-vault-navigator
+```
+
+Hermes loads these defaults before any explicit `--skills` / `-s` values for the current launch, then removes duplicates while preserving order. Missing default skills warn and are skipped instead of blocking startup. `--ignore-rules` suppresses profile defaults together with the other automatic context injections.
+
 ## External Skill Directories
 
 If you maintain skills outside of Hermes — for example, a shared `~/.agents/skills/` directory used by multiple AI tools — you can tell Hermes to scan those directories too.

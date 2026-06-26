@@ -3002,6 +3002,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import threading as _threading
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
+        self._profile_default_skills_prompt_cache: Dict[tuple, str] = {}
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
@@ -18280,6 +18281,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if cfg_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
+            if not is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")):
+                try:
+                    from agent.skill_commands import (
+                        build_preloaded_skills_prompt,
+                        config_default_skill_identifiers,
+                    )
+
+                    default_skills = config_default_skill_identifiers(user_config)
+                    if default_skills:
+                        cache = getattr(self, "_profile_default_skills_prompt_cache", None)
+                        if not isinstance(cache, dict):
+                            cache = {}
+                            self._profile_default_skills_prompt_cache = cache
+                        prompt_cache_key = (
+                            session_id,
+                            tuple(default_skills),
+                            os.environ.get("HERMES_HOME", ""),
+                        )
+                        default_skills_prompt = cache.get(prompt_cache_key)
+                        if default_skills_prompt is None:
+                            default_skills_prompt, _loaded_skills, missing_skills = (
+                                build_preloaded_skills_prompt(
+                                    default_skills,
+                                    task_id=session_id or session_key,
+                                )
+                            )
+                            if missing_skills:
+                                logger.warning(
+                                    "[Gateway] Profile default skill(s) not found and skipped: %s",
+                                    ", ".join(missing_skills),
+                                )
+                            cache[prompt_cache_key] = default_skills_prompt
+                        if default_skills_prompt:
+                            combined_ephemeral = (
+                                combined_ephemeral + "\n\n" + default_skills_prompt
+                            ).strip()
+                except Exception as exc:
+                    logger.warning(
+                        "[Gateway] Failed to load profile default skill(s): %s",
+                        exc,
+                    )
 
             max_iterations = _current_max_iterations()
 

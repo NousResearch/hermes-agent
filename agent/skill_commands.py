@@ -55,6 +55,63 @@ _BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
 _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 
 
+def normalize_skill_identifiers(skills: Any) -> list[str]:
+    """Normalize skill config/flag values into an ordered, deduplicated list."""
+    if not skills:
+        return []
+
+    if isinstance(skills, str):
+        raw_values = [skills]
+    elif isinstance(skills, (list, tuple, set)):
+        raw_values = [str(item) for item in skills if item is not None]
+    else:
+        raw_values = [str(skills)]
+
+    parsed: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        for part in raw.replace("\n", ",").split(","):
+            normalized = part.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            parsed.append(normalized)
+    return parsed
+
+
+def config_default_skill_identifiers(config: Any) -> list[str]:
+    """Return profile-scoped default skills from ``skills.defaults``."""
+    if not isinstance(config, dict):
+        return []
+    skills_cfg = config.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+    return normalize_skill_identifiers(skills_cfg.get("defaults"))
+
+
+def merge_preloaded_skill_identifiers(
+    default_skills: Any,
+    explicit_skills: Any,
+) -> list[str]:
+    """Compose profile defaults with explicit startup skills.
+
+    Defaults come first so the profile's baseline role is loaded before any
+    per-invocation additions. Duplicate identifiers are removed while keeping
+    first-seen order.
+    """
+    merged: list[str] = []
+    seen: set[str] = set()
+    for skill in (
+        *normalize_skill_identifiers(default_skills),
+        *normalize_skill_identifiers(explicit_skills),
+    ):
+        if skill in seen:
+            continue
+        seen.add(skill)
+        merged.append(skill)
+    return merged
+
+
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     """Recover the user's instruction from a slash-skill-expanded turn.
 
@@ -741,7 +798,7 @@ def build_preloaded_skills_prompt(
             pass  # Non-critical
 
         activation_note = (
-            f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '
+            f'[IMPORTANT: The user launched this Hermes session with the "{skill_name}" skill '
             "preloaded. Treat its instructions as active guidance for the duration of this "
             "session unless the user overrides them.]"
         )

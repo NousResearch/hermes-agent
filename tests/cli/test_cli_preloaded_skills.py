@@ -54,6 +54,7 @@ class _DummyCLI:
         self.session_id = "session-123"
         self.system_prompt = "base prompt"
         self.preloaded_skills = []
+        self.ignore_rules = kwargs.get("ignore_rules", False)
 
     def show_banner(self):
         return None
@@ -77,6 +78,7 @@ def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
         created["cli"] = _DummyCLI(**kwargs)
         return created["cli"]
 
+    monkeypatch.setattr(cli_mod, "CLI_CONFIG", {})
     monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
     monkeypatch.setattr(
         cli_mod,
@@ -92,9 +94,82 @@ def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
     assert cli_obj.preloaded_skills == ["hermes-agent-dev", "github-auth"]
 
 
+def test_main_applies_profile_default_skills_before_explicit(monkeypatch):
+    import cli as cli_mod
+
+    created = {}
+    captured = {}
+
+    def fake_cli(**kwargs):
+        created["cli"] = _DummyCLI(**kwargs)
+        return created["cli"]
+
+    def fake_preload(skills, task_id=None):
+        captured["skills"] = skills
+        return "skill prompt", ["profile-skill", "extra-skill"], []
+
+    monkeypatch.setattr(cli_mod, "CLI_CONFIG", {"skills": {"defaults": ["profile-skill"]}})
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+    monkeypatch.setattr(cli_mod, "build_preloaded_skills_prompt", fake_preload)
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(skills="extra-skill,profile-skill", list_tools=True)
+
+    assert captured["skills"] == ["profile-skill", "extra-skill"]
+    assert created["cli"].preloaded_skills == ["profile-skill", "extra-skill"]
+
+
+def test_main_skips_missing_profile_default_skill(monkeypatch):
+    import cli as cli_mod
+
+    created = {}
+
+    def fake_cli(**kwargs):
+        created["cli"] = _DummyCLI(**kwargs)
+        return created["cli"]
+
+    monkeypatch.setattr(cli_mod, "CLI_CONFIG", {"skills": {"defaults": ["ghost-skill"]}})
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+    monkeypatch.setattr(cli_mod, "_cprint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "build_preloaded_skills_prompt",
+        lambda skills, task_id=None: ("", [], ["ghost-skill"]),
+    )
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(list_tools=True)
+
+    assert created["cli"].system_prompt == "base prompt"
+    assert created["cli"].preloaded_skills == []
+
+
+def test_main_ignore_rules_suppresses_profile_default_skills(monkeypatch):
+    import cli as cli_mod
+
+    created = {}
+
+    def fake_cli(**kwargs):
+        created["cli"] = _DummyCLI(**kwargs)
+        return created["cli"]
+
+    def fail_preload(*args, **kwargs):
+        raise AssertionError("profile defaults should not preload")
+
+    monkeypatch.setattr(cli_mod, "CLI_CONFIG", {"skills": {"defaults": ["profile-skill"]}})
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+    monkeypatch.setattr(cli_mod, "build_preloaded_skills_prompt", fail_preload)
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(ignore_rules=True, list_tools=True)
+
+    assert created["cli"].preloaded_skills == []
+
+
 def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     import cli as cli_mod
 
+    monkeypatch.setattr(cli_mod, "CLI_CONFIG", {})
     monkeypatch.setattr(cli_mod, "HermesCLI", lambda **kwargs: _DummyCLI(**kwargs))
     monkeypatch.setattr(
         cli_mod,

@@ -79,17 +79,18 @@ def build_write_denied_prefixes(home: str) -> list[str]:
 
 def get_safe_write_roots() -> set[str]:
     """Return resolved HERMES_WRITE_SAFE_ROOT paths. Supports multiple directories
-    separated by ':' (Unix PATH-style). E.g., '/opt/data:/var/www/html'."""
+    separated by ``os.pathsep`` (``:`` on Unix, ``;`` on Windows).
+    E.g., ``/opt/data:/var/www/html`` on Unix, ``C:\\data;D:\\www`` on Windows."""
     env = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
     if not env:
         return set()
     roots: set[str] = set()
-    for path in env.split(":"):
+    for path in env.split(os.pathsep):
         if path:
             try:
                 resolved = os.path.realpath(os.path.expanduser(path))
                 roots.add(resolved)
-            except Exception:
+            except (OSError, ValueError):
                 continue
     return roots
 
@@ -132,7 +133,6 @@ def is_write_denied(path: str) -> bool:
 
     safe_roots = get_safe_write_roots()
     if safe_roots:
-        # Allow write if path is under ANY of the safe roots
         allowed = False
         for safe_root in safe_roots:
             if resolved == safe_root or resolved.startswith(safe_root + os.sep):

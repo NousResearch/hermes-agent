@@ -399,6 +399,18 @@ def _rich_normalize_linebreaks(text: str) -> str:
     return ''.join(out)
 
 
+# Registry of live TelegramAdapter instances keyed by bot token.
+# Allows send_message_tool.py to reuse the gateway's connected Bot
+# instead of creating a competing standalone instance that would
+# conflict with polling (get_updates) on the same token.
+_LIVE_ADAPTERS: Dict[str, 'TelegramAdapter'] = {}
+
+
+def get_telegram_live_adapter(token: str) -> 'Optional[TelegramAdapter]':
+    """Return the live TelegramAdapter for a token, or None if not connected."""
+    return _LIVE_ADAPTERS.get(token)
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -2575,6 +2587,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             
             self._mark_connected()
+            _LIVE_ADAPTERS[self.config.token] = self
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
@@ -2646,6 +2659,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        _LIVE_ADAPTERS.pop(self.config.token, None)
         # Cancel the heartbeat before tearing down the app so the probe task
         # cannot fire get_me() into a half-shutdown bot client.
         if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():

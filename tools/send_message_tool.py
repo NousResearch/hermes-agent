@@ -1010,30 +1010,43 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
-        # Honour a configured proxy (telegram.proxy_url in config.yaml, exported
-        # as TELEGRAM_PROXY env var by load_gateway_config). Without this, the
-        # standalone send path bypasses the proxy and times out in regions
-        # where api.telegram.org is blocked. The in-gateway adapter does the
-        # same thing in gateway/platforms/telegram.py.
+        # Try to reuse the gateway's live Bot to avoid polling conflicts.
+        # The live adapter already has proxy configured in connect().
+        # Fall back to a standalone Bot when gateway is not running.
         try:
-            from gateway.platforms.base import resolve_proxy_url
-            _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
-        except Exception:
-            _tg_proxy = None
-        if _tg_proxy:
-            try:
-                from telegram.request import HTTPXRequest
-                logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
-                bot = Bot(
-                    token=token,
-                    request=HTTPXRequest(proxy=_tg_proxy),
-                    get_updates_request=HTTPXRequest(proxy=_tg_proxy),
-                )
-            except Exception as _proxy_err:
-                logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
-                bot = Bot(token=token)
+            from plugins.platforms.telegram.adapter import get_telegram_live_adapter
+            _live = get_telegram_live_adapter(token)
+        except ImportError:
+            _live = None
+
+        if _live is not None and _live._bot is not None:
+            bot = _live._bot
+            logger.debug('Reusing live Telegram adapter Bot for send')
         else:
-            bot = Bot(token=token)
+            # Honour a configured proxy (telegram.proxy_url in config.yaml, exported
+            # as TELEGRAM_PROXY env var by load_gateway_config). Without this, the
+            # standalone send path bypasses the proxy and times out in regions
+            # where api.telegram.org is blocked. The in-gateway adapter does the
+            # same thing in gateway/platforms/telegram.py.
+            try:
+                from gateway.platforms.base import resolve_proxy_url
+                _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
+            except Exception:
+                _tg_proxy = None
+            if _tg_proxy:
+                try:
+                    from telegram.request import HTTPXRequest
+                    logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
+                    bot = Bot(
+                        token=token,
+                        request=HTTPXRequest(proxy=_tg_proxy),
+                        get_updates_request=HTTPXRequest(proxy=_tg_proxy),
+                    )
+                except Exception as _proxy_err:
+                    logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
+                    bot = Bot(token=token)
+            else:
+                bot = Bot(token=token)
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}

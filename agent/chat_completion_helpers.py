@@ -727,7 +727,10 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     # found, delegate fully; otherwise fall through to the legacy flag path.
     try:
         from providers import get_provider_profile
-        _profile = get_provider_profile(agent.provider)
+        _provider_for_profile = agent.provider
+        if _provider_for_profile and _provider_for_profile.startswith("custom:") and _provider_for_profile != "custom":
+            _provider_for_profile = "custom"
+        _profile = get_provider_profile(_provider_for_profile)
     except Exception:
         _profile = None
 

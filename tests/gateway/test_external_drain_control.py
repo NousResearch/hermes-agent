@@ -73,6 +73,95 @@ class TestMarkerContract:
 
 
 # ---------------------------------------------------------------------------
+# Instantiation-epoch staleness (NS-570: orphaned marker on durable volume)
+# ---------------------------------------------------------------------------
+
+
+class TestInstantiationEpoch:
+    def test_write_stamps_current_epoch(self, home):
+        payload = dc.write_drain_request(principal="nas")
+        assert payload["epoch"] == dc.current_instantiation_epoch()
+        body = dc.read_drain_request()
+        assert body is not None and body["epoch"] == dc.current_instantiation_epoch()
+
+    def test_current_epoch_is_stable_within_process(self):
+        # Memoised — an s6 respawn of just the gateway keeps PID 1, so a
+        # repeated call inside one process must return the same value (an
+        # in-flight drain stays honoured).
+        assert dc.current_instantiation_epoch() == dc.current_instantiation_epoch()
+
+    def test_marker_from_prior_instantiation_reads_as_absent(self, home, monkeypatch):
+        # THE NS-570 REGRESSION. A begin-drain marker written by a PREVIOUS
+        # container/VM instantiation survives on the durable HERMES_HOME volume
+        # across a machine restart. The freshly-restarted gateway (new epoch)
+        # must treat it as absent, NOT re-engage drain.
+        monkeypatch.setattr(dc, "current_instantiation_epoch", lambda: "epoch-OLD")
+        dc.write_drain_request(principal="nas")  # stamps "epoch-OLD"
+        assert dc.drain_requested() is True  # same epoch → active
+
+        # Simulate the restart: a brand-new instantiation epoch.
+        monkeypatch.setattr(dc, "current_instantiation_epoch", lambda: "epoch-NEW")
+        # The marker file is still physically present on the volume…
+        assert dc.drain_request_path().exists() is True
+        # …but it is ignored because its epoch belongs to a prior instantiation.
+        assert dc.drain_requested() is False
+
+    def test_marker_from_current_instantiation_is_honoured(self, home, monkeypatch):
+        monkeypatch.setattr(dc, "current_instantiation_epoch", lambda: "epoch-A")
+        dc.write_drain_request()
+        assert dc.drain_requested() is True
+
+    def test_legacy_marker_without_epoch_still_active(self, home):
+        # A marker written before this change (no "epoch" key) must remain
+        # fail-safe toward quiescing — never silently ignored.
+        import json
+
+        dc.drain_request_path().write_text(
+            json.dumps({"action": "drain", "requested_at": "x", "principal": "p"}),
+            encoding="utf-8",
+        )
+        assert dc.drain_requested() is True
+
+    def test_corrupt_marker_with_no_parseable_epoch_still_active(self, home):
+        # Half-written / malformed → read_drain_request returns {} → no epoch →
+        # lenient check keeps it active (fail-safe), same as before the change.
+        dc.drain_request_path().write_text("{not valid json", encoding="utf-8")
+        assert dc.drain_requested() is True
+
+    def test_unavailable_epoch_disables_staleness_check(self, home, monkeypatch):
+        # No /proc (non-Linux, etc.) → epoch "" → degrade to presence-only:
+        # any present marker (even with a foreign epoch) reads as active rather
+        # than fail-closed.
+        import json
+
+        dc.drain_request_path().write_text(
+            json.dumps({"action": "drain", "epoch": "some-other-epoch"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(dc, "current_instantiation_epoch", lambda: "")
+        assert dc.drain_requested() is True
+
+    def test_current_epoch_empty_when_proc_unreadable(self, monkeypatch):
+        # When neither /proc identity source is readable, the epoch is "" so
+        # the staleness check is disabled rather than crashing.
+        from pathlib import Path as _P
+
+        orig_read_text = _P.read_text
+
+        def _boom(self, *a, **k):
+            if str(self).startswith("/proc/"):
+                raise OSError("no /proc")
+            return orig_read_text(self, *a, **k)
+
+        dc.current_instantiation_epoch.cache_clear()
+        monkeypatch.setattr(_P, "read_text", _boom)
+        try:
+            assert dc.current_instantiation_epoch() == ""
+        finally:
+            dc.current_instantiation_epoch.cache_clear()
+
+
+# ---------------------------------------------------------------------------
 # Gateway state machine (enter / exit / idempotency)
 # ---------------------------------------------------------------------------
 

@@ -4075,8 +4075,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         gateway/drain_control.py). Marker present -> ``_enter_external_drain``;
         marker absent -> ``_exit_external_drain``. The 1s cadence bounds the
         observe-the-marker latency the live-validation gate checks (point a).
-        Reconciles once at startup so a marker that survived a restart is
-        honoured immediately. Best-effort: any tick error is logged and the
+        Reconciles once at startup. A marker stamped with a PRIOR
+        instantiation epoch (one that survived a machine restart on the durable
+        HERMES_HOME volume — NS-570) is treated as absent by ``drain_requested``
+        and is NOT honoured; only a marker from the current instantiation flips
+        the gateway into drain. Best-effort: any tick error is logged and the
         loop continues (a transient stat() failure must not wedge the gateway).
         """
         from gateway.drain_control import drain_requested
@@ -6342,8 +6345,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Start background drain-control watcher — reconciles the gateway's
         # new-turn accept-state with the external ``.drain_request.json`` marker
-        # the dashboard begin/cancel-drain endpoint writes (Phase 2). Honours a
-        # marker that survived a restart on its first tick.
+        # the dashboard begin/cancel-drain endpoint writes (Phase 2). A marker
+        # left behind by a prior instantiation (durable-volume restart, NS-570)
+        # is ignored via its instantiation epoch; only a current-epoch marker
+        # engages drain on the first tick.
         asyncio.create_task(self._drain_control_watcher())
 
         logger.info("Press Ctrl+C to stop")

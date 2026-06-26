@@ -2589,6 +2589,30 @@ class TestConcurrentToolExecution:
         assert starts == [("c1", "web_search", {"query": "hello"})]
         assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
 
+    def test_sequential_browser_type_callbacks_redact_api_key(self, agent):
+        secret = "sk-proj-ABCD1234567890EFGH"
+        tool_call = _mock_tool_call(
+            name="browser_type",
+            arguments=json.dumps({"ref": "@apikey", "text": secret}),
+            call_id="c-secret",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        starts = []
+        completes = []
+        progress = []
+        agent.tool_start_callback = lambda tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
+        agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
+        agent.tool_progress_callback = lambda event, name, preview, args, **kw: progress.append((event, name, preview, args))
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true, "typed": "sk-pro...EFGH"}'):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert starts[0][2]["text"].startswith("sk-pro")
+        assert completes[0][2]["text"].startswith("sk-pro")
+        assert progress[0][2].startswith("sk-pro")
+        assert secret not in repr(starts + completes + progress)
+
     def test_concurrent_tool_callbacks_fire_for_each_tool(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='{"query":"two"}', call_id="c2")
@@ -2609,6 +2633,30 @@ class TestConcurrentToolExecution:
         assert len(completes) == 2
         assert {entry[0] for entry in completes} == {"c1", "c2"}
         assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
+
+    def test_concurrent_browser_type_callbacks_redact_api_key(self, agent):
+        secret = "sk-proj-ABCD1234567890EFGH"
+        tc = _mock_tool_call(
+            name="browser_type",
+            arguments=json.dumps({"ref": "@apikey", "text": secret}),
+            call_id="c-secret",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        starts = []
+        completes = []
+        progress = []
+        agent.tool_start_callback = lambda tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
+        agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
+        agent.tool_progress_callback = lambda event, name, preview, args, **kw: progress.append((event, name, preview, args))
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true, "typed": "sk-pro...EFGH"}'):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert starts[0][2]["text"].startswith("sk-pro")
+        assert completes[0][2]["text"].startswith("sk-pro")
+        assert progress[0][2].startswith("sk-pro")
+        assert secret not in repr(starts + completes + progress)
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
@@ -4076,6 +4124,54 @@ class TestRunConversation:
         # Should use the streamed content, not the old prior-turn fallback
         assert result["final_response"] == "Fresh partial content from this turn"
         assert result["api_calls"] == 1
+
+    def test_interrupt_during_stream_preserves_partial_assistant_text(self, agent):
+        """Stopping mid-response keeps the streamed reply in history (not 'forgotten')."""
+        self._setup_agent(agent)
+
+        def _fake_api_call(api_kwargs):
+            # Model streamed some visible text, then the user hit stop.
+            agent._current_streamed_assistant_text = "Sure, here's how to do it: first"
+            raise InterruptedError("Agent interrupted during streaming API call")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("how do I do X")
+
+        assert result["interrupted"] is True
+        # Partial reply is surfaced and persisted as an assistant turn so the
+        # next turn remembers what the model said.
+        assert result["final_response"] == "Sure, here's how to do it: first"
+        assert result["messages"][-1] == {
+            "role": "assistant",
+            "content": "Sure, here's how to do it: first",
+        }
+
+    def test_interrupt_before_any_stream_keeps_sentinel(self, agent):
+        """An interrupt with no streamed text falls back to the metadata sentinel."""
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        self._setup_agent(agent)
+
+        def _fake_api_call(api_kwargs):
+            agent._current_streamed_assistant_text = ""
+            raise InterruptedError("Agent interrupted during streaming API call")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hi")
+
+        assert result["interrupted"] is True
+        assert result["final_response"].startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+        assert result["messages"][-1]["role"] == "user"
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)

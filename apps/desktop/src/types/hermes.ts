@@ -774,14 +774,17 @@ export interface MoaModelSlot {
 export interface MoaConfigResponse {
   default_preset: string
   active_preset: string
-  presets: Record<string, {
-    aggregator: MoaModelSlot
-    aggregator_temperature: number
-    enabled: boolean
-    max_tokens: number
-    reference_models: MoaModelSlot[]
-    reference_temperature: number
-  }>
+  presets: Record<
+    string,
+    {
+      aggregator: MoaModelSlot
+      aggregator_temperature: number
+      enabled: boolean
+      max_tokens: number
+      reference_models: MoaModelSlot[]
+      reference_temperature: number
+    }
+  >
   aggregator: MoaModelSlot
   aggregator_temperature: number
   enabled: boolean

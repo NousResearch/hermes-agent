@@ -245,7 +245,41 @@ function Invoke-NativeWithRelaxedErrorAction {
         $ErrorActionPreference = $prevEAP
     }
 }
+function Discard-LockfileChurn {
+    param([string]$Repo = $InstallDir)
 
+    if (-not $Repo -or -not (Test-Path (Join-Path $Repo ".git"))) { return }
+
+    try {
+        $diff = & git -c windows.appendAtomically=false -C $Repo diff --name-only 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $diff) { return }
+
+        $dirtyPackageDirs = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase
+        )
+        foreach ($path in $diff) {
+            if ($path -like "*package.json") {
+                $null = $dirtyPackageDirs.Add((Split-Path $path -Parent))
+            }
+        }
+
+        $dirtyLocks = [System.Collections.Generic.List[string]]::new()
+        foreach ($path in $diff) {
+            if ($path -notlike "*package-lock.json") { continue }
+            $lockDir = Split-Path $path -Parent
+            if ($dirtyPackageDirs.Contains($lockDir)) { continue }
+            $dirtyLocks.Add($path)
+        }
+
+        if ($dirtyLocks.Count -eq 0) { return }
+        & git -c windows.appendAtomically=false -C $Repo checkout -- @($dirtyLocks) 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Info "Discarded npm lockfile churn ($($dirtyLocks.Count) file(s))"
+        }
+    } catch {
+        # Best-effort only; never let cleanup block the installer update path.
+    }
+}
 # Inspect npm output for a TLS-trust failure and, if found, print actionable
 # remediation. npm/Node surface corporate MITM proxies and missing root CAs as
 # "unable to get local issuer certificate" / "self-signed certificate in
@@ -1281,6 +1315,7 @@ function Install-Repository {
                 # users hit on update. Pin autocrlf=false so the dirt is never
                 # created in the first place.
                 git -c windows.appendAtomically=false config core.autocrlf false 2>$null
+                Discard-LockfileChurn $InstallDir
                 # Preserve any real local changes before the checkout instead of
                 # discarding them with `reset --hard HEAD`. The old hard reset
                 # silently destroyed agent-edited source on managed clones (the

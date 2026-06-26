@@ -75,7 +75,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
-  onPasteClipboardImage: () => void
+  onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles: () => void
   onPickFolders: () => void
   onPickImages: () => void
@@ -88,10 +88,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
-  onRestoreToMessage?: (
-    messageId: string,
-    target?: { text?: string; userOrdinal?: number | null }
-  ) => Promise<void>
+  onRestoreToMessage?: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   onRetryResume: (sessionId: string) => void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
   onDismissError?: (messageId: string) => void
@@ -320,7 +317,12 @@ export function ChatView({
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.
   const showIntro =
-    !isSecondaryWindow() && freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messagesEmpty
+    !isSecondaryWindow() &&
+    freshDraftReady &&
+    !isRoutedSessionView &&
+    !selectedSessionId &&
+    !activeSessionId &&
+    messagesEmpty
 
   // Session is still loading if the route references a session we haven't
   // resumed yet. Once `activeSessionId` is set (runtime has resumed), the

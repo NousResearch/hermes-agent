@@ -354,9 +354,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 backdrop-blur-md">
         <div className="w-full max-w-xl rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
           <h2 className="text-2xl font-semibold tracking-tight">{copy.oneTimeTitle}</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {copy.unsupportedDesc(platformLabel)}
-          </p>
+          <p className="mt-2 text-sm text-muted-foreground">{copy.unsupportedDesc(platformLabel)}</p>
 
           <div className="mt-4">
             <div className="mb-1.5 text-xs font-medium text-muted-foreground">{copy.installCommand}</div>
@@ -423,9 +421,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           <h2 className="text-2xl font-semibold tracking-tight">
             {failed ? copy.failedTitle : state.active ? copy.settingUpTitle : copy.finishingTitle}
           </h2>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            {failed ? copy.failedDesc : copy.activeDesc}
-          </p>
+          <p className="mt-1.5 text-sm text-muted-foreground">{failed ? copy.failedDesc : copy.activeDesc}</p>
         </div>
 
         {/* Scrollable middle: progress, stages, error block, log */}
@@ -490,9 +486,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             >
               {logOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               <span>{logOpen ? copy.hideOutput : copy.showOutput}</span>
-              <span className="ml-1 tabular-nums">
-                ({copy.lines(state.log.length)})
-              </span>
+              <span className="ml-1 tabular-nums">({copy.lines(state.log.length)})</span>
             </Button>
 
             {logOpen && (

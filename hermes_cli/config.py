@@ -987,8 +987,12 @@ DEFAULT_CONFIG = {
         # Verification closure: after the agent edits files in a code workspace,
         # do not accept a final answer until fresh verification evidence exists
         # or the agent explains why it cannot run checks. The loop is bounded
-        # and uses the passive verification ledger. Set false to disable.
-        "verify_on_stop": True,
+        # and uses the passive verification ledger. The default "auto" enables
+        # it on interactive coding surfaces (CLI, TUI, desktop) and programmatic
+        # callers, and disables it on conversational messaging surfaces
+        # (Telegram, Discord, etc.) where the verification summary would reach a
+        # human as chat noise. Set true or false to force it on or off.
+        "verify_on_stop": "auto",
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
@@ -1838,6 +1842,22 @@ DEFAULT_CONFIG = {
             "password": "",  # plaintext fallback (hashed in-memory at load)
             "secret": "",  # token-signing key; blank → random per-process
             "session_ttl_seconds": 0,  # 0 → plugin default (12h)
+        },
+        # Drain-control service-credential configuration — read by the
+        # bundled ``dashboard_auth/drain`` plugin (the first consumer of the
+        # generic non-interactive token-auth capability). The SECRET itself
+        # is a credential and is NOT configured here: it is provisioned by
+        # nous-account-service at deploy time via the
+        # ``HERMES_DASHBOARD_DRAIN_SECRET`` env var (the .env-is-for-secrets
+        # rule). These are the behavioural knobs only. The plugin is a no-op
+        # unless that env var is set to a >=256-bit secret; a weak secret is
+        # rejected at registration (fail-closed) and the drain endpoint stays
+        # disabled. ``scope`` is the capability label attached to the verified
+        # principal; ``min_secret_chars`` is the entropy bar (url-safe-b64
+        # chars; 43 ~= 256 bits).
+        "drain_auth": {
+            "scope": "drain",
+            "min_secret_chars": 43,
         },
         # Public URL override (env: ``HERMES_DASHBOARD_PUBLIC_URL``).
         # When set, this is the complete authority — scheme + host +

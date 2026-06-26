@@ -114,8 +114,7 @@ export const markPetUnread = () => $petUnread.set(true)
 export const clearPetUnread = () => $petUnread.set(false)
 
 /** Steady activity flags (toolRunning / reasoning) set + cleared by the stream. */
-export const setPetActivity = (next: Partial<PetActivity>) =>
-  $petActivity.set({ ...$petActivity.get(), ...next })
+export const setPetActivity = (next: Partial<PetActivity>) => $petActivity.set({ ...$petActivity.get(), ...next })
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -129,10 +128,7 @@ let flashTimer: ReturnType<typeof setTimeout> | undefined
 export const flashPetActivity = (next: Partial<PetActivity>, ms = 1600) => {
   setPetActivity({ celebrate: false, error: false, justCompleted: false, ...next })
   clearTimeout(flashTimer)
-  flashTimer = setTimeout(
-    () => setPetActivity({ celebrate: false, error: false, justCompleted: false }),
-    ms
-  )
+  flashTimer = setTimeout(() => setPetActivity({ celebrate: false, error: false, justCompleted: false }), ms)
 }
 
 export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
@@ -146,21 +142,18 @@ export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
  * mirrored to the pop-out overlay through the same atom, so both surfaces agree
  * without the overlay needing the session list.
  */
-export const $petState = computed(
-  [$petActivity, $busy],
-  (activity, busy): PetState => {
-    const live = activity.busy ?? busy
+export const $petState = computed([$petActivity, $busy], (activity, busy): PetState => {
+  const live = activity.busy ?? busy
 
-    return derivePetState({
-      busy: live,
-      awaitingInput: activity.awaitingInput,
-      // Steady flags only count mid-turn — ignore stale ones once at rest so an
-      // interrupted turn can't pin the pet on `run`/`review`.
-      toolRunning: live && activity.toolRunning,
-      reasoning: live && activity.reasoning,
-      error: activity.error,
-      justCompleted: activity.justCompleted,
-      celebrate: activity.celebrate
-    })
-  }
-)
+  return derivePetState({
+    busy: live,
+    awaitingInput: activity.awaitingInput,
+    // Steady flags only count mid-turn — ignore stale ones once at rest so an
+    // interrupted turn can't pin the pet on `run`/`review`.
+    toolRunning: live && activity.toolRunning,
+    reasoning: live && activity.reasoning,
+    error: activity.error,
+    justCompleted: activity.justCompleted,
+    celebrate: activity.celebrate
+  })
+})

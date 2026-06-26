@@ -482,6 +482,11 @@ async def _dashboard_auth_gate(request: Request, call_next):
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
+    # A request already authenticated by the token-auth seam (a service caller
+    # presenting a bearer token on a registered token route) carries
+    # ``token_authenticated`` — never bounce it through the cookie/session gate.
+    if getattr(request.state, "token_authenticated", False):
+        return await call_next(request)
     # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
     # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
     # and is skipped here so the gate's session attachment isn't overridden.
@@ -495,6 +500,20 @@ async def auth_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _token_auth_seam(request: Request, call_next):
+    """Outermost auth seam: non-interactive bearer-token auth for opted-in routes.
+
+    Registered LAST so it runs FIRST (Starlette middleware is outermost-last).
+    A registered token route is fully owned here — authenticate by token,
+    attach the principal + ``token_authenticated`` flag, and let the downstream
+    cookie/session gates skip enforcement. Non-token routes pass straight
+    through untouched.
+    """
+    from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
+    return await token_auth_middleware(request, call_next)
 
 
 # ---------------------------------------------------------------------------
@@ -2625,6 +2644,71 @@ async def restart_gateway(profile: Optional[str] = None):
         "ok": True,
         "pid": proc.pid,
         "name": "gateway-restart",
+    }
+
+
+@app.post("/api/gateway/drain")
+async def gateway_drain(request: Request):
+    """Begin or cancel an external (NAS-driven) gateway drain.
+
+    Authenticated by the non-interactive token-auth seam: the
+    ``dashboard_auth/drain`` plugin registers this exact path as a token route
+    and verifies the ``Authorization`` bearer secret. If that plugin isn't
+    active (no ``HERMES_DASHBOARD_DRAIN_SECRET``), the route is NOT a token
+    route, so on a gated bind the cookie gate handles it (a browser session can
+    still drive it from the dashboard) and on a loopback bind the legacy
+    session-token gate applies — either way it is never unauthenticated on a
+    network-exposed bind.
+
+    Body: ``{"action": "drain"}`` (begin) or ``{"action": "cancel"}`` (cancel).
+    Begin writes the ``.drain_request.json`` marker the gateway's
+    ``_drain_control_watcher`` observes (flip to ``draining`` + refuse new
+    turns); cancel removes it (revert to ``running`` + re-accept). Idempotent
+    on both sides. This endpoint only writes/removes the marker — the gateway
+    process owns the actual state transition (there is no HTTP control channel
+    into the running gateway; the marker IS the channel, decisions.md Q-B).
+
+    The force-override (D6: "unless a user commands it") is NOT here — an
+    immediate, drain-skipping action maps onto the existing
+    ``POST /api/gateway/restart`` force path, which supersedes a drain.
+    """
+    from gateway.drain_control import (
+        clear_drain_request,
+        drain_requested,
+        write_drain_request,
+    )
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    action = str((body or {}).get("action", "drain")).strip().lower()
+
+    # Attribute the request to the verified token principal when present
+    # (token-auth seam attaches it); fall back to a generic label otherwise.
+    principal_obj = getattr(request.state, "token_principal", None)
+    principal = getattr(principal_obj, "principal", None) or "dashboard"
+
+    if action == "cancel":
+        existed = clear_drain_request()
+        _log.info("Gateway drain CANCEL requested by %s (existed=%s)", principal, existed)
+        return {"ok": True, "action": "cancel", "was_draining": existed}
+
+    if action != "drain":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown drain action {action!r}; expected 'drain' or 'cancel'",
+        )
+
+    payload = write_drain_request(principal=str(principal))
+    _log.info("Gateway drain BEGIN requested by %s", principal)
+    return {
+        "ok": True,
+        "action": "drain",
+        "requested_at": payload["requested_at"],
+        # Echo so a caller polling /api/status knows the marker is now set;
+        # the gateway watcher flips gateway_state -> draining within ~1s.
+        "draining": drain_requested(),
     }
 
 

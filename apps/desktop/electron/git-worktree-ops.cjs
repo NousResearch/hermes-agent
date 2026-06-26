@@ -45,7 +45,10 @@ function parseWorktrees(out) {
     } else if (!cur) {
       continue
     } else if (line.startsWith('branch ')) {
-      cur.branch = line.slice(7).trim().replace(/^refs\/heads\//, '')
+      cur.branch = line
+        .slice(7)
+        .trim()
+        .replace(/^refs\/heads\//, '')
     } else if (line === 'detached') {
       cur.detached = true
     } else if (line === 'bare') {
@@ -122,10 +125,9 @@ async function gitLine(gitBin, args, cwd) {
 }
 
 async function defaultBranch(gitBin, cwd) {
-  const remote = (await gitLine(gitBin, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd)).replace(
-    /^origin\//,
-    ''
-  )
+  const remote = (
+    await gitLine(gitBin, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd)
+  ).replace(/^origin\//, '')
 
   if (remote) {
     return remote
@@ -177,7 +179,16 @@ async function ensureGitRepo(gitBin, dir) {
     // Inline identity so the seed commit lands even with no global git config.
     await runGit(
       gitBin,
-      ['-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes', 'commit', '--allow-empty', '-m', 'Initial commit'],
+      [
+        '-c',
+        'user.email=hermes@localhost',
+        '-c',
+        'user.name=Hermes',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'Initial commit'
+      ],
       dir
     )
   }

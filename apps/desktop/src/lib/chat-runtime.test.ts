@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { attachmentDisplayText, coerceThinkingText, optimisticAttachmentRef, parseCommandDispatch } from './chat-runtime'
+import {
+  attachmentDisplayText,
+  coerceThinkingText,
+  optimisticAttachmentRef,
+  parseCommandDispatch
+} from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 

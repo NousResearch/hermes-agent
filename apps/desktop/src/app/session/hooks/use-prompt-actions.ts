@@ -177,9 +177,7 @@ function imageFilenameFromPath(filePath: string): string {
 // Remote gateway: the local composer-image file lives on THIS machine's disk,
 // not the gateway's, so read the bytes here and upload them via
 // image.attach_bytes. Returns null when the file can't be read.
-async function readImageForRemoteAttach(
-  filePath: string
-): Promise<{ contentBase64: string; filename: string } | null> {
+async function readImageForRemoteAttach(filePath: string): Promise<{ contentBase64: string; filename: string } | null> {
   const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
   const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
 
@@ -587,13 +585,14 @@ export function usePromptActions({
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = rawText.trim()
       const usingComposerAttachments = !options?.attachments
+
       // Drop undefined/null holes a session switch or draft restore can leave in
       // the attachments array (same bug class as AttachmentList #49624). Without
       // this, the sibling iterations below (a.kind / a.label / a.refText, and the
       // sync step) throw "Cannot read properties of undefined (reading 'refText')"
       // and break the chat surface.
-      const attachments = (options?.attachments ?? $composerAttachments.get()).filter(
-        (a): a is ComposerAttachment => Boolean(a)
+      const attachments = (options?.attachments ?? $composerAttachments.get()).filter((a): a is ComposerAttachment =>
+        Boolean(a)
       )
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
@@ -610,6 +609,7 @@ export function usePromptActions({
         // atts may be the post-sync array, which can reintroduce holes; filter
         // before touching a.refText / a.kind.
         const present = atts.filter((a): a is ComposerAttachment => Boolean(a))
+
         const contextRefs = present
           .map(a => a.refText)
           .filter(Boolean)
@@ -641,6 +641,7 @@ export function usePromptActions({
 
       _submitInFlight.add(submitLockKey)
       let submitLockReleased = false
+
       const releaseSubmitLock = () => {
         if (!submitLockReleased) {
           submitLockReleased = true
@@ -848,6 +849,7 @@ export function usePromptActions({
     },
     [
       activeSessionId,
+      activeSessionIdRef,
       busyRef,
       copy,
       createBackendSessionForSend,
@@ -983,7 +985,9 @@ export function usePromptActions({
           return
         }
 
-        const handleDispatch = async (dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>): Promise<void> => {
+        const handleDispatch = async (
+          dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
+        ): Promise<void> => {
           if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
             renderSlashOutput(dispatch.output ?? '(no output)')
 
@@ -1510,13 +1514,8 @@ export function usePromptActions({
 
     const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
       messages
-        .filter(
-          message =>
-            !((message.pending || message.id === streamId) && !chatMessageText(message).trim())
-        )
-        .map(message =>
-          message.pending || message.id === streamId ? { ...message, pending: false } : message
-        )
+        .filter(message => !((message.pending || message.id === streamId) && !chatMessageText(message).trim()))
+        .map(message => (message.pending || message.id === streamId ? { ...message, pending: false } : message))
 
     if (!sessionId) {
       releaseBusy()

@@ -21,12 +21,12 @@ import {
   $petGalleryStatus,
   adoptPet,
   exportPet as exportPetAction,
+  type GalleryPet,
   loadPetGallery,
   loadPetThumb,
   PET_SCALE_DEFAULT,
   PET_SCALE_MAX,
   PET_SCALE_MIN,
-  type GalleryPet,
   rankedGalleryPets,
   removePet as removePetAction,
   renamePet as renamePetAction,
@@ -288,10 +288,16 @@ export function PetSettings() {
         onClose={() => setConfirmDelete(null)}
         onConfirm={async () => {
           if (confirmDelete) {
-            const ok = await removePetAction(requestGateway, confirmDelete.slug, copy.uninstallFailed(confirmDelete.slug))
+            const ok = await removePetAction(
+              requestGateway,
+              confirmDelete.slug,
+              copy.uninstallFailed(confirmDelete.slug)
+            )
+
             if (!ok) {
               throw new Error(copy.uninstallFailed(confirmDelete.slug))
             }
+
             triggerHaptic('crisp')
           }
         }}

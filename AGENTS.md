@@ -1383,8 +1383,6 @@ them into invariants before re-requesting review.
 
 ## Learned User Preferences
 
-## Learned User Preferences
-
 - Respond in Japanese for this workspace unless the user switches language; use なんJ tone in `_docs/` implementation logs.
 - Run Python with `py -3`; chain PowerShell commands with `;`, not `&`.
 - Write implementation logs under `_docs/` as `yyyy-mm-dd_{feature}_{worktreename}.md`.
@@ -1395,13 +1393,18 @@ them into invariants before re-requesting review.
 - Run ESLint on changed files before opening upstream PRs.
 - Verify `upstream/main` for dependency pins before changing local versions; align with upstream rather than guessing (e.g. `slack` extra `aiohttp`).
 - Personal single-user gateway deployments use `GATEWAY_ALLOW_ALL_USERS=true` in `~/.hermes/.env`.
+- When asked to enable plugins, skills, or config, run `hermes … setup` / `~/.hermes` edits directly; do not stop at instructions-only.
+- VRChat OSC/audio sends require explicit user ACK before `dry_run=false` on `vrchat-autonomy` move/speak paths.
 
 ## Learned Workspace Facts
 
-- Fork upstream sync uses `scripts/merge_tools/`; preserves harness/vrchat/voicevox toolsets and keyless Parallel web default.
+- Fork upstream sync uses `scripts/merge_tools/`; preserves harness/vrchat/voicevox toolsets; default web search/extract backend is CloakBrowser (`plugins/web/cloakbrowser/`).
+- FreeLLMAPI local proxy: `plugins/model-providers/freellmapi/` at `http://127.0.0.1:3001/v1` with `FREELLMAPI_API_KEY`; remote access may require Tailscale.
 - HF hub cache on this PC: `H:\elt_data\hf-cache\`.
 - `lm-twitterer`: cron jobs need `script_timeout_seconds: 900`; status via `lm_twitterer_status` tool.
-- `openclaw-vendor` and `book-to-skill`: enable in `plugins.enabled`; install via `hermes … install`.
+- `openclaw-vendor`, `book-to-skill`, `freebuff`, `worldmonitor-osint`, and `aituber-kit`: enable in `plugins.enabled`; install via `hermes … install` / `hermes … setup`.
+- AI-Scientist vendor sync: `py -3 scripts/sync_ai_scientist_vendor.py --execute` (preserves `nc_kan` / `hermes_self_evolve` templates).
+- Self-improver profile lives at `~/.hermes/profiles/self-improver/` (curator / weekly review workflows).
 - Gateway on Windows can lock `agent.log`; rollover tolerates `PermissionError`.
 - Desktop session transcript bleed fixes: `use-message-stream.ts`, `use-session-state-cache.ts`, `use-session-actions.ts`.
 - Plugin tool handlers must accept `task_id` (or `**kwargs`).

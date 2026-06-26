@@ -1123,9 +1123,9 @@ DEFAULT_CONFIG = {
     },
 
     "web": {
-        "backend": "",           # shared fallback — applies to both search and extract
-        "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
-        "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        "backend": "cloakbrowser",           # shared fallback — stealth browser search+extract
+        "search_backend": "cloakbrowser",    # per-capability override for web_search
+        "extract_backend": "cloakbrowser",     # per-capability override for web_extract
     },
 
     "browser": {
@@ -3477,6 +3477,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Brave Search subscription token",
         "url": "https://brave.com/search/api/",
         "tools": ["web_search"],
+        "password": True,
+        "category": "tool",
+    },
+    "CLOAKBROWSER_PROXY": {
+        "description": "Optional HTTP/S proxy for CloakBrowser stealth web search/extract (residential recommended on strict sites)",
+        "prompt": "CloakBrowser proxy URL",
+        "url": "https://github.com/zapabob/CloakBrowser",
+        "tools": ["web_search", "web_extract"],
         "password": True,
         "category": "tool",
     },

@@ -1124,6 +1124,39 @@ def _run_post_setup(post_setup_key: str):
         _print_info("    No API key required. DuckDuckGo enforces server-side rate limits.")
         _print_info("    Pair with an extract provider if you also need web_extract.")
 
+    elif post_setup_key == "cloakbrowser":
+        try:
+            __import__("cloakbrowser")
+            _print_success("    cloakbrowser is already installed")
+        except ImportError:
+            _print_info("    Installing cloakbrowser (stealth Chromium)...")
+            try:
+                result = _pip_install(
+                    ["-U", "cloakbrowser>=0.4.3,<0.5", "--quiet"],
+                    timeout=600,
+                )
+                if result.returncode == 0:
+                    _print_success("    cloakbrowser installed")
+                else:
+                    _print_warning("    cloakbrowser install failed:")
+                    _print_info(f"      {(result.stderr or '').strip()[:300]}")
+                    _print_info(
+                        "    Run manually: uv pip install 'cloakbrowser>=0.4.3,<0.5'"
+                    )
+                    return
+            except subprocess.TimeoutExpired:
+                _print_warning("    cloakbrowser install timed out (>10min)")
+                _print_info(
+                    "    Run manually: uv pip install 'cloakbrowser>=0.4.3,<0.5'"
+                )
+                return
+        _print_info(
+            "    First launch downloads the stealth Chromium binary (~200MB)."
+        )
+        _print_info(
+            "    Optional: set CLOAKBROWSER_PROXY in ~/.hermes/.env for residential egress."
+        )
+
     elif post_setup_key == "spotify":
         # Run the full `hermes auth spotify` flow — if the user has no
         # client_id yet, this drops them into the interactive wizard

@@ -2,7 +2,7 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+- All nine bundled plugins (brave-free, cloakbrowser, ddgs, searxng, exa, parallel,
   tavily, firecrawl, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
@@ -70,15 +70,16 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All nine bundled web plugins discover and register correctly."""
 
-    def test_all_eight_plugins_present_in_registry(self) -> None:
+    def test_all_nine_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
         assert names == [
             "brave-free",
+            "cloakbrowser",
             "ddgs",
             "exa",
             "firecrawl",
@@ -92,6 +93,7 @@ class TestBundledPluginsRegister:
         "plugin_name,expected_search,expected_extract",
         [
             ("brave-free", True, False),
+            ("cloakbrowser", True, True),
             ("ddgs", True, False),
             ("searxng", True, False),
             ("exa", True, True),
@@ -120,6 +122,7 @@ class TestBundledPluginsRegister:
         "plugin_name",
         [
             "brave-free",
+            "cloakbrowser",
             "ddgs",
             "searxng",
             "exa",
@@ -142,6 +145,7 @@ class TestBundledPluginsRegister:
         "plugin_name",
         [
             "brave-free",
+            "cloakbrowser",
             "ddgs",
             "searxng",
             "exa",
@@ -237,6 +241,28 @@ class TestIsAvailable:
         assert p.is_available() is True
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        assert p.is_available() is True
+
+    def test_cloakbrowser_reflects_package_import(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("cloakbrowser")
+        assert p is not None
+
+        def _raise(*_a, **_k):
+            raise ImportError("no cloakbrowser")
+
+        monkeypatch.setattr(
+            "plugins.web.cloakbrowser.provider._ensure_cloakbrowser",
+            _raise,
+        )
+        assert p.is_available() is False
+
+        monkeypatch.setattr(
+            "plugins.web.cloakbrowser.provider._ensure_cloakbrowser",
+            lambda: None,
+        )
         assert p.is_available() is True
 
     def test_ddgs_always_available_when_package_importable(self) -> None:
@@ -335,18 +361,25 @@ class TestRegistryResolution:
     ) -> None:
         """No backend configured AND no available providers → typically None.
 
-        ``ddgs`` is the no-credential fallback; if its ``ddgs`` Python
-        package is installed in the test env, ddgs will be picked.
-        Otherwise the resolver returns None. Either outcome is correct.
+        ``cloakbrowser`` / ``ddgs`` are no-credential fallbacks; if either
+        Python package is installed in the test env, one of them will be
+        picked. Otherwise the resolver returns None. Either outcome is correct.
         """
         _ensure_plugins_loaded()
         from agent.web_search_registry import _resolve
 
         result = _resolve(None, capability="search")
         if result is not None:
-            # The only no-credential provider is ddgs; anything else
-            # means an env var leaked in.
+            # No-credential providers: cloakbrowser, ddgs.
             assert result.is_available() is True
+
+    def test_cloakbrowser_extract_is_async(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("cloakbrowser")
+        assert p is not None
+        assert inspect.iscoroutinefunction(p.extract) is True
 
 
 # ---------------------------------------------------------------------------

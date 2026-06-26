@@ -1,5 +1,8 @@
 # LM-twitterer to Ebbinghaus Memory Bridge
 
+> **This reference is superseded by the `lm-twitterer-operations` skill.**
+> Load it with `skill_view(name='lm-twitterer-operations')` for the complete reference covering the memory bridge, SearchTimeline→HomeLatestTimeline fallback, cron integration, and all known pitfalls.
+
 These notes capture a reusable pattern for aligning a Hermes social-output plugin with Ebbinghaus memory.
 
 ## Context

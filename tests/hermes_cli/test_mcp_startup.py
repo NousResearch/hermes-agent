@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from contextlib import nullcontext
 import sys
 import threading
 import time
@@ -70,6 +71,16 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         "agent.shell_hooks",
         types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
     )
+    # Stub mcp_oauth so the background thread doesn't pay the real (cold,
+    # ~0.75s) ``tools.mcp_oauth`` import before calling discovery. This test
+    # asserts the *backgrounding contract* (main thread returns fast, discovery
+    # runs off-thread), not OAuth suppression — the unrelated import latency
+    # would otherwise blow the polling deadline on a loaded CI runner.
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
     monkeypatch.setitem(
         sys.modules,
         "tools.mcp_tool",
@@ -81,7 +92,7 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         main_mod._prepare_agent_startup(_agent_args())
         elapsed = time.monotonic() - start
         assert elapsed < 0.2
-        deadline = time.monotonic() + 1.0
+        deadline = time.monotonic() + 3.0
         while calls["mcp"] == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert calls["mcp"] == 1

@@ -21,7 +21,13 @@ You can select a preset through the normal model picker surfaces:
 /model review --provider moa
 ```
 
-The Dashboard, TUI, and Desktop model pickers also show a `Mixture of Agents` provider row. Its models are your configured preset names.
+MoA presets are selectable on **every Hermes surface**, because MoA is a normal provider in the model system:
+
+- **CLI / gateway / TUI `/model`** — `/model <preset> --provider moa`, or `/model --provider moa` for the default preset. A bare `/model <preset>` also works when the name exactly matches a configured preset.
+- **`hermes model`** and the **Dashboard model picker** — a `Mixture of Agents` provider row appears with your preset names as its models.
+- **Desktop GUI app** — the model dropdown shows an `MoA presets` section; selecting one (`MoA: <preset>`) switches the active model to that preset. The Desktop settings panel also creates and edits presets.
+
+Configured presets therefore show up wherever you would pick any other model.
 
 ## Slash command shortcut
 

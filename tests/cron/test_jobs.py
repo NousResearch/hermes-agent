@@ -234,6 +234,19 @@ class TestJobCRUD:
         )
         assert job["deliver"] == "origin"
 
+    def test_default_delivery_local_no_origin(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="30m")
+        assert job["deliver"] == "local"
+
+    def test_allow_silent_false_is_persisted(self, tmp_cron_dir):
+        job = create_job(prompt="Daily briefing", schedule="every 1h", allow_silent=False)
+        assert job["allow_silent"] is False
+        assert get_job(job["id"])["allow_silent"] is False
+
+    def test_allow_silent_rejects_non_bool_on_create(self, tmp_cron_dir):
+        with pytest.raises(ValueError, match="allow_silent"):
+            create_job(prompt="Daily briefing", schedule="every 1h", allow_silent="false")
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -250,6 +263,85 @@ class TestUpdateJob:
         # Verify persisted to disk
         fetched = get_job(job["id"])
         assert fetched["name"] == "New Name"
+
+    def test_update_schedule(self, tmp_cron_dir):
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        assert job["schedule"]["kind"] == "interval"
+        assert job["schedule"]["minutes"] == 60
+        old_next_run = job["next_run_at"]
+        new_schedule = parse_schedule("every 2h")
+        updated = update_job(job["id"], {"schedule": new_schedule, "schedule_display": new_schedule["display"]})
+        assert updated is not None
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["schedule"]["minutes"] == 120
+        assert updated["schedule_display"] == "every 120m"
+        assert updated["next_run_at"] != old_next_run
+        # Verify persisted to disk
+        fetched = get_job(job["id"])
+        assert fetched["schedule"]["minutes"] == 120
+        assert fetched["schedule_display"] == "every 120m"
+
+    def test_update_to_past_oneshot_rejected(self, tmp_cron_dir, monkeypatch):
+        """Updating a job's schedule to a one-shot >ONESHOT_GRACE_SECONDS in the
+        past must raise ValueError — otherwise the ghost-job bug (#59395) re-enters
+        through the update door (next_run_at=None stored with state='scheduled').
+        The original job must be left unchanged on disk."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Recurring", schedule="every 1h", deliver="local")
+        past = parse_schedule((now - timedelta(minutes=10)).isoformat())
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            update_job(job["id"], {"schedule": past})
+        # Original job unchanged — still the recurring interval, still scheduled.
+        fetched = get_job(job["id"])
+        assert fetched["schedule"]["kind"] == "interval"
+        assert fetched["next_run_at"] is not None
+
+    def test_update_to_future_oneshot_accepted(self, tmp_cron_dir, monkeypatch):
+        """Updating to a FUTURE one-shot still works — only past ones are rejected."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Recurring", schedule="every 1h", deliver="local")
+        future = parse_schedule((now + timedelta(hours=2)).isoformat())
+        updated = update_job(job["id"], {"schedule": future})
+        assert updated is not None
+        assert updated["schedule"]["kind"] == "once"
+        assert updated["next_run_at"] is not None
+
+    def test_update_enable_disable(self, tmp_cron_dir):
+        job = create_job(prompt="Toggle me", schedule="every 1h")
+        assert job["enabled"] is True
+        updated = update_job(job["id"], {"enabled": False})
+        assert updated["enabled"] is False
+        fetched = get_job(job["id"])
+        assert fetched["enabled"] is False
+
+    def test_update_allow_silent(self, tmp_cron_dir):
+        job = create_job(prompt="Report", schedule="every 1h")
+        updated = update_job(job["id"], {"allow_silent": False})
+        assert updated["allow_silent"] is False
+        assert get_job(job["id"])["allow_silent"] is False
+
+    def test_update_allow_silent_rejects_non_bool(self, tmp_cron_dir):
+        job = create_job(prompt="Report", schedule="every 1h")
+        with pytest.raises(ValueError, match="allow_silent"):
+            update_job(job["id"], {"allow_silent": "false"})
+        assert "allow_silent" not in get_job(job["id"])
+
+    def test_update_nonexistent_returns_none(self, tmp_cron_dir):
+        result = update_job("nonexistent_id", {"name": "X"})
+        assert result is None
+
+    def test_update_rejects_id_change(self, tmp_cron_dir):
+        """Job IDs are filesystem path components — must be immutable."""
+        job = create_job(prompt="Original", schedule="every 1h")
+
+        with pytest.raises(ValueError, match="id"):
+            update_job(job["id"], {"id": "../escape"})
+
+        # Original job still resolvable, no rename happened.
+        assert get_job(job["id"]) is not None
+        assert get_job("../escape") is None
 
 
 class TestPauseResumeJob:

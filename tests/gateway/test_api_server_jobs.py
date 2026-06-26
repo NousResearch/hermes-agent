@@ -139,6 +139,68 @@ class TestCreateJob:
                 assert call_kwargs["origin"]["forwarded_for"] == "203.0.113.11"
                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
 
+    @pytest.mark.asyncio
+    async def test_create_job_allow_silent_false(self, adapter):
+        """POST /api/jobs forwards allow_silent when explicitly set."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value={**SAMPLE_JOB, "allow_silent": False})
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "daily-briefing",
+                    "schedule": "0 8 * * *",
+                    "prompt": "Daily briefing",
+                    "allow_silent": False,
+                })
+                assert resp.status == 200
+                assert mock_create.call_args[1]["allow_silent"] is False
+
+    @pytest.mark.asyncio
+    async def test_create_job_rejects_non_bool_allow_silent(self, adapter):
+        """POST /api/jobs requires allow_silent to be a JSON boolean."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "daily-briefing",
+                    "schedule": "0 8 * * *",
+                    "allow_silent": "false",
+                })
+                assert resp.status == 400
+                data = await resp.json()
+                assert "allow_silent" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_create_job_missing_name(self, adapter):
+        """POST /api/jobs without name returns 400."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                resp = await cli.post("/api/jobs", json={
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                })
+                assert resp.status == 400
+                data = await resp.json()
+                assert "name" in data["error"].lower() or "Name" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_create_job_name_too_long(self, adapter):
+        """POST /api/jobs with name > 200 chars returns 400."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "x" * 201,
+                    "schedule": "*/5 * * * *",
+                })
+                assert resp.status == 400
+                data = await resp.json()
+                assert "200" in data["error"] or "Name" in data["error"]
 
     @pytest.mark.asyncio
     async def test_create_job_reports_saved_but_unregistered(self, adapter):
@@ -213,6 +275,40 @@ class TestGetJob:
 # ---------------------------------------------------------------------------
 
 class TestUpdateJob:
+
+    @pytest.mark.asyncio
+    async def test_update_job_allow_silent(self, adapter):
+        """PATCH /api/jobs/{id} allows boolean allow_silent updates."""
+        app = _create_app(adapter)
+        updated_job = {**SAMPLE_JOB, "allow_silent": False}
+        mock_update = MagicMock(return_value=updated_job)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"allow_silent": False},
+                )
+                assert resp.status == 200
+                sanitized = mock_update.call_args[0][1]
+                assert sanitized["allow_silent"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_job_rejects_non_bool_allow_silent(self, adapter):
+        """PATCH /api/jobs/{id} rejects non-boolean allow_silent."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"allow_silent": "false"},
+                )
+                assert resp.status == 400
+                data = await resp.json()
+                assert "allow_silent" in data["error"]
 
     @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):

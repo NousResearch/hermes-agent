@@ -2524,6 +2524,13 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_type and channel_id.startswith("D"):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
+        if is_dm and self._slack_disable_dms():
+            logger.info(
+                "[Slack] Ignoring DM because Slack DMs are disabled: channel=%s user=%s",
+                channel_id,
+                user_id,
+            )
+            return
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -3672,6 +3679,13 @@ class SlackAdapter(BasePlatformAdapter):
         # keep group semantics so different users do not collide into one
         # session key.
         is_dm = str(channel_id).startswith("D")
+        if is_dm and self._slack_disable_dms():
+            logger.info(
+                "[Slack] Ignoring slash command from DM because Slack DMs are disabled: channel=%s user=%s",
+                channel_id,
+                user_id,
+            )
+            return
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
@@ -3926,12 +3940,27 @@ class SlackAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _slack_disable_dms(self) -> bool:
+        """Return whether incoming Slack DMs should be ignored.
+
+        Supports both profile config (``slack.disable_dms`` bridged into
+        ``PlatformConfig.extra``) and the environment override
+        ``SLACK_DISABLE_DMS``. Defaults to False for backward compatibility.
+        """
+        raw = self.config.extra.get("disable_dms")
+        if raw is None:
+            raw = os.getenv("SLACK_DISABLE_DMS", "false")
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(raw)
+
     def _slack_allowed_channels(self) -> set:
         """Return the whitelist of channel IDs the bot will respond in.
 
         When non-empty, messages from channels NOT in this set are silently
-        ignored — even if the bot is @mentioned.  DMs are never filtered.
-        Empty set means no restriction (fully backward compatible).
+        ignored — even if the bot is @mentioned.  DMs are controlled separately
+        by ``_slack_disable_dms()``. Empty set means no channel restriction
+        (fully backward compatible).
         """
         raw = self.config.extra.get("allowed_channels")
         if raw is None:
@@ -4230,6 +4259,8 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "reactions" in slack_cfg and not os.getenv("SLACK_REACTIONS"):
         os.environ["SLACK_REACTIONS"] = str(slack_cfg["reactions"]).lower()
+    if "disable_dms" in slack_cfg and not os.getenv("SLACK_DISABLE_DMS"):
+        os.environ["SLACK_DISABLE_DMS"] = str(slack_cfg["disable_dms"]).lower()
     ac = slack_cfg.get("allowed_channels")
     if ac is not None and not os.getenv("SLACK_ALLOWED_CHANNELS"):
         if isinstance(ac, list):
@@ -4271,9 +4302,9 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of config.yaml slack:
         # keys (require_mention, strict_mention, allow_bots,
-        # free_response_channels, reactions, allowed_channels) into SLACK_*
-        # env vars that the adapter reads via os.getenv(). Replaces the
-        # hardcoded block in gateway/config.py. Hook contract: #24849.
+        # free_response_channels, reactions, disable_dms, allowed_channels)
+        # into SLACK_* env vars that the adapter reads via os.getenv(). Replaces
+        # the hardcoded block in gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="SLACK_ALLOWED_USERS",

@@ -166,6 +166,20 @@ class TestSlashCommandSessionIsolation:
         assert event.source.chat_id == "D123"
         assert event.source.user_id == "U123"
 
+    @pytest.mark.asyncio
+    async def test_disable_dms_drops_dm_slash_command(self, adapter):
+        adapter.config.extra["disable_dms"] = True
+        command = {
+            "text": "hello",
+            "user_id": "U123",
+            "channel_id": "D123",
+            "team_id": "T123",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # TestAppMentionHandler
@@ -1199,6 +1213,31 @@ class TestBangPrefixCommands:
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.text.startswith("/queue")
         assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_disable_dms_drops_text_dm(self, adapter):
+        adapter.config.extra["disable_dms"] = True
+
+        await adapter._handle_slack_message(self._make_event("hello from DM"))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_disable_dms_does_not_drop_channel_mentions(self, adapter):
+        adapter.config.extra["disable_dms"] = True
+
+        await adapter._handle_slack_message(
+            self._make_event(
+                "<@U_BOT> hello from channel",
+                channel_type="channel",
+                channel="C123",
+            )
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert msg_event.source.chat_type == "group"
+        assert msg_event.source.chat_id == "C123"
 
 
 # ---------------------------------------------------------------------------

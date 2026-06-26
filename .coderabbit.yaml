@@ -1,0 +1,21 @@
+# CodeRabbit configuration
+# Docs: https://docs.coderabbit.ai/guides/configure-coderabbit
+language: "en-AU"
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+      - master
+  path_filters:
+    - "!**/*.lock"
+    - "!**/node_modules/**"
+    - "!**/dist/**"
+    - "!**/build/**"

@@ -51,13 +51,15 @@ def ensure_install_id(config: Dict[str, Any]) -> str:
 def may_upload_aggregate(config: Dict[str, Any]) -> bool:
     """Whether aggregate metrics may upload — the gate a future uploader consults.
 
-    True only when the admin hard gate allows it AND the user has opted in via
-    ``telemetry.consent_state``.
+    Aggregate metrics are derived from the local telemetry tables, so they require
+    local telemetry to be on. True only when local telemetry is enabled, the admin
+    hard gate allows it, and the user has opted in via ``telemetry.consent_state``.
     """
     tel = _telemetry_cfg(config)
+    local_enabled = bool(tel.get("local", True))
     allow_aggregate = bool(tel.get("allow_aggregate", True))
     state = tel.get("consent_state", CONSENT_UNKNOWN)
-    return allow_aggregate and state == CONSENT_AGGREGATE
+    return local_enabled and allow_aggregate and state == CONSENT_AGGREGATE
 
 
 __all__ = [

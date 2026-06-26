@@ -38,6 +38,13 @@ def test_allow_aggregate_false_overrides_opt_in():
     assert policy.may_upload_aggregate(cfg) is False  # the hard gate wins
 
 
+def test_local_off_makes_aggregate_inert():
+    # Aggregate metrics derive from the local tables; with local off there is
+    # nothing to aggregate, so opting in cannot upload.
+    cfg = _cfg(local=False, consent_state="aggregate", allow_aggregate=True)
+    assert policy.may_upload_aggregate(cfg) is False
+
+
 def test_install_id_minted_when_empty_and_stable_when_set():
     cfg = _cfg(install_id="")
     minted = policy.ensure_install_id(cfg)

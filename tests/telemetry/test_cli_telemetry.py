@@ -92,3 +92,17 @@ def test_allow_aggregate_false_keeps_metrics_off_in_status(home, capsys):
     out = capsys.readouterr().out
     assert "Aggregate metrics: off" in out
     assert "allow_aggregate is false" in out
+
+
+def test_local_off_with_consent_shows_inert_in_status(home, capsys):
+    # local off + opted in: aggregate is off and the status explains why.
+    from hermes_cli.config import load_config, save_config
+    cfg = load_config()
+    tel = cfg.setdefault("telemetry", {})
+    tel["local"] = False
+    tel["consent_state"] = "aggregate"
+    save_config(cfg)
+    _run("status")
+    out = capsys.readouterr().out
+    assert "Aggregate metrics: off" in out
+    assert "inert: local telemetry is off" in out

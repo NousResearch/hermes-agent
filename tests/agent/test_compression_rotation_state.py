@@ -54,6 +54,9 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
+    # ROTATION fallback path — pin in_place=False so these keep covering fork
+    # rotation regardless of the global default (flipped to True in #38763).
+    agent.compression_in_place = False
     return agent
 
 

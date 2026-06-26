@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { persistString, storedString } from '@/lib/storage'
 import { $petInfo, clearPetUnread, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
-import { resetPetGallery } from '@/store/pet-gallery'
+import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
 import { $petOverlayActive, initPetOverlayBridge, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
@@ -12,21 +12,46 @@ import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { PetSprite } from './pet-sprite'
+import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
 
 // v2: positions are now top/left anchored (v1 stored bottom-anchored values,
 // which dragged inverted). Bumping the key discards stale v1 coordinates.
 const POSITION_KEY = 'hermes.desktop.pet-position.v2'
+
+// Stand-in pet size for the pre-load clamp (real size flows in with `info`).
+const NOMINAL_PET_PX = 96
 
 interface Point {
   x: number
   y: number
 }
 
-function clampToViewport({ x, y }: Point): Point {
-  const maxX = Math.max(0, (window.innerWidth || 800) - 80)
-  const maxY = Math.max(0, (window.innerHeight || 600) - 80)
+interface PetInfoMeta {
+  enabled: boolean
+  slug?: string
+  displayName?: string
+  scale?: number
+  spritesheetRevision?: string
+}
 
-  return { x: Math.min(Math.max(0, x), maxX), y: Math.min(Math.max(0, y), maxY) }
+function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
+  return (
+    info.enabled &&
+    Boolean(info.spritesheetBase64) &&
+    info.slug === meta.slug &&
+    info.displayName === meta.displayName &&
+    info.scale === meta.scale &&
+    info.spritesheetRevision === meta.spritesheetRevision
+  )
+}
+
+// Keep a w×h box fully inside the viewport. Pre-pet-load callers pass a nominal
+// size; the live size flows in once `info` arrives.
+function clampPoint(x: number, y: number, w: number, h: number): Point {
+  return {
+    x: Math.min(Math.max(0, x), Math.max(0, (window.innerWidth || 800) - w)),
+    y: Math.min(Math.max(0, y), Math.max(0, (window.innerHeight || 600) - h))
+  }
 }
 
 // The sprite art faces left by default, so mirror it when the pet's center sits
@@ -43,7 +68,7 @@ function loadPosition(): Point {
       const parsed = JSON.parse(raw) as Point
 
       if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
-        return clampToViewport(parsed)
+        return clampPoint(parsed.x, parsed.y, NOMINAL_PET_PX, NOMINAL_PET_PX)
       }
     }
   } catch {
@@ -51,7 +76,7 @@ function loadPosition(): Point {
   }
 
   // Default: lower-left corner (top/left anchored).
-  return clampToViewport({ x: 24, y: (window.innerHeight || 600) - 220 })
+  return clampPoint(24, (window.innerHeight || 600) - 220, NOMINAL_PET_PX, NOMINAL_PET_PX)
 }
 
 /**
@@ -63,12 +88,15 @@ function loadPosition(): Point {
  * Adopting a pet is fully in-app: type `/pet boba` in the composer. That
  * writes `display.pet.*` from the slash worker, so we keep polling `pet.info`
  * while no pet is active and the mascot pops in within a few seconds — no
- * reload, no CLI. Once a pet is live we stop polling.
+ * reload, no CLI. Once a pet is live we still refresh more slowly so generated
+ * pets rewritten on disk (or renamed/rebuilt by the hatch flow) repaint without
+ * restarting the app.
  *
  * Promotion to a separate frameless OS-level window is a follow-up — the
  * sprite + state logic here is reused as-is, only the host changes.
  */
 const PET_POLL_MS = 3000
+const PET_ACTIVE_REFRESH_MS = 15000
 
 export function FloatingPet() {
   const { requestGateway } = useGatewayRequest()
@@ -83,6 +111,7 @@ export function FloatingPet() {
   // speech bubble (a container child) never renders flipped/backwards.
   const spriteWrapRef = useRef<HTMLDivElement | null>(null)
   const petW = (info.frameW ?? 192) * (info.scale ?? 0.33)
+  const petH = (info.frameH ?? 208) * (info.scale ?? 0.33)
   // Soft contact shadow, sized off the pet so every scale/species grounds the
   // same way (cf. lairp's per-actor feet ellipse). Lighter on light backgrounds.
   const shadowW = Math.round(petW * 0.55)
@@ -93,11 +122,16 @@ export function FloatingPet() {
   // state is only committed on release.
   const dragRef = useRef<{ dx: number; dy: number; x: number; y: number } | null>(null)
 
-  // Fetch pet.info on connect, then keep polling while no pet is active so an
-  // in-app `/pet <slug>` shows up live. Stops polling once a pet is enabled.
+  // Keep the *whole* pet on-screen at its current size, so growing it near an
+  // edge can't leave the window cropping it. Shared by drag + the reclamp effect.
+  const clamp = useCallback(({ x, y }: Point): Point => clampPoint(x, y, petW, petH), [petW, petH])
+
+  // Fetch pet.info on connect. Poll quickly while inactive so an in-app
+  // `/pet <slug>` appears, then slowly while active so regenerated spritesheets
+  // and row-count metadata replace the cached base64 payload.
   const active = info.enabled && Boolean(info.spritesheetBase64)
   useEffect(() => {
-    if (gatewayState !== 'open' || active) {
+    if (gatewayState !== 'open') {
       return
     }
 
@@ -105,9 +139,45 @@ export function FloatingPet() {
 
     const pull = async () => {
       try {
+        if (active) {
+          try {
+            const meta = await requestGateway<PetInfoMeta>('pet.info.meta', { profile: petProfile() })
+
+            if (cancelled || !meta) {
+              return
+            }
+
+            if (!meta.enabled) {
+              setPetInfo({ enabled: false })
+
+              return
+            }
+
+            if (samePetRevision($petInfo.get(), meta)) {
+              return
+            }
+          } catch {
+            // Older gateways may not have pet.info.meta yet; fall back to pet.info.
+          }
+        }
+
         const next = await requestGateway<PetInfo>('pet.info', { profile: petProfile() })
 
         if (!cancelled && next) {
+          const current = $petInfo.get()
+
+          if (
+            next.enabled &&
+            current.enabled &&
+            current.slug === next.slug &&
+            current.displayName === next.displayName &&
+            current.scale === next.scale &&
+            current.spritesheetRevision &&
+            current.spritesheetRevision === next.spritesheetRevision
+          ) {
+            return
+          }
+
           setPetInfo(next)
         }
       } catch {
@@ -116,10 +186,12 @@ export function FloatingPet() {
     }
 
     void pull()
-    const timer = window.setInterval(() => void pull(), PET_POLL_MS)
+    const timer = window.setInterval(() => void pull(), active ? PET_ACTIVE_REFRESH_MS : PET_POLL_MS)
+    window.addEventListener('focus', pull)
 
     return () => {
       cancelled = true
+      window.removeEventListener('focus', pull)
       window.clearInterval(timer)
     }
   }, [gatewayState, active, requestGateway])
@@ -180,12 +252,13 @@ export function FloatingPet() {
     restorePetOverlay()
   }, [active])
 
-  // A window resize must never strand the pet off-screen — re-clamp the
-  // committed position (and persist it) whenever the viewport shrinks.
+  // Never strand or crop the pet: re-clamp (and persist) whenever the viewport
+  // shrinks or the pet's own size changes (wheel/slider). `clamp` carries the
+  // current size, so depending on it covers both triggers.
   useEffect(() => {
-    const onResize = () =>
+    const reclamp = () =>
       setPosition(prev => {
-        const next = clampToViewport(prev)
+        const next = clamp(prev)
 
         if (next.x === prev.x && next.y === prev.y) {
           return prev
@@ -196,10 +269,11 @@ export function FloatingPet() {
         return next
       })
 
-    window.addEventListener('resize', onResize)
+    reclamp()
+    window.addEventListener('resize', reclamp)
 
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
+    return () => window.removeEventListener('resize', reclamp)
+  }, [clamp])
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     const el = containerRef.current
@@ -234,7 +308,7 @@ export function FloatingPet() {
         return
       }
 
-      const next = clampToViewport({ x: e.clientX - drag.dx, y: e.clientY - drag.dy })
+      const next = clamp({ x: e.clientX - drag.dx, y: e.clientY - drag.dy })
       drag.x = next.x
       drag.y = next.y
       // Mutate the DOM directly — no setState, so no re-render while dragging. The
@@ -247,7 +321,7 @@ export function FloatingPet() {
         spriteWrapRef.current.style.transform = facing(next.x, petW)
       }
     },
-    [petW]
+    [clamp, petW]
   )
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
@@ -267,6 +341,31 @@ export function FloatingPet() {
       el.releasePointerCapture?.(e.pointerId)
     }
   }, [])
+
+  // Alt+wheel over the pet resizes it (persisted via the same path as the
+  // settings slider). Zoom toward the cursor — shift the top-left so the pixel
+  // under the pointer stays put — so the pet grows in place instead of running
+  // off. The reclamp effect (via `clamp`) still guarantees it stays on-screen.
+  const onScale = useCallback(
+    (next: number, { clientX, clientY, ratio }: PetZoomAnchor) => {
+      setPetScale(requestGateway, next)
+      setPosition(prev => {
+        const at = clampPoint(
+          clientX - (clientX - prev.x) * ratio,
+          clientY - (clientY - prev.y) * ratio,
+          (info.frameW ?? 192) * next,
+          (info.frameH ?? 208) * next
+        )
+
+        persistString(POSITION_KEY, JSON.stringify(at))
+
+        return at
+      })
+    },
+    [requestGateway, info.frameW, info.frameH]
+  )
+
+  usePetZoomGesture(containerRef, onScale, active && !overlayActive)
 
   // While popped out, the desktop overlay window owns the mascot — hide the
   // in-window one so there aren't two.
@@ -305,7 +404,10 @@ export function FloatingPet() {
           zIndex: 0
         }}
       />
-      <div ref={spriteWrapRef} style={{ lineHeight: 0, position: 'relative', transform: facing(position.x, petW), zIndex: 1 }}>
+      <div
+        ref={spriteWrapRef}
+        style={{ lineHeight: 0, position: 'relative', transform: facing(position.x, petW), zIndex: 1 }}
+      >
         <PetSprite info={info} />
       </div>
     </div>

@@ -261,3 +261,10 @@ export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentN
 
 export const activeSubagentCount = (items: readonly SubagentProgress[]) =>
   items.filter(item => item.status === 'queued' || item.status === 'running').length
+
+export const failedSubagentCount = (items: readonly SubagentProgress[]) =>
+  items.filter(item => item.status === 'failed' || item.status === 'interrupted').length
+
+/** Flatten every session's subagents — the scope the Spawn-tree panel and the
+ *  status-bar indicator must agree on. */
+export const allSubagents = (bySession: Record<string, SubagentProgress[]>) => Object.values(bySession).flat()

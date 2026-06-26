@@ -6,6 +6,7 @@ are made.
 """
 
 import ast
+import copy
 import inspect
 import io
 import json
@@ -4125,6 +4126,33 @@ class TestRunConversation:
         assert result["final_response"] == "Fresh partial content from this turn"
         assert result["api_calls"] == 1
 
+    def test_partial_stream_recovery_persists_recovered_assistant_message(self, agent):
+        self._setup_agent(agent)
+        empty_stub = _mock_response(content=None, finish_reason="stop")
+        persisted_calls = []
+
+        def _fake_api_call(api_kwargs):
+            agent._current_streamed_assistant_text = "Recovered visible answer"
+            return empty_stub
+
+        def _capture_persist(msgs, conversation_history=None):
+            persisted_calls.append(copy.deepcopy(msgs))
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session", side_effect=_capture_persist),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("question")
+
+        assert result["final_response"].startswith("Recovered visible answer")
+        assert persisted_calls
+        assert persisted_calls[-1][-1] == {
+            "role": "assistant",
+            "content": "Recovered visible answer",
+        }
+
     def test_interrupt_during_stream_preserves_partial_assistant_text(self, agent):
         """Stopping mid-response keeps the streamed reply in history (not 'forgotten')."""
         self._setup_agent(agent)
@@ -4171,8 +4199,36 @@ class TestRunConversation:
 
         assert result["interrupted"] is True
         assert result["final_response"].startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
-        assert result["messages"][-1]["role"] == "user"
+        assert result["messages"][-1] == {
+            "role": "assistant",
+            "content": result["final_response"],
+        }
 
+    def test_interrupted_stream_persists_visible_assistant_text(self, agent):
+        self._setup_agent(agent)
+        persisted_calls = []
+
+        def _fake_api_call(api_kwargs):
+            agent._current_streamed_assistant_text = "Visible answer before interrupt"
+            raise InterruptedError("stream interrupted")
+
+        def _capture_persist(msgs, conversation_history=None):
+            persisted_calls.append(copy.deepcopy(msgs))
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session", side_effect=_capture_persist),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("interrupt me")
+
+        assert result["interrupted"] is True
+        assert persisted_calls
+        assert persisted_calls[-1][-1] == {
+            "role": "assistant",
+            "content": "Visible answer before interrupt",
+        }
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
         agent.provider = "nous"

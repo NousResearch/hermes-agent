@@ -166,25 +166,53 @@ def finalize_turn(
     # same empty-response loop again.
     try:
         agent._drop_trailing_empty_response_scaffolding(messages)
+        _strip_think_blocks = getattr(agent, "_strip_think_blocks", lambda content: content)
+        _normalize_visible_text = getattr(
+            agent,
+            "_normalize_interim_visible_text",
+            lambda text: " ".join((text or "").split()),
+        )
 
-        # When the turn was interrupted and the last message is a tool
-        # result, append a synthetic assistant message to close the
-        # tool-call sequence. Without this, the session persists a
-        # ``tool → user`` alternation that strict providers (Gemini,
-        # Claude) reject, causing them to hallucinate a continuation of
-        # the user's message on the next turn (#48879).
-        #
-        # ``_drop_trailing_empty_response_scaffolding`` only rewinds the
-        # tool tail when an empty-response scaffolding flag is present; a
-        # clean ``/stop`` interrupt after a successful tool sets no such
-        # flag, so the tool result survives as the tail and we close it
-        # here instead. On an interrupt ``final_response`` is typically
-        # empty, so fall back to an explicit placeholder rather than
-        # persisting an empty-content assistant turn.
+        _visible_assistant_text = None
+        if _turn_exit_reason == "partial_stream_recovery" and final_response:
+            _visible_assistant_text = final_response
+        elif interrupted:
+            _visible_assistant_text = _strip_think_blocks(
+                getattr(agent, "_current_streamed_assistant_text", "") or ""
+            ).strip()
+            if not _visible_assistant_text and final_response:
+                _visible_assistant_text = _strip_think_blocks(final_response).strip()
+
+        # Preserve the visible assistant text on interrupted tool tails
+        # instead of falling back to the generic placeholder.
         if interrupted:
-            from agent.message_sanitization import close_interrupted_tool_sequence
-            close_interrupted_tool_sequence(messages, final_response)
+            try:
+                from agent.message_sanitization import close_interrupted_tool_sequence
+            except ImportError:
+                close_interrupted_tool_sequence = None
+            if close_interrupted_tool_sequence is not None:
+                close_interrupted_tool_sequence(
+                    messages,
+                    _visible_assistant_text or final_response,
+                )
 
+        if _visible_assistant_text:
+            _expected = _normalize_visible_text(_visible_assistant_text)
+            _already_persisted = False
+            for _msg in reversed(messages):
+                if not isinstance(_msg, dict):
+                    continue
+                if _msg.get("role") == "assistant":
+                    _candidate = _normalize_visible_text(
+                        _strip_think_blocks(_msg.get("content") or "")
+                    )
+                    if _candidate == _expected:
+                        _already_persisted = True
+                        break
+                if _msg.get("role") == "user":
+                    break
+            if not _already_persisted:
+                messages.append({"role": "assistant", "content": _visible_assistant_text})
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:
         _cleanup_errors.append(f"persist_session: {_persist_err}")

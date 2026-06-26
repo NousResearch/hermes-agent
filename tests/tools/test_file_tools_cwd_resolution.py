@@ -325,6 +325,43 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
 # env's live cwd only when the resolving session owns it.)
 
 
+def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(_isolated_cwd, monkeypatch):
+    """V4A patch headers must resolve to the same absolute path the tool reports."""
+    workspace, decoy = _isolated_cwd
+    task_id = "sess-v4a"
+
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    env = LocalEnvironment(cwd=str(decoy))
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ShellFileOperations(env))
+
+    import json
+    out = json.loads(ft.patch_tool(
+        mode="patch",
+        patch=(
+            "*** Begin Patch\n"
+            "*** Update File: target.py\n"
+            "@@\n"
+            "-WORKSPACE_ORIGINAL\n"
+            "+WORKSPACE_PATCHED\n"
+            "*** End Patch\n"
+        ),
+        task_id=task_id,
+    ))
+
+    expected = str((workspace / "target.py").resolve())
+    assert not out.get("error"), out
+    assert out.get("resolved_path") == expected
+    assert out.get("files_modified") == [expected]
+    assert (workspace / "target.py").read_text() == "WORKSPACE_PATCHED\n"
+    assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
+
+
 class _FakeOwnedEnv:
     def __init__(self, cwd: str, cwd_owner: str):
         self.cwd = cwd

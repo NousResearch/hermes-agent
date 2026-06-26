@@ -40,6 +40,7 @@ the *Retired* section at the bottom with the upstream PR/commit reference.
 | [D7](#d-7) | fix(state) | Translate SQLite `X'0A'`/`X'0D'` hex literals to `chr()` for Postgres | depends-on D1 |
 | [D8](#d-8) | feat(plugins) | `system_prompt` plugin hook for dynamic system-prompt injection | open-upstream (witt3rd/hermes-agent#1) |
 | [D9](#d-9) | fix(docker) | Honor passwd home in container wrappers instead of hardcoding `/opt/data` | candidate-upstream |
+| [D10](#d-10) | feat(gateway) | `X-Hermes-User-Id` header → agent `user_id` on the api_server platform (interlocutor identity) | candidate-upstream |
 
 ---
 
@@ -216,6 +217,46 @@ the *Retired* section at the bottom with the upstream PR/commit reference.
   general (honoring passwd over hardcoded paths is the obviously-correct
   shape) and not coupled to any other fork-local feature. If extracted
   upstream, the script change and the reconciled test ship together.
+
+<a id="d-10"></a>
+### D10 — feat(gateway): `X-Hermes-User-Id` header → agent `user_id` on the api_server platform
+
+- **Status:** active, **candidate for upstream PR**.
+- **PR:** team-ajk/hermes-agent#16
+- **Fork-local touchpoints:**
+  - `gateway/platforms/api_server.py` — new `_parse_user_id_header()`
+    (mirrors `_parse_session_key_header`'s auth/validation shape); a
+    `gateway_user_id` parameter threaded through `_create_agent`,
+    `_run_agent`, and the per-handler dispatch sites; sets `agent._user_id`
+    after construction.
+  - `tests/gateway/test_api_server.py` — `TestUserIdHeader` + a
+    `_create_agent` user-id forwarding test.
+- **Why:** Every other gateway platform (Telegram, Discord, Slack, …)
+  constructs the agent with `user_id=source.user_id`, so plugins that
+  resolve *who is speaking* from `agent._user_id` work. The api_server
+  platform was the only one that never set it — it hardcoded
+  `platform="api_server"` and passed only `gateway_session_key`. As a
+  result, web-originated callers always presented an empty `sender_id`,
+  and the janus interlocutor `system_prompt` hook (D8) could never
+  distinguish the actual sender from the member — every web chat resolved
+  to the member's relational pack. This delta adds the missing inbound
+  identity: a caller sends `X-Hermes-User-Id: <stable-id>` and it lands on
+  `agent._user_id`, giving the api_server platform the same per-sender
+  identity surface every other platform already carries. Security mirrors
+  `X-Hermes-Session-Key`: the header is an impersonation surface, so it is
+  rejected unless `API_SERVER_KEY` is configured; control chars and
+  over-long values are rejected. Absent header ⇒ unchanged member-fallback
+  behaviour (fully backward compatible). Also adds `X-Hermes-User-Id` —
+  and the pre-existing siblings `X-Hermes-Session-Key` /
+  `X-Hermes-Session-Id` — to the CORS `Access-Control-Allow-Headers` list,
+  so browser clients can send any Hermes custom header without a preflight
+  failure (the sibling gap predated this PR; fixed here as the same class).
+- **Upstream disposition:** clean candidate for extraction. It closes a
+  real cross-platform parity gap (api_server is the only platform missing
+  user identity) and is independent of the janus plugin — any plugin or
+  memory provider keying on `agent._user_id` benefits. Depends conceptually
+  on nothing fork-local; the consumer that motivated it is D8, but the
+  mechanism is generic.
 
 ## Retired
 

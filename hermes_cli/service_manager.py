@@ -684,15 +684,54 @@ class S6ServiceManager:
         # start`, etc. See `_gateway_command_inner` for the matching
         # guard.
         lines.append("export HERMES_S6_SUPERVISED_CHILD=1")
+        # ``--replace`` makes the supervised gateway authoritative for its
+        # profile's HERMES_HOME. Without it, a gateway started OUTSIDE s6
+        # (a stray ``hermes gateway run`` from a shell, an agent action, or
+        # the Open WebUI helper) grabs the per-HERMES_HOME PID lock first;
+        # the supervised slot then execs a bare ``gateway run``, hits the
+        # "Another gateway instance is already running" guard, exits
+        # non-zero, and s6 restarts it — a restart loop that floods the
+        # log and never binds (NS-505). ``--replace``
+        # instead reaps the stale holder (hardened takeover path: marker +
+        # SIGTERM→SIGKILL-with-confirmation + scoped-lock cleanup, see
+        # gateway/run.py) so s6 always wins. The HERMES_S6_SUPERVISED_CHILD
+        # sentinel above prevents the run→start→run redirect recursion.
+        # Each profile is scoped to its own HERMES_HOME and s6 guarantees a
+        # single supervised instance per slot, so there is no legitimate
+        # supervised sibling for ``--replace`` to clobber.
         if profile == "default":
-            gateway_cmd = "hermes gateway run"
+            gateway_cmd = "hermes gateway run --replace"
         else:
-            gateway_cmd = f"hermes -p {shlex.quote(profile)} gateway run"
+            gateway_cmd = f"hermes -p {shlex.quote(profile)} gateway run --replace"
         # Skip the drop when already non-root (setgroups() lacks CAP_SETGID →
         # s6 boot-loop).
         lines.append(f'[ "$(id -u)" = 0 ] || exec {gateway_cmd}')
         lines.append(f"exec s6-setuidgid hermes {gateway_cmd}")
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_finish_script() -> str:
+        """Generate the finish script for a profile-gateway s6 service.
+
+        When the gateway exits with EX_CONFIG (78) — a fatal
+        configuration error such as a token collision or no messaging
+        platforms — we tell s6-supervise to stop restarting by exiting
+        125 (permanent failure).  Any other exit code lets s6 restart
+        normally.  See #51228.
+        """
+        from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+        code = GATEWAY_FATAL_CONFIG_EXIT_CODE
+        return (
+            "#!/command/with-contenv sh\n"
+            "# shellcheck shell=sh\n"
+            "# $1 = exit code from the run script.\n"
+            f"# Exit {code} (EX_CONFIG) = fatal config error — don't restart.\n"
+            f'if [ "$1" = "{code}" ]; then\n'
+            "  exit 125\n"
+            "fi\n"
+            "exit 0\n"
+        )
 
     @staticmethod
     def _render_log_run(profile: str) -> str:
@@ -940,6 +979,10 @@ class S6ServiceManager:
             run_path = tmp_dir / "run"
             run_path.write_text(run_script)
             run_path.chmod(0o755)
+
+            finish_path = tmp_dir / "finish"
+            finish_path.write_text(self._render_finish_script())
+            finish_path.chmod(0o755)
 
             # Persistent log rotation (OQ8-C).
             log_subdir = tmp_dir / "log"

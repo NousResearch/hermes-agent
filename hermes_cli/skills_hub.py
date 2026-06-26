@@ -28,6 +28,20 @@ from agent.skill_utils import is_excluded_skill_path
 _console = Console()
 
 
+def _display_source(r) -> str:
+    """Human-facing source label for a result row.
+
+    GitHub-tap skills are stored under source="github"; surface their per-tap
+    provider label (NVIDIA / OpenAI / ...) when present so the table reflects
+    the real origin instead of the generic "github".
+    """
+    if r.source == "github":
+        provider = (getattr(r, "extra", None) or {}).get("provider")
+        if provider:
+            return provider
+    return r.source
+
+
 # ---------------------------------------------------------------------------
 # Shared do_* functions
 # ---------------------------------------------------------------------------
@@ -303,7 +317,7 @@ def do_search(query: str, source: str = "all", limit: int = 10,
         table.add_row(
             r.name,
             r.description[:60] + ("..." if len(r.description) > 60 else ""),
-            r.source,
+            _display_source(r),
             f"[{trust_style}]{trust_label}[/]",
             r.identifier,
         )
@@ -380,6 +394,16 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print("[dim]No skills found in the Skills Hub.[/]\n")
         return
 
+    # Provider filter (nvidia/openai/...) narrows GitHub-tap skills by their
+    # per-tap ``extra.provider`` label (the runtime index stores them all under
+    # source="github"). Real source ids were already filtered upstream.
+    from tools.skills_hub import _PROVIDER_FILTER_VALUES, _filter_results_by_provider
+    if source.strip().lower() in _PROVIDER_FILTER_VALUES:
+        all_results = _filter_results_by_provider(all_results, source)
+        if not all_results:
+            c.print(f"[dim]No skills found for provider '{source}'.[/]\n")
+            return
+
     # Deduplicate by identifier, preferring higher trust.
     # identifier is always unique per skill; name is not (browse-sh skills from different
     # sites can share the same task name, e.g. "search-listings" on Airbnb and Booking.com).
@@ -444,7 +468,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
             str(i),
             r.name,
             desc,
-            r.source,
+            _display_source(r),
             f"[{trust_style}]{trust_label}[/]",
             r.identifier,
         )
@@ -1149,6 +1173,73 @@ def do_reset(name: str, restore: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
 
 
+def do_list_modified(console: Optional[Console] = None,
+                     as_json: bool = False) -> None:
+    """List bundled skills the user has edited (which `hermes update` keeps)."""
+    from tools.skills_sync import list_user_modified_bundled_skills
+
+    c = console or _console
+    modified = list_user_modified_bundled_skills()
+
+    if as_json:
+        import json
+
+        c.print(json.dumps([m["name"] for m in modified]))
+        return
+
+    if not modified:
+        c.print("[dim]No user-modified bundled skills — everything tracks upstream.[/]\n")
+        return
+
+    c.print(f"\n[bold]{len(modified)} user-modified bundled skill(s)[/] "
+            "[dim](kept as-is by `hermes update`):[/]")
+    for entry in modified:
+        c.print(f"  [yellow]~[/] {entry['name']}")
+    c.print()
+    c.print("[dim]See changes:   hermes skills diff <name>[/]")
+    c.print("[dim]Resume updates: hermes skills reset <name>          (keep your copy, re-baseline)[/]")
+    c.print("[dim]Revert to stock: hermes skills reset <name> --restore[/]\n")
+
+
+def do_diff(name: str, console: Optional[Console] = None) -> None:
+    """Show how the user's copy of a bundled skill differs from the stock version."""
+    from tools.skills_sync import diff_bundled_skill
+
+    c = console or _console
+    result = diff_bundled_skill(name)
+
+    if not result["ok"]:
+        c.print(f"[bold red]Error:[/] {result['message']}\n")
+        return
+
+    if not result["modified"]:
+        c.print(f"[green]{result['message']}[/]\n")
+        return
+
+    c.print(f"\n[bold]{result['message']}[/]\n")
+    for entry in result["diffs"]:
+        status = entry["status"]
+        if status == "modified":
+            # Render the unified diff with light coloring.
+            for line in entry["diff"].splitlines():
+                if line.startswith("+") and not line.startswith("+++"):
+                    c.print(f"[green]{line}[/]")
+                elif line.startswith("-") and not line.startswith("---"):
+                    c.print(f"[red]{line}[/]")
+                elif line.startswith("@@"):
+                    c.print(f"[cyan]{line}[/]")
+                else:
+                    c.print(line, highlight=False)
+        elif status == "added":
+            c.print(f"[green]+ only in your copy:[/] {entry['path']}")
+        elif status == "removed":
+            c.print(f"[red]- only in stock:[/] {entry['path']}")
+        else:  # binary
+            c.print(f"[yellow]~ {entry['path']}:[/] binary file differs")
+    c.print()
+    c.print(f"[dim]Revert with: hermes skills reset {name} --restore[/]\n")
+
+
 def do_opt_out(remove: bool = False,
                console: Optional[Console] = None,
                skip_confirm: bool = False,
@@ -1624,6 +1715,10 @@ def skills_command(args) -> None:
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
+    elif action == "list-modified":
+        do_list_modified(as_json=getattr(args, "json", False))
+    elif action == "diff":
+        do_diff(args.name)
     elif action == "opt-out":
         do_opt_out(remove=getattr(args, "remove", False),
                    skip_confirm=getattr(args, "yes", False))
@@ -1654,7 +1749,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1726,10 +1821,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "search":
         if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N] [--json]\n")
+            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|github|official|nvidia|openai|anthropic|huggingface] [--limit N] [--json]\n")
             return
         source = "all"
-        limit = 10
+        limit = 25
         as_json = False
         query_parts = []
         i = 0
@@ -1826,6 +1921,15 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_reset(name, restore=restore, console=c, skip_confirm=True,
                  invalidate_cache=invalidate_cache)
 
+    elif action in {"list-modified", "modified"}:
+        do_list_modified(console=c, as_json="--json" in args)
+
+    elif action == "diff":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills diff <name>\n")
+            return
+        do_diff(args[0], console=c)
+
     elif action == "publish":
         if not args:
             c.print("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n")
@@ -1883,6 +1987,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
+        "  [cyan]list-modified[/]               List bundled skills you've edited (kept by update)\n"
+        "  [cyan]diff[/] <name>                 Diff your copy of a bundled skill vs the stock version\n"
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"

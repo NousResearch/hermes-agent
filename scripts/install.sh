@@ -258,6 +258,58 @@ restore_dirty_lockfiles() {
     done
 }
 
+# npm rewrites tracked package-lock.json files non-deterministically during
+# local builds. On a managed install those diffs are usually runtime churn, not
+# intentional user edits, so discard them before the repository-stage stash.
+# If package.json in the same directory is also dirty we keep both changes.
+discard_update_lockfile_churn() {
+    local repo="${1:-$INSTALL_DIR}"
+    [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
+    command -v git >/dev/null 2>&1 || return 0
+
+    local dirty_diff
+    dirty_diff=$(git -C "$repo" diff --name-only 2>/dev/null) || return 0
+    [ -n "$dirty_diff" ] || return 0
+
+    local dirty_package_dirs=""
+    while IFS= read -r path; do
+        case "$path" in
+            *package.json)
+                dirty_package_dirs="${dirty_package_dirs}$(dirname "$path")"$'\n'
+                ;;
+        esac
+    done <<EOF
+$dirty_diff
+EOF
+
+    local dirty_locks=""
+    local dirty_count=0
+    while IFS= read -r path; do
+        case "$path" in
+            *package-lock.json)
+                local lock_dir
+                lock_dir=$(dirname "$path")
+                case $'\n'"$dirty_package_dirs" in
+                    *$'\n'"$lock_dir"$'\n'*) continue ;;
+                esac
+                dirty_locks="${dirty_locks}${path}"$'\n'
+                dirty_count=$((dirty_count + 1))
+                ;;
+        esac
+    done <<EOF
+$dirty_diff
+EOF
+
+    [ "$dirty_count" -gt 0 ] || return 0
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        git -C "$repo" checkout -- "$path" 2>/dev/null || true
+    done <<EOF
+$dirty_locks
+EOF
+    log_info "Discarded npm lockfile churn (${dirty_count} file(s))"
+}
+
 emit_manifest() {
     # Stage-Desktop is included only with --include-desktop, mirroring
     # install.ps1: the signed bootstrap installer (Hermes-Setup) passes it so
@@ -1136,6 +1188,7 @@ clone_repo() {
             cd "$INSTALL_DIR"
 
             local autostash_ref=""
+            discard_update_lockfile_churn "$INSTALL_DIR"
             if [ -n "$(git status --porcelain)" ]; then
                 # A previously interrupted update can leave the index with
                 # unmerged entries. In that state `git stash` aborts with
@@ -1727,24 +1780,14 @@ copy_config_templates() {
         log_info "~/.hermes/config.yaml already exists, keeping it"
     fi
 
-    # Create SOUL.md if it doesn't exist (global persona file)
+    # Create SOUL.md if it doesn't exist (global persona file).
+    # This MUST match DEFAULT_SOUL_MD in hermes_cli/default_soul.py — the
+    # runtime (_ensure_default_soul_md) treats the old comment-only scaffold as
+    # "never customized" and upgrades it to this text on next run, so any drift
+    # here is self-healing, but keep them in sync to avoid a churn on first run.
     if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
         cat > "$HERMES_HOME/SOUL.md" << 'SOUL_EOF'
-# Hermes Agent Persona
-
-<!--
-This file defines the agent's personality and tone.
-The agent will embody whatever you write here.
-Edit this to customize how Hermes communicates with you.
-
-Examples:
-  - "You are a warm, playful assistant who uses kaomoji occasionally."
-  - "You are a concise technical expert. No fluff, just facts."
-  - "You speak like a friendly coworker who happens to know everything."
-
-This file is loaded fresh each message -- no restart needed.
-Delete the contents (or this file) to use the default personality.
--->
+You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.
 SOUL_EOF
         log_success "Created ~/.hermes/SOUL.md (edit to customize personality)"
     fi
@@ -1777,40 +1820,64 @@ SOUL_EOF
 }
 
 find_system_browser() {
-    # Prefer a user-specified browser path, then common Linux/macOS Chrome and
-    # Chromium command names.  Arch-family distributions commonly ship plain
-    # `chromium`, while Debian-family systems often use `chromium-browser`.
-    if [ -n "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ]; then
-        if [ -x "$AGENT_BROWSER_EXECUTABLE_PATH" ]; then
-            echo "$AGENT_BROWSER_EXECUTABLE_PATH"
-            return 0
-        fi
-        if command -v "$AGENT_BROWSER_EXECUTABLE_PATH" >/dev/null 2>&1; then
-            command -v "$AGENT_BROWSER_EXECUTABLE_PATH"
-            return 0
-        fi
+    # Honor ONLY an explicit, user-set AGENT_BROWSER_EXECUTABLE_PATH override.
+    #
+    # We deliberately do NOT scan PATH or well-known app locations any more.
+    # Auto-detection silently bound the install to whatever `command -v chromium`
+    # resolved to — most damagingly a Snap Chromium (/snap/bin/chromium), whose
+    # sandbox blocks agent-browser's control socket under /tmp, so every
+    # browser_navigate hung until the 60s timeout fired ("opening web page
+    # failed"). Every install now uses the bundled Playwright Chromium unless the
+    # user explicitly points elsewhere.
+    local override="${AGENT_BROWSER_EXECUTABLE_PATH:-}"
+
+    if [ -z "$override" ]; then
+        return 1
     fi
 
-    local candidate
-    for candidate in google-chrome google-chrome-stable chromium chromium-browser chrome; do
-        if command -v "$candidate" >/dev/null 2>&1; then
-            command -v "$candidate"
-            return 0
-        fi
-    done
+    # A Snap binary is never a valid target — its confinement is the very bug we
+    # are fixing — so reject it even when set explicitly.
+    case "$override" in
+        /snap/*) return 1 ;;
+    esac
 
-    if [ "$(uname)" = "Darwin" ]; then
-        for app in \
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-            "/Applications/Chromium.app/Contents/MacOS/Chromium"; do
-            if [ -x "$app" ]; then
-                echo "$app"
-                return 0
-            fi
-        done
+    if [ -x "$override" ]; then
+        echo "$override"
+        return 0
+    fi
+    if command -v "$override" >/dev/null 2>&1; then
+        command -v "$override"
+        return 0
     fi
 
     return 1
+}
+
+strip_snap_browser_override() {
+    # Existing installs created before the system-browser fallback was dropped
+    # may carry an auto-written AGENT_BROWSER_EXECUTABLE_PATH pointing at a Snap
+    # Chromium (/snap/bin/chromium). That path is the root cause of the "opening
+    # web page failed" hang, and the runtime reads it straight from .env — so
+    # removing the fallback in the installer is not enough on its own. Strip any
+    # snap-pointing override here (and its auto-written comment) so the bundled
+    # Chromium download runs and the agent stops using the broken binary. A
+    # deliberately-set non-snap override is left untouched.
+    local env_file="$HERMES_HOME/.env"
+
+    [ -f "$env_file" ] || return 0
+    grep -Eq '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/' "$env_file" 2>/dev/null || return 0
+
+    local tmp
+    tmp="$(mktemp)" || return 0
+    if grep -Ev '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/|^# Hermes Agent browser tools' "$env_file" > "$tmp"; then
+        mv "$tmp" "$env_file"
+        log_warn "Removed stale Snap browser override (AGENT_BROWSER_EXECUTABLE_PATH=/snap/...) from $env_file"
+        log_info "Hermes will use the bundled Chromium instead."
+        # Drop it from this process too so the rest of the run doesn't re-detect it.
+        unset AGENT_BROWSER_EXECUTABLE_PATH
+    else
+        rm -f "$tmp"
+    fi
 }
 
 run_browser_install_with_timeout() {
@@ -1848,7 +1915,7 @@ configure_browser_env_from_system_browser() {
 
     {
         echo ""
-        echo "# Hermes Agent browser tools — use the system Chrome/Chromium binary."
+        echo "# Hermes Agent browser tools — explicit browser override."
         echo "AGENT_BROWSER_EXECUTABLE_PATH=$browser_path"
     } >> "$env_file"
     log_success "Configured browser tools to use $browser_path"
@@ -1887,10 +1954,11 @@ install_node_deps() {
             log_info "  sudo npx playwright install-deps chromium"
         else
         log_info "Installing browser engine (Playwright Chromium)..."
+        strip_snap_browser_override
         DETECTED_BROWSER_EXECUTABLE="$(find_system_browser 2>/dev/null || true)"
         if [ -n "$DETECTED_BROWSER_EXECUTABLE" ]; then
-            log_success "Found system Chrome/Chromium at $DETECTED_BROWSER_EXECUTABLE"
-            log_info "Skipping Playwright browser download; Hermes will use the system browser."
+            log_success "Using explicit browser override: $DETECTED_BROWSER_EXECUTABLE"
+            log_info "Skipping bundled Chromium download (AGENT_BROWSER_EXECUTABLE_PATH is set)."
         else
             case "$DISTRO" in
                 ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
@@ -2225,11 +2293,12 @@ ensure_browser() {
     rm -f "$log_file"
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
+    strip_snap_browser_override
     local sys_browser
     sys_browser="$(find_system_browser 2>/dev/null || true)"
     if [ -n "$sys_browser" ]; then
         configure_browser_env_from_system_browser "$sys_browser"
-        log_info "System browser detected -- skipping Chromium download"
+        log_info "Explicit browser override set -- skipping bundled Chromium download"
         return 0
     fi
 
@@ -2398,24 +2467,24 @@ _desktop_pack() {
     fi
 }
 
-# Public Electron mirror used as a last-resort fallback when GitHub's release
-# host is blocked/throttled (the repeating "retrying" symptom). npmmirror.com is
-# the de-facto Electron community mirror (Alibaba). @electron/get SHASUM-checks
-# the download, but the SHASUMS come from the same mirror — that guards against a
-# corrupt/partial download, NOT a compromised mirror. Reaching for it is an
-# explicit trust trade-off we only make AFTER the canonical GitHub download has
-# failed, and we never override a user-pinned ELECTRON_MIRROR.
+# Last-resort Electron mirror after GitHub download fails (#47266).
 DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
 
-# True (returns 0) when node_modules/electron/dist holds a usable Electron
-# binary. electron-builder reads the binary from build.electronDist
-# (node_modules/electron/dist) since #38673, so this is the exact file whose
-# absence makes a pack fail with "The specified electronDist does not exist". A
-# dist dir that exists but is missing the binary (partial extraction / aborted
-# postinstall) is NOT ok. $1 = the workspace root holding node_modules.
+# Electron package dir — workspace-local nest first, then root hoist.
+_electron_dir() {
+    local install_dir="$1"
+    if [ -d "$install_dir/apps/desktop/node_modules/electron" ]; then
+        printf '%s\n' "$install_dir/apps/desktop/node_modules/electron"
+    else
+        printf '%s\n' "$install_dir/node_modules/electron"
+    fi
+}
+
+# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.cjs).
 _electron_dist_ok() {
     local install_dir="$1"
-    local electron_dir="$install_dir/node_modules/electron"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
     if [ "$OS" = "macos" ]; then
         [ -e "$electron_dir/dist/Electron.app/Contents/MacOS/Electron" ]
     else
@@ -2423,26 +2492,12 @@ _electron_dist_ok() {
     fi
 }
 
-# (Re)populate node_modules/electron/dist via electron's own downloader.
-#
-# Since #38673 the desktop build pins build.electronDist to
-# node_modules/electron/dist, so electron-builder reads the Electron binary
-# straight from there and never downloads it during `npm run pack`. That dist
-# tree is produced by the electron package's postinstall (install.js) during
-# `npm ci`. When that download is blocked/throttled (GitHub's release host is
-# unreachable in some regions - #47266), dist is missing and re-running pack only
-# re-throws "The specified electronDist does not exist". The mirror fallback
-# therefore has to drive THIS downloader, not another pack.
-#
-# No-op (returns 0) when the dist binary is already present. Otherwise drops a
-# partial dist + version marker (electron's install.js short-circuits when
-# path.txt already matches) and runs the downloader once. $1 = the workspace root
-# holding node_modules; optional $2 = an ELECTRON_MIRROR base URL. Best-effort:
-# returns 0 iff the dist binary exists afterward.
+# Best-effort: run electron/install.js to populate dist/ (optional mirror).
 _restore_electron_dist() {
     local install_dir="$1"
     local mirror="${2:-}"
-    local electron_dir="$install_dir/node_modules/electron"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
     _electron_dist_ok "$install_dir" && return 0
 
     [ -f "$electron_dir/install.js" ] || return 1
@@ -2457,6 +2512,19 @@ _restore_electron_dist() {
         ( cd "$electron_dir" && node install.js ) || true
     fi
     _electron_dist_ok "$install_dir"
+}
+
+_electron_pkg_staged_missing_dist() {
+    local install_dir="$1"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
+    [ -f "$electron_dir/package.json" ] && [ -f "$electron_dir/install.js" ] && ! _electron_dist_ok "$install_dir"
+}
+
+_restore_electron_dist_with_fallback() {
+    local install_dir="$1"
+    _restore_electron_dist "$install_dir" \
+        || { [ -z "${ELECTRON_MIRROR:-}" ] && _restore_electron_dist "$install_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; }
 }
 
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
@@ -2500,7 +2568,12 @@ install_desktop() {
     #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
     #    only if `npm ci` is unavailable or the lockfile is out of sync.
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ) || {
+    if ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ); then
+        log_success "Desktop workspace dependencies installed"
+    elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
+        log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
+        _restore_electron_dist_with_fallback "$INSTALL_DIR" || true
+    else
         log_error "Desktop workspace npm install failed"
         # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
         # ~/.npm, so this non-root install can't write the shared cache. npm hides
@@ -2513,8 +2586,7 @@ install_desktop() {
         log_info "Then re-run this installer, or build manually:"
         log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
         return 1
-    }
-    log_success "Desktop workspace dependencies installed"
+    fi
 
     # 2. Build, with up to three escalating attempts so a transient/blocked
     #    Electron download self-heals instead of failing the whole install:
@@ -2528,21 +2600,13 @@ install_desktop() {
     if _desktop_pack "$desktop_dir"; then
         pack_ok=true
     else
-        # (b) Corrupt cached Electron zip is the most common self-healable cause.
-        local purged
-        purged="$(clear_electron_build_cache "$desktop_dir")"
-        # electronDist is pinned to node_modules/electron/dist (#38673):
-        # electron-builder reads the binary from there and `pack` never downloads
-        # it, so purging the cache + re-running pack can't by itself repopulate a
-        # missing/partial dist. When the dist is actually gone, re-run electron's
-        # own downloader so the retry has a binary to read. Gated on the dist
-        # check so an unrelated build failure (tsc/vite) doesn't trigger a
-        # pointless ~200MB refetch.
+        local purged=""
         local restored=false
         if ! _electron_dist_ok "$INSTALL_DIR"; then
+            purged="$(clear_electron_build_cache "$desktop_dir")"
             if _restore_electron_dist "$INSTALL_DIR"; then restored=true; fi
         fi
-        if [ -n "$purged" ] || [ "$restored" = true ]; then
+        if [ "$restored" = true ]; then
             log_warn "Desktop build failed; refreshed the Electron download and retrying once..."
             if _desktop_pack "$desktop_dir"; then
                 pack_ok=true
@@ -2550,27 +2614,14 @@ install_desktop() {
         fi
     fi
 
-    # (c) Still failing and the user hasn't pinned their own mirror: the GitHub
-    #     release host is likely blocked/throttled. Re-download the Electron
-    #     binary via a public mirror, then retry. The mirror MUST drive
-    #     electron's own downloader — `npm run pack` reads the pinned electronDist
-    #     and never downloads, so a mirror passed only to pack is a no-op (#47266).
+    # (c) GitHub blocked → mirror fallback (#47266).
     if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ]; then
         log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
         log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
         log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-        local have_dist=false
-        if _electron_dist_ok "$INSTALL_DIR"; then
-            have_dist=true
-        elif _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
-            have_dist=true
-        fi
-        if [ "$have_dist" = true ]; then
-            if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
-                pack_ok=true
-            fi
-        else
-            log_warn "Could not re-download Electron from the mirror (node_modules/electron/dist still missing)"
+        _electron_dist_ok "$INSTALL_DIR" || _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR" || true
+        if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
+            pack_ok=true
         fi
     fi
 
@@ -2750,7 +2801,12 @@ run_stage_body() {
             detect_os
             resolve_install_layout
             print_success
-            echo "git" > "$HERMES_HOME/.install_method"
+            # Code-scoped stamp: write next to the install tree, not into
+            # $HERMES_HOME. $HERMES_HOME is a shared data dir (it can be
+            # bind-mounted into a Docker gateway too), so a stamp there gets
+            # clobbered by the container's 'docker' stamp and wrongly blocks
+            # 'hermes update' on this host install. See detect_install_method().
+            echo "git" > "$INSTALL_DIR/.install_method"
             ;;
         *)
             log_error "Unknown stage: $stage"
@@ -2829,7 +2885,12 @@ main() {
 
     print_success
 
-    echo "git" > "$HERMES_HOME/.install_method"
+    # Code-scoped stamp: write next to the install tree, not into $HERMES_HOME.
+    # $HERMES_HOME is a shared data dir (it can be bind-mounted into a Docker
+    # gateway too), so a stamp there gets clobbered by the container's 'docker'
+    # stamp and wrongly blocks 'hermes update' on this host install.
+    # See detect_install_method().
+    echo "git" > "$INSTALL_DIR/.install_method"
 }
 
 if [ "$MANIFEST_MODE" = true ]; then

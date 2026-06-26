@@ -1,3 +1,10 @@
+import type {
+  PetOverlayBounds,
+  PetOverlayControl,
+  PetOverlayOpenRequest,
+  PetOverlayStatePayload
+} from './store/pet-overlay'
+
 export {}
 
 declare global {
@@ -26,6 +33,20 @@ declare global {
       openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
       // Open (or focus) a compact secondary window on the new-session draft.
       openNewSessionWindow: () => Promise<{ ok: boolean; error?: string }>
+      // The pop-out pet overlay: a transparent always-on-top window hosting only
+      // the mascot. The main renderer drives it (open/close/drag + state push);
+      // the overlay sends control messages back (pop-in, composer submit).
+      petOverlay: {
+        open: (request: PetOverlayOpenRequest) => Promise<{ ok: boolean; bounds?: PetOverlayBounds }>
+        close: () => Promise<{ ok: boolean }>
+        setBounds: (bounds: PetOverlayBounds) => void
+        setIgnoreMouse: (ignore: boolean) => void
+        setFocusable: (focusable: boolean) => void
+        pushState: (payload: PetOverlayStatePayload) => void
+        control: (payload: PetOverlayControl) => void
+        onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
+        onControl: (callback: (payload: PetOverlayControl) => void) => () => void
+      }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -60,6 +81,7 @@ declare global {
       setTranslucency?: (payload: { intensity: number }) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
@@ -71,10 +93,61 @@ declare global {
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
-      // Resolve git-worktree identity for a batch of session cwds, reading git's
-      // on-disk metadata locally. Returns null per cwd that isn't inside a
-      // checkout (or can't be read — e.g. a remote backend's path).
-      worktrees?: (cwds: string[]) => Promise<Record<string, HermesWorktreeInfo | null>>
+      // Reveal a path in the OS file manager (Finder / Explorer).
+      revealPath?: (path: string) => Promise<boolean>
+      // Rename a file/folder in place (new base name, same parent dir).
+      renamePath?: (path: string, newName: string) => Promise<{ path: string }>
+      // Write a small UTF-8 text file (hardened path, parent must exist).
+      writeTextFile?: (path: string, content: string) => Promise<{ path: string }>
+      // Move a file/folder to the OS trash (recoverable).
+      trashPath?: (path: string) => Promise<boolean>
+      // Git-driven worktree management for the "Start work" flow.
+      git?: {
+        worktreeList: (repoPath: string) => Promise<HermesGitWorktree[]>
+        worktreeAdd: (
+          repoPath: string,
+          options?: { name?: string; branch?: string; base?: string; existingBranch?: string }
+        ) => Promise<{ path: string; branch: string; repoRoot: string }>
+        worktreeRemove: (
+          repoPath: string,
+          worktreePath: string,
+          options?: { force?: boolean }
+        ) => Promise<{ removed: string }>
+        branchSwitch: (repoPath: string, branch: string) => Promise<{ branch: string }>
+        // Local branches for the "convert a branch into a worktree" picker.
+        branchList: (repoPath: string) => Promise<HermesGitBranch[]>
+        // Compact working-tree status for the composer coding rail. Null on a
+        // non-repo / remote backend (where the Electron probe can't run).
+        repoStatus: (repoPath: string) => Promise<HermesRepoStatus | null>
+        // Working-tree-vs-HEAD unified diff for one file (the preview's diff
+        // view). Empty string when the file is unchanged or not in a repo.
+        fileDiff: (repoPath: string, filePath: string) => Promise<string>
+        // Codex-style review pane: changed files per scope, per-file diff, and
+        // stage / unstage / revert.
+        review: {
+          list: (repoPath: string, scope: HermesReviewScope, baseRef?: null | string) => Promise<HermesReviewList>
+          diff: (
+            repoPath: string,
+            filePath: string,
+            scope: HermesReviewScope,
+            baseRef?: null | string,
+            staged?: boolean
+          ) => Promise<string>
+          stage: (repoPath: string, filePath?: null | string) => Promise<{ ok: boolean }>
+          unstage: (repoPath: string, filePath?: null | string) => Promise<{ ok: boolean }>
+          revert: (repoPath: string, filePath?: null | string) => Promise<{ ok: boolean }>
+          revParse: (repoPath: string, ref?: null | string) => Promise<null | string>
+          commit: (repoPath: string, message: string, push: boolean) => Promise<{ ok: boolean }>
+          // Diff (staged-or-all) + recent commit subjects for drafting a
+          // commit message. Reads only; empty strings off-repo.
+          commitContext: (repoPath: string) => Promise<{ diff: string; recent: string }>
+          push: (repoPath: string) => Promise<{ ok: boolean }>
+          shipInfo: (repoPath: string) => Promise<HermesReviewShipInfo>
+          createPr: (repoPath: string) => Promise<{ url: string }>
+        }
+        // Repo-first discovery: scan bounded roots for git repos (depth-capped).
+        scanRepos: (roots: string[], options?: { maxDepth?: number }) => Promise<{ root: string; label: string }[]>
+      }
       terminal: {
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
@@ -102,6 +175,7 @@ declare global {
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
+      getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
@@ -199,6 +273,7 @@ export interface DesktopUpdateCommit {
 
 export interface DesktopUpdateStatus {
   supported: boolean
+  updateAvailable?: boolean
   branch?: string
   currentBranch?: string
   reason?: string
@@ -228,9 +303,45 @@ export interface DesktopUpdateApplyResult {
   manual?: boolean
   command?: string
   hermesRoot?: string
+  /** True when the backend was updated but the GUI couldn't be relaunched in
+   *  place (AppImage / dev run): the new version loads on next launch. */
+  backendUpdated?: boolean
+  /** False when the running GUI package was NOT replaced by this update
+   *  (Linux GUI/backend skew, or a sandbox-blocked relaunch). Distinguishes
+   *  "backend only" outcomes from a real in-place GUI relaunch. (#45205) */
+  guiUpdated?: boolean
+  /** True for the Linux GUI/backend-skew terminal state: backend updated but
+   *  the running AppImage/.deb/.rpm shell is unchanged and must be
+   *  reinstalled. Renders a closeable "update the desktop app" message. */
+  guiSkew?: boolean
+  /** True when the update finished but the app must be quit + reopened by hand
+   *  (e.g. the rebuilt sandbox helper isn't launchable): keep a working
+   *  window, don't auto-quit into a dead app. (#45205) */
+  manualRestart?: boolean
+  /** True when the auto-relaunch was skipped specifically because the rebuilt
+   *  chrome-sandbox helper is not launchable (not root:root + setuid). */
+  sandboxBlocked?: boolean
+  /** True when a detached relauncher took over (macOS bundle swap / Linux
+   *  re-exec): the app is about to quit and reopen itself. */
+  handedOff?: boolean
 }
 
-export type DesktopUpdateStage = 'idle' | 'prepare' | 'fetch' | 'pull' | 'pydeps' | 'restart' | 'manual' | 'error'
+export type DesktopUpdateStage =
+  | 'idle'
+  | 'prepare'
+  | 'fetch'
+  | 'pull'
+  | 'pydeps'
+  | 'update'
+  | 'rebuild'
+  | 'restart'
+  | 'done'
+  | 'manual'
+  /** Backend updated but the running GUI package (AppImage/.deb/.rpm) was NOT
+   *  changed — the user must update/reinstall the desktop app. Terminal,
+   *  closeable; never claims the GUI was updated. (#45205) */
+  | 'guiSkew'
+  | 'error'
 
 export interface DesktopUpdateProgress {
   stage: DesktopUpdateStage
@@ -452,16 +563,94 @@ export interface HermesPreviewWatch {
   path: string
 }
 
-export interface HermesWorktreeInfo {
-  // Main repo root — the shared grouping key for a checkout and all its linked
-  // worktrees.
-  repoRoot: string
-  // This cwd's own worktree root.
-  worktreeRoot: string
-  // True when this is the repo's primary checkout (.git is a directory).
-  isMainWorktree: boolean
-  // Current branch (or short detached-HEAD sha), null when unreadable.
+// A real git worktree as reported by `git worktree list` (source of truth for
+// the "Start work" flow), as opposed to the session-cwd-derived grouping above.
+export interface HermesGitWorktree {
+  path: string
   branch: null | string
+  isMain: boolean
+  detached: boolean
+  locked: boolean
+}
+
+// A local branch as offered by the "convert a branch into a worktree" picker.
+// `checkedOut` means selecting opens that checkout; `isDefault` means selecting
+// switches the main checkout instead of creating `.worktrees/main`.
+export interface HermesGitBranch {
+  name: string
+  checkedOut: boolean
+  isDefault: boolean
+  worktreePath: null | string
+}
+
+// A single changed path from `git status --porcelain=v2`, classified by state
+// so the coding rail / switcher can group + open the right diff.
+export interface HermesRepoStatusFile {
+  path: string
+  staged: boolean
+  unstaged: boolean
+  untracked: boolean
+  conflicted: boolean
+}
+
+// Compact working-tree status for the composer coding rail (parsed from
+// `git status --porcelain=v2 --branch`).
+export interface HermesRepoStatus {
+  branch: null | string
+  // The repo's trunk ("main" / "master" / …), so the UI can offer "branch off
+  // the default" from anywhere. Null when no trunk is detected.
+  defaultBranch: null | string
+  detached: boolean
+  ahead: number
+  behind: number
+  staged: number
+  unstaged: number
+  untracked: number
+  conflicted: number
+  // Total distinct changed paths (tracked modified + conflicts + untracked).
+  changed: number
+  // +/- line counts of tracked changes vs HEAD (staged + unstaged). Untracked
+  // files aren't in the diff, so they don't contribute lines.
+  added: number
+  removed: number
+  // Capped changed-file list (REPO_STATUS_FILE_CAP) for the diff/open actions.
+  files: HermesRepoStatusFile[]
+}
+
+// Diff scope for the review pane, mirroring Codex: uncommitted working-tree
+// changes, all changes vs the branch base, or everything since the current
+// turn began.
+export type HermesReviewScope = 'branch' | 'lastTurn' | 'uncommitted'
+
+// One changed file in the review pane (status letter, +/- lines, staged flag).
+export interface HermesReviewFile {
+  path: string
+  added: number
+  removed: number
+  // M(odified) A(dded) D(eleted) R(enamed) C(opied) U(nmerged) ?(untracked)
+  status: string
+  staged: boolean
+}
+
+export interface HermesReviewList {
+  files: HermesReviewFile[]
+  // The resolved base ref the scope diffed against (branch merge-base / turn
+  // baseline), or null for the uncommitted scope.
+  base: null | string
+}
+
+// The branch's PR (if any) as reported by `gh pr view`.
+export interface HermesReviewPr {
+  url: string
+  state: string
+  number: number
+}
+
+// gh availability/auth + the current branch's PR — drives the review pane's PR
+// button (disabled when gh isn't ready, "Open PR" vs "Create PR" otherwise).
+export interface HermesReviewShipInfo {
+  ghReady: boolean
+  pr: HermesReviewPr | null
 }
 
 export interface HermesReadDirEntry {

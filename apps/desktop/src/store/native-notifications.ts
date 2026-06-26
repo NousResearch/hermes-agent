@@ -113,7 +113,15 @@ function isBackgrounded(): boolean {
   return typeof document.hasFocus === 'function' && !document.hasFocus()
 }
 
-function shouldFire(kind: NativeNotificationKind, sessionId?: null | string): boolean {
+function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, global = false): boolean {
+  // Global notifications aren't tied to a chat session (e.g. pet generation,
+  // which runs from the command center with no active conversation). They fire
+  // whenever the user is away, with no session-match requirement — otherwise a
+  // background run started without an open session would be silently dropped.
+  if (global) {
+    return isBackgrounded()
+  }
+
   // Attention kinds break through for an off-screen session even while focused.
   if (ATTENTION_KINDS.has(kind)) {
     return isBackgrounded() || (Boolean(sessionId) && sessionId !== $activeSessionId.get())
@@ -134,6 +142,12 @@ export interface NativeNotificationInput {
   title: string
   body?: string
   sessionId?: null | string
+  /**
+   * Not tied to a chat session (e.g. pet generation). Fires whenever the user
+   * is away, bypassing the session-match gate that completion kinds normally
+   * require.
+   */
+  global?: boolean
   silent?: boolean
   actions?: NativeNotificationAction[]
 }
@@ -145,11 +159,11 @@ export function dispatchNativeNotification(input: NativeNotificationInput): void
     return
   }
 
-  if (!shouldFire(input.kind, input.sessionId)) {
+  if (!shouldFire(input.kind, input.sessionId, input.global)) {
     return
   }
 
-  if (throttled(`${input.kind}:${input.sessionId ?? ''}`, Date.now())) {
+  if (throttled(`${input.kind}:${input.sessionId ?? (input.global ? 'global' : '')}`, Date.now())) {
     return
   }
 

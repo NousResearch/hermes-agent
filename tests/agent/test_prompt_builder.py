@@ -27,6 +27,8 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE,
+    GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -988,8 +990,17 @@ class TestPromptBuilderConstants:
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
+        assert "tui" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
         assert "webui" in PLATFORM_HINTS
+
+    def test_cli_and_tui_hints_flag_local_only_cron(self):
+        """#51568 — cron jobs from CLI/TUI sessions don't deliver back into
+        the session, so the agent must be told up front not to promise it."""
+        for key in ("cli", "tui"):
+            hint = PLATFORM_HINTS[key]
+            assert "LOCAL-ONLY" in hint
+            assert "deliver" in hint
 
     def test_whatsapp_cloud_hint_mentions_24h_window(self):
         """The Cloud API's 24-hour conversation window is a hard rule the
@@ -1495,6 +1506,49 @@ class TestOpenAIModelExecutionGuidance:
     def test_guidance_is_string(self):
         assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)
         assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
+
+
+class TestParallelToolCallGuidance:
+    """Behavior contracts for the universal parallel-tool-call guidance block.
+
+    Asserts the invariants the block must satisfy (steer batching, scope to
+    independent calls, stay short for the cached prompt) rather than freezing
+    its exact wording.
+    """
+
+    def test_is_nonempty_string(self):
+        assert isinstance(PARALLEL_TOOL_CALL_GUIDANCE, str)
+        assert PARALLEL_TOOL_CALL_GUIDANCE.strip()
+
+    def test_steers_batching_into_one_response(self):
+        text = PARALLEL_TOOL_CALL_GUIDANCE.lower()
+        # Must tell the model to group independent calls together — accept any
+        # phrasing that means "one turn" without freezing exact wording.
+        assert "single response" in text or ("same" in text and "turn" in text)
+        assert "independent" in text
+
+    def test_carves_out_dependent_calls(self):
+        # Must NOT tell the model to batch dependent calls — that would break
+        # ordering (read-before-patch). The block has to acknowledge the
+        # serialize-when-dependent case.
+        text = PARALLEL_TOOL_CALL_GUIDANCE.lower()
+        assert "depend" in text
+
+    def test_stays_short_for_cached_prompt(self):
+        # Shipped in every cached system prompt — keep it tight. The existing
+        # task-completion block is ~600 chars; allow generous headroom but
+        # guard against accidental essay growth.
+        assert len(PARALLEL_TOOL_CALL_GUIDANCE) < 900
+
+    def test_has_a_heading(self):
+        # Heading delimits it as its own section in the assembled prompt.
+        assert PARALLEL_TOOL_CALL_GUIDANCE.lstrip().startswith("#")
+
+    def test_not_duplicated_in_google_guidance(self):
+        # The universal block is now the single source of parallel-batching
+        # steer. The Google-only block must NOT carry its own copy, otherwise
+        # Gemini/Gemma would receive the instruction twice in one prompt.
+        assert "parallel tool call" not in GOOGLE_MODEL_OPERATIONAL_GUIDANCE.lower()
 
 
 # =========================================================================

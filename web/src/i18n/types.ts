@@ -124,6 +124,7 @@ export interface Translations {
     agent: string;
     connected: string;
     connectedPlatforms: string;
+    disabled?: string;
     disconnected: string;
     error: string;
     failed: string;
@@ -181,6 +182,7 @@ export interface Translations {
     selectedSessionsDeleted: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
+    newChat: string;
     previousPage: string;
     nextPage: string;
     roles: {

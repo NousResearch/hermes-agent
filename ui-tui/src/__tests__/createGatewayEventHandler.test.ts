@@ -8,6 +8,13 @@ import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
+// Mock the external-URL opener so the billing.step_up.verification test can
+// assert it's invoked without spawning a real browser process.
+const openExternalUrlMock = vi.fn((_url: string) => true)
+vi.mock('../lib/openExternalUrl.js', () => ({
+  openExternalUrl: (url: string) => openExternalUrlMock(url)
+}))
+
 const ref = <T>(current: T) => ({ current })
 
 const buildCtx = (appended: Msg[]) =>
@@ -183,9 +190,7 @@ describe('createGatewayEventHandler', () => {
       type: 'review.summary'
     } as any)
 
-    expect(ctx.system.sys).toHaveBeenCalledWith(
-      "💾 Self-improvement review: Skill 'hermes-release' patched"
-    )
+    expect(ctx.system.sys).toHaveBeenCalledWith("💾 Self-improvement review: Skill 'hermes-release' patched")
   })
 
   it('ignores review.summary events with empty or missing text', () => {
@@ -872,7 +877,10 @@ describe('createGatewayEventHandler', () => {
   it('defaults approval overlays to allowPermanent when the backend omits the field', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
-    onEvent({ payload: { command: 'rm -rf /tmp/x', description: 'dangerous command' }, type: 'approval.request' } as any)
+    onEvent({
+      payload: { command: 'rm -rf /tmp/x', description: 'dangerous command' },
+      type: 'approval.request'
+    } as any)
 
     expect(getOverlayState().approval).toMatchObject({ allowPermanent: true })
   })
@@ -1181,9 +1189,9 @@ describe('createGatewayEventHandler', () => {
     // Settle flips busy false (the single drain edge) and the backend
     // "Operation interrupted…" line is suppressed (not appended).
     expect(getUiState().busy).toBe(false)
-    expect(appended.slice(before).some(m => typeof m.text === 'string' && m.text.includes('Operation interrupted'))).toBe(
-      false
-    )
+    expect(
+      appended.slice(before).some(m => typeof m.text === 'string' && m.text.includes('Operation interrupted'))
+    ).toBe(false)
   })
 
   it('persists an abandoned (timed-out) clarify into the transcript when the clarify tool completes', () => {
@@ -1559,6 +1567,36 @@ describe('createGatewayEventHandler', () => {
 
       onEvent({ payload: { key: 'credits.90', level: 'warn' }, type: 'notification.show' } as any)
       expect(getUiState().notice).toBeNull()
+    })
+  })
+
+  describe('billing.step_up.verification', () => {
+    beforeEach(() => {
+      openExternalUrlMock.mockClear()
+    })
+
+    it('renders the verification link + code and opens the browser', () => {
+      const ctx = buildCtx([])
+      const onEvent = createGatewayEventHandler(ctx)
+
+      onEvent({
+        payload: { user_code: 'WXYZ-9999', verification_url: 'https://portal.example/device?code=WXYZ' },
+        type: 'billing.step_up.verification'
+      } as any)
+
+      const printed = (ctx.system.sys as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0]).join('\n')
+      expect(printed).toContain('https://portal.example/device?code=WXYZ')
+      expect(printed).toContain('WXYZ-9999')
+      expect(openExternalUrlMock).toHaveBeenCalledWith('https://portal.example/device?code=WXYZ')
+    })
+
+    it('no-ops on a missing verification_url (never opens a browser)', () => {
+      const ctx = buildCtx([])
+      const onEvent = createGatewayEventHandler(ctx)
+
+      onEvent({ payload: { verification_url: '' }, type: 'billing.step_up.verification' } as any)
+
+      expect(openExternalUrlMock).not.toHaveBeenCalled()
     })
   })
 })

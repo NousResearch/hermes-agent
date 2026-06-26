@@ -59,6 +59,9 @@ _HERMES_ALWAYS_CORE_TOOLS = [
     "vision_analyze",
     # Orchestration engine — delegate tasks to workers with the right toolset
     "delegate_task",
+    "terminal",
+    "read_file",
+    "search_files",
 ]
 
 _HERMES_DEFERRABLE_CORE_TOOLS = [

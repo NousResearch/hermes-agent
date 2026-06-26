@@ -1525,10 +1525,22 @@ def run_doctor(args):
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
         agent_browser_ok = False
         _which_ab = shutil.which("agent-browser")
+        # `hermes acp --setup-browser` installs agent-browser into the
+        # Hermes-managed node prefix, which isn't necessarily on PATH. Mirror
+        # dep_ensure._has_hermes_agent_browser() so doctor and dep_ensure agree
+        # on what "installed" means; otherwise doctor false-negatives (#53192).
+        _managed_ab = HERMES_HOME / "node" / "bin" / "agent-browser"
+        _legacy_ab = HERMES_HOME / "node_modules" / ".bin" / "agent-browser"
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
             agent_browser_ok = True
         elif _which_ab and agent_browser_runnable(_which_ab):
+            check_ok("agent-browser", "(browser automation)")
+            agent_browser_ok = True
+        elif _managed_ab.is_file() and agent_browser_runnable(str(_managed_ab)):
+            check_ok("agent-browser", "(browser automation)")
+            agent_browser_ok = True
+        elif _legacy_ab.is_file() and agent_browser_runnable(str(_legacy_ab)):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
         elif _which_ab:

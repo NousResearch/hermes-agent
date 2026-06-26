@@ -1,0 +1,29 @@
+The System Brand Design Document proof log — v2 clean review branch
+Port: 8793
+Docroot: /Users/jacknicklaus/agent-lab/state/public-proofs
+Scope rule: serve public-proofs only, never state/local-pages.
+
+Local repo proof artifacts:
+- PDF: docs/brand-design-docs/the-system-20260626/the-system-brand-design-doc-20260626.pdf
+- HTML: docs/brand-design-docs/the-system-20260626/the-system-brand-design-doc-20260626.html
+- brand-system-map: docs/brand-design-docs/the-system-20260626/brand-system-map.json
+- contact sheet: docs/brand-design-docs/the-system-20260626/the-system-brand-design-doc-contact-sheet.png
+
+SHA256 PDF: ac19c2870416015f5b7660f0eb2c28505abae34afe76b23c5f5387085f6d2e5f
+SHA256 HTML: 834e5cde74550031ad7b4b2d1f8ac39e71df72a2d96dc7d75427e44f511bdb93
+SHA256 brand-system-map: 93ae499d601799387289d89c5228b4fee25e7a12cb5a2d2a09b7718d81f598f6
+SHA256 contact sheet: c879e8adf9f5cc7f2e527b71beb3521854230141cd62b927b36c1292bec79312
+
+V2 fixes:
+- Clean branch from current origin/main; no unrelated predecessor commits.
+- PNG-byte logo assets renamed to .png.
+- Color page includes visible hex values and usage notes.
+- Typography page includes sizes, weights, line heights, and usage specs.
+- Cover logo card enlarged.
+- Source-notes contrast/readability improved.
+- In-repo skill directories excluded pending James canonical-home decision.
+
+Expected public proof checks when mirrored:
+- PDF/HTML/map/contact sheet return 200 with non-empty bytes.
+- /QUEUE.md returns 404.
+- /golf-darin-memory-inventory/ returns 404.

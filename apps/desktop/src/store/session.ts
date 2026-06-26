@@ -343,13 +343,9 @@ export const workspaceCwdForNewSession = (): string => {
     return getRememberedWorkspaceCwd()
   }
 
-  // Restore the pre-#49037 fallback chain: configured default → remembered
-  // workspace cwd → current $currentCwd. A bare new chat inherits the last
-  // folder the user worked in, so the right sidebar tree and coding rail
-  // have a root instead of showing "No project open". Entering a project or
-  // worktree still attaches its cwd directly (startSessionInWorkspace),
-  // so the projects paradigm is unaffected — this only fills the gap for
-  // global/detached sessions that had no cwd. See issue #53004.
+  // Desktop renderer only: gateway/TUI/CLI resolve their cwd server-side and never
+  // call this, so reviving last-folder inheritance here can't affect them. Safe to
+  // inherit in the desktop because the right-sidebar picker can re-point the folder.
   return getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
 }
 

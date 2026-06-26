@@ -198,14 +198,21 @@ describe('workspaceCwdForNewSession', () => {
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
   })
 
-  it('starts detached (no inherited cwd) when no default project dir is configured', () => {
-    // A bare new chat must NOT inherit the sticky/remembered or live workspace —
-    // that's the "why is my new session already on a branch" bug. Only an
-    // explicit configured default pre-attaches.
+  it('inherits the remembered workspace cwd when no default project dir is configured', () => {
+    // Both remembered and live cwd are set, so this also pins the order:
+    // remembered wins over live.
     window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
     $currentCwd.set('/home/user/live')
 
-    expect(workspaceCwdForNewSession()).toBe('')
+    expect(workspaceCwdForNewSession()).toBe('/home/user/sticky')
+  })
+
+  it('inherits the live cwd when nothing is configured or remembered', () => {
+    // Last link of the chain: with no default and no remembered workspace, a new
+    // chat still roots at wherever you currently are.
+    $currentCwd.set('/home/user/live')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/live')
   })
 
   it('does not rewrite the live cwd while a session is active', () => {
@@ -233,9 +240,21 @@ describe('workspaceCwdForNewSession', () => {
     setCurrentCwd('/backend/project-b')
     expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
 
-    // Back on local with no configured default: a bare new chat is detached and
-    // never reads the remote keys (nor inherits the sticky local workspace).
+    // Back on local: returns the local sticky, not the remote '/backend/project-b',
+    // so local and remote workspace memory stay isolated.
     $connection.set(null)
+    expect(workspaceCwdForNewSession()).toBe('/local/project')
+  })
+
+  it('never inherits a local cwd in remote mode — the gateway stays detached', () => {
+    // Remote = a gateway on another machine; the local picker can't point there, so
+    // none of the local sources (default, remembered, live) may leak into a new
+    // remote chat. It stays detached until the user sets a cwd for that remote.
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
+    $currentCwd.set('/home/user/live')
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+
     expect(workspaceCwdForNewSession()).toBe('')
   })
 })

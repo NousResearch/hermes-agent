@@ -2511,12 +2511,29 @@ def _spawn_hermes_action(
 
     cmd = [sys.executable, "-m", "hermes_cli.main", *subcommand]
 
+    # A detached ``hermes <subcommand>`` child is a fresh, external CLI
+    # invocation — never the running gateway itself. ``gateway/run.py`` sets
+    # ``_HERMES_GATEWAY=1`` as a *module-level* import side effect, so a process
+    # that has imported it leaks the marker into this child's environment. On the
+    # desktop's managed runtime the dashboard is served from inside the gateway
+    # process, so ``hermes gateway restart`` spawned here would inherit the marker
+    # and the restart guard would misfire — "Refusing to restart the gateway from
+    # inside the gateway process" — making the desktop's restart button a no-op
+    # (issue Eynzof/Hermes-CN-Desktop#224). Strip the marker so this child is the
+    # "external shell" the guard expects. The agent-tool-call restart path runs
+    # ``hermes gateway restart`` directly (not via this helper), so its loop
+    # protection is unaffected.
+    child_env = {k: v for k, v in os.environ.items() if k != "_HERMES_GATEWAY"}
+    child_env["HERMES_NONINTERACTIVE"] = "1"
+    if extra_env:
+        child_env.update(extra_env)
+
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
-        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1", **(extra_env or {})},
+        "env": child_env,
     }
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = (

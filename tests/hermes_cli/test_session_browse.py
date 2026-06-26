@@ -6,6 +6,7 @@ Covers:
 - Argument parser registration
 """
 
+import sys
 import time
 from unittest.mock import MagicMock, patch
 
@@ -441,6 +442,70 @@ class TestCmdSessionsBrowse:
                 result = _session_browse_picker(sessions)
 
         assert result == "s1"
+
+    def test_cli_browse_requests_last_active_order(self, monkeypatch, capsys):
+        """The real sessions browse command should sort by latest activity."""
+        import hermes_cli.main as main_mod
+        import hermes_state
+
+        captured = {}
+
+        class FakeDB:
+            def list_sessions_rich(self, **kwargs):
+                captured["kwargs"] = kwargs
+                return []
+
+            def close(self):
+                captured["closed"] = True
+
+        monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["hermes", "sessions", "browse", "--source", "tui", "--limit", "42"],
+        )
+
+        main_mod.main()
+
+        assert captured["kwargs"] == {
+            "source": "tui",
+            "exclude_sources": None,
+            "limit": 42,
+            "order_by_last_active": True,
+        }
+        assert "No sessions found." in capsys.readouterr().out
+
+    def test_cli_list_requests_last_active_order(self, monkeypatch, capsys):
+        """The real sessions list command should sort by latest activity."""
+        import hermes_cli.main as main_mod
+        import hermes_state
+
+        captured = {}
+
+        class FakeDB:
+            def list_sessions_rich(self, **kwargs):
+                captured["kwargs"] = kwargs
+                return []
+
+            def close(self):
+                captured["closed"] = True
+
+        monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["hermes", "sessions", "list", "--source", "tui", "--limit", "42"],
+        )
+
+        main_mod.main()
+
+        assert captured["kwargs"] == {
+            "source": "tui",
+            "exclude_sources": None,
+            "limit": 42,
+            "order_by_last_active": True,
+        }
+        assert "No sessions found." in capsys.readouterr().out
 
 
 # ─── Edge cases ──────────────────────────────────────────────────────────────

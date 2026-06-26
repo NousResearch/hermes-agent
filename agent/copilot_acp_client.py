@@ -635,7 +635,7 @@ class CopilotACPClient:
                     content = ""
                 line = params.get("line")
                 limit = params.get("limit")
-                if isinstance(line, int) and line > 1:
+                if isinstance(line, int) and line >= 1:
                     lines = content.splitlines(keepends=True)
                     start = line - 1
                     end = start + limit if isinstance(limit, int) and limit > 0 else None

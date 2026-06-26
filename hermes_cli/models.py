@@ -3092,6 +3092,43 @@ def lmstudio_model_reasoning_options(
     return []
 
 
+def _is_google_gemini_base_url(base_url: Optional[str]) -> bool:
+    normalized = (base_url or "").strip().rstrip("/").lower()
+    return "generativelanguage.googleapis.com" in normalized
+
+
+def _fetch_google_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch model IDs from Google AI Studio using ?key= query auth.
+
+    Google AI Studio's generativelanguage endpoint authenticates with a
+    ``?key=`` query parameter, not an ``Authorization: Bearer`` header, and
+    returns ``models[].name`` shaped as ``models/<id>`` rather than
+    ``data[].id``. Probing it with the generic Bearer path fails auth.
+    """
+    if not api_key:
+        return None
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        normalized = "https://generativelanguage.googleapis.com/v1beta"
+    url = f"{normalized}/models?key={api_key}"
+    req = urllib.request.Request(url, headers={"User-Agent": _HERMES_USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            models = data.get("models", [])
+            return [
+                m["name"].split("/")[-1]
+                for m in models
+                if m.get("name")
+            ]
+    except Exception:
+        return None
+
+
 def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[str]]:
     catalog = fetch_github_model_catalog(api_key=api_key, timeout=timeout)
     if not catalog:
@@ -3430,6 +3467,19 @@ def probe_api_models(
             "models": models,
             "probed_url": COPILOT_MODELS_URL,
             "resolved_base_url": COPILOT_BASE_URL,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+
+    # Google AI Studio uses ?key= query auth, not Bearer — handle separately
+    if _is_google_gemini_base_url(normalized):
+        models = _fetch_google_models(
+            api_key=api_key, base_url=normalized, timeout=timeout,
+        )
+        return {
+            "models": models,
+            "probed_url": f"{normalized}/models",
+            "resolved_base_url": normalized,
             "suggested_base_url": None,
             "used_fallback": False,
         }

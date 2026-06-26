@@ -174,7 +174,12 @@ class MemGatewayProvider(MemoryProvider):
         # (Codex PR #30 review). Parse the URL and require an exact loopback host.
         from urllib.parse import urlparse
 
-        host = (urlparse(url).hostname or '').lower()
+        try:
+            host = (urlparse(url).hostname or '').lower()
+        except ValueError:
+            # Malformed URL (e.g. typoed IPv6 like "http://[::1:8081/mcp") —
+            # treat as unavailable rather than propagating the exception.
+            return False
         return host in ('localhost', '127.0.0.1', '::1')
 
     def get_config_schema(self):

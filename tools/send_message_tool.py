@@ -1,4 +1,4 @@
-"""Send Message Tool -- cross-channel messaging via platform APIs.
+﻿"""Send Message Tool -- cross-channel messaging via platform APIs.
 
 Sends a message to a user or channel on any connected messaging platform
 (Telegram, Discord, Slack). Supports listing available targets and resolving
@@ -327,7 +327,7 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
-            # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
+            # Preserve the leading '+' 鈥?signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
@@ -573,24 +573,40 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
-    Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
+    Applies markdown鈫扢arkdownV2 formatting (same as the gateway adapter)
     so that bold, links, and headers render correctly.  If the message
     already contains HTML tags, it is sent with ``parse_mode='HTML'``
     instead, bypassing MarkdownV2 conversion.
     """
     try:
-        from telegram import Bot
         from telegram.constants import ParseMode
 
-        # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
-        # Inspired by github.com/ashaney — PR #1568.
+        # Try to reuse the gateway's live Bot to avoid polling conflicts.
+        # Fall back to a standalone Bot when gateway is not running.
+        try:
+            from gateway.platforms.telegram import get_telegram_live_adapter
+            live = get_telegram_live_adapter(token)
+        except ImportError:
+            live = None
+
+        if live is not None and live._bot is not None:
+            from telegram import Bot
+            bot = live._bot
+            logger.debug('Reusing live Telegram adapter Bot for send')
+        else:
+            from telegram import Bot
+            bot = Bot(token=token)
+            logger.debug('No live adapter found, using standalone Bot')
+
+        # Auto-detect HTML tags 鈥?if present, skip MarkdownV2 and send as HTML.
+        # Inspired by github.com/ashaney 鈥?PR #1568.
         _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
 
         if _has_html:
             formatted = message
             send_parse_mode = ParseMode.HTML
         else:
-            # Reuse the gateway adapter's format_message for markdown→MarkdownV2
+            # Reuse the gateway adapter's format_message for markdown鈫扢arkdownV2
             try:
                 from gateway.platforms.telegram import TelegramAdapter
                 _adapter = TelegramAdapter.__new__(TelegramAdapter)
@@ -734,7 +750,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
     Media files are uploaded one-by-one via multipart/form-data after the
     text message is sent (same pattern as Telegram).
 
-    Forum channels (type 15) reject POST /messages — a thread post is created
+    Forum channels (type 15) reject POST /messages 鈥?a thread post is created
     automatically via POST /channels/{id}/threads.  Media files are uploaded
     as multipart attachments on the starter message of the new thread.
 
@@ -761,9 +777,9 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
             url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
         else:
             # Check if the target channel is a forum channel (type 15).
-            # Forum channels reject POST /messages — create a thread post instead.
-            # Three-layer detection: directory cache → process-local probe
-            # cache → GET /channels/{id} probe (with result memoized).
+            # Forum channels reject POST /messages 鈥?create a thread post instead.
+            # Three-layer detection: directory cache 鈫?process-local probe
+            # cache 鈫?GET /channels/{id} probe (with result memoized).
             _channel_type = None
             try:
                 from gateway.channel_directory import lookup_channel_type
@@ -822,7 +838,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                         form = aiohttp.FormData()
                         form.add_field("payload_json", payload_json, content_type="application/json")
 
-                        # Buffer file bytes up front — aiohttp's FormData can
+                        # Buffer file bytes up front 鈥?aiohttp's FormData can
                         # read lazily and we don't want handles closing under
                         # it on retry.
                         try:
@@ -841,7 +857,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                         except Exception as e:
                             return _error(_sanitize_error_text(f"Discord forum thread upload failed: {e}"))
                     else:
-                        # No media — simple JSON POST creates the thread with
+                        # No media 鈥?simple JSON POST creates the thread with
                         # just the text starter.
                         async with session.post(
                             thread_url,
@@ -1057,7 +1073,7 @@ async def _send_sms(auth_token, chat_id, message):
     if not account_sid or not auth_token or not from_number:
         return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
 
-    # Strip markdown — SMS renders it as literal characters
+    # Strip markdown 鈥?SMS renders it as literal characters
     message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
     message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
     message = re.sub(r"__(.+?)__", r"\1", message, flags=re.DOTALL)
@@ -1483,5 +1499,6 @@ registry.register(
     schema=SEND_MESSAGE_SCHEMA,
     handler=send_message_tool,
     check_fn=_check_send_message,
-    emoji="📨",
+    emoji="馃摠",
 )
+

@@ -143,8 +143,6 @@ class DrainSecretProvider(DashboardAuthProvider):
     name = "drain-secret"
     display_name = "Drain Control (service credential)"
     supports_token = True
-    # Service credential, not an interactive login: keeps it out of the login
-    # page, /auth/login, and the gate's verify/refresh loops.
     supports_session = False
 
     def __init__(self, *, secret: str, scope: str = "drain") -> None:

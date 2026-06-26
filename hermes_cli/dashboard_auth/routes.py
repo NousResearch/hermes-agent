@@ -151,7 +151,7 @@ async def login_page(request: Request) -> HTMLResponse:
 @router.get("/api/auth/providers", name="auth_providers")
 async def api_auth_providers() -> Any:
     # Advertise only interactive providers; a token-only credential (e.g. drain)
-    # is not a sign-in option. (Logout still uses list_providers() to revoke.)
+    # is not a sign-in option.
     providers = list_session_providers()
     if not providers:
         # Q13: fail-closed when zero providers are registered.
@@ -186,8 +186,6 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             status_code=404,
             detail=f"Unknown provider: {provider!r}",
         )
-    # A token-only provider has no login flow (start_login raises), so a
-    # hand-typed ?provider= must 404, not 500.
     if not getattr(p, "supports_session", True):
         raise HTTPException(
             status_code=404,

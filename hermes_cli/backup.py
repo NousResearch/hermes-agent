@@ -762,6 +762,15 @@ _QUICK_STATE_FILES = (
     "channel_directory.json",
     "channel_aliases.json",
     "processes.json",
+    # Per-profile user-created stores that live outside the git checkout and are
+    # therefore destroyed if the post-update CREATE TABLE IF NOT EXISTS runs
+    # against a missing file (issue #52889).  projects.db is always at
+    # $HERMES_HOME/projects.db (projects_db.projects_db_path).  kanban.db lives
+    # at the shared-root for the default profile ($HERMES_HOME/kanban.db); on
+    # non-root profiles its real path is outside HERMES_HOME and the entry is
+    # silently skipped — handled here best-effort, same as the pairing stores.
+    "projects.db",                      # per-profile project store
+    "kanban.db",                        # kanban board (default/root profile)
     # Pairing stores (generic + per-platform JSONs outside state.db)
     "pairing",                          # legacy location (gateway/pairing.py)
     "platforms/pairing",                # new location (gateway/pairing.py)

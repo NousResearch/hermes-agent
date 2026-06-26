@@ -1666,6 +1666,71 @@ class TestQuickSnapshot:
         # Cleanup the seeded escape source so the test is hermetic.
         escape_src.unlink()
 
+
+class TestQuickSnapshotProjectsKanban:
+    """Regression for #52889: projects.db / kanban.db must survive an upgrade.
+
+    Both are per-profile user-created stores outside the git checkout. If they
+    are not in the pre-update snapshot, the post-update ``CREATE TABLE IF NOT
+    EXISTS`` runs against a missing file and every project / board row is lost.
+    """
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        # Minimal critical file so the snapshot is non-empty.
+        (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
+
+        for name, table, row in (
+            ("projects.db", "projects", ("p1", "demo")),
+            ("kanban.db", "tasks", ("t1", "todo")),
+        ):
+            conn = sqlite3.connect(str(home / name))
+            conn.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY, data TEXT)")
+            conn.execute(f"INSERT INTO {table} VALUES (?, ?)", row)
+            conn.commit()
+            conn.close()
+        return home
+
+    def test_in_quick_state_files(self):
+        from hermes_cli.backup import _QUICK_STATE_FILES
+        assert "projects.db" in _QUICK_STATE_FILES
+        assert "kanban.db" in _QUICK_STATE_FILES
+
+    def test_projects_db_snapshotted(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        copy = hermes_home / "state-snapshots" / snap_id / "projects.db"
+        assert copy.exists()
+        conn = sqlite3.connect(str(copy))
+        rows = conn.execute("SELECT * FROM projects").fetchall()
+        conn.close()
+        assert rows == [("p1", "demo")]
+
+    def test_kanban_db_snapshotted(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        copy = hermes_home / "state-snapshots" / snap_id / "kanban.db"
+        assert copy.exists()
+
+    def test_restore_recreates_emptied_projects_db(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        # Simulate the upgrade wiping the store back to an empty schema.
+        conn = sqlite3.connect(str(hermes_home / "projects.db"))
+        conn.execute("DELETE FROM projects")
+        conn.commit()
+        conn.close()
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        conn = sqlite3.connect(str(hermes_home / "projects.db"))
+        rows = conn.execute("SELECT * FROM projects").fetchall()
+        conn.close()
+        assert rows == [("p1", "demo")]
+
+
 class TestPreUpdateBackup:
     """Tests for create_pre_update_backup — the auto-backup ``hermes update``
     runs before touching anything."""

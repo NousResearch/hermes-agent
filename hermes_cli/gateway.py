@@ -5,6 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import json
 import logging
 import os
 import shlex
@@ -723,6 +724,38 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         windows_detach_popen_kwargs,
     )
 
+    # On Windows the incoming ``run_argv`` leads with the venv's console
+    # ``python.exe`` (from ``get_python_path()``).  Respawning the gateway
+    # with that interpreter — even under CREATE_NO_WINDOW — leaves a
+    # persistent console window, because uv's venv launcher re-execs the
+    # base console interpreter, which allocates its own conhost.  Rewrite
+    # the argv to the windowless ``pythonw.exe`` (mirroring the clean-start
+    # ``_spawn_detached`` path) and capture the cwd + env overlay the base
+    # interpreter needs to resolve imports without the venv launcher.
+    # No-op on POSIX.  See gateway_windows.windowless_gateway_restart_spec.
+    respawn_cwd = ""
+    respawn_env_overlay: dict[str, str] = {}
+    if sys.platform == "win32":
+        try:
+            from hermes_cli.gateway_windows import (
+                windowless_gateway_restart_spec,
+            )
+
+            run_argv, respawn_cwd, respawn_env_overlay = (
+                windowless_gateway_restart_spec(list(run_argv))
+            )
+        except Exception:
+            # Best-effort: if the rewrite fails for any reason, fall back to
+            # the original argv.  A visible window is worse than nothing, but
+            # a failed respawn is worse still — keep the gateway coming back.
+            respawn_cwd = ""
+            respawn_env_overlay = {}
+
+    # Serialized as JSON literals embedded in the watcher source so the
+    # inner respawn can apply cwd= / env= without extra argv plumbing.
+    respawn_cwd_literal = json.dumps(respawn_cwd)
+    respawn_env_literal = json.dumps(respawn_env_overlay)
+
     watcher = textwrap.dedent(
         """
         import os
@@ -736,6 +769,8 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
 
         pid = int(sys.argv[1])
         cmd = sys.argv[2:]
+        _respawn_cwd = {respawn_cwd_literal}
+        _respawn_env_overlay = {respawn_env_literal}
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the
@@ -752,10 +787,18 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         # been spawned inside a job object (Electron/Tauri parent), and
         # without breakaway the respawned gateway would die when that job
         # tears down. See _subprocess_compat.windows_detach_flags().
-        _popen_kwargs = {
+        _popen_kwargs = {{
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
-        }
+        }}
+        # Anchor the respawned gateway at the stable working dir and overlay
+        # the env (VIRTUAL_ENV / PYTHONPATH / HERMES_HOME) the windowless
+        # base interpreter needs to import hermes_cli.  Empty on POSIX, where
+        # the venv python resolves imports without help.
+        if _respawn_cwd:
+            _popen_kwargs["cwd"] = _respawn_cwd
+        if _respawn_env_overlay:
+            _popen_kwargs["env"] = {{**os.environ, **_respawn_env_overlay}}
         if sys.platform == "win32":
             try:
                 _popen_kwargs["creationflags"] = windows_detach_flags()
@@ -772,7 +815,10 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
             _popen_kwargs["start_new_session"] = True
             subprocess.Popen(cmd, **_popen_kwargs)
         """
-    ).strip()
+    ).strip().format(
+        respawn_cwd_literal=respawn_cwd_literal,
+        respawn_env_literal=respawn_env_literal,
+    )
 
     watcher_argv = [
         sys.executable,

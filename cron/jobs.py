@@ -122,7 +122,7 @@ def _jobs_lock():
                     fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 elif msvcrt is not None:
                     getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
-            except (OSError, IOError) as e:
+            except OSError as e:
                 # Never let a locking failure take down cron writes — fall back to
                 # in-process-only protection (still held via _jobs_file_lock).
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
@@ -136,7 +136,7 @@ def _jobs_lock():
                             fcntl.flock(lock_fd, fcntl.LOCK_UN)
                         elif msvcrt is not None:
                             getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
-                    except (OSError, IOError):
+                    except OSError:
                         pass
                     finally:
                         lock_fd.close()

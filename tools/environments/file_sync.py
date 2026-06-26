@@ -292,7 +292,7 @@ class FileSyncManager:
         finally:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
+            except OSError:
                 pass
             lock_fd.close()
 

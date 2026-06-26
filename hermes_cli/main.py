@@ -4972,7 +4972,7 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
             with open(path, "rb") as f:
                 for chunk in iter(lambda: f.read(65536), b""):
                     h.update(chunk)
-        except (OSError, IOError):
+        except OSError:
             pass
         h.update(b"\0")
 

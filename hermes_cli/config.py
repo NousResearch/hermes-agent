@@ -795,7 +795,7 @@ def _is_container() -> bool:
             cgroup_content = f.read()
         if "docker" in cgroup_content or "lxc" in cgroup_content or "kubepods" in cgroup_content:
             return True
-    except (OSError, IOError):
+    except OSError:
         pass
     return False
 

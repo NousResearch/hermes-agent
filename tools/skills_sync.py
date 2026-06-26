@@ -88,7 +88,7 @@ def _read_manifest() -> Dict[str, str]:
                 # v1 format: plain name — empty hash triggers migration
                 result[line] = ""
         return result
-    except (OSError, IOError):
+    except OSError:
         return {}
 
 
@@ -209,7 +209,7 @@ def _dir_hash(directory: Path) -> str:
                 rel = fpath.relative_to(directory)
                 hasher.update(str(rel).encode("utf-8"))
                 hasher.update(fpath.read_bytes())
-    except (OSError, IOError):
+    except OSError:
         pass
     return hasher.hexdigest()
 
@@ -518,7 +518,7 @@ def sync_skills(quiet: bool = False) -> dict:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(_orphan), str(dest))
                 logger.info("Recovered orphaned skill backup: %s", _orphan)
-            except (OSError, IOError):
+            except OSError:
                 logger.warning(
                     "Could not recover orphaned skill backup %s", _orphan,
                     exc_info=True,
@@ -554,7 +554,7 @@ def sync_skills(quiet: bool = False) -> dict:
                     manifest[skill_name] = bundled_hash
                     if not quiet:
                         print(f"  + {skill_name}")
-            except (OSError, IOError) as e:
+            except OSError as e:
                 if not quiet:
                     print(f"  ! Failed to copy {skill_name}: {e}")
                 # Do NOT add to manifest — next sync should retry
@@ -603,9 +603,9 @@ def sync_skills(quiet: bool = False) -> dict:
                         # Remove backup after successful copy
                         try:
                             _rmtree_writable(backup)
-                        except (OSError, IOError):
+                        except OSError:
                             logger.debug("Could not remove backup %s", backup, exc_info=True)
-                    except (OSError, IOError):
+                    except OSError:
                         # Restore from backup. A partially-written dest must
                         # not shadow the user's copy or block the restore —
                         # clear it first, then move the backup home.
@@ -613,7 +613,7 @@ def sync_skills(quiet: bool = False) -> dict:
                             if dest.exists():
                                 try:
                                     _rmtree_writable(dest)
-                                except (OSError, IOError):
+                                except OSError:
                                     logger.warning(
                                         "Could not clear partial copy %s during restore",
                                         dest, exc_info=True,
@@ -621,7 +621,7 @@ def sync_skills(quiet: bool = False) -> dict:
                             if not dest.exists():
                                 shutil.move(str(backup), str(dest))
                         raise
-                except (OSError, IOError) as e:
+                except OSError as e:
                     if not quiet:
                         print(f"  ! Failed to update {skill_name}: {e}")
             else:
@@ -644,7 +644,7 @@ def sync_skills(quiet: bool = False) -> dict:
             try:
                 dest_desc.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(desc_md, dest_desc)
-            except (OSError, IOError) as e:
+            except OSError as e:
                 logger.debug("Could not copy %s: %s", desc_md, e)
 
     _write_manifest(manifest)
@@ -774,7 +774,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
             try:
                 _rmtree_writable(dest)
                 deleted_user_copy = True
-            except (OSError, IOError) as e:
+            except OSError as e:
                 return {
                     "ok": False,
                     "action": "not_reset",
@@ -1084,7 +1084,7 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
             continue
         try:
             _rmtree_writable(dest)
-        except (OSError, IOError) as e:
+        except OSError as e:
             skipped.append({"name": name, "reason": f"delete failed: {e}"})
             continue
         if name in manifest:

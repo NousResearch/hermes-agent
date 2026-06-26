@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { createContext, useContext, useMemo, useState } from 'react'
+import { createContext, useContext, useMemo, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -74,6 +74,29 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const currentReasoningEffort = useStore($currentReasoningEffort)
   const modelPresets = useStore($modelPresets)
   const visibleModels = useStore($visibleModels)
+
+  // A finger can't hover, so the per-model effort/fast submenu (which opens on
+  // hover on desktop) is unreachable on touch. Long-press a row to open it; a
+  // quick tap still selects the model. Desktop is untouched — touch events don't
+  // fire there. The submenu is made controlled so the long-press can drive it
+  // while hover/keyboard still work through onOpenChange.
+  const [openSub, setOpenSub] = useState<null | string>(null)
+  const longPressTimer = useRef<null | number>(null)
+  const longPressFired = useRef(false)
+  const cancelLongPress = () => {
+    if (longPressTimer.current !== null) {
+      window.clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
+    }
+  }
+  const beginLongPress = (key: string) => () => {
+    longPressFired.current = false
+    cancelLongPress()
+    longPressTimer.current = window.setTimeout(() => {
+      longPressFired.current = true
+      setOpenSub(key)
+    }, 450)
+  }
 
   const modelOptions = useQuery({
     queryKey: ['model-options', activeSessionId || 'global'],
@@ -256,7 +279,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // Clicking the row commits the model and closes the picker; the
                 // edit submenu (reasoning/fast) is reached by HOVER, so you can
                 // still tweak those without the click dismissing everything.
+                const subKey = `${group.provider.slug}:${family.id}`
                 const activate = () => {
+                  if (longPressFired.current) {
+                    longPressFired.current = false
+                    return // a long-press opened the effort submenu — don't select/close
+                  }
                   if (!isCurrent) {
                     void selectFamily(family, group.provider)
                   }
@@ -265,16 +293,25 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 }
 
                 return (
-                  <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
+                  <DropdownMenuSub
+                    key={subKey}
+                    onOpenChange={open => setOpenSub(open ? subKey : null)}
+                    open={openSub === subKey}
+                  >
                     <DropdownMenuSubTrigger
                       className={dropdownMenuRow}
                       hideChevron
                       onClick={activate}
+                      onContextMenu={event => event.preventDefault()}
                       onKeyDown={event => {
                         if (event.key === 'Enter' || event.key === ' ') {
                           activate()
                         }
                       }}
+                      onTouchCancel={cancelLongPress}
+                      onTouchEnd={cancelLongPress}
+                      onTouchMove={cancelLongPress}
+                      onTouchStart={beginLongPress(subKey)}
                     >
                       <span className="min-w-0 flex-1 truncate">
                         {name}

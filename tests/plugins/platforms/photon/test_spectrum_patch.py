@@ -64,7 +64,7 @@ def _tabify(src: str) -> str:
     return "\n".join(out)
 
 
-# A faithful, *executable* slice of spectrum-ts 7.x's iMessage inbound mapper:
+# A faithful, *executable* slice of spectrum-ts 8.x's iMessage inbound mapper:
 # the two functions the patch rewrites (`rebuildFromAppleMessage` for
 # `space.getMessage`, `toInboundMessages` for the live stream), plus stubs of
 # the helpers they close over. Mirrors the published shape — tab-indented (via
@@ -77,9 +77,6 @@ const asText = (text) => ({ type: "text", text });
 const asCustom = (message) => ({ type: "custom" });
 const asProviderGroup = (items) => ({ type: "group", items });
 const messageAttachments = (message) => message.content.attachments ?? [];
-const getBalloonBundleId = () => "";
-const URL_BALLOON_BUNDLE_ID = "url-balloon";
-const toRichlinkMessage = (message, base, id) => ({ ...base, id, content: { type: "richlink" } });
 const buildMessageBase = (message, chatGuidHint, timestamp, phone) => ({ direction: "inbound", sender: { id: "s" }, space: { id: "sp", type: "dm", phone }, timestamp });
 const buildAttachmentMessage = async (client, base, info, id, partIndex, parentId) => {
   const msg = { ...base, id, content: { type: "attachment", id: info.guid }, partIndex };
@@ -109,7 +106,6 @@ const rebuildFromAppleMessage = async (client, message, phone, chatGuidHint) => 
       content: asProviderGroup(items)
     };
   }
-  if (getBalloonBundleId(message) === URL_BALLOON_BUNDLE_ID) return toRichlinkMessage(message, base, messageGuidStr);
   const text = message.content.text;
   return {
     ...base,
@@ -120,11 +116,6 @@ const rebuildFromAppleMessage = async (client, message, phone, chatGuidHint) => 
 const toInboundMessages = async (client, cache, event, phone) => {
   const base = buildMessageBase(event.message, event.chatGuid, event.occurredAt, phone);
   const messageGuidStr = event.message.guid;
-  if (getBalloonBundleId(event.message) === URL_BALLOON_BUNDLE_ID) {
-    const msg = toRichlinkMessage(event.message, base, messageGuidStr);
-    cacheMessage(cache, msg);
-    return [msg];
-  }
   const attachments = messageAttachments(event.message);
   if (attachments.length === 1) {
     const info = attachments[0];
@@ -170,7 +161,7 @@ def _write_fixture(tmp_path: Path) -> Path:
 
 
 def test_spectrum_patch_rewrites_the_imessage_mapper(tmp_path: Path) -> None:
-    """The dependency patch must apply to the 7.x `@spectrum-ts/imessage` chunk
+    """The dependency patch must apply to the 8.x `@spectrum-ts/imessage` chunk
     and rewrite both inbound mappers to thread text through attachment bubbles."""
     chunk = _write_fixture(tmp_path)
 

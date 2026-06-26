@@ -162,7 +162,8 @@ All env vars are documented in `plugin.yaml`. The most important:
 (no `^` range) and installed with `npm ci`, because the SDK ships breaking
 majors (v2 removed `defineFusorPlatform`; v3 reworked space construction; v5
 split it into `@spectrum-ts/*` packages, with `spectrum-ts` as the umbrella
-that re-exports them). A floating range or `npm install spectrum-ts@latest`
+that re-exports them; v8 made `richlink` outbound-only, so inbound rich links
+now arrive as plain `text`). A floating range or `npm install spectrum-ts@latest`
 would let a breaking release take down fresh setups silently. Upgrades are
 deliberate:
 

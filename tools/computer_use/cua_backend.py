@@ -433,6 +433,37 @@ def _image_dimensions_from_bytes(raw: bytes) -> Tuple[int, int]:
     return 0, 0
 
 
+def _dimensions_from_gws_structured(sc: Dict[str, Any]) -> Tuple[int, int]:
+    """Logical window/screenshot size when PNG bytes are missing (SCK asleep)."""
+    for wkey, hkey in (
+        ("screenshot_width", "screenshot_height"),
+        ("width", "height"),
+    ):
+        try:
+            w = int(sc.get(wkey) or 0)
+            h = int(sc.get(hkey) or 0)
+        except (TypeError, ValueError):
+            continue
+        if w > 0 and h > 0:
+            return w, h
+    return 0, 0
+
+
+def _dimensions_from_element_bounds(elements: List[UIElement]) -> Tuple[int, int]:
+    """Infer a logical canvas size from AX element frames."""
+    max_x = 0
+    max_y = 0
+    for element in elements:
+        x, y, w, h = element.bounds
+        if w <= 0 or h <= 0:
+            continue
+        max_x = max(max_x, x + w)
+        max_y = max(max_y, y + h)
+    if max_x > 0 and max_y > 0:
+        return max_x, max_y
+    return 0, 0
+
+
 def _split_tree_text(full_text: str) -> Tuple[str, str]:
     """Split get_window_state text into (summary_line, tree_markdown)."""
     lines = full_text.split("\n", 1)
@@ -1043,8 +1074,17 @@ class CuaDriverBackend(ComputerUseBackend):
         windows.sort(key=lambda w: w["z_index"])
 
         if not windows:
-            return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
-                                 elements=[], app="", window_title="", png_bytes_len=0)
+            return CaptureResult(
+                mode=mode, width=0, height=0, png_b64=None,
+                elements=[], app="",
+                window_title=(
+                    "<no on-screen windows returned by cua-driver list_windows; "
+                    "wake the built-in display (ScreenCaptureKit often reports "
+                    "display_count=0 while asleep), confirm with "
+                    "`hermes computer-use doctor`, then retry>"
+                ),
+                png_bytes_len=0,
+            )
 
         # Filter by app name (case-insensitive substring) if requested.
         # When the filter matches nothing, surface that explicitly instead of
@@ -1121,6 +1161,7 @@ class CuaDriverBackend(ComputerUseBackend):
         elements: List[UIElement] = []
         width = height = 0
         window_title = ""
+        gws_structured: Dict[str, Any] = {}
 
         if mode == "vision":
             # Plain screenshot, no AX walk. cua-driver dropped the standalone
@@ -1168,6 +1209,7 @@ class CuaDriverBackend(ComputerUseBackend):
                     },
                 )
                 png_b64, image_mime_type = _image_from_tool_result(gws_out)
+                gws_structured = gws_out.get("structuredContent") or {}
                 # Still grab the window title — it's cheap and useful in the
                 # vision response — but deliberately leave `elements` empty so
                 # vision stays free of AX-tree noise.
@@ -1187,6 +1229,7 @@ class CuaDriverBackend(ComputerUseBackend):
                 },
             )
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
+            gws_structured = gws_out.get("structuredContent") or {}
             summary, tree = _split_tree_text(text)
 
             # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
@@ -1235,6 +1278,21 @@ class CuaDriverBackend(ComputerUseBackend):
                     height = detected_height
             except Exception:
                 png_bytes_len = len(png_b64) * 3 // 4
+
+        if not png_b64 and (width == 0 or height == 0):
+            inferred_w, inferred_h = _dimensions_from_gws_structured(gws_structured)
+            if inferred_w <= 0 or inferred_h <= 0:
+                inferred_w, inferred_h = _dimensions_from_element_bounds(elements)
+            if (inferred_w <= 0 or inferred_h <= 0) and elements:
+                try:
+                    screen = self.get_screen_size()
+                    inferred_w = int(screen.get("width") or 0)
+                    inferred_h = int(screen.get("height") or 0)
+                except Exception:
+                    inferred_w = inferred_h = 0
+            if inferred_w > 0 and inferred_h > 0:
+                width = inferred_w
+                height = inferred_h
 
         return CaptureResult(
             mode=mode,

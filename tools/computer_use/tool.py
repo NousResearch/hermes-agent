@@ -574,6 +574,13 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             f"is below the {_MIN_PROVIDER_IMAGE_DIMENSION}x{_MIN_PROVIDER_IMAGE_DIMENSION} "
             "provider minimum)"
         )
+    elif not cap.png_b64 and total_elements > 0 and cap.mode in ("som", "vision"):
+        summary_lines.append(
+            "  (screenshot unavailable: ScreenCaptureKit often omits PNG when "
+            "display_count=0 or the built-in panel is asleep — run "
+            "`hermes computer-use doctor` and wake the display; "
+            "element-index actions still work)"
+        )
     summary = "\n".join(summary_lines)
 
     if cap.png_b64 and cap.mode != "ax" and not image_too_small:
@@ -662,6 +669,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     }
     if truncated_elements:
         payload["truncated_elements"] = truncated_elements
+    if not cap.png_b64 and total_elements > 0 and cap.mode in ("som", "vision"):
+        payload["screenshot_unavailable"] = True
     return json.dumps(payload)
 
 

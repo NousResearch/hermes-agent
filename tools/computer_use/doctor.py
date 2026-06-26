@@ -159,6 +159,49 @@ def _drive_health_report(
     )
 
 
+def _apply_display_count_guard(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Treat ScreenCaptureKit display_count=0 as degraded even when cua-driver passes.
+
+    RCA: permissions can be granted while the built-in panel is asleep, so
+    screenshots are missing and captures report 0×0. Hermes doctor should not
+    read overall=ok in that state.
+    """
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        return report
+
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        if check.get("name") != "screen_capture_capability":
+            continue
+        data = check.get("data")
+        if not isinstance(data, dict):
+            continue
+        try:
+            display_count = int(data.get("display_count", -1))
+        except (TypeError, ValueError):
+            display_count = -1
+        if display_count != 0:
+            break
+
+        check["status"] = "fail"
+        check["message"] = (
+            "ScreenCaptureKit reports 0 shareable displays — screenshots will "
+            "be missing and computer_use capture may show 0×0. Wake the built-in "
+            "display or attach a shareable monitor."
+        )
+        check["hint"] = (
+            "Run: system_profiler SPDisplaysDataType | grep 'Display Asleep'; "
+            "wake with trackpad/key, then re-run `hermes computer-use doctor`."
+        )
+        if report.get("overall") == "ok":
+            report["overall"] = "degraded"
+        break
+
+    return report
+
+
 def _print_text_report(report: Dict[str, Any], color: bool) -> None:
     """Render the report in the same style as `cua-driver call health_report`
     would (one line per check + a summary footer)."""
@@ -253,6 +296,7 @@ def run_doctor(
 
     try:
         report = _drive_health_report(binary, include=include, skip=skip)
+        report = _apply_display_count_guard(report)
     except RuntimeError as e:
         print(f"cua-driver health_report failed: {e}", file=sys.stderr)
         return 2

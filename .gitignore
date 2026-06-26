@@ -146,3 +146,14 @@ _artifacts/
 *.log
 vendor/openclaw-mirror/AI-Scientist
 vendor/openclaw-mirror/ShinkaEvolve
+
+# Fork/local work artifacts — do not commit
+.specstory/
+venv.corrupt.bak/
+tmp_social_sync.py
+tmp_social_sync_output.json
+_diag_search.py
+latest_vrchat.png
+ohayo.wav
+ohayo_tweet.mp4
+temp_pic.png

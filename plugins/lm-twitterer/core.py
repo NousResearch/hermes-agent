@@ -833,7 +833,318 @@ def _flatten_tweet_items(items: Iterable[Any]) -> dict[str, Any]:
     return found
 
 
-def _fetch_thread(tweet_api: Any, focal_tweet_id: str) -> list[dict[str, str]]:
+def _graphql_tweet_item(
+    result: dict[str, Any],
+    *,
+    relationship_perspectives: dict[str, Any] | None = None,
+) -> Any:
+    """Wrap a raw GraphQL tweet result into an attribute-accessible object.
+
+    The returned object exposes the same attribute access patterns
+    (``.tweet.rest_id``, ``.tweet.legacy.full_text``, ``.user.legacy.screen_name``,
+    ``.user.relationship_perspectives.followed_by``) that ``_tweet_id``,
+    ``_tweet_text``, ``_screen_name``, and ``_followed_by_bot`` expect.
+    """
+    from types import SimpleNamespace
+
+    legacy = result.get("legacy") or {}
+    core = result.get("core") or {}
+    user_result = (core.get("user_results") or {}).get("result") or {}
+    user_legacy = user_result.get("legacy") or {}
+    user_core = user_result.get("core") or {}
+
+    tweet = SimpleNamespace()
+    tweet.rest_id = str(result.get("rest_id") or "")
+    tweet.legacy = SimpleNamespace()
+    tweet.legacy.full_text = str(legacy.get("full_text") or "")
+    tweet.legacy.in_reply_to_status_id_str = legacy.get("in_reply_to_status_id_str")
+    for k, v in legacy.items():
+        if not str(k).endswith("?"):
+            setattr(tweet.legacy, k, v)
+
+    user = SimpleNamespace()
+    user.legacy = SimpleNamespace()
+    user.legacy.screen_name = str(user_legacy.get("screen_name") or "")
+    for k, v in user_legacy.items():
+        if not str(k).endswith("?"):
+            setattr(user.legacy, k, v)
+    user.core = SimpleNamespace()
+    user.core.screen_name = str(user_core.get("screen_name") or "")
+    for k, v in user_core.items():
+        if not str(k).endswith("?"):
+            setattr(user.core, k, v)
+
+    rp = dict(relationship_perspectives or {})
+    if not rp:
+        rp = user_result.get("relationship_perspectives") or {}
+    user.relationship_perspectives = SimpleNamespace()
+    user.relationship_perspectives.followed_by = rp.get("followed_by")
+    user.relationship_perspectives.following = rp.get("following")
+
+    item = SimpleNamespace()
+    item.tweet = tweet
+    item.user = user
+    item.replies = []
+    return item
+
+
+def _graphql_tweet_detail_results(cfg: "Settings", focal_tweet_id: str) -> dict[str, Any]:
+    """Fetch tweet detail via GraphQL TweetDetail, return {tweet_id: item} map."""
+    from types import SimpleNamespace
+
+    data = _placeholder_graphql_get(
+        cfg,
+        "TweetDetail",
+        {
+            "focalTweetId": str(focal_tweet_id),
+            "cursor": None,
+            "referrer": None,
+            "controller_data": None,
+            "with_rux_injections": False,
+            "rankingMode": "Relevance",
+            "includePromotedContent": True,
+            "withCommunity": True,
+            "withQuickPromoteEligibilityTweetFields": True,
+            "withBirdwatchNotes": False,
+            "withVoice": True,
+            "withV2Timeline": True,
+        },
+    )
+    instructions = (
+        (data.get("data") or {})
+        .get("threaded_conversation_with_injections_v2", {})
+        .get("instructions", [])
+    )
+    items: list[Any] = []
+    for instr in instructions:
+        if instr.get("type") == "TimelineAddEntries":
+            for entry in instr.get("entries") or []:
+                content = entry.get("content") or {}
+                item_content = content.get("itemContent") or {}
+                tweet_result = (item_content.get("tweet_results") or {}).get("result") or {}
+                if tweet_result and isinstance(tweet_result, dict):
+                    items.append(_graphql_tweet_item(tweet_result))
+                # Also unwrap entries nested as conversationThread
+                for sub_entry in content.get("items") or []:
+                    sub_item = sub_entry.get("item") or {}
+                    sub_content = sub_item.get("itemContent") or {}
+                    sub_result = (sub_content.get("tweet_results") or {}).get("result") or {}
+                    if sub_result and isinstance(sub_result, dict):
+                        items.append(_graphql_tweet_item(sub_result))
+    id_map = _flatten_tweet_items(items)
+    return id_map
+
+
+def _graphql_home_timeline_items(
+    cfg: "Settings", count: int = 20
+) -> list[Any]:
+    """Fetch the authenticated user's home timeline via HomeLatestTimeline GraphQL.
+
+    Returns a list of ``_graphql_tweet_item`` results. Use this as a fallback
+    when SearchTimeline is unavailable.
+    """
+    from types import SimpleNamespace
+
+    variables = {"count": max(1, min(int(count or 20), 100)), "includePromotedContent": False}
+    data = _placeholder_graphql_get(cfg, "HomeLatestTimeline", variables)
+    home = (data.get("data") or {}).get("home") or {}
+    # HomeLatestTimeline uses home_timeline_urt (not home_timeline_u) as of mid-2026
+    instructions = (
+        home.get("home_timeline_urt", {})
+        .get("instructions", [])
+    ) or (
+        home.get("home_timeline_u", {})
+        .get("timeline", {})
+        .get("instructions", [])
+    ) or (
+        home.get("home_timeline_u", {})
+        .get("instructions", [])
+    ) or (
+        home.get("instructions", [])
+    ) or []
+    items: list[Any] = []
+    for instr in instructions:
+        if instr.get("type") == "TimelineAddEntries":
+            for entry in instr.get("entries") or []:
+                content = entry.get("content") or {}
+                item_content = content.get("itemContent") or {}
+                tweet_result = (item_content.get("tweet_results") or {}).get("result") or {}
+                if tweet_result and isinstance(tweet_result, dict):
+                    items.append(_graphql_tweet_item(tweet_result))
+                # Nested conversation module
+                for module_entry in content.get("items") or []:
+                    module_item = module_entry.get("item") or {}
+                    module_content = module_item.get("itemContent") or {}
+                    module_result = (
+                        (module_content.get("tweet_results") or {}).get("result") or {}
+                    )
+                    if module_result and isinstance(module_result, dict):
+                        items.append(_graphql_tweet_item(module_result))
+    return items
+
+
+def _graphql_search_timeline_items(
+    cfg: "Settings", raw_query: str, count: int = 20
+) -> Any:
+    """Search via GraphQL SearchTimeline and return a structure compatible with
+    ``_flatten_tweet_items`` (a ``SimpleNamespace`` with ``.data.data`` iterable).
+
+    Falls back to ``HomeLatestTimeline`` when SearchTimeline returns 404 (X has
+    deprecated the SearchTimeline query endpoint as of mid-2026).
+    """
+    from types import SimpleNamespace
+
+    variables = {
+        "rawQuery": str(raw_query),
+        "count": max(1, min(int(count or 20), 100)),
+        "product": "Latest",
+        "querySource": "typed_query",
+    }
+    try:
+        data = _placeholder_graphql_get(cfg, "SearchTimeline", variables)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            # SearchTimeline is deprecated — fall back to HomeLatestTimeline
+            all_items = _graphql_home_timeline_items(cfg, count=count)
+            # Extract the @ mention target from the raw query
+            mention_target = (raw_query or "").strip().lstrip("@").lower()
+            filtered = [
+                item for item in all_items
+                if mention_target and f"@{mention_target}" in _tweet_text(item).lower()
+            ]
+            result = SimpleNamespace()
+            result.data = SimpleNamespace()
+            result.data.data = filtered[:count]
+            return result
+        raise
+    instructions = (
+        (data.get("data") or {})
+        .get("search_by_raw_query", {})
+        .get("search_timeline", {})
+        .get("timeline", {})
+        .get("instructions", [])
+    )
+    items: list[Any] = []
+    for instr in instructions:
+        if instr.get("type") == "TimelineAddEntries":
+            for entry in instr.get("entries") or []:
+                content = entry.get("content") or {}
+                item_content = content.get("itemContent") or {}
+                tweet_result = (item_content.get("tweet_results") or {}).get("result") or {}
+                if tweet_result and isinstance(tweet_result, dict):
+                    # Pass relationship_perspectives if available at entry level
+                    rp = (item_content.get("tweet_results") or {}).get("result", {}).get("relationship_perspectives")
+                    items.append(
+                        _graphql_tweet_item(
+                            tweet_result,
+                            relationship_perspectives=rp,
+                        )
+                    )
+                # Some timeline entries nest tweets inside a conversation module
+                for module_entry in content.get("items") or []:
+                    module_item = module_entry.get("item") or {}
+                    module_content = module_item.get("itemContent") or {}
+                    module_result = (
+                        (module_content.get("tweet_results") or {}).get("result") or {}
+                    )
+                    if module_result and isinstance(module_result, dict):
+                        items.append(_graphql_tweet_item(module_result))
+    result = SimpleNamespace()
+    result.data = SimpleNamespace()
+    result.data.data = items
+    return result
+
+
+def _graphql_create_tweet(
+    cfg: "Settings",
+    *,
+    tweet_text: str,
+    in_reply_to_tweet_id: str | None = None,
+    media_ids: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Create a tweet via direct GraphQL POST, avoiding twitter-openapi client bootstrap.
+
+    Returns the raw JSON dict from the GraphQL endpoint.  Use ``_tweet_id_from_mapping``
+    to extract the created tweet id.
+    """
+    from twitter_openapi_python import TwitterOpenapiPython
+
+    client_meta = TwitterOpenapiPython()
+    with urllib.request.urlopen(
+        client_meta.placeholder_url.format(hash=client_meta.hash), timeout=30
+    ) as resp:
+        placeholder = json.loads(resp.read().decode("utf-8", errors="replace"))
+    flags = placeholder.get("CreateTweet") or {}
+    query_id = str(flags.get("queryId") or "").strip()
+    if not query_id:
+        raise RuntimeError("Could not resolve CreateTweet query id")
+
+    merged_variables: dict[str, Any] = _strip_optional_placeholder_keys(
+        flags.get("variables") or {}
+    )
+    features: dict[str, Any] = _strip_optional_placeholder_keys(
+        flags.get("features") or {}
+    )
+    merged_variables["tweet_text"] = tweet_text
+    merged_variables.pop("attachment_url", None)
+    merged_variables.pop("reply", None)
+    if in_reply_to_tweet_id:
+        merged_variables["reply"] = {
+            "in_reply_to_tweet_id": str(in_reply_to_tweet_id),
+            "exclude_reply_user_ids": [],
+        }
+    mid_list = [str(mid) for mid in (media_ids or []) if str(mid).strip()]
+    if mid_list:
+        merged_variables["media"] = {
+            "media_entities": [
+                {"media_id": mid, "tagged_users": []} for mid in mid_list
+            ],
+            "possibly_sensitive": False,
+        }
+
+    body = json.dumps(
+        {
+            "queryId": query_id,
+            "variables": merged_variables,
+            "features": features,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    request = urllib.request.Request(
+        f"https://x.com/i/api/graphql/{query_id}/CreateTweet",
+        data=body.encode("utf-8"),
+        headers=_twitter_web_headers(cfg, content_type="application/json"),
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+    return payload
+
+
+def _fetch_thread(
+    tweet_api: Any, focal_tweet_id: str, cfg: "Settings | None" = None
+) -> list[dict[str, str]]:
+    if cfg is not None:
+        # GraphQL path — avoids the fragile twitter-openapi client bootstrap
+        id_map = _graphql_tweet_detail_results(cfg, focal_tweet_id)
+        chain: list[dict[str, str]] = []
+        current_id = str(focal_tweet_id)
+        seen: set[str] = set()
+        while current_id and current_id in id_map and current_id not in seen:
+            seen.add(current_id)
+            item = id_map[current_id]
+            chain.append(
+                {
+                    "tweet_id": current_id,
+                    "username": _screen_name(item),
+                    "text": _tweet_text(item),
+                }
+            )
+            current_id = _parent_id(item)
+        chain.reverse()
+        return chain
+    # Old path via twitter-openapi client object
     response = tweet_api.get_tweet_detail(focal_tweet_id=focal_tweet_id)
     id_map = _flatten_tweet_items(response.data.data)
     chain: list[dict[str, str]] = []
@@ -1292,15 +1603,12 @@ def reply_mentions(
     if not whitelist:
         return {"ok": False, "error": f"Whitelist is empty: {cfg.whitelist_file}"}
 
-    client = _twitter_client(cfg)
-    tweet_api = client.get_tweet_api()
-    post_api = client.get_post_api()
-    response = tweet_api.get_search_timeline(
+    search_result = _graphql_search_timeline_items(
+        cfg,
         raw_query=f"@{cfg.bot_screen_name}",
-        product="Latest",
-        count=max(1, min(int(count or 20), 100)),
+        count=count or 20,
     )
-    mentions = _flatten_tweet_items(response.data.data)
+    mentions = _flatten_tweet_items(search_result.data.data)
     replied_ids = load_replied_ids(cfg)
     logs: list[dict[str, Any]] = []
     generated_replies = 0
@@ -1345,7 +1653,7 @@ def reply_mentions(
             )
             break
         try:
-            thread = _fetch_thread(tweet_api, tweet_id)
+            thread = _fetch_thread(None, tweet_id, cfg=cfg)
             thread_text = _format_thread(thread)
             reply_text = generate_reply_text(thread_text, cfg)
             generated_replies += 1
@@ -1369,8 +1677,8 @@ def reply_mentions(
             continue
 
         try:
-            created = _safe_post_create_tweet(
-                post_api,
+            created = _graphql_create_tweet(
+                cfg,
                 tweet_text=reply_text,
                 in_reply_to_tweet_id=tweet_id,
             )
@@ -1408,13 +1716,12 @@ def mention_candidates(
     if not cfg.bot_screen_name:
         return {"ok": False, "error": "LM_TWITTERER_BOT_SCREEN_NAME is not set"}
 
-    client = _twitter_client(cfg)
-    response = client.get_tweet_api().get_search_timeline(
+    search_result = _graphql_search_timeline_items(
+        cfg,
         raw_query=f"@{cfg.bot_screen_name}",
-        product="Latest",
-        count=max(1, min(int(count or 20), 100)),
+        count=count or 20,
     )
-    mentions = _flatten_tweet_items(response.data.data)
+    mentions = _flatten_tweet_items(search_result.data.data)
     whitelist = load_whitelist(cfg)
     replied_ids = load_replied_ids(cfg)
     max_chars = max(40, min(int(max_text_chars or 180), 1000))

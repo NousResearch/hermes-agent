@@ -3431,11 +3431,14 @@ def generate_launchd_plist() -> str:
     if profile_arg:
         for part in profile_arg.split():
             prog_args.append(f"<string>{part}</string>")
+    # launchd owns the service lifecycle. Do NOT pass --replace here:
+    # repeated launchctl kickstart/bootstrap calls must be idempotent, not make
+    # each supervised child SIGTERM the previous gateway and enter a drain loop.
+    # Windows Scheduled Tasks already follow this rule (gateway_windows.py).
     prog_args.extend(
         [
             "<string>gateway</string>",
             "<string>run</string>",
-            "<string>--replace</string>",
         ]
     )
     prog_args_xml = "\n        ".join(prog_args)
@@ -3476,7 +3479,13 @@ def generate_launchd_plist() -> str:
     
     <key>KeepAlive</key>
     <true/>
-    
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>ExitTimeout</key>
+    <integer>200</integer>
+
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     

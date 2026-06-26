@@ -82,15 +82,7 @@ export interface PetDraft {
   dataUri: string
 }
 
-export type PetGenStatus =
-  | 'idle'
-  | 'generating'
-  | 'ready'
-  | 'hatching'
-  | 'preview'
-  | 'adopting'
-  | 'error'
-  | 'stale'
+export type PetGenStatus = 'idle' | 'generating' | 'ready' | 'hatching' | 'preview' | 'adopting' | 'error' | 'stale'
 
 /** Live hatch step for the egg screen — which row is being drawn, then compose/save. */
 export interface PetHatchStage {
@@ -410,9 +402,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
         return
       }
 
-      $petGenDrafts.set(
-        [...current, { index: draft.index, dataUri: draft.dataUri }].sort((a, b) => a.index - b.index)
-      )
+      $petGenDrafts.set([...current, { index: draft.index, dataUri: draft.dataUri }].sort((a, b) => a.index - b.index))
     }) ?? (() => {})
 
   try {

@@ -14,6 +14,7 @@ export const creditsCommands: SlashCommand[] = [
           ctx.guarded<CreditsViewResponse>(view => {
             if (!view.logged_in) {
               ctx.transcript.sys('💳 Not logged into Nous Portal — run /portal to log in.')
+
               return
             }
 

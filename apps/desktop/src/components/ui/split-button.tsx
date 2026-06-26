@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { cn } from '@/lib/utils'
 
-import type { buttonVariants } from './button';
+import type { buttonVariants } from './button'
 import { Button } from './button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './dropdown-menu'
 

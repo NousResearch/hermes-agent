@@ -10,7 +10,13 @@ const UPPER_HALF = '▀'
 const LOWER_HALF = '▄'
 
 const hex = (r: number, g: number, b: number) =>
-  `#${[r, g, b].map(v => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('')}`
+  `#${[r, g, b]
+    .map(v =>
+      Math.max(0, Math.min(255, v | 0))
+        .toString(16)
+        .padStart(2, '0')
+    )
+    .join('')}`
 
 /**
  * Renders one petdex frame as truecolor half-blocks using native Ink color
@@ -70,13 +76,7 @@ export const PetSprite = memo(function PetSprite({ grid }: { grid: PetGrid }) {
  * cells. Truecolor-only — the color must reach the terminal verbatim for the
  * id to decode, which Ghostty/kitty support.
  */
-export const PetKitty = memo(function PetKitty({
-  color,
-  placeholder
-}: {
-  color: string
-  placeholder: string[]
-}) {
+export const PetKitty = memo(function PetKitty({ color, placeholder }: { color: string; placeholder: string[] }) {
   if (!placeholder.length) {
     return null
   }

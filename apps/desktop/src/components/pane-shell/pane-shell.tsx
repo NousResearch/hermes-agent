@@ -264,7 +264,13 @@ export function PaneShell({ children, className, style }: PaneShellProps) {
       tracks.push(track)
       cssVars[`--pane-${pane.id}-width`] = track
       const gridRow = open && paneSide === bottomRailSide ? '1 / 2' : '1 / -1'
-      paneById.set(pane.id, { open, side: paneSide, gridColumn: `${column} / ${column + 1}`, gridRow, bottomRow: false })
+      paneById.set(pane.id, {
+        open,
+        side: paneSide,
+        gridColumn: `${column} / ${column + 1}`,
+        gridRow,
+        bottomRow: false
+      })
       column++
     }
 
@@ -282,7 +288,13 @@ export function PaneShell({ children, className, style }: PaneShellProps) {
     // Place every bottom-row pane: span its rail's columns on the second row.
     for (const pane of bottomRowPanes) {
       const gridColumn = pane.side === 'left' ? `1 / ${mainColumn}` : `${mainColumn + 1} / -1`
-      paneById.set(pane.id, { open: pane === activeBottomRow, side: pane.side, gridColumn, gridRow: '2 / 3', bottomRow: true })
+      paneById.set(pane.id, {
+        open: pane === activeBottomRow,
+        side: pane.side,
+        gridColumn,
+        gridRow: '2 / 3',
+        bottomRow: true
+      })
     }
 
     // Always emit explicit rows so `grid-row: 1 / -1` (full-height) resolves
@@ -292,7 +304,13 @@ export function PaneShell({ children, className, style }: PaneShellProps) {
       ? `minmax(0,1fr) ${heightTrackForPane(activeBottomRow, paneStates)}`
       : 'minmax(0,1fr)'
 
-    return { cssVars, gridTemplate: tracks.join(' '), gridTemplateRows, mainColumn, paneById } satisfies PaneShellContextValue & {
+    return {
+      cssVars,
+      gridTemplate: tracks.join(' '),
+      gridTemplateRows,
+      mainColumn,
+      paneById
+    } satisfies PaneShellContextValue & {
       cssVars: Record<string, string>
       gridTemplate: string
       gridTemplateRows: string
@@ -349,6 +367,7 @@ export function Pane({
   // hover/focus instead of hiding them. Honors any persisted resize width.
   const overlayActive = !open && hoverReveal && !disabled
   const override = resizable ? paneStates[id]?.widthOverride : undefined
+
   // Overlay width: an explicit `overlayWidth` (e.g. min width on mobile) wins,
   // else the persisted resize override, else the docked width.
   const overlayWidth =

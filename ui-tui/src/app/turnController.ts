@@ -772,7 +772,13 @@ class TurnController {
             done?.verboseArgs,
             error || resultText || summary || ''
           )
-        : buildToolTrailLine(name, done?.context || '', Boolean(error), error || summary || '', duration ?? fallbackDuration)
+        : buildToolTrailLine(
+            name,
+            done?.context || '',
+            Boolean(error),
+            error || summary || '',
+            duration ?? fallbackDuration
+          )
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -915,9 +921,11 @@ class TurnController {
     // sticky until the policy clears them. The Python `active` latch retains the key,
     // so a yielded notice won't re-fire on the next turn.
     const yieldingNoticeKey = getUiState().notice?.key
+
     if (yieldingNoticeKey === 'credits.usage' || yieldingNoticeKey === 'credits.grant_spent') {
       this.clearNotice(yieldingNoticeKey)
     }
+
     patchUiState({ busy: true })
     patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
   }

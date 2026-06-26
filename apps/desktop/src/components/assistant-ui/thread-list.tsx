@@ -1,7 +1,7 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
 import {
-  type CSSProperties,
   type ComponentProps,
+  type CSSProperties,
   type FC,
   memo,
   type ReactNode,
@@ -145,6 +145,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // sticky user bubble falls back to its ~4px default and slides under the OS
   // traffic lights.
   const secondaryTitlebarGap = 'calc(var(--titlebar-height) + 0.75rem)'
+
   const threadContentTopPad = secondaryWindow
     ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
     : 'pt-[calc(var(--titlebar-height)-0.5rem)]'

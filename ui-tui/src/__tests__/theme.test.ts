@@ -220,10 +220,13 @@ describe('fromSkin', () => {
   it('maps completion meta background colors from skins', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 
-    const theme = fromSkin({
-      completion_menu_meta_bg: '#111111',
-      completion_menu_meta_current_bg: '#222222'
-    }, {})
+    const theme = fromSkin(
+      {
+        completion_menu_meta_bg: '#111111',
+        completion_menu_meta_current_bg: '#222222'
+      },
+      {}
+    )
 
     expect(theme.color.completionMetaBg).toBe('#111111')
     expect(theme.color.completionMetaCurrentBg).toBe('#222222')
@@ -263,14 +266,17 @@ describe('fromSkin', () => {
   it('normalizes non-banner foregrounds on light Apple Terminal', async () => {
     const { fromSkin } = await importThemeWithEnv({ TERM_PROGRAM: 'Apple_Terminal' })
 
-    const theme = fromSkin({
-      banner_accent: '#FFBF00',
-      banner_border: '#CD7F32',
-      banner_dim: '#B8860B',
-      banner_text: '#FFF8DC',
-      banner_title: '#FFD700',
-      prompt: '#FFF8DC'
-    }, {})
+    const theme = fromSkin(
+      {
+        banner_accent: '#FFBF00',
+        banner_border: '#CD7F32',
+        banner_dim: '#B8860B',
+        banner_text: '#FFF8DC',
+        banner_title: '#FFD700',
+        prompt: '#FFF8DC'
+      },
+      {}
+    )
 
     expect(theme.color.primary).toBe('#FFD700')
     expect(theme.color.accent).toBe('#FFBF00')

@@ -86,10 +86,8 @@ async function scanGitRepos(roots, options = {}) {
     await mapLimit(subdirs, MAX_CONCURRENCY, sub => walk(sub, depth + 1))
   }
 
-  await mapLimit(
-    searchRoots.map(root => String(root || '').trim()).filter(Boolean),
-    MAX_CONCURRENCY,
-    root => walk(root, 0)
+  await mapLimit(searchRoots.map(root => String(root || '').trim()).filter(Boolean), MAX_CONCURRENCY, root =>
+    walk(root, 0)
   )
 
   return [...found.entries()].map(([root, label]) => ({ label, root }))

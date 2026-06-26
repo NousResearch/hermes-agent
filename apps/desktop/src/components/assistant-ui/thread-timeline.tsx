@@ -272,9 +272,7 @@ const TimelinePopover: FC<{
         type="button"
         {...hoverProps(index, onHover)}
       >
-        <span className="block w-full min-w-0 truncate font-medium leading-snug text-foreground">
-          {entry.preview}
-        </span>
+        <span className="block w-full min-w-0 truncate font-medium leading-snug text-foreground">{entry.preview}</span>
       </button>
     ))}
   </div>
@@ -300,9 +298,7 @@ const TimelineTicks: FC<{
         <span
           className={cn(
             'block h-px w-3 transition-opacity duration-100 ease-out',
-            index === activeIndex
-              ? 'bg-(--theme-primary)'
-              : 'dither text-(--ui-text-quaternary) opacity-70'
+            index === activeIndex ? 'bg-(--theme-primary)' : 'dither text-(--ui-text-quaternary) opacity-70'
           )}
           ref={listRef(tickRefs, index)}
         />

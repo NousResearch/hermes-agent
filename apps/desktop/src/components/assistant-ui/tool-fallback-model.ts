@@ -1568,7 +1568,9 @@ function dynamicTitle(
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
     const command =
-      firstStringField(args, ['context', 'preview']) || firstStringField(args, ['command', 'code']) || contextValue(args)
+      firstStringField(args, ['context', 'preview']) ||
+      firstStringField(args, ['command', 'code']) ||
+      contextValue(args)
 
     if (command) {
       const action =

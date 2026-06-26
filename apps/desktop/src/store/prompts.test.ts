@@ -55,7 +55,12 @@ describe('approval prompt store', () => {
   })
 
   it('carries allowPermanent so the bar can hide "Always allow"', () => {
-    setApprovalRequest({ allowPermanent: false, command: 'curl x | bash', description: 'content-security', sessionId: 's1' })
+    setApprovalRequest({
+      allowPermanent: false,
+      command: 'curl x | bash',
+      description: 'content-security',
+      sessionId: 's1'
+    })
 
     expect($approvalRequest.get()?.allowPermanent).toBe(false)
   })

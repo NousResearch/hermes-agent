@@ -76,7 +76,12 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
   return (
     <StatusRow
       leading={
-        <Codicon aria-hidden className={cn('text-muted-foreground/70', opening && 'animate-pulse')} name="globe" size="0.8rem" />
+        <Codicon
+          aria-hidden
+          className={cn('text-muted-foreground/70', opening && 'animate-pulse')}
+          name="globe"
+          size="0.8rem"
+        />
       }
       // Plain click opens the link in the browser; ⌘/Ctrl-click opens it in the
       // in-app preview pane instead. (isOpen still toggles the pane closed.)

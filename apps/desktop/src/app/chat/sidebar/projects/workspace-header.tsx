@@ -4,7 +4,14 @@ import { useCallback, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
   DropdownMenu,
@@ -70,7 +77,15 @@ export function WorkspaceAddButton({ label, onClick }: { label: string; onClick:
 }
 
 // Reveals the next page of already-loaded rows within a workspace/worktree.
-export function WorkspaceShowMoreButton({ count, label, onClick }: { count: number; label: string; onClick: () => void }) {
+export function WorkspaceShowMoreButton({
+  count,
+  label,
+  onClick
+}: {
+  count: number
+  label: string
+  onClick: () => void
+}) {
   const { t } = useI18n()
   const text = t.sidebar.showMoreIn(count, label)
 

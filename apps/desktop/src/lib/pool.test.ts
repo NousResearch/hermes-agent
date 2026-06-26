@@ -6,6 +6,7 @@ describe('mapPool', () => {
   it('preserves input order regardless of completion order', async () => {
     const out = await mapPool([30, 10, 20], 3, async ms => {
       await new Promise(r => setTimeout(r, ms))
+
       return ms
     })
 

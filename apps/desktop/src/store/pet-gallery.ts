@@ -380,11 +380,14 @@ export function setPetScale(request: GatewayRequest, scale: number): void {
 export async function exportPet(request: GatewayRequest, slug: string, fallback: string): Promise<boolean> {
   $petBusy.set(slug)
   $petGalleryError.set(null)
+
   try {
     const res = await petRpc<{ ok: boolean; filename: string; zipBase64: string }>(request, 'pet.export', { slug })
+
     if (!res?.ok || !res.zipBase64) {
       throw new Error(fallback)
     }
+
     const bytes = Uint8Array.from(atob(res.zipBase64), c => c.charCodeAt(0))
     const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }))
     const anchor = document.createElement('a')
@@ -392,9 +395,11 @@ export async function exportPet(request: GatewayRequest, slug: string, fallback:
     anchor.download = res.filename || `${slug}.zip`
     anchor.click()
     URL.revokeObjectURL(url)
+
     return true
   } catch (e) {
     $petGalleryError.set(e instanceof Error ? e.message : fallback)
+
     return false
   } finally {
     $petBusy.set(null)
@@ -479,6 +484,7 @@ export function removePet(request: GatewayRequest, slug: string, fallback: strin
         if (p.slug !== slug) {
           return [p]
         }
+
         return p.generated || !p.spritesheetUrl ? [] : [{ ...p, installed: false }]
       })
     }))

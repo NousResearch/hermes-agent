@@ -27,5 +27,6 @@ export function codiconIcon(name: string): Icon {
   }
 
   CodiconIcon.displayName = `Codicon(${name})`
+
   return CodiconIcon as Icon
 }

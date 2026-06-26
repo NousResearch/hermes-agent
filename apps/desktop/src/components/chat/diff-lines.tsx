@@ -534,10 +534,7 @@ function DiffOverviewRuler({ lines }: { lines: DiffLine[] }) {
           short diff renders thin, line-aligned ticks instead of stretching a few
           changes into gross full-height blocks. A long diff hits the 100% cap and
           compresses into a true overview. */}
-      <div
-        className="relative w-full"
-        style={{ height: `min(100%, ${lines.length * PREVIEW_LINE_PX}px)` }}
-      >
+      <div className="relative w-full" style={{ height: `min(100%, ${lines.length * PREVIEW_LINE_PX}px)` }}>
         {runs.map((run, index) => (
           <div
             className={cn('absolute inset-x-0', run.kind === 'add' ? 'bg-(--ui-green)' : 'bg-(--ui-red)')}
@@ -622,9 +619,7 @@ export function FileDiffPanel({ className, diff, fullText, path, showLineNumbers
       <div className="absolute inset-0 overflow-auto pr-2.5" onScroll={onScroll} ref={scrollerRef}>
         <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)]">
           <div className="sticky left-0 z-1 select-none bg-(--ui-editor-surface-background) py-3 text-muted-foreground/55">
-            {beforeRows > 0 && (
-              <div aria-hidden style={{ height: beforeRows * PREVIEW_LINE_PX }} />
-            )}
+            {beforeRows > 0 && <div aria-hidden style={{ height: beforeRows * PREVIEW_LINE_PX }} />}
             {visibleLineChunks.map(chunk => (
               <div className="block" key={chunk.start}>
                 {chunk.lines.map((line, offset) => {

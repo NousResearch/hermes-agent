@@ -102,7 +102,13 @@ describe('session orchestrator helpers', () => {
 
     expect(currentSessionSelectionIndex(sessions, 'second')).toBe(1)
     expect(
-      currentSessionSelectionIndex([{ id: 'first', status: 'idle' }, { id: 'third', status: 'idle' }], 'third')
+      currentSessionSelectionIndex(
+        [
+          { id: 'first', status: 'idle' },
+          { id: 'third', status: 'idle' }
+        ],
+        'third'
+      )
     ).toBe(1)
     expect(currentSessionSelectionIndex(sessions, 'missing')).toBe(1)
     expect(currentSessionSelectionIndex([], 'missing')).toBe(0)

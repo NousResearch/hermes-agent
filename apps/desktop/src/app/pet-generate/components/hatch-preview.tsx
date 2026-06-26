@@ -16,7 +16,17 @@ import { frameCountForRow } from '../lib/frame-count'
 const PREVIEW_SCALE = 0.7
 const PREVIEW_STATE_MS = 1400
 
-const PREVIEW_ROWS = ['idle', 'waving', 'running-right', 'running-left', 'running', 'review', 'jumping', 'failed', 'waiting']
+const PREVIEW_ROWS = [
+  'idle',
+  'waving',
+  'running-right',
+  'running-left',
+  'running',
+  'review',
+  'jumping',
+  'failed',
+  'waiting'
+]
 
 interface HatchPreviewProps {
   pet: PetInfo
@@ -38,7 +48,11 @@ export function HatchPreview({ pet, adopting, error, onAdopt, onDiscard }: Hatch
   // hands off to the normal state-cycling preview.
   const [celebrating, setCelebrating] = useState(false)
   const [stateIndex, setStateIndex] = useState(0)
-  const previewRows = (pet.stateRows?.length ? pet.stateRows : PREVIEW_ROWS).filter(row => frameCountForRow(pet, row) > 0)
+
+  const previewRows = (pet.stateRows?.length ? pet.stateRows : PREVIEW_ROWS).filter(
+    row => frameCountForRow(pet, row) > 0
+  )
+
   const rows = previewRows.length > 0 ? previewRows : ['idle']
   const activeRow = rows[stateIndex % rows.length] ?? 'idle'
   const canJump = frameCountForRow(pet, 'jumping') > 0
@@ -58,10 +72,13 @@ export function HatchPreview({ pet, adopting, error, onAdopt, onDiscard }: Hatch
 
     setCelebrating(true)
 
-    const id = setTimeout(() => {
-      setCelebrating(false)
-      setStateIndex(0)
-    }, 2 * (pet.loopMs ?? 1100))
+    const id = setTimeout(
+      () => {
+        setCelebrating(false)
+        setStateIndex(0)
+      },
+      2 * (pet.loopMs ?? 1100)
+    )
 
     return () => clearTimeout(id)
   }, [revealed, pet.loopMs])

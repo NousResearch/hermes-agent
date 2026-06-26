@@ -181,38 +181,38 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       )}
 
       <CreateProfileDialog
-          onClose={() => setCreateOpen(false)}
-          onCreate={async (name, cloneFrom) => handleCreate(name, cloneFrom)}
-          open={createOpen}
-          profiles={profiles ?? []}
-        />
+        onClose={() => setCreateOpen(false)}
+        onCreate={async (name, cloneFrom) => handleCreate(name, cloneFrom)}
+        open={createOpen}
+        profiles={profiles ?? []}
+      />
 
-        <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>{p.deleteTitle}</DialogTitle>
-              <DialogDescription>
-                {pendingDelete ? (
-                  <>
-                    {p.deleteDescPrefix}
-                    <span className="font-medium text-foreground">{pendingDelete.name}</span>
-                    {p.deleteDescMid}
-                    <span className="font-mono text-xs">{pendingDelete.path}</span>
-                    {p.deleteDescSuffix}
-                  </>
-                ) : null}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-                {t.common.cancel}
-              </Button>
-              <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-                {deleting ? p.deleting : t.common.delete}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{p.deleteTitle}</DialogTitle>
+            <DialogDescription>
+              {pendingDelete ? (
+                <>
+                  {p.deleteDescPrefix}
+                  <span className="font-medium text-foreground">{pendingDelete.name}</span>
+                  {p.deleteDescMid}
+                  <span className="font-mono text-xs">{pendingDelete.path}</span>
+                  {p.deleteDescSuffix}
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
+              {t.common.cancel}
+            </Button>
+            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
+              {deleting ? p.deleting : t.common.delete}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </OverlayView>
   )
 }
@@ -538,7 +538,10 @@ function CreateProfileDialog({
             <label className="text-xs font-medium" htmlFor="new-profile-clone-from">
               {p.cloneFrom}
             </label>
-            <Select onValueChange={value => setCloneFrom(value === '__none__' ? null : value)} value={cloneFrom ?? '__none__'}>
+            <Select
+              onValueChange={value => setCloneFrom(value === '__none__' ? null : value)}
+              value={cloneFrom ?? '__none__'}
+            >
               <SelectTrigger className="h-9 rounded-md" id="new-profile-clone-from">
                 <SelectValue />
               </SelectTrigger>

@@ -19,7 +19,11 @@ export const PROJECT_PREVIEW_COUNT = 3
 const WORKTREE_PROBE_CONCURRENCY = 4
 
 const pathListKey = (paths: string[]): string =>
-  paths.map(path => path.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b)).join('\n')
+  paths
+    .map(path => path.trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+    .join('\n')
 
 // Every session in a project, across its repos/worktrees (order-agnostic).
 const projectSessions = (project: SidebarProjectTree): SessionInfo[] =>
@@ -63,7 +67,10 @@ export function sortProjectsForOverview(
       return aHasSessions ? -1 : 1
     }
 
-    return projectActivityTime(b) - projectActivityTime(a) || a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    return (
+      projectActivityTime(b) - projectActivityTime(a) ||
+      a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    )
   })
 }
 

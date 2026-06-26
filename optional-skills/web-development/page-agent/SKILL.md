@@ -4,6 +4,7 @@ description: Embed alibaba/page-agent into your own web application — a pure-J
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [web, javascript, agent, browser, gui, alibaba, embed, copilot, saas]

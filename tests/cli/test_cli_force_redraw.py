@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import cli as cli_mod
 from cli import HermesCLI
 
 
@@ -33,10 +34,18 @@ class TestForceFullRedraw:
         # Simulate HermesCLI before the TUI has ever been constructed.
         bare_cli._force_full_redraw()  # must not raise
 
-    def test_sends_full_clear_and_invalidates(self, bare_cli):
+    def test_sends_full_clear_replays_then_invalidates(self, bare_cli, monkeypatch):
         app = MagicMock()
         out = app.renderer.output
         bare_cli._app = app
+        events = []
+        out.reset_attributes.side_effect = lambda: events.append("reset_attrs")
+        out.erase_screen.side_effect = lambda: events.append("erase")
+        out.cursor_goto.side_effect = lambda *_: events.append("home")
+        out.flush.side_effect = lambda: events.append("flush")
+        app.renderer.reset.side_effect = lambda **_: events.append("renderer_reset")
+        monkeypatch.setattr(cli_mod, "_replay_output_history", lambda: events.append("replay"))
+        app.invalidate.side_effect = lambda: events.append("invalidate")
 
         bare_cli._force_full_redraw()
 
@@ -52,6 +61,149 @@ class TestForceFullRedraw:
 
         # Must schedule a repaint.
         app.invalidate.assert_called_once()
+        assert events == [
+            "reset_attrs",
+            "erase",
+            "home",
+            "flush",
+            "renderer_reset",
+            "replay",
+            "invalidate",
+        ]
+
+    def test_resize_recovery_skips_clear_when_width_unchanged(self, bare_cli, monkeypatch):
+        """A rows-only resize (same width) must NOT clear the screen.
+
+        prompt_toolkit's built-in Application._on_resize() starts with
+        renderer.erase(leave_alternate_screen=False), which uses the renderer's
+        cached cursor position to move back to the live prompt origin before
+        erase_down(). With no column reflow there is no ghost chrome to wipe,
+        so we delegate straight to prompt_toolkit and avoid an extra repaint.
+        """
+        app = MagicMock()
+        events = []
+        app.renderer.reset.side_effect = lambda **_: events.append("renderer_reset")
+        app.invalidate.side_effect = lambda: events.append("invalidate")
+        original_on_resize = lambda: events.append("original_resize")
+
+        # bare_cli skips __init__, so seed attributes the way __init__ would.
+        bare_cli._status_bar_suppressed_after_resize = False
+        bare_cli._last_resize_width = 120
+        # Same width on this resize → rows-only change.
+        monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: 120)
+        monkeypatch.setattr(bare_cli, "_schedule_status_bar_unsuppress", lambda *_: None)
+
+        bare_cli._recover_after_resize(app, original_on_resize)
+
+        assert events == ["original_resize"]
+        app.renderer.reset.assert_not_called()
+        app.invalidate.assert_not_called()
+        # Must NOT clear the screen or scrollback — those destroy the banner.
+        app.renderer.output.erase_screen.assert_not_called()
+        app.renderer.output.write_raw.assert_not_called()
+        app.renderer.output.cursor_goto.assert_not_called()
+        # Status bar / input rules must be suppressed until the next prompt.
+        assert bare_cli._status_bar_suppressed_after_resize is True
+
+    def test_resize_recovery_clears_viewport_on_width_change(self, bare_cli, monkeypatch):
+        """A WIDTH change must wipe the visible viewport (CSI 2J) and replay.
+
+        On column shrink the terminal reflows the old full-width chrome into
+        extra rows that prompt_toolkit's stale-cursor erase cannot reach,
+        leaving a duplicated status bar (#19280/#5474 class). We route through
+        the same recovery as Ctrl+L: erase_screen (2J) + replay transcript.
+        It must be banner-safe — CSI 3J (write_raw) must NOT fire.
+        """
+        app = MagicMock()
+        events = []
+        app.renderer.output.erase_screen.side_effect = lambda: events.append("erase")
+        app.renderer.output.write_raw.side_effect = lambda *_: events.append("scrollback_wipe")
+        original_on_resize = lambda: events.append("original_resize")
+
+        bare_cli._status_bar_suppressed_after_resize = False
+        bare_cli._last_resize_width = 200
+        monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: 90)
+        monkeypatch.setattr(bare_cli, "_schedule_status_bar_unsuppress", lambda *_: None)
+        monkeypatch.setattr(cli_mod, "_replay_output_history", lambda: events.append("replay"))
+
+        bare_cli._recover_after_resize(app, original_on_resize)
+
+        # Viewport cleared and transcript replayed BEFORE prompt_toolkit's resize.
+        assert "erase" in events
+        assert "replay" in events
+        assert events.index("erase") < events.index("original_resize")
+        # Banner-safe: scrollback (CSI 3J) must never be wiped on a resize.
+        assert "scrollback_wipe" not in events
+        # New width recorded for the next comparison.
+        assert bare_cli._last_resize_width == 90
+        assert bare_cli._status_bar_suppressed_after_resize is True
+
+    def test_force_redraw_uses_full_screen_clear_without_scrollback_clear(self, bare_cli):
+        app = MagicMock()
+        bare_cli._app = app
+
+        bare_cli._force_full_redraw()
+
+        app.renderer.output.erase_screen.assert_called_once()
+        app.renderer.output.cursor_goto.assert_called_once_with(0, 0)
+        app.renderer.output.write_raw.assert_not_called()
+
+    def test_resize_recovery_is_debounced(self, bare_cli, monkeypatch):
+        timers = []
+        calls = []
+
+        class FakeTimer:
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.cancelled = False
+                self.daemon = False
+                timers.append(self)
+
+            def start(self):
+                calls.append(("start", self.delay))
+
+            def cancel(self):
+                self.cancelled = True
+                calls.append(("cancel", self.delay))
+
+            def fire(self):
+                self.callback()
+
+        app = MagicMock()
+        app.loop.call_soon_threadsafe.side_effect = lambda cb: cb()
+        monkeypatch.setattr(cli_mod.threading, "Timer", FakeTimer)
+        monkeypatch.setattr(
+            bare_cli,
+            "_recover_after_resize",
+            lambda _app, _orig: calls.append(("recover", _orig())),
+        )
+
+        original_one = lambda: "first"
+        original_two = lambda: "second"
+
+        bare_cli._schedule_resize_recovery(app, original_one, delay=0.25)
+        assert bare_cli._resize_recovery_pending is True
+        bare_cli._schedule_resize_recovery(app, original_two, delay=0.25)
+
+        assert len(timers) == 2
+        assert timers[0].cancelled is True
+        timers[0].fire()
+        assert ("recover", "first") not in calls
+
+        timers[1].fire()
+        assert ("recover", "second") in calls
+        assert bare_cli._resize_recovery_pending is False
+
+    def test_invalidate_is_suppressed_while_resize_recovery_is_pending(self, bare_cli):
+        app = MagicMock()
+        bare_cli._app = app
+        bare_cli._last_invalidate = 0.0
+        bare_cli._resize_recovery_pending = True
+
+        bare_cli._invalidate(min_interval=0)
+
+        app.invalidate.assert_not_called()
 
     def test_swallows_renderer_exceptions(self, bare_cli):
         # If the renderer blows up for any reason, the helper must not

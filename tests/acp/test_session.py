@@ -77,6 +77,50 @@ class TestCreateSession:
     def test_get_nonexistent_session_returns_none(self, manager):
         assert manager.get_session("does-not-exist") is None
 
+    def test_make_agent_stamps_session_cwd_for_codex_runtime(self, monkeypatch):
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "acp_adapter.session.load_config",
+            lambda: {
+                "model": {
+                    "default": "fake-model",
+                    "provider": "fake-provider",
+                },
+                "mcp_servers": {},
+            },
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "default": "fake-model",
+                    "provider": "fake-provider",
+                },
+                "mcp_servers": {},
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": requested,
+                "api_mode": "codex_app_server",
+                "base_url": "https://example.invalid",
+                "api_key": "test-key",
+            },
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert state.agent.session_cwd == "/tmp/project"
+
 
 
 
@@ -187,6 +231,34 @@ class TestListAndCleanup:
     def test_list_sessions_hides_empty_threads(self, manager):
         manager.create_session(cwd="/empty")
         assert manager.list_sessions() == []
+
+    def test_save_session_preserves_existing_messages_on_encode_failure(self, manager):
+        """Regression for #13675: a bad message in state.history must not
+        clobber the previously-persisted transcript.  replace_messages()
+        wraps DELETE + INSERT in a single rolled-back-on-exception txn.
+        """
+        state = manager.create_session()
+        state.history.append({"role": "user", "content": "original"})
+        manager.save_session(state.session_id)
+
+        # Now swap history with a message whose tool_calls is non-JSON-serializable.
+        # _execute_write rolls back; the previously persisted "original" stays.
+        state.history = [
+            {"role": "user", "content": "replacement"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"bad": object()}],
+            },
+        ]
+        manager.save_session(state.session_id)
+
+        db = manager._get_db()
+        messages = db.get_messages_as_conversation(state.session_id)
+        assert len(messages) == 1
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"] == "original"
+        assert isinstance(messages[0].get("timestamp"), (int, float))
 
     def test_cleanup_clears_all(self, manager):
         s1 = manager.create_session()
@@ -454,6 +526,41 @@ class TestPersistence:
         assert len(restored.history) == 2
         assert restored.history[0].get("tool_calls") is not None
         assert restored.history[1].get("tool_call_id") == "tc_1"
+
+    def test_assistant_reasoning_fields_persisted(self, manager):
+        """ACP session restore should preserve assistant reasoning context."""
+        state = manager.create_session()
+        state.history.append({
+            "role": "assistant",
+            "content": "hello",
+            "reasoning": "step-by-step",
+            "reasoning_details": [
+                {"type": "thinking", "thinking": "first thought"},
+            ],
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"},
+            ],
+        })
+        manager.save_session(state.session_id)
+
+        with manager._lock:
+            del manager._sessions[state.session_id]
+
+        restored = manager.get_session(state.session_id)
+        assert restored is not None
+        msg = restored.history[0]
+        assert isinstance(msg.pop("timestamp", None), (int, float))
+        assert restored.history == [{
+            "role": "assistant",
+            "content": "hello",
+            "reasoning": "step-by-step",
+            "reasoning_details": [
+                {"type": "thinking", "thinking": "first thought"},
+            ],
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"},
+            ],
+        }]
 
     def test_restore_preserves_persisted_provider_snapshot(self, tmp_path, monkeypatch):
         """Restored ACP sessions should keep their original runtime provider."""

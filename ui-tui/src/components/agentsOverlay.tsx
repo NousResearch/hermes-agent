@@ -18,7 +18,6 @@ import {
   buildSubagentTree,
   descendantIds,
   flattenTree,
-  fmtCost,
   fmtDuration,
   fmtTokens,
   formatSummary,
@@ -57,25 +56,33 @@ const FILTER_LABEL: Record<FilterMode, string> = {
 }
 
 const STATUS_RANK: Record<Status, number> = {
+  error: 0,
   failed: 0,
   interrupted: 1,
+  timeout: 1,
   running: 2,
   queued: 3,
   completed: 4
 }
 
+const statusRank = (status: string): number => STATUS_RANK[status as Status] ?? STATUS_RANK.error
+
 const SORT_COMPARATORS: Record<SortMode, (a: SubagentNode, b: SubagentNode) => number> = {
   'depth-first': (a, b) => a.item.depth - b.item.depth || a.item.index - b.item.index,
   'tools-desc': (a, b) => b.aggregate.totalTools - a.aggregate.totalTools,
   'duration-desc': (a, b) => b.aggregate.totalDuration - a.aggregate.totalDuration,
-  status: (a, b) => STATUS_RANK[a.item.status] - STATUS_RANK[b.item.status]
+  status: (a, b) => statusRank(a.item.status) - statusRank(b.item.status)
 }
 
 const FILTER_PREDICATES: Record<FilterMode, (n: SubagentNode) => boolean> = {
   all: () => true,
   leaf: n => n.children.length === 0,
   running: n => n.item.status === 'running' || n.item.status === 'queued',
-  failed: n => n.item.status === 'failed' || n.item.status === 'interrupted'
+  failed: n =>
+    n.item.status === 'error' ||
+    n.item.status === 'failed' ||
+    n.item.status === 'interrupted' ||
+    n.item.status === 'timeout'
 }
 
 const STATUS_GLYPH: Record<Status, { color: (t: Theme) => string; glyph: string }> = {
@@ -83,7 +90,9 @@ const STATUS_GLYPH: Record<Status, { color: (t: Theme) => string; glyph: string 
   queued: { color: t => t.color.muted, glyph: '○' },
   completed: { color: t => t.color.statusGood, glyph: '✓' },
   interrupted: { color: t => t.color.warn, glyph: '■' },
-  failed: { color: t => t.color.error, glyph: '✗' }
+  failed: { color: t => t.color.error, glyph: '✗' },
+  timeout: { color: t => t.color.warn, glyph: '⌛' },
+  error: { color: t => t.color.error, glyph: '⚠' }
 }
 
 // Heatmap palette — cold → hot, resolved against the active theme.
@@ -111,7 +120,8 @@ const formatRowId = (n: number): string => String(n + 1).padStart(2, ' ')
 const cycle = <T,>(order: readonly T[], current: T): T => order[(order.indexOf(current) + 1) % order.length]!
 
 const statusGlyph = (item: SubagentProgress, t: Theme) => {
-  const g = STATUS_GLYPH[item.status]
+  // Defensive fallback for cross-version snapshots with unknown statuses.
+  const g = STATUS_GLYPH[item.status] ?? STATUS_GLYPH.error
 
   return { color: g.color(t), glyph: g.glyph }
 }
@@ -396,8 +406,6 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
   const outputTokens = item.outputTokens ?? 0
   const localTokens = inputTokens + outputTokens
   const subtreeTokens = agg.inputTokens + agg.outputTokens - localTokens
-  const localCost = item.costUsd ?? 0
-  const subtreeCost = agg.costUsd - localCost
 
   const filesRead = item.filesRead ?? []
   const filesWritten = item.filesWritten ?? []
@@ -431,7 +439,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
         {item.apiCalls ? <Field name="api calls" t={t} value={String(item.apiCalls)} /> : null}
       </Box>
 
-      {localTokens > 0 || localCost > 0 ? (
+      {localTokens > 0 ? (
         <OverlaySection defaultOpen t={t} title="Budget">
           {localTokens > 0 ? (
             <Field
@@ -441,19 +449,6 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
                 <>
                   {fmtTokens(inputTokens)} in · {fmtTokens(outputTokens)} out
                   {item.reasoningTokens ? ` · ${fmtTokens(item.reasoningTokens)} reasoning` : ''}
-                </>
-              }
-            />
-          ) : null}
-
-          {localCost > 0 ? (
-            <Field
-              name="cost"
-              t={t}
-              value={
-                <>
-                  {fmtCost(localCost)}
-                  {subtreeCost >= 0.01 ? ` · subtree +${fmtCost(subtreeCost)}` : ''}
                 </>
               }
             />
@@ -639,7 +634,6 @@ function DiffView({
 
   const round = (n: number) => String(Math.round(n))
   const sumTokens = (x: typeof aTotals) => x.inputTokens + x.outputTokens
-  const dollars = (n: number) => fmtCost(n) || '$0.00'
 
   return (
     <Box flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
@@ -672,7 +666,6 @@ function DiffView({
           {diffMetricLine('duration', aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
         </Text>
         <Text color={t.color.text}>{diffMetricLine('tokens', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}</Text>
-        <Text color={t.color.text}>{diffMetricLine('cost', aTotals.costUsd, bTotals.costUsd, dollars)}</Text>
       </Box>
     </Box>
   )

@@ -1,7 +1,6 @@
 """Tests for Matrix require-mention gating and auto-thread features."""
 
 import json
-import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,7 +17,7 @@ from gateway.config import PlatformConfig
 
 def _make_adapter(tmp_path=None):
     """Create a MatrixAdapter with mocked config."""
-    from gateway.platforms.matrix import MatrixAdapter
+    from plugins.platforms.matrix.adapter import MatrixAdapter
 
     config = PlatformConfig(
         enabled=True,

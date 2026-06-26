@@ -13,7 +13,6 @@ Signal's native implementation is covered by test_signal.py.
 """
 
 import asyncio
-import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,7 +41,7 @@ class _StubAdapter(BasePlatformAdapter):
         self.sent_animations = []
         self.sent_files = []
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         return True
 
     async def disconnect(self):
@@ -116,7 +115,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 class TestTelegramMultiImage:
@@ -210,7 +209,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 class TestDiscordMultiImage:
@@ -287,7 +286,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 class TestSlackMultiImage:
@@ -344,7 +343,7 @@ class TestSlackMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from gateway.platforms.mattermost import MattermostAdapter  # noqa: E402
+from plugins.platforms.mattermost.adapter import MattermostAdapter  # noqa: E402
 
 
 class TestMattermostMultiImage:
@@ -403,7 +402,7 @@ class TestMattermostMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from gateway.platforms.email import EmailAdapter  # noqa: E402
+from plugins.platforms.email.adapter import EmailAdapter  # noqa: E402
 
 
 class TestEmailMultiImage:

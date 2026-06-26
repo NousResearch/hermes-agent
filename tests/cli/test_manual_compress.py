@@ -111,6 +111,57 @@ def test_manual_compress_syncs_session_id_after_split():
     assert shell._pending_title is None
 
 
+def test_manual_compress_flushes_compressed_history_to_child_session_db():
+    """Manual /compress must persist the handoff in the continuation DB.
+
+    _compress_context rotates the agent to a new child session and returns a
+    compressed transcript whose first messages include the handoff summary. The
+    CLI then replaces its in-memory conversation_history with that transcript.
+    Because the child DB starts empty, the flush must start from offset 0 rather
+    than treating the compressed history as already persisted.
+    """
+    shell = _make_cli()
+    history = _make_history()
+    old_id = shell.session_id
+    new_child_id = "20260101_000000_child1"
+    compressed = [
+        {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] compacted"},
+        history[-1],
+    ]
+    shell.conversation_history = history
+    shell.agent = MagicMock()
+    shell.agent.compression_enabled = True
+    shell.agent._cached_system_prompt = ""
+    shell.agent.session_id = old_id
+
+    def _fake_compress(*args, **kwargs):
+        shell.agent.session_id = new_child_id
+        return (compressed, "")
+
+    shell.agent._compress_context.side_effect = _fake_compress
+
+    with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
+        shell._manual_compress()
+
+    shell.agent._flush_messages_to_session_db.assert_called_once_with(compressed, None)
+
+
+def test_manual_compress_does_not_flush_full_history_when_session_id_unchanged():
+    shell = _make_cli()
+    history = _make_history()
+    shell.conversation_history = history
+    shell.agent = MagicMock()
+    shell.agent.compression_enabled = True
+    shell.agent._cached_system_prompt = ""
+    shell.agent.session_id = shell.session_id
+    shell.agent._compress_context.return_value = (list(history), "")
+
+    with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
+        shell._manual_compress()
+
+    shell.agent._flush_messages_to_session_db.assert_not_called()
+
+
 def test_manual_compress_no_sync_when_session_id_unchanged():
     """If compression is a no-op (agent.session_id didn't change), the CLI
     must NOT clear _pending_title or otherwise disturb session state.

@@ -24,22 +24,44 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
+import re
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_aux_credential(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+class _ReviewRuntimeBinding(NamedTuple):
+    """Provider/model for the curator review fork plus optional per-slot overrides."""
+
+    provider: str
+    model: str
+    explicit_api_key: Optional[str]
+    explicit_base_url: Optional[str]
 
 
 DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
 DEFAULT_MIN_IDLE_HOURS = 2
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_ARCHIVE_AFTER_DAYS = 90
+# Consolidation (the LLM umbrella-building fork) is OFF by default. The
+# deterministic inactivity prune (apply_automatic_transitions) still runs
+# whenever the curator is enabled; only the opinionated, aux-model-cost
+# consolidation pass is opt-in.
+DEFAULT_CONSOLIDATE = False
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +77,7 @@ def _default_state() -> Dict[str, Any]:
         "last_run_at": None,
         "last_run_duration_seconds": None,
         "last_run_summary": None,
+        "last_run_summary_shown_at": None,
         "last_report_path": None,
         "paused": False,
         "run_count": 0,
@@ -79,20 +102,7 @@ def load_state() -> Dict[str, Any]:
 def save_state(data: Dict[str, Any]) -> None:
     path = _state_file()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".curator_state_", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        atomic_json_write(path, data, indent=2, sort_keys=True)
     except Exception as e:
         logger.debug("Failed to save curator state: %s", e, exc_info=True)
 
@@ -163,6 +173,34 @@ def get_archive_after_days() -> int:
         return int(cfg.get("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS))
     except (TypeError, ValueError):
         return DEFAULT_ARCHIVE_AFTER_DAYS
+
+
+def get_prune_builtins() -> bool:
+    """Whether the curator may prune (archive) bundled built-in skills too.
+
+    ON by default. When on, built-ins become curation candidates and are
+    archived after the same inactivity period as agent-created skills, with a
+    suppression list keeping them archived across `hermes update` re-seeds.
+    Hub-installed skills are never pruned regardless of this flag.
+    """
+    cfg = _load_config()
+    return bool(cfg.get("prune_builtins", True))
+
+
+def get_consolidate() -> bool:
+    """Whether the curator runs its LLM consolidation (umbrella-building) pass.
+
+    OFF by default. When off, a curator run does ONLY the deterministic
+    inactivity prune (mark stale / archive long-unused skills) and skips the
+    forked aux-model review entirely — no consolidation, no umbrella-building,
+    no aux-model cost. Set ``curator.consolidate: true`` to opt back into the
+    LLM pass that merges overlapping skills into class-level umbrellas.
+
+    The explicit ``hermes curator run --consolidate`` flag overrides this for
+    a single invocation regardless of the config value.
+    """
+    cfg = _load_config()
+    return bool(cfg.get("consolidate", DEFAULT_CONSOLIDATE))
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +274,17 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 # ---------------------------------------------------------------------------
 
 def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
-    """Walk every agent-created skill and move active/stale/archived based on
+    """Walk every curator-managed skill and move active/stale/archived based on
     the latest real activity timestamp. Pinned skills are never touched.
-    Returns a counter dict describing what changed."""
+
+    Built-ins (eligible only when ``curator.prune_builtins`` is on) are seeded
+    with a baseline record the first time they're seen so their inactivity
+    clock starts NOW rather than at epoch — a long-unused built-in is therefore
+    archived only after a fresh ``archive_after_days`` of non-use, not on the
+    first pass after the flag flips on.
+
+    Returns a counter dict describing what changed.
+    """
     from tools import skill_usage as _u
 
     if now is None:
@@ -246,12 +292,19 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
-    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
+    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
     for row in _u.agent_created_report():
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
+            continue
+
+        # First sight of a curation-eligible skill with no persisted record
+        # (e.g. a newly-eligible built-in): anchor its clock to now and defer.
+        if not row.get("_persisted", True):
+            _u.seed_record_if_missing(name)
+            counts["seeded"] += 1
             continue
 
         last_activity = _parse_iso(row.get("last_activity_at"))
@@ -324,12 +377,19 @@ CURATOR_REVIEW_PROMPT = (
     "bodies + `references/`, `templates/`, and `scripts/` subfiles for "
     "session-specific detail — not one-session-one-skill micro-entries.\n\n"
     "Hard rules — do not violate:\n"
-    "1. DO NOT touch bundled or hub-installed skills. The candidate list "
-    "below is already filtered to agent-created skills only.\n"
+    "1. DO NOT touch bundled, hub-installed, or external-dir skills "
+    "(`skills.external_dirs`). The candidate list below is already filtered "
+    "to local curator-managed skills only; external skills are externally "
+    "owned and read-only to this background curator.\n"
     "2. DO NOT delete any skill. Archiving (moving the skill's directory "
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
     "3. DO NOT touch skills shown as pinned=yes. Skip them entirely.\n"
+    "3b. DO NOT archive, delete, consolidate, move, or otherwise modify any "
+    "skill named in the protected built-ins list (currently: plan). These "
+    "back load-bearing UX (slash-command entry points referenced in docs and "
+    "tips) and are filtered out of the candidate list below — never resurrect "
+    "one as an archive or absorb target.\n"
     "4. DO NOT use usage counters as a reason to skip consolidation. The "
     "counters are new and often mostly zero. Judge overlap on CONTENT, "
     "not on use_count. 'use=0' is not evidence a skill is valuable; it's "
@@ -372,7 +432,26 @@ CURATOR_REVIEW_PROMPT = (
     "(verification scripts, fixture generators, probes)\n"
     "      Then archive the old sibling. Use `terminal` with `mkdir -p "
     "~/.hermes/skills/<umbrella>/references/ && mv ... <umbrella>/"
-    "references/<topic>.md` (or templates/ / scripts/).\n"
+    "references/<topic>.md` (or templates/ / scripts/).\n\n"
+    "Package integrity — not optional:\n"
+    "Before demoting or archiving a skill, inspect it as a COMPLETE "
+    "directory package, not just SKILL.md. A skill root may include "
+    "`references/`, `templates/`, `scripts/`, and `assets/`; `skill_view` "
+    "discovers those relative to the skill root. A reference markdown file "
+    "inside another skill is NOT a new skill root and does not get its own "
+    "linked-file discovery.\n"
+    "If the source skill has support files OR SKILL.md contains relative "
+    "links such as `references/...`, `templates/...`, `scripts/...`, or "
+    "`assets/...`, DO NOT flatten only SKILL.md into "
+    "`<umbrella>/references/<old>.md`. Choose one safe path instead:\n"
+    "   • keep it as a standalone skill, OR\n"
+    "   • fully merge it by re-homing every needed support file into the "
+    "umbrella's canonical `references/`, `templates/`, `scripts/`, or "
+    "`assets/` directories AND rewrite the destination instructions to "
+    "the new paths, OR\n"
+    "   • archive the entire original skill package unchanged.\n"
+    "Never leave archived/demoted instructions pointing at files that were "
+    "left behind under the old skill directory.\n"
     "4. Also flag skills whose NAME is too narrow (contains a PR number, "
     "a feature codename, a specific error string, an 'audit' / "
     "'diagnosis' / 'salvage' session artifact). These almost always "
@@ -392,8 +471,9 @@ CURATOR_REVIEW_PROMPT = (
     "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
     "forwarding target. This drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
-    "  - terminal                       — mv a sibling into the archive "
-    "OR move its content into a support subfile\n\n"
+    "  - terminal                       — move LOCAL candidate content into "
+    "a support subfile when package integrity requires it; never mv, cp, rm, "
+    "patch, or rewrite bundled, hub-installed, or external-dir skills\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
     "class-level umbrella and none of the proposed merges would improve "
     "discoverability. 'This is narrow but distinct from its siblings' "
@@ -451,6 +531,24 @@ def _reports_root() -> Path:
     except OSError as e:
         logger.debug("Curator reports dir create failed: %s", e)
     return root
+
+
+def _needle_in_path_component(needle: str, path: str) -> bool:
+    """Check if *needle* is a complete filename stem or directory name in *path*.
+
+    Unlike simple substring matching, this avoids false positives where short
+    skill names are embedded in longer filenames (e.g. "api" matching
+    "references/api-design.md").  Hyphens and underscores are normalised so
+    "open-webui-setup" matches "open_webui_setup.md".
+    """
+    norm_needle = needle.replace("-", "_")
+    for part in path.replace("\\", "/").split("/"):
+        if not part:
+            continue
+        stem = part.rsplit(".", 1)[0] if "." in part else part
+        if stem.replace("-", "_") == norm_needle:
+            return True
+    return False
 
 
 def _classify_removed_skills(
@@ -531,15 +629,29 @@ def _classify_removed_skills(
                 continue
 
             # Look for the removed skill's name in file_path / content / raw.
-            haystacks: List[str] = []
+            # Matching strategy differs by field type:
+            #   file_path — needle must be a complete path component
+            #     (filename stem or directory name), so "api" does NOT
+            #     falsely match "references/api-design.md".
+            #   content fields — word-boundary regex so "test" does NOT
+            #     falsely match "latest" or "testing".
+            haystacks: List[tuple[str, str]] = []
             for key in ("file_path", "file_content", "content", "new_string", "_raw"):
                 v = args.get(key)
                 if isinstance(v, str):
-                    haystacks.append(v)
+                    haystacks.append((key, v))
             hit = False
-            for hay in haystacks:
+            for key, hay in haystacks:
                 for needle in needles:
-                    if needle and needle in hay:
+                    if not needle:
+                        continue
+                    if key == "file_path":
+                        matched = _needle_in_path_component(needle, hay)
+                    else:
+                        matched = bool(
+                            re.search(rf'\b{re.escape(needle)}\b', hay)
+                        )
+                    if matched:
                         hit = True
                         evidence = (
                             f"skill_manage action={args.get('action', '?')} "
@@ -825,6 +937,96 @@ def _reconcile_classification(
         })
 
     return {"consolidated": consolidated, "pruned": pruned}
+
+
+def _build_rename_summary(
+    *,
+    before_names: Set[str],
+    after_report: List[Dict[str, Any]],
+    tool_calls: List[Dict[str, Any]],
+    model_final: str,
+) -> str:
+    """Format the user-visible rename map for a curator run.
+
+    Renders the "where did my skills go?" lines that get appended to the
+    `final_summary` string fed to gateway/CLI receivers. Empty string when
+    nothing was archived this run — most ticks are no-op and shouldn't add
+    extra log noise.
+
+    Format::
+
+        archived 4 skill(s):
+          • pdf-extraction → document-tools
+          • docx-extraction → document-tools
+          • flaky-thing — pruned (stale)
+          • old-utility → spreadsheet-ops
+        full report: hermes curator status
+        keep an umbrella stable: hermes curator pin document-tools
+
+    Cap is 10 entries so a 50-skill consolidation doesn't blow up
+    agent.log; the full list is always in REPORT.md. The pin hint only
+    appears when at least one consolidation produced an umbrella worth
+    pinning (pruned-only runs skip it).
+    """
+    after_by_name = {r.get("name"): r for r in after_report if isinstance(r, dict)}
+    after_names = set(after_by_name.keys())
+    removed = sorted(before_names - after_names)
+    added = sorted(after_names - before_names)
+    if not removed:
+        return ""
+
+    heuristic = _classify_removed_skills(
+        removed=removed,
+        added=added,
+        after_names=after_names,
+        tool_calls=tool_calls,
+    )
+    model_block = _parse_structured_summary(model_final)
+    destinations = set(after_names) | set(added)
+    absorbed_declarations = _extract_absorbed_into_declarations(tool_calls)
+    classification = _reconcile_classification(
+        removed=removed,
+        heuristic=heuristic,
+        model_block=model_block,
+        destinations=destinations,
+        absorbed_declarations=absorbed_declarations,
+    )
+    consolidated = classification["consolidated"]
+    pruned = classification["pruned"]
+
+    SHOW = 10
+    lines: List[str] = []
+    total = len(consolidated) + len(pruned)
+    lines.append(f"archived {total} skill(s):")
+    shown = 0
+    for entry in consolidated:
+        if shown >= SHOW:
+            break
+        name = entry.get("name", "?")
+        into = entry.get("into", "?")
+        lines.append(f"  • {name} → {into}")
+        shown += 1
+    for entry in pruned:
+        if shown >= SHOW:
+            break
+        name = entry.get("name", "?") if isinstance(entry, dict) else str(entry)
+        lines.append(f"  • {name} — pruned (stale)")
+        shown += 1
+    if total > SHOW:
+        lines.append(f"  … and {total - SHOW} more")
+    lines.append("full report: hermes curator status")
+    # Pin hint — only surface it when there's actually a destination skill
+    # worth pinning. The umbrella skills that absorbed content are the natural
+    # candidates: pinning one tells future curator runs to leave it alone.
+    # Pruned-only runs don't get this hint (nothing surviving to pin).
+    if consolidated:
+        umbrellas = sorted({e.get("into") for e in consolidated if e.get("into")})
+        if umbrellas:
+            example = umbrellas[0]
+            lines.append(
+                f"keep an umbrella stable: hermes curator pin {example}"
+            )
+    return "\n".join(lines)
 
 
 def _write_run_report(
@@ -1230,25 +1432,38 @@ def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None,
     synchronous: bool = False,
     dry_run: bool = False,
+    consolidate: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Execute a single curator review pass.
 
     Steps:
       1. Apply automatic state transitions (pure, no LLM).
-      2. If there are agent-created skills, spawn a forked AIAgent that runs
-         the LLM review prompt against the current candidate list.
+      2. If consolidation is enabled AND there are agent-created skills, spawn
+         a forked AIAgent that runs the LLM review prompt against the current
+         candidate list.
       3. Update .curator_state with last_run_at and a one-line summary.
       4. Invoke *on_summary* with a user-visible description.
 
     If *synchronous* is True, the LLM review runs in the calling thread; the
     default is to spawn a daemon thread so the caller returns immediately.
 
+    *consolidate* gates the LLM umbrella-building pass. ``None`` (the default)
+    reads ``curator.consolidate`` from config (OFF by default). Passing
+    ``True``/``False`` overrides the config for this invocation — used by the
+    ``hermes curator run --consolidate`` flag. When consolidation is off, only
+    the deterministic inactivity prune runs and the forked aux-model review is
+    skipped entirely (no aux-model cost).
+
     If *dry_run* is True, the automatic stale/archive transitions are SKIPPED
     and the LLM review pass is instructed to produce a report only — no
     skill_manage mutations, no terminal archive moves. The REPORT.md still
     gets written and ``state.last_report_path`` still records it so users
-    can read what the curator WOULD have done.
+    can read what the curator WOULD have done. A dry-run also honors
+    *consolidate*: when consolidation is off, the preview only reports the
+    deterministic prune candidates.
     """
+    if consolidate is None:
+        consolidate = get_consolidate()
     start = datetime.now(timezone.utc)
     if dry_run:
         # Count candidates without mutating state.
@@ -1311,6 +1526,53 @@ def run_curator_review(
             before_report = []
         before_names = {r.get("name") for r in before_report if isinstance(r, dict)}
 
+        # Consolidation gate. When off (the default), the curator does ONLY the
+        # deterministic inactivity prune above — no forked aux-model review, no
+        # umbrella-building, no aux-model cost. Record the run, write a report
+        # reflecting the prune-only outcome, and return without spawning a fork.
+        if not consolidate:
+            final_summary = (
+                f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
+            )
+            llm_meta = {
+                "final": "",
+                "summary": "skipped (consolidation off)",
+                "model": "",
+                "provider": "",
+                "tool_calls": [],
+                "error": None,
+            }
+            elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            state2 = load_state()
+            state2["last_run_duration_seconds"] = elapsed
+            state2["last_run_summary"] = final_summary
+            try:
+                after_report = skill_usage.agent_created_report()
+            except Exception:
+                after_report = []
+            try:
+                report_path = _write_run_report(
+                    started_at=start,
+                    elapsed_seconds=elapsed,
+                    auto_counts=counts,
+                    auto_summary=auto_summary,
+                    before_report=before_report,
+                    before_names=before_names,
+                    after_report=after_report,
+                    llm_meta=llm_meta,
+                )
+                if report_path is not None:
+                    state2["last_report_path"] = str(report_path)
+            except Exception as e:
+                logger.debug("Curator report write failed: %s", e, exc_info=True)
+            save_state(state2)
+            if on_summary:
+                try:
+                    on_summary(f"curator: {final_summary}")
+                except Exception:
+                    pass
+            return
+
         llm_meta: Dict[str, Any] = {}
         try:
             candidate_list = _render_candidate_list()
@@ -1325,14 +1587,30 @@ def run_curator_review(
                     "error": None,
                 }
             else:
+                # When pruning built-ins is enabled, the candidate list now
+                # includes bundled skills. Override the default "don't touch
+                # bundled" rule for them — but only archiving is permitted, and
+                # hub-installed skills remain strictly off-limits.
+                builtins_note = ""
+                if get_prune_builtins():
+                    builtins_note = (
+                        "\n\nPRUNE-BUILTINS MODE IS ON: bundled built-in skills "
+                        "ARE included in the candidate list below and MAY be "
+                        "archived for staleness/irrelevance, overriding hard "
+                        "rule #1 for bundled skills ONLY. Hub-installed skills "
+                        "remain strictly off-limits. Treat a stale built-in the "
+                        "same as a stale agent-created skill: archive it (never "
+                        "delete). It will be restored on `hermes update` only if "
+                        "the user explicitly restores it."
+                    )
                 if dry_run:
                     prompt = (
                         f"{CURATOR_DRY_RUN_BANNER}\n\n"
-                        f"{CURATOR_REVIEW_PROMPT}\n\n"
+                        f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n"
                         f"{candidate_list}"
                     )
                 else:
-                    prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+                    prompt = f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n{candidate_list}"
                 llm_meta = _run_llm_review(prompt)
                 final_summary = (
                     f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
@@ -1348,6 +1626,22 @@ def run_curator_review(
                 "tool_calls": [],
                 "error": str(e),
             }
+
+        # Append the rename map (`old-name → umbrella`) to the user-visible
+        # summary so people don't have to dig into REPORT.md to find out where
+        # their skills went. Best-effort: classification is pure but never
+        # block the run on a formatting issue.
+        try:
+            rename_lines = _build_rename_summary(
+                before_names=before_names,
+                after_report=skill_usage.agent_created_report(),
+                tool_calls=llm_meta.get("tool_calls", []) or [],
+                model_final=llm_meta.get("final", "") or "",
+            )
+            if rename_lines:
+                final_summary = f"{final_summary}\n{rename_lines}"
+        except Exception as e:
+            logger.debug("Curator rename summary build failed: %s", e, exc_info=True)
 
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         state2 = load_state()
@@ -1398,6 +1692,52 @@ def run_curator_review(
     }
 
 
+def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
+    """Resolve provider/model and per-slot credentials for the curator review fork.
+
+    Same precedence as `_resolve_review_model()`. Non-empty ``api_key`` /
+    ``base_url`` from the active slot are returned as explicit overrides so
+    ``resolve_runtime_provider`` does not silently reuse the main chat
+    credential chain for a routed auxiliary model.
+    """
+    _main = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
+    _main_provider = _main.get("provider") or "auto"
+    _main_model = _main.get("default") or _main.get("model") or ""
+
+    # 1. Canonical aux task slot
+    _aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
+    _task_provider = (_cur_task.get("provider") or "").strip() or None
+    _task_model = (_cur_task.get("model") or "").strip() or None
+    if _task_provider and _task_provider != "auto" and _task_model:
+        return _ReviewRuntimeBinding(
+            _task_provider,
+            _task_model,
+            _strip_aux_credential(_cur_task.get("api_key")),
+            _strip_aux_credential(_cur_task.get("base_url")),
+        )
+
+    # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
+    _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
+    _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
+    _legacy_provider = _legacy.get("provider") or None
+    _legacy_model = _legacy.get("model") or None
+    if _legacy_provider and _legacy_model:
+        logger.info(
+            "curator: using deprecated curator.auxiliary.{provider,model} "
+            "config — please migrate to auxiliary.curator.{provider,model}"
+        )
+        return _ReviewRuntimeBinding(
+            str(_legacy_provider),
+            str(_legacy_model),
+            _strip_aux_credential(_legacy.get("api_key")),
+            _strip_aux_credential(_legacy.get("base_url")),
+        )
+
+    # 3. Fall through to the main chat model
+    return _ReviewRuntimeBinding(_main_provider, _main_model, None, None)
+
+
 def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
     """Pick (provider, model) for the curator review fork.
 
@@ -1413,32 +1753,8 @@ def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
       2. Legacy ``curator.auxiliary.{provider,model}`` when both are set
       3. Main ``model.{provider,default/model}`` pair
     """
-    _main = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
-    _main_provider = _main.get("provider") or "auto"
-    _main_model = _main.get("default") or _main.get("model") or ""
-
-    # 1. Canonical aux task slot
-    _aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-    _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
-    _task_provider = (_cur_task.get("provider") or "").strip() or None
-    _task_model = (_cur_task.get("model") or "").strip() or None
-    if _task_provider and _task_provider != "auto" and _task_model:
-        return _task_provider, _task_model
-
-    # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
-    _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
-    _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
-    _legacy_provider = _legacy.get("provider") or None
-    _legacy_model = _legacy.get("model") or None
-    if _legacy_provider and _legacy_model:
-        logger.info(
-            "curator: using deprecated curator.auxiliary.{provider,model} "
-            "config — please migrate to auxiliary.curator.{provider,model}"
-        )
-        return _legacy_provider, _legacy_model
-
-    # 3. Fall through to the main chat model
-    return _main_provider, _main_model
+    b = _resolve_review_runtime(cfg)
+    return b.provider, b.model
 
 
 def _run_llm_review(prompt: str) -> Dict[str, Any]:
@@ -1477,10 +1793,10 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     # arguments hits an auto-resolution path that fails for OAuth-only
     # providers and for pool-backed credentials.
     #
-    # `_resolve_review_model()` honors `auxiliary.curator.{provider,model}`
+    # `_resolve_review_runtime()` honors `auxiliary.curator.{provider,model,...}`
     # (canonical aux-task slot, wired through `hermes model` → auxiliary
     # picker and the dashboard Models tab), with a legacy fallback to
-    # `curator.auxiliary.{provider,model}`. See docs/user-guide/features/curator.md.
+    # `curator.auxiliary.{provider,model,...}`. See docs/user-guide/features/curator.md.
     _api_key = None
     _base_url = None
     _api_mode = None
@@ -1490,9 +1806,13 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
         _cfg = load_config()
-        _provider, _model_name = _resolve_review_model(_cfg)
+        _binding = _resolve_review_runtime(_cfg)
+        _provider, _model_name = _binding.provider, _binding.model
         _rp = resolve_runtime_provider(
-            requested=_provider, target_model=_model_name
+            requested=_provider,
+            target_model=_model_name,
+            explicit_api_key=_binding.explicit_api_key,
+            explicit_base_url=_binding.explicit_base_url,
         )
         _api_key = _rp.get("api_key")
         _base_url = _rp.get("base_url")
@@ -1526,13 +1846,21 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0
+        # Tag this fork as autonomous background curation so skill_manage's
+        # background-review write guard fires. Without this the fork inherits
+        # the default "assistant_tool" origin, is_background_review() is False,
+        # and the external/bundled/hub-installed skill_manage guards never
+        # trigger during the curation pass they exist to protect against.
+        # turn_context.py binds this onto the write-origin ContextVar at turn
+        # start (see agent/turn_context.py).
+        review_agent._memory_write_origin = "background_review"
 
         # Redirect the forked agent's stdout/stderr to /dev/null while it
         # runs so its tool-call chatter doesn't pollute the foreground
         # terminal. The background-thread runner also hides it; this
         # belt-and-suspenders path matters when a caller invokes
         # run_curator_review(synchronous=True) from the CLI.
-        with open(os.devnull, "w") as _devnull, \
+        with open(os.devnull, "w", encoding="utf-8") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
              contextlib.redirect_stderr(_devnull):
             conv_result = review_agent.run_conversation(user_message=prompt)

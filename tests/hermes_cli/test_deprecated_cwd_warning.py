@@ -1,7 +1,5 @@
 """Tests for warn_deprecated_cwd_env_vars() migration warning."""
 
-import os
-import pytest
 
 
 class TestDeprecatedCwdWarning:

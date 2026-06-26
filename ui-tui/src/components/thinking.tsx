@@ -6,7 +6,6 @@ import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import {
   buildSubagentTree,
-  fmtCost,
   fmtTokens,
   formatSummary as formatSpawnSummary,
   hotnessBucket,
@@ -327,7 +326,11 @@ function SubagentAccordion({
   const aggregate = node.aggregate
 
   const statusTone: 'dim' | 'error' | 'warn' =
-    item.status === 'failed' ? 'error' : item.status === 'interrupted' ? 'warn' : 'dim'
+    item.status === 'error' || item.status === 'failed'
+      ? 'error'
+      : item.status === 'interrupted' || item.status === 'timeout'
+        ? 'warn'
+        : 'dim'
 
   const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
   const goalLabel = item.goal || `Subagent ${item.index + 1}`
@@ -357,12 +360,6 @@ function SubagentAccordion({
     rollupBits.push(`${fmtTokens(localTokens)} tok`)
   }
 
-  const localCost = item.costUsd ?? 0
-
-  if (localCost > 0) {
-    rollupBits.push(fmtCost(localCost))
-  }
-
   const filesLocal = (item.filesWritten?.length ?? 0) + (item.filesRead?.length ?? 0)
 
   if (filesLocal > 0) {
@@ -374,12 +371,6 @@ function SubagentAccordion({
 
     if (subtreeTools > 0) {
       rollupBits.push(`+${subtreeTools}t sub`)
-    }
-
-    const subCost = aggregate.costUsd - localCost
-
-    if (subCost >= 0.01) {
-      rollupBits.push(`+${fmtCost(subCost)} sub`)
     }
 
     if (aggregate.activeCount > 0 && item.status !== 'running') {
@@ -852,7 +843,16 @@ export const ToolTrail = memo(function ToolTrail({
       color: t.color.text,
       key: tool.id,
       label,
-      details: [],
+      details: tool.verboseArgs
+        ? [
+            {
+              color: t.color.muted,
+              content: `Args:\n${boundedLiveRenderText(tool.verboseArgs)}`,
+              dimColor: true,
+              key: `${tool.id}-args`
+            }
+          ]
+        : [],
       content: (
         <>
           <Spinner color={t.color.accent} variant="tool" /> {label}
@@ -1060,6 +1060,10 @@ export const ToolTrail = memo(function ToolTrail({
             const branch: TreeBranch = index === groups.length - 1 ? 'last' : 'mid'
             const childRails = nextTreeRails(rails, branch)
             const hasInlineSubagents = inlineDelegateKey === group.key
+            // Surface the /agents hint the moment a delegate group appears —
+            // while it's still in-flight and before any subagent has
+            // registered — so users can open the live monitor immediately.
+            const isDelegateGroup = group.label.startsWith('Delegate Task')
 
             return (
               <Box flexDirection="column" key={group.key}>
@@ -1070,6 +1074,11 @@ export const ToolTrail = memo(function ToolTrail({
                     <>
                       <Text color={t.color.accent}>● </Text>
                       {toolLabel(group)}
+                      {isDelegateGroup ? (
+                        <Text color={t.color.statusFg} dim>
+                          {'  (/agents to monitor)'}
+                        </Text>
+                      ) : null}
                     </>
                   }
                   rails={rails}

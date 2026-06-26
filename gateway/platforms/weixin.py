@@ -23,6 +23,7 @@ import re
 import secrets
 import struct
 import tempfile
+import textwrap
 import time
 import uuid
 from datetime import datetime
@@ -31,6 +32,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
+
+WEIXIN_COPY_LINE_WIDTH = 120
 
 try:
     import aiohttp
@@ -375,12 +378,16 @@ async def _api_post(
 ) -> Dict[str, Any]:
     body = _json_dumps({**payload, "base_info": _base_info()})
     url = f"{base_url.rstrip('/')}/{endpoint}"
-    timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
-    async with session.post(url, data=body, headers=_headers(token, body), timeout=timeout) as response:
-        raw = await response.text()
-        if not response.ok:
-            raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+    # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+    # "Timeout context manager should be used inside a task" errors when
+    # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+    async def _do() -> Dict[str, Any]:
+        async with session.post(url, data=body, headers=_headers(token, body)) as response:
+            raw = await response.text()
+            if not response.ok:
+                raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
+            return json.loads(raw)
+    return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
 
 async def _api_get(
@@ -395,12 +402,16 @@ async def _api_get(
         "iLink-App-Id": ILINK_APP_ID,
         "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
     }
-    timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
-    async with session.get(url, headers=headers, timeout=timeout) as response:
-        raw = await response.text()
-        if not response.ok:
-            raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+    # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+    # "Timeout context manager should be used inside a task" errors when
+    # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+    async def _do() -> Dict[str, Any]:
+        async with session.get(url, headers=headers) as response:
+            raw = await response.text()
+            if not response.ok:
+                raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
+            return json.loads(raw)
+    return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
 
 async def _get_updates(
@@ -548,17 +559,21 @@ async def _upload_ciphertext(
     Accepts either a constructed CDN URL (from upload_param) or a direct
     upload_full_url — both use POST with the raw ciphertext as the body.
     """
-    timeout = aiohttp.ClientTimeout(total=120)
-    async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}, timeout=timeout) as response:
-        if response.status == 200:
-            encrypted_param = response.headers.get("x-encrypted-param")
-            if encrypted_param:
-                await response.read()
-                return encrypted_param
+    # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+    # "Timeout context manager should be used inside a task" errors when
+    # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+    async def _do_upload() -> str:
+        async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}) as response:
+            if response.status == 200:
+                encrypted_param = response.headers.get("x-encrypted-param")
+                if encrypted_param:
+                    await response.read()
+                    return encrypted_param
+                raw = await response.text()
+                raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
             raw = await response.text()
-            raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
-        raw = await response.text()
-        raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+            raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+    return await asyncio.wait_for(_do_upload(), timeout=120)
 
 
 async def _download_bytes(
@@ -567,10 +582,13 @@ async def _download_bytes(
     url: str,
     timeout_seconds: float = 60.0,
 ) -> bytes:
-    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-    async with session.get(url, timeout=timeout) as response:
-        response.raise_for_status()
-        return await response.read()
+    # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+    # "Timeout context manager should be used inside a task" errors.
+    async def _do_download() -> bytes:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            return await response.read()
+    return await asyncio.wait_for(_do_download(), timeout=timeout_seconds)
 
 
 _WEIXIN_CDN_ALLOWLIST: frozenset[str] = frozenset(
@@ -595,7 +613,7 @@ def _assert_weixin_cdn_url(url: str) -> None:
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"Unparseable media URL: {url!r}") from exc
 
-    if scheme not in ("http", "https"):
+    if scheme not in {"http", "https"}:
         raise ValueError(
             f"Media URL has disallowed scheme {scheme!r}; only http/https are permitted."
         )
@@ -648,52 +666,6 @@ def _split_table_row(line: str) -> List[str]:
     return [cell.strip() for cell in row.split("|")]
 
 
-def _rewrite_headers_for_weixin(line: str) -> str:
-    match = _HEADER_RE.match(line)
-    if not match:
-        return line.rstrip()
-    level = len(match.group(1))
-    title = match.group(2).strip()
-    if level == 1:
-        return f"【{title}】"
-    return f"**{title}**"
-
-
-def _rewrite_table_block_for_weixin(lines: List[str]) -> str:
-    if len(lines) < 2:
-        return "\n".join(lines)
-    headers = _split_table_row(lines[0])
-    body_rows = [_split_table_row(line) for line in lines[2:] if line.strip()]
-    if not headers or not body_rows:
-        return "\n".join(lines)
-
-    formatted_rows: List[str] = []
-    for row in body_rows:
-        pairs = []
-        for idx, header in enumerate(headers):
-            if idx >= len(row):
-                break
-            label = header or f"Column {idx + 1}"
-            value = row[idx].strip()
-            if value:
-                pairs.append((label, value))
-        if not pairs:
-            continue
-        if len(pairs) == 1:
-            label, value = pairs[0]
-            formatted_rows.append(f"- {label}: {value}")
-            continue
-        if len(pairs) == 2:
-            label, value = pairs[0]
-            other_label, other_value = pairs[1]
-            formatted_rows.append(f"- {label}: {value}")
-            formatted_rows.append(f"  {other_label}: {other_value}")
-            continue
-        summary = " | ".join(f"{label}: {value}" for label, value in pairs)
-        formatted_rows.append(f"- {summary}")
-    return "\n".join(formatted_rows) if formatted_rows else "\n".join(lines)
-
-
 def _normalize_markdown_blocks(content: str) -> str:
     lines = content.splitlines()
     result: List[str] = []
@@ -722,6 +694,46 @@ def _normalize_markdown_blocks(content: str) -> str:
         result.append(line)
 
     return "\n".join(result).strip()
+
+
+def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
+    """Wrap long display lines that are hard to copy in WeChat clients."""
+    if not content:
+        return content
+
+    wrapped: List[str] = []
+    in_code_block = False
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if _FENCE_RE.match(stripped):
+            in_code_block = not in_code_block
+            wrapped.append(line)
+            continue
+
+        if (
+            in_code_block
+            or len(line) <= WEIXIN_COPY_LINE_WIDTH
+            or not stripped
+            or stripped.startswith("|")
+            or _TABLE_RULE_RE.match(stripped)
+        ):
+            wrapped.append(line)
+            continue
+
+        wrapped_lines = textwrap.wrap(
+            line,
+            width=WEIXIN_COPY_LINE_WIDTH,
+            break_long_words=False,
+            break_on_hyphens=False,
+            replace_whitespace=False,
+            drop_whitespace=True,
+        )
+        wrapped.extend(wrapped_lines or [line])
+
+    return "\n".join(wrapped).strip()
 
 
 def _split_markdown_blocks(content: str) -> List[str]:
@@ -933,7 +945,7 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
             ref = item.get("ref_msg") or {}
             ref_item = ref.get("message_item") or {}
             ref_type = ref_item.get("type")
-            if ref_type in (ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE):
+            if ref_type in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
                 title = ref.get("title") or ""
                 prefix = f"[引用媒体: {title}]\n" if title else "[引用媒体]\n"
                 return f"{prefix}{text}".strip()
@@ -1037,11 +1049,11 @@ async def qr_login(
         except Exception as _qr_exc:
             print(f"（终端二维码渲染失败: {_qr_exc}，请直接打开上面的二维码链接）")
 
-        deadline = time.time() + timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
         current_base_url = ILINK_BASE_URL
         refresh_count = 0
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             try:
                 status_resp = await _api_get(
                     session,
@@ -1126,6 +1138,9 @@ async def qr_login(
 class WeixinAdapter(BasePlatformAdapter):
     """Native Hermes adapter for Weixin personal accounts."""
 
+    supports_code_blocks = True  # Weixin renders fenced code blocks
+    splits_long_messages = True  # send() chunks via _split_text()
+
     MAX_MESSAGE_LENGTH = 2000
 
     # WeChat does not support editing sent messages — streaming must use the
@@ -1160,6 +1175,24 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("send_chunk_retry_delay_seconds")
             or os.getenv("WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS", "1.0")
         )
+        self._send_text_gate = asyncio.Lock()
+        self._rate_limit_circuit_threshold = max(
+            1,
+            int(
+                extra.get("rate_limit_circuit_threshold")
+                or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_THRESHOLD", "1")
+            ),
+        )
+        self._rate_limit_circuit_window_seconds = float(
+            extra.get("rate_limit_circuit_window_seconds")
+            or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_WINDOW_SECONDS", "30.0")
+        )
+        self._rate_limit_circuit_open_seconds = float(
+            extra.get("rate_limit_circuit_open_seconds")
+            or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_OPEN_SECONDS", "30.0")
+        )
+        self._rate_limit_circuit_until = 0.0
+        self._rate_limit_events: List[float] = []
         self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "open")).strip().lower()
         self._group_policy = str(extra.get("group_policy") or os.getenv("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
         allow_from = extra.get("allow_from")
@@ -1176,11 +1209,47 @@ class WeixinAdapter(BasePlatformAdapter):
             default=False,
         )
 
+        # Text debounce batching (mirrors Telegram adapter pattern).
+        # iLink delivers messages individually, so rapid multi-message
+        # bursts (forwarded batches, paste-splits) each trigger a
+        # separate agent invocation.  Default 3s delay / 5s split delay
+        # are tuned for iLink's typical delivery cadence.  Tunable via
+        # config.yaml under
+        # ``gateway.platforms.weixin.extra.text_batch_delay_seconds`` /
+        # ``text_batch_split_delay_seconds``.
+        self._text_batch_delay_seconds = self._coerce_float_extra(
+            "text_batch_delay_seconds", 3.0
+        )
+        self._text_batch_split_delay_seconds = self._coerce_float_extra(
+            "text_batch_split_delay_seconds", 5.0
+        )
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
             if persisted:
                 self._token = str(persisted.get("token") or "").strip()
                 self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
+
+    def _coerce_float_extra(self, key: str, default: float) -> float:
+        """Read a float from ``config.extra``, guarding against bad/non-finite values.
+
+        The result is fed directly to ``asyncio.sleep()``, so NaN/Inf and
+        unparseable values fall back to ``default``.
+        """
+        import math
+
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return float(default)
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if not math.isfinite(parsed) or parsed < 0:
+            return float(default)
+        return parsed
 
     @staticmethod
     def _coerce_list(value: Any) -> List[str]:
@@ -1192,7 +1261,7 @@ class WeixinAdapter(BasePlatformAdapter):
             return [str(item).strip() for item in value if str(item).strip()]
         return [str(value).strip()] if str(value).strip() else []
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_weixin_requirements():
             message = "Weixin startup failed: aiohttp and cryptography are required"
             self._set_fatal_error("weixin_missing_dependency", message, retryable=False)
@@ -1216,7 +1285,12 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
 
         self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
-        self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        # Disable aiohttp's built-in ClientTimeout (total=None) to prevent
+        # "Timeout context manager should be used inside a task" errors when
+        # send() is invoked via asyncio.run_coroutine_threadsafe() from cron.
+        # Timeout is managed externally via asyncio.wait_for() in _api_post/_api_get.
+        _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
+        self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -1238,6 +1312,11 @@ class WeixinAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         _LIVE_ADAPTERS.pop(self._token, None)
         self._running = False
+        for task in self._pending_text_batch_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._pending_text_batches.clear()
+        self._pending_text_batch_tasks.clear()
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
@@ -1276,7 +1355,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
                 ret = response.get("ret", 0)
                 errcode = response.get("errcode", 0)
-                if ret not in (0, None) or errcode not in (0, None):
+                if ret not in {0, None} or errcode not in {0, None}:
                     if (ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE
                             or _is_stale_session_ret(ret, errcode, response.get("errmsg"))):
                         logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
@@ -1333,6 +1412,15 @@ class WeixinAdapter(BasePlatformAdapter):
         if message_id and self._dedup.is_duplicate(message_id):
             return
 
+        # Secondary content-fingerprint dedup for text messages
+        item_list = message.get("item_list") or []
+        text = _extract_text(item_list)
+        if text:
+            content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
+            if self._dedup.is_duplicate(content_key):
+                logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
+                return
+
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
             if self._group_policy == "disabled":
@@ -1347,8 +1435,6 @@ class WeixinAdapter(BasePlatformAdapter):
             self._token_store.set(self._account_id, sender_id, context_token)
         asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
 
-        item_list = message.get("item_list") or []
-        text = _extract_text(item_list)
         media_paths: List[str] = []
         media_types: List[str] = []
 
@@ -1379,7 +1465,10 @@ class WeixinAdapter(BasePlatformAdapter):
             timestamp=datetime.now(),
         )
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
-        await self.handle_message(event)
+        if event.message_type == MessageType.TEXT:
+            self._enqueue_text_event(event)
+        else:
+            await self.handle_message(event)
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         if self._dm_policy == "disabled":
@@ -1387,6 +1476,76 @@ class WeixinAdapter(BasePlatformAdapter):
         if self._dm_policy == "allowlist":
             return sender_id in self._allow_from
         return True
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Weixin gates DM/group access at intake via dm_policy/group_policy."""
+        return True
+
+    # ------------------------------------------------------------------
+    # Text debounce batching
+    # ------------------------------------------------------------------
+
+    _SPLIT_THRESHOLD = 1800  # iLink chunks at ~2048 chars
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer.
+
+        When users forward multiple messages or send rapid-fire texts
+        via WeChat, each arrives as a separate iLink message. This
+        concatenates them and waits for a short quiet period before
+        dispatching the combined message.
+        """
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for quiet period then dispatch aggregated text."""
+        current_task = asyncio.current_task()
+        try:
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            if last_len >= self._SPLIT_THRESHOLD:
+                delay = self._text_batch_split_delay_seconds
+            else:
+                delay = self._text_batch_delay_seconds
+            await asyncio.sleep(delay)
+            if self._pending_text_batch_tasks.get(key) is not current_task:
+                return
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
 
     async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:
         item_type = item.get("type")
@@ -1507,6 +1666,37 @@ class WeixinAdapter(BasePlatformAdapter):
             content, self.MAX_MESSAGE_LENGTH, self._split_multiline_messages,
         )
 
+    def _rate_limit_cooldown_remaining(self) -> float:
+        return max(0.0, self._rate_limit_circuit_until - time.monotonic())
+
+    def _rate_limit_error(self) -> RuntimeError:
+        return RuntimeError(
+            f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s"
+        )
+
+    def _open_rate_limit_circuit(self) -> None:
+        if self._rate_limit_circuit_open_seconds <= 0:
+            return
+        self._rate_limit_circuit_until = max(
+            self._rate_limit_circuit_until,
+            time.monotonic() + self._rate_limit_circuit_open_seconds,
+        )
+
+    def _record_rate_limit_event(self) -> bool:
+        """Record a genuine iLink rate limit and return True if breaker opened."""
+        now = time.monotonic()
+        window_start = now - self._rate_limit_circuit_window_seconds
+        self._rate_limit_events = [ts for ts in self._rate_limit_events if ts >= window_start]
+        self._rate_limit_events.append(now)
+        if len(self._rate_limit_events) >= self._rate_limit_circuit_threshold:
+            self._open_rate_limit_circuit()
+            return self._rate_limit_cooldown_remaining() > 0
+        return False
+
+    def _reset_rate_limit_circuit(self) -> None:
+        self._rate_limit_events.clear()
+        self._rate_limit_circuit_until = 0.0
+
     async def _send_text_chunk(
         self,
         *,
@@ -1522,9 +1712,28 @@ class WeixinAdapter(BasePlatformAdapter):
         degraded fallback, which keeps cron-initiated push messages working
         even when no user message has refreshed the session recently.
         """
+        async with self._send_text_gate:
+            await self._send_text_chunk_locked(
+                chat_id=chat_id,
+                chunk=chunk,
+                context_token=context_token,
+                client_id=client_id,
+            )
+
+    async def _send_text_chunk_locked(
+        self,
+        *,
+        chat_id: str,
+        chunk: str,
+        context_token: Optional[str],
+        client_id: str,
+    ) -> None:
+        """Send a text chunk while holding the adapter-wide outbound text gate."""
         last_error: Optional[Exception] = None
         retried_without_token = False
         for attempt in range(self._send_chunk_retries + 1):
+            if self._rate_limit_cooldown_remaining() > 0:
+                raise self._rate_limit_error()
             try:
                 resp = await _send_message(
                     self._send_session,
@@ -1539,7 +1748,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 if resp and isinstance(resp, dict):
                     ret = resp.get("ret")
                     errcode = resp.get("errcode")
-                    if (ret is not None and ret not in (0,)) or (errcode is not None and errcode not in (0,)):
+                    if (ret is not None and ret not in {0,}) or (errcode is not None and errcode not in {0,}):
                         is_session_expired = (
                             ret == SESSION_EXPIRED_ERRCODE
                             or errcode == SESSION_EXPIRED_ERRCODE
@@ -1570,6 +1779,9 @@ class WeixinAdapter(BasePlatformAdapter):
                             last_error = RuntimeError(
                                 f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
                             )
+                            if self._record_rate_limit_event():
+                                last_error = self._rate_limit_error()
+                                break
                             if attempt >= self._send_chunk_retries:
                                 break
                             wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
@@ -1583,6 +1795,7 @@ class WeixinAdapter(BasePlatformAdapter):
                         raise RuntimeError(
                             f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
                         )
+                self._reset_rate_limit_circuit()
                 return
             except Exception as exc:
                 last_error = exc
@@ -1617,8 +1830,10 @@ class WeixinAdapter(BasePlatformAdapter):
 
         # Extract MEDIA: tags and bare local file paths before text delivery.
         media_files, cleaned_content = self.extract_media(content)
+        media_files = self.filter_media_delivery_paths(media_files)
         _, image_cleaned = self.extract_images(cleaned_content)
         local_files, final_content = self.extract_local_files(image_cleaned)
+        local_files = self.filter_local_delivery_paths(local_files)
 
         _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
@@ -1668,10 +1883,47 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
 
+    async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
+        """Return a valid typing ticket, refreshing from getConfig if expired.
+
+        The iLink typing ticket has a 600-second TTL.  When a long-running
+        session exceeds that window the cached ticket evicts, and both
+        ``send_typing`` and ``stop_typing`` silently no-op — leaving the
+        WeChat client stuck showing the typing indicator forever.  This
+        method transparently refreshes the ticket so the stop signal can
+        always be delivered.
+        """
+        ticket = self._typing_cache.get(chat_id)
+        if ticket:
+            return ticket
+        if not self._send_session or not self._token:
+            return None
+        # Ticket expired or never fetched — refresh via getConfig.
+        # Use the most recent context_token for this peer if available.
+        context_token = self._token_store.get(self._account_id, chat_id)
+        try:
+            response = await _get_config(
+                self._send_session,
+                base_url=self._base_url,
+                token=self._token,
+                user_id=chat_id,
+                context_token=context_token,
+            )
+            typing_ticket = str(response.get("typing_ticket") or "")
+            if typing_ticket:
+                self._typing_cache.set(chat_id, typing_ticket)
+                return typing_ticket
+        except Exception as exc:
+            logger.debug(
+                "[%s] typing ticket refresh failed for %s: %s",
+                self.name, _safe_id(chat_id), exc,
+            )
+        return None
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._send_session or not self._token:
             return
-        typing_ticket = self._typing_cache.get(chat_id)
+        typing_ticket = await self._ensure_typing_ticket(chat_id)
         if not typing_ticket:
             return
         try:
@@ -1689,7 +1941,7 @@ class WeixinAdapter(BasePlatformAdapter):
     async def stop_typing(self, chat_id: str) -> None:
         if not self._send_session or not self._token:
             return
-        typing_ticket = self._typing_cache.get(chat_id)
+        typing_ticket = await self._ensure_typing_ticket(chat_id)
         if not typing_ticket:
             return
         try:
@@ -1817,10 +2069,14 @@ class WeixinAdapter(BasePlatformAdapter):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
 
         assert self._send_session is not None
-        async with self._send_session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-            response.raise_for_status()
-            data = await response.read()
-            suffix = Path(url.split("?", 1)[0]).suffix or ".bin"
+        # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+        # "Timeout context manager should be used inside a task" errors.
+        async def _do_fetch():
+            async with self._send_session.get(url) as response:
+                response.raise_for_status()
+                return await response.read()
+        data = await asyncio.wait_for(_do_fetch(), timeout=30)
+        suffix = Path(url.split("?", 1)[0]).suffix or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
             handle.write(data)
             return handle.name
@@ -1999,7 +2255,7 @@ class WeixinAdapter(BasePlatformAdapter):
     def format_message(self, content: Optional[str]) -> str:
         if content is None:
             return ""
-        return _normalize_markdown_blocks(content)
+        return _wrap_copy_friendly_lines_for_weixin(_normalize_markdown_blocks(content))
 
 
 async def send_weixin_direct(
@@ -2030,7 +2286,9 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    if (live_adapter is not None and send_session is not None
+            and not send_session.closed
+            and send_session._loop is asyncio.get_running_loop()):
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:

@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
@@ -125,6 +127,30 @@ class TestScanSkillCommands:
         assert "/knowledge-brain" in result
         assert result["/knowledge-brain"]["name"] == "knowledge-brain"
 
+    def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
+        """Slash commands should load skills symlinked under the local skills dir."""
+        external_root = tmp_path / "external"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        real_skill_dir = _make_skill(
+            external_root,
+            "impeccable",
+            body="Apply impeccable design craft.",
+        )
+        symlink_path = skills_root / "impeccable"
+        try:
+            symlink_path.symlink_to(real_skill_dir, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            result = scan_skill_commands()
+            message = build_skill_invocation_message("/impeccable")
+
+        assert "/impeccable" in result
+        assert message is not None
+        assert "Apply impeccable design craft." in message
+
     def test_get_skill_commands_rescans_when_platform_scope_changes(self, tmp_path):
         """Platform-specific disabled-skill caches must not leak across platforms.
 
@@ -176,6 +202,137 @@ class TestScanSkillCommands:
 
             assert "/telegram-only" not in telegram_again
             assert "/discord-only" in telegram_again
+
+    def test_get_skill_commands_rescans_when_session_platform_changes(self, tmp_path):
+        """``HERMES_SESSION_PLATFORM`` from the gateway session context must
+        also trigger a rescan, not just ``HERMES_PLATFORM`` (#14536).
+
+        Exercises the real ContextVar path: the gateway sets the active
+        adapter via ``set_session_vars(platform=...)`` and the resolver
+        reads it via ``get_session_env``. Setting ``HERMES_SESSION_PLATFORM``
+        in ``os.environ`` would only test ``get_session_env``'s legacy
+        env-var fallback — a regression that swapped ``get_session_env``
+        for plain ``os.getenv`` would still pass while breaking concurrent
+        gateway sessions, which is the bug the ContextVar plumbing exists
+        to prevent in the first place.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+        from gateway.session_context import (
+            clear_session_vars,
+            get_session_env,
+            set_session_vars,
+        )
+
+        def _disabled_skills():
+            platform = (
+                os.getenv("HERMES_PLATFORM")
+                or get_session_env("HERMES_SESSION_PLATFORM")
+            )
+            if platform == "telegram":
+                return {"telegram-only"}
+            if platform == "discord":
+                return {"discord-only"}
+            return set()
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+        ):
+            _make_skill(tmp_path, "shared")
+            _make_skill(tmp_path, "telegram-only")
+            _make_skill(tmp_path, "discord-only")
+
+            # First simulated gateway request: telegram handler.
+            tokens = set_session_vars(platform="telegram")
+            try:
+                telegram_commands = dict(get_skill_commands())
+            finally:
+                clear_session_vars(tokens)
+
+            assert "/shared" in telegram_commands
+            assert "/discord-only" in telegram_commands
+            assert "/telegram-only" not in telegram_commands
+
+            # Second simulated gateway request: discord handler. The cache
+            # was just populated for telegram; the rescan trigger must fire
+            # off the ContextVar change, not just an env-var change.
+            tokens = set_session_vars(platform="discord")
+            try:
+                discord_commands = dict(get_skill_commands())
+            finally:
+                clear_session_vars(tokens)
+
+            assert "/shared" in discord_commands
+            assert "/telegram-only" in discord_commands
+            assert "/discord-only" not in discord_commands
+
+    def test_get_skill_commands_rescans_when_leaving_platform_scope(self, tmp_path, monkeypatch):
+        """Returning to no-platform-scope (CLI / cron / RL) after a gateway
+        session must rescan so the unfiltered view is repopulated (#14536).
+
+        A long-lived process running both gateway sessions and bare CLI
+        invocations would otherwise stay stuck on whichever platform's
+        filter was last applied.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+
+        def _disabled_skills():
+            if os.getenv("HERMES_PLATFORM") == "telegram":
+                return {"telegram-only"}
+            return set()
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+        ):
+            _make_skill(tmp_path, "shared")
+            _make_skill(tmp_path, "telegram-only")
+
+            monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+            telegram_commands = dict(get_skill_commands())
+            assert "/telegram-only" not in telegram_commands
+
+            # Drop back to no platform scope — bare CLI / cron / RL rollouts.
+            monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+            bare_commands = dict(get_skill_commands())
+
+            assert "/telegram-only" in bare_commands
+            assert sc_mod._skill_commands_platform is None
+
+    def test_get_skill_commands_does_not_rescan_when_platform_unchanged(self, tmp_path):
+        """Same-platform back-to-back calls must hit the cache, not rescan.
+
+        The rescan trigger is *change* in platform scope, not "always
+        re-resolve." A gateway serving consecutive telegram requests must
+        not pay the scan cost for each one.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}),
+        ):
+            _make_skill(tmp_path, "shared")
+            # Prime the cache.
+            get_skill_commands()
+            # Spy on rescans during the subsequent same-platform calls.
+            with patch(
+                "agent.skill_commands.scan_skill_commands",
+                wraps=sc_mod.scan_skill_commands,
+            ) as scan_spy:
+                get_skill_commands()
+                get_skill_commands()
+                get_skill_commands()
+            assert scan_spy.call_count == 0
 
 
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):
@@ -335,6 +492,14 @@ Generate some audio.
             msg = build_skill_invocation_message("/nonexistent")
         assert msg is None
 
+    def test_returns_none_when_skill_load_fails(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "broken-skill")
+            scan_skill_commands()
+            with patch("agent.skill_commands._load_skill_payload", return_value=None):
+                msg = build_skill_invocation_message("/broken-skill", "do stuff")
+        assert msg is None
+
     def test_uses_shared_skill_loader_for_secure_setup(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
         calls = []
@@ -391,10 +556,11 @@ Generate some audio.
             raising=False,
         )
 
-        with patch.dict(
-            os.environ, {"HERMES_SESSION_PLATFORM": "telegram"}, clear=False
-        ):
-            with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            from gateway.session_context import clear_session_vars, set_session_vars
+
+            tokens = set_session_vars(platform="telegram")
+            try:
                 _make_skill(
                     tmp_path,
                     "test-skill",
@@ -406,6 +572,8 @@ Generate some audio.
                 )
                 scan_skill_commands()
                 msg = build_skill_invocation_message("/test-skill", "do stuff")
+            finally:
+                clear_session_vars(tokens)
 
         assert msg is not None
         assert "local cli" in msg.lower()

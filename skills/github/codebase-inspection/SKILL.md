@@ -4,6 +4,7 @@ description: "Inspect codebases w/ pygount: LOC, languages, ratios."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [LOC, Code Analysis, pygount, Codebase, Metrics, Repository]

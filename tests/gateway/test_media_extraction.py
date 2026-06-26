@@ -5,6 +5,10 @@ Verifies that MEDIA tags (e.g., from TTS tool) are only extracted from
 messages in the CURRENT turn, not from the full conversation history.
 This prevents voice messages from accumulating and being sent multiple
 times per reply. (Regression test for #160)
+
+Also covers #34608: a stale MEDIA: path emitted by an execute_code /
+make_image tool several turns earlier must not leak onto a later
+text-only reply, even when the path-based dedup set fails to capture it.
 """
 
 import pytest
@@ -43,6 +47,37 @@ def extract_media_tags_fixed(result_messages, history_len):
     return media_tags, has_voice_directive
 
 
+def extract_media_tags_production(result_messages, history_len, history_media_paths):
+    """Mirror of the production scan in gateway/run.py after the #34608 fix.
+
+    Primary guard: scope the scan to the current turn via ``history_len``
+    slicing (matching how ``agent_history`` is passed as
+    ``conversation_history`` into ``run_conversation``). Secondary guard:
+    path-based dedup against ``history_media_paths`` (the #160 compression-safe
+    fallback, also used when compression shrinks the list below history_len).
+    """
+    media_tags = []
+    has_voice_directive = False
+
+    if len(result_messages) >= history_len and history_len:
+        scan_msgs = result_messages[history_len:]
+    else:
+        scan_msgs = result_messages
+
+    for msg in scan_msgs:
+        if msg.get("role") == "tool" or msg.get("role") == "function":
+            content = msg.get("content", "")
+            if "MEDIA:" in content:
+                for match in re.finditer(r'MEDIA:(\S+)', content):
+                    path = match.group(1).strip().rstrip('",}')
+                    if path and path not in history_media_paths:
+                        media_tags.append(f"MEDIA:{path}")
+                if "[[audio_as_voice]]" in content:
+                    has_voice_directive = True
+
+    return media_tags, has_voice_directive
+
+
 def extract_media_tags_broken(result_messages):
     """
     The BROKEN behavior: extract MEDIA tags from ALL messages including history.
@@ -67,7 +102,226 @@ def extract_media_tags_broken(result_messages):
 
 class TestMediaExtraction:
     """Tests for MEDIA tag extraction from tool results."""
-    
+
+    def test_gateway_auto_append_ignores_media_examples_in_skill_docs(self):
+        """Skill/documentation examples must not be appended as real attachments."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "How should I format gateway media?"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_skill", "function": {"name": "skill_view"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_skill",
+                "content": """
+Recommended pattern:
+```text
+MEDIA:/absolute/path/to/image.png
+```
+Second message:
+```text
+caption
+```
+""",
+            },
+            {"role": "assistant", "content": "Use a standalone media message."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == []
+        assert voice is False
+
+    def test_gateway_auto_append_keeps_real_tts_media_tag(self):
+        """TTS tool media tags are still auto-appended when the model omits them."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Say this as audio"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_tts", "function": {"name": "text_to_speech"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_tts",
+                "content": '{"success": true, "media_tag": "[[audio_as_voice]]\\nMEDIA:/tmp/voice.ogg"}',
+            },
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/voice.ogg"]
+        assert voice is True
+
+    def test_gateway_auto_append_image_generate_json_path(self):
+        """image_generate returns a local path in JSON (no MEDIA: tag); it is
+        auto-appended so delivery doesn't depend on the model restating it."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make me a cat"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_img", "function": {"name": "image_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": '{"success": true, "image": "/tmp/gen/cat.png", "agent_visible_image": "/tmp/gen/cat.png"}',
+            },
+            {"role": "assistant", "content": "Here's your cat."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/gen/cat.png"]
+        assert voice is False
+
+    def test_gateway_auto_append_image_generate_prefers_host_path(self):
+        """When host and sandbox paths differ, the host-deliverable path wins."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make me a dog"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_img", "function": {"name": "image_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": '{"success": true, "host_image": "/host/dog.jpg", "image": "/host/dog.jpg", "agent_visible_image": "/sandbox/dog.jpg"}',
+            },
+        ]
+
+        tags, _ = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/host/dog.jpg"]
+
+    def test_gateway_auto_append_image_generate_failure_and_url_ignored(self):
+        """Failed generations and remote URLs are not auto-delivered."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        def _img_msgs(content):
+            return [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "c", "function": {"name": "image_generate"}}
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c", "content": content},
+            ]
+
+        # Failed generation
+        tags, _ = _collect_auto_append_media_tags(
+            _img_msgs('{"success": false, "image": null, "error": "boom"}'),
+            history_offset=0,
+        )
+        assert tags == []
+
+        # Remote URL is not a local file path
+        tags, _ = _collect_auto_append_media_tags(
+            _img_msgs('{"success": true, "image": "https://fal.media/x/cat.png"}'),
+            history_offset=0,
+        )
+        assert tags == []
+
+    def test_gateway_auto_append_image_generate_dedupes_history(self):
+        """A generated image path already in history is not re-sent."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c", "function": {"name": "image_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "content": '{"success": true, "image": "/tmp/gen/cat.png"}',
+            },
+        ]
+
+        tags, _ = _collect_auto_append_media_tags(
+            messages, history_offset=0, history_media_paths={"/tmp/gen/cat.png"}
+        )
+        assert tags == []
+
+    def test_collect_history_media_paths_includes_image_generate_json(self):
+        """Regression for #46627: the history media-path collector must pick up
+        image_generate JSON-payload paths (no MEDIA: tag), not just MEDIA:
+        text tags. Otherwise, after a compression boundary the auto-append
+        fallback rescans full history, finds the generated path absent from
+        the dedup set, and re-emits the same MEDIA tag every turn.
+        """
+        from gateway.run import _collect_history_media_paths
+
+        history = [
+            {"role": "user", "content": "make a cat"},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "c", "function": {"name": "image_generate"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "content": '{"success": true, "image": "/tmp/gen/cat.png"}',
+            },
+            # A separate MEDIA: text tag from another tool, to confirm both shapes.
+            {
+                "role": "tool",
+                "tool_call_id": "d",
+                "content": "Saved MEDIA:/tmp/voice/note.ogg done",
+            },
+        ]
+        paths = _collect_history_media_paths(history)
+        assert "/tmp/gen/cat.png" in paths  # JSON-payload path (the bug)
+        assert "/tmp/voice/note.ogg" in paths  # MEDIA: text path (already worked)
+
+    def test_image_generate_not_reemitted_after_compression(self):
+        """End-to-end of the #46627 fix: collect history paths, then the
+        compression-fallback rescan (history_offset stale) must dedup the
+        generated image against them — no re-emission."""
+        from gateway.run import (
+            _collect_auto_append_media_tags,
+            _collect_history_media_paths,
+        )
+
+        history = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "c", "function": {"name": "image_generate"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "content": '{"success": true, "image": "/tmp/gen/dog.png"}',
+            },
+        ]
+        history_paths = _collect_history_media_paths(history)
+
+        # Simulate the post-compression fallback: history_offset is stale
+        # (larger than the shrunken message list), so the collector rescans
+        # the full list. With the dedup set populated, the already-delivered
+        # image must NOT be re-emitted.
+        tags, _ = _collect_auto_append_media_tags(
+            history, history_offset=9999, history_media_paths=history_paths
+        )
+        assert tags == [], f"generated image re-emitted after compression: {tags}"
+
+
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""
         # Simulate conversation history with a TTS call from a previous turn
@@ -178,6 +432,105 @@ class TestMediaExtraction:
         seen = set()
         unique = [t for t in tags if t not in seen and not seen.add(t)]
         assert len(unique) == 2  # After dedup: same.ogg and different.ogg
+
+
+class TestStaleToolMediaLeak:
+    """Regression tests for #34608.
+
+    A MEDIA: path emitted by an execute_code / make_image tool several turns
+    earlier remains in the full conversation message list. A later text-only
+    reply (zero MEDIA directives) must NOT attach that stale image.
+
+    The production code previously relied solely on path-based dedup against
+    paths reconstructed from the replayable transcript. When that
+    reconstruction does not byte-match the in-memory tool content (timestamp
+    stripping, observed-context withholding, compression rewrites), the stale
+    path is absent from the dedup set and leaks. Turn-scoped slicing closes
+    this class of bug deterministically.
+    """
+
+    def test_stale_execute_code_media_not_attached_to_text_only_reply(self):
+        """The exact #34608 scenario: make_image cover from an earlier turn."""
+        # Prior turn generated an image via execute_code stdout.
+        history = [
+            {"role": "user", "content": "Make a cover image"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "1", "function": {"name": "execute_code"}}]},
+            {"role": "tool", "tool_call_id": "1",
+             "content": "Generating cover...\nMEDIA:/tmp/seosmi_cover.png\nDone."},
+            {"role": "assistant", "content": "Here is your cover."},
+        ]
+        # Current turn: plain text status update, zero MEDIA directives.
+        new_messages = [
+            {"role": "user", "content": "What skill version am I on?"},
+            {"role": "assistant", "content": "You're on v0.15.1."},
+        ]
+        all_messages = history + new_messages
+        history_len = len(history)
+
+        # Simulate the dedup set FAILING to capture the stale path (the real
+        # #34608 condition: replayable-history reconstruction diverged from
+        # the in-memory tool content, so the path is not in the set).
+        history_media_paths = set()
+
+        tags, voice = extract_media_tags_production(
+            all_messages, history_len, history_media_paths
+        )
+        assert tags == [], (
+            "Stale tool MEDIA from a prior turn must not leak onto a "
+            f"later text-only reply, got {tags}"
+        )
+        assert voice is False
+
+        # The pre-fix production behaviour (scan everything, dedup only) would
+        # have leaked the stale path when the dedup set missed it.
+        broken_tags, _ = extract_media_tags_broken(all_messages)
+        assert any("seosmi_cover.png" in t for t in broken_tags), (
+            "Sanity: the unscoped scan does surface the stale path"
+        )
+
+    def test_current_turn_media_still_attached_when_dedup_set_empty(self):
+        """Turn-scoping must not suppress genuinely new media."""
+        history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        new_messages = [
+            {"role": "user", "content": "Make me a cover image"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "9", "function": {"name": "execute_code"}}]},
+            {"role": "tool", "tool_call_id": "9",
+             "content": "MEDIA:/tmp/fresh_cover.png"},
+            {"role": "assistant", "content": "Here it is."},
+        ]
+        all_messages = history + new_messages
+        tags, _ = extract_media_tags_production(
+            all_messages, len(history), set()
+        )
+        assert len(tags) == 1 and "fresh_cover.png" in tags[0]
+
+    def test_compression_shrink_falls_back_to_path_dedup(self):
+        """When the list is shorter than history_len (mid-run compression),
+        fall back to scanning everything with path-based dedup so the #160
+        compression-safe guarantee is preserved."""
+        # Post-compression list is shorter than the original history length.
+        compressed_messages = [
+            {"role": "user", "content": "summary so far..."},
+            {"role": "tool", "tool_call_id": "7",
+             "content": "MEDIA:/tmp/old_from_history.png"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        original_history_len = 12  # larger than the compressed list
+        # The old path IS captured in the dedup set here (history scan ran
+        # before compression), so it must still be excluded.
+        history_media_paths = {"/tmp/old_from_history.png"}
+        tags, _ = extract_media_tags_production(
+            compressed_messages, original_history_len, history_media_paths
+        )
+        assert tags == [], (
+            "On the compression fallback path, path-dedup must still exclude "
+            f"known-old media, got {tags}"
+        )
 
 
 if __name__ == "__main__":

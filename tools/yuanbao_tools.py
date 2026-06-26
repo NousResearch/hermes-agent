@@ -122,7 +122,7 @@ async def query_group_members(
         hint = {"mention_hint": MENTION_HINT} if mention else {}
 
         if action == "list_bots":
-            bots = [m for m in all_members if m["role"] in ("yuanbao_ai", "bot")]
+            bots = [m for m in all_members if m["role"] in {"yuanbao_ai", "bot"}]
             if not bots:
                 return {"success": False, "error": "No bots found in this group."}
             return {
@@ -472,6 +472,7 @@ async def _handle_yb_send_dm(args, **kw):
     embedded_media, message = BasePlatformAdapter.extract_media(message)
     if embedded_media:
         media_files.extend(embedded_media)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     return tool_result(await send_dm(
         group_code=group_code,        name=args.get("name", ""),

@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
+from agent.context_handoff import write_context_handoff
 
 logger = logging.getLogger(__name__)
 
@@ -460,15 +461,35 @@ def compress_context(
         except Exception:
             pass
 
+    # Persist a prompt-safe local handoff before lossy compression.  This is
+    # intentionally best-effort: a failed local write must never block normal
+    # compression, but when compression later aborts/truncates this file gives a
+    # fresh session a verified starting point instead of relying on the summary.
+    write_context_handoff(
+        agent,
+        messages,
+        reason="pre_compression",
+        approx_tokens=approx_tokens,
+        focus_topic=focus_topic,
+    )
+
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept
         # focus_topic / force — fall back to calling without them.
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
-    except BaseException:
+    except BaseException as exc:
         # ANY exception during compress() must release the lock so the
         # session isn't permanently blocked from future compression.
+        write_context_handoff(
+            agent,
+            messages,
+            reason="compression_exception",
+            approx_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            error=f"{type(exc).__name__}: {exc}",
+        )
         _release_lock()
         raise
 
@@ -479,6 +500,14 @@ def compress_context(
     # the no-op via len(returned) == len(input).
     if getattr(agent.context_compressor, "_last_compress_aborted", False):
         _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
+        write_context_handoff(
+            agent,
+            messages,
+            reason="compression_aborted",
+            approx_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            error=str(_err),
+        )
         if getattr(agent, "_last_compression_summary_warning", None) != _err:
             agent._last_compression_summary_warning = _err
             agent._emit_warning(

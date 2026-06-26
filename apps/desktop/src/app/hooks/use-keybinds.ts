@@ -6,6 +6,7 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
 import { $capture, $comboIndex, endCapture, setBinding, toggleKeybindPanel } from '@/store/keybinds'
 import {
@@ -25,6 +26,8 @@ import {
   switchToDefaultProfile,
   toggleShowAllProfiles
 } from '@/store/profile'
+import { requestNewWorktree } from '@/store/projects'
+import { toggleReview } from '@/store/review'
 import { setModelPickerOpen } from '@/store/session'
 import {
   $switcherOpen,
@@ -37,9 +40,10 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
+import { openNewSessionInNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus } from '../chat/composer/focus'
+import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 import {
   AGENTS_ROUTE,
@@ -113,6 +117,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
     'composer.focus': () => requestComposerFocus('main'),
     'composer.modelPicker': () => setModelPickerOpen(true),
+    'composer.voice': requestVoiceToggle,
 
     'nav.commandPalette': toggleCommandPalette,
     'nav.commandCenter': deps.toggleCommandCenter,
@@ -132,11 +137,15 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       deps.startFreshSession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
+    'session.newWindow': () => void openNewSessionInNewWindow(),
     'session.next': () => stepSession(1),
     'session.prev': () => stepSession(-1),
     ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
+    // Only meaningful inside a git repo — a no-op otherwise (the key falls
+    // through instead of silently doing nothing).
+    'workspace.newWorktree': () => $repoStatus.get() && requestNewWorktree(),
 
     'view.toggleSidebar': () => {
       if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
@@ -152,6 +161,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         toggleFileBrowserOpen()
       }
     },
+    'view.toggleReview': toggleReview,
     'view.showFiles': showFiles,
     'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
     'view.flipPanes': togglePanesFlipped,

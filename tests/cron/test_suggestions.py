@@ -62,6 +62,22 @@ class TestStore:
         with pytest.raises(ValueError):
             store.add_suggestion(title="x", description="d", source="bogus", job_spec={}, dedup_key="k")
 
+    def test_usage_source_is_consent_first_self_improvement(self, store):
+        """Background review suggestions must stay pending until user acceptance."""
+        rec = _add(
+            store,
+            key="usage:weekly-summary",
+            title="Weekly project summary",
+            source="usage",
+            schedule="0 17 * * 5",
+        )
+
+        assert rec is not None
+        assert rec["source"] == "usage"
+        assert rec["status"] == "pending"
+        assert rec["job_spec"]["schedule"] == "0 17 * * 5"
+        assert store.list_pending()[0]["dedup_key"] == "usage:weekly-summary"
+
     def test_pending_cap(self, store):
         for i in range(store.MAX_PENDING):
             assert _add(store, key=f"k{i}") is not None

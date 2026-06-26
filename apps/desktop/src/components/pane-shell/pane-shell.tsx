@@ -38,6 +38,8 @@ export interface PaneProps {
   forceCollapsed?: boolean
   /** When collapsed, float the contents over the main column on hover/focus instead of hiding them (track stays 0px). */
   hoverReveal?: boolean
+  /** Width of the collapsed-overlay panel. Defaults to the docked width (or its resize override); set this to render a narrower overlay than the docked pane (e.g. min width on mobile). */
+  overlayWidth?: WidthValue
   /** Called with true while the pane is a collapsed hover-reveal overlay, so the consumer can keep contents mounted (ready to slide). */
   onOverlayActiveChange?: (overlayActive: boolean) => void
   id: string
@@ -80,9 +82,12 @@ const HOVER_REVEAL_EASE = 'cubic-bezier(0.32,0.72,0,1)'
 // Offset shadow lifting the revealed panel off the content (same both sides;
 // the mirror axis is offset-x, which is 0). Same color on light + dark.
 const HOVER_REVEAL_SHADOW = '0px -18px 18px -5px #00000012'
-// Edge trigger strip, inset past the OS window-resize grab area.
+// Edge trigger strip, inset past the OS window-resize grab area AND the
+// adjacent pane's scrollbar (0.5rem, .scrollbar-dt) — the strip overlays the
+// neighboring scroller's edge, so any overlap makes the scrollbar reveal the
+// pane on hover and swallow its clicks (#44140).
 const HOVER_REVEAL_TRIGGER_WIDTH = 14
-const HOVER_REVEAL_EDGE_GUTTER = 6
+const HOVER_REVEAL_EDGE_GUTTER = 'calc(0.5rem + 2px)'
 
 // Fired (window CustomEvent<{ id }>) to toggle a force-collapsed pane's reveal
 // from the keyboard, since its store-open toggle is a no-op while collapsed.
@@ -224,7 +229,7 @@ export function PaneShell({ children, className, style }: PaneShellProps) {
 
   return (
     <PaneShellContext.Provider value={{ mainColumn: ctxValue.mainColumn, paneById: ctxValue.paneById }}>
-      <div className={cn('relative grid h-full min-h-0', className)} style={composedStyle}>
+      <div className={cn('relative grid h-full min-h-0', className)} data-pane-shell="" style={composedStyle}>
         {children}
       </div>
     </PaneShellContext.Provider>
@@ -238,6 +243,7 @@ export function Pane({
   divider = false,
   disabled = false,
   hoverReveal = false,
+  overlayWidth: overlayWidthProp,
   id,
   maxWidth,
   minWidth,
@@ -259,7 +265,14 @@ export function Pane({
   // hover/focus instead of hiding them. Honors any persisted resize width.
   const overlayActive = !open && hoverReveal && !disabled
   const override = resizable ? paneStates[id]?.widthOverride : undefined
-  const overlayWidth = override !== undefined ? `${override}px` : widthToCss(width, DEFAULT_WIDTH)
+  // Overlay width: an explicit `overlayWidth` (e.g. min width on mobile) wins,
+  // else the persisted resize override, else the docked width.
+  const overlayWidth =
+    overlayWidthProp !== undefined
+      ? widthToCss(overlayWidthProp, DEFAULT_WIDTH)
+      : override !== undefined
+        ? `${override}px`
+        : widthToCss(width, DEFAULT_WIDTH)
 
   useEffect(() => {
     if (registered.current) {
@@ -376,6 +389,7 @@ export function Pane({
         <div
           aria-hidden="true"
           className="pointer-events-auto absolute inset-y-0 z-30 [-webkit-app-region:no-drag]"
+          data-pane-reveal-trigger=""
           style={{ [edge]: HOVER_REVEAL_EDGE_GUTTER, width: HOVER_REVEAL_TRIGGER_WIDTH }}
         />
 

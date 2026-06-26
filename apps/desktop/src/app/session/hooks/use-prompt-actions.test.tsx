@@ -44,7 +44,10 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 
 interface HarnessHandle {
   cancelRun: () => Promise<void>
-  restoreToMessage: (messageId: string) => Promise<void>
+  restoreToMessage: (
+    messageId: string,
+    target?: { text?: string; userOrdinal?: number | null }
+  ) => Promise<void>
   steerPrompt: (text: string) => Promise<boolean>
   submitText: (
     text: string,
@@ -202,6 +205,67 @@ describe('usePromptActions /title', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.title', expect.objectContaining({ title: 'way too long title' }))
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
+  })
+})
+
+describe('usePromptActions slash.exec dispatch payloads', () => {
+  afterEach(() => {
+    cleanup()
+    $busy.set(false)
+    vi.restoreAllMocks()
+  })
+
+  it('submits /goal send directives returned directly by slash.exec instead of rendering no output', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set. Starting now.',
+          message: 'write the implementation plan'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal write the implementation plan')
+
+    expect(calls.map(c => c.method)).toEqual(['slash.exec', 'prompt.submit'])
+    expect(calls[0]?.params).toEqual({
+      command: 'goal write the implementation plan',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(calls[1]?.params).toEqual({
+      session_id: RUNTIME_SESSION_ID,
+      text: 'write the implementation plan'
+    })
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(renderedText).toContain('⊙ Goal set. Starting now.')
+    expect(renderedText).not.toContain('/goal: no output')
   })
 })
 
@@ -581,16 +645,44 @@ describe('usePromptActions restoreToMessage', () => {
     })
   })
 
-  it('ignores non-user targets and unknown ids without touching the gateway', async () => {
+  it('rejects non-user targets and unknown ids without touching the gateway', async () => {
     const requestGateway = vi.fn(async () => ({}) as never)
 
     let handle: HarnessHandle | null = null
     render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
 
-    await handle!.restoreToMessage('a1')
-    await handle!.restoreToMessage('missing')
+    await expect(handle!.restoreToMessage('a1')).rejects.toThrow('Could not find the message to restore.')
+    await expect(handle!.restoreToMessage('missing')).rejects.toThrow('Could not find the message to restore.')
 
     expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('uses the clicked runtime user ordinal when the rendered message id is stale', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let lastState: Record<string, unknown> = {}
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => (lastState = state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={$messages.get()}
+      />
+    )
+
+    await handle!.restoreToMessage('runtime-user-id-not-in-store', {
+      text: 'first prompt',
+      userOrdinal: 0
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'first prompt',
+      truncate_before_user_ordinal: 0
+    })
+    expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
   })
 })
 

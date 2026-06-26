@@ -96,7 +96,6 @@ const baseProps = {
   liveSessionCount: 0,
   model: 'opus-4.8',
   sessionStartedAt: null,
-  showCost: false,
   status: 'ready',
   statusColor: DEFAULT_THEME.color.ok,
   t: DEFAULT_THEME,
@@ -104,6 +103,46 @@ const baseProps = {
   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
   voiceLabel: ''
 }
+
+describe('StatusRule background-subagent indicator', () => {
+  it('renders ⛓ N on a wide terminal when subagents are running', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 3 }
+    })
+
+    expect(textContent(element)).toContain('⛓ 3')
+  })
+
+  it('omits the segment when no subagents are running', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 0 }
+    })
+
+    expect(textContent(element)).not.toContain('⛓')
+  })
+
+  it('omits the segment when the field is absent', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).not.toContain('⛓')
+  })
+
+  it('drops the subagent segment before the bg segment on a narrow terminal', () => {
+    // cols=44 is below the subagents breakpoint (92) but the bg breakpoint
+    // (88) too — both gone. Assert the lower-priority subagent indicator is
+    // not shown when space is tight even with a live count.
+    const element = StatusRule({
+      ...baseProps,
+      cols: 44,
+      bgCount: 1,
+      usage: { ...baseProps.usage, active_subagents: 2 }
+    })
+
+    expect(textContent(element)).not.toContain('⛓')
+  })
+})
 
 describe('StatusRule session count click target', () => {
   it('makes the live session count itself clickable', () => {
@@ -117,7 +156,6 @@ describe('StatusRule session count click target', () => {
       model: 'kimi-k2.6',
       onSessionCountClick: openSwitcher,
       sessionStartedAt: null,
-      showCost: false,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
@@ -143,12 +181,11 @@ describe('StatusRule session count click target', () => {
       model: 'opus-4.8',
       onSessionCountClick: vi.fn(),
       sessionStartedAt: Date.now() - 60_000,
-      showCost: true,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
       turnStartedAt: null,
-      usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, cost_usd: 0.5, total: 50_000 },
+      usage: { calls: 0, context_max: 200_000, context_percent: 25, context_used: 50_000, input: 0, output: 0, total: 50_000 },
       voiceLabel: 'voice off'
     })
 
@@ -157,9 +194,8 @@ describe('StatusRule session count click target', () => {
     // Must-keep essentials survive intact …
     expect(rendered).toContain('ready')
     expect(rendered).toContain('opus 4.8')
-    // … while the low-value tail (session count, cost) is dropped, not truncated.
+    // … while the low-value tail (session count) is dropped, not truncated.
     expect(rendered).not.toContain('3 sessions')
-    expect(rendered).not.toContain('$0.5000')
   })
 })
 

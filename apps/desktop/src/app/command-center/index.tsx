@@ -1,5 +1,4 @@
 import { useStore } from '@nanostores/react'
-import { IconBookmark, IconBookmarkFilled, IconDownload, IconTrash } from '@tabler/icons-react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
@@ -17,7 +16,7 @@ import {
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { Activity, AlertCircle, BarChart3, Pin } from '@/lib/icons'
+import { Activity, AlertCircle, BarChart3, Bookmark, BookmarkFilled, Download, Pin, Trash2 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
@@ -338,23 +337,23 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                             title={pinned ? cc.unpinSession : cc.pinSession}
                           >
                             {pinned ? (
-                              <IconBookmarkFilled className="size-3.5" />
+                              <BookmarkFilled className="size-3.5" />
                             ) : (
-                              <IconBookmark className="size-3.5" />
+                              <Bookmark className="size-3.5" />
                             )}
                           </RowIconButton>
                           <RowIconButton
                             onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
                             title={cc.exportSession}
                           >
-                            <IconDownload className="size-3.5" />
+                            <Download className="size-3.5" />
                           </RowIconButton>
                           <RowIconButton
                             className="hover:text-destructive"
                             onClick={() => void onDeleteSession(session.id)}
                             title={cc.deleteSession}
                           >
-                            <IconTrash className="size-3.5" />
+                            <Trash2 className="size-3.5" />
                           </RowIconButton>
                         </div>
                       </li>
@@ -395,7 +394,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                         <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
-                          {cc.restartMessaging}
+                          {cc.restartGateway}
                         </Button>
                         <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
                           {cc.updateHermes}
@@ -426,7 +425,10 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                     </span>
                   )}
                 </div>
-                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)">
+                <pre
+                  className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)"
+                  data-selectable-text="true"
+                >
                   {logs.length ? logs.join('\n') : cc.noLogs}
                 </pre>
               </div>
@@ -450,20 +452,6 @@ function formatTokens(value: null | number | undefined): string {
   }
 
   return num.toLocaleString()
-}
-
-function formatCost(value: null | number | undefined): string {
-  const num = Number(value || 0)
-
-  if (num === 0) {
-    return '$0.00'
-  }
-
-  if (num < 0.01) {
-    return '<$0.01'
-  }
-
-  return `$${num.toFixed(2)}`
 }
 
 function formatInteger(value: null | number | undefined): string {
@@ -522,17 +510,12 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
         </span>
       )}
 
-      <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-(--ui-stroke-tertiary) pb-5 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-(--ui-stroke-tertiary) pb-5 sm:grid-cols-3">
         <UsageStat label={cc.statSessions} value={formatInteger(totals.total_sessions)} />
         <UsageStat label={cc.statApiCalls} value={formatInteger(totals.total_api_calls)} />
         <UsageStat
           label={cc.statTokens}
           value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
-        />
-        <UsageStat
-          hint={totals.total_actual_cost > 0 ? cc.actualCost(formatCost(totals.total_actual_cost)) : undefined}
-          label={cc.statCost}
-          value={formatCost(totals.total_estimated_cost)}
         />
       </div>
 
@@ -593,7 +576,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           rows={byModel.slice(0, 6).map(entry => ({
             key: entry.model,
             label: entry.model,
-            value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} · ${formatCost(entry.estimated_cost)}`
+            value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))}`
           }))}
           title={cc.topModels}
         />

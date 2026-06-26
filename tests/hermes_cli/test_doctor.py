@@ -473,7 +473,6 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
 
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
     except Exception:
         pass
@@ -493,6 +492,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("opencode-zen", "anthropic/claude-sonnet-4.6"),
         ("kilocode", "anthropic/claude-sonnet-4.6"),
         ("kimi-coding", "kimi-k2"),
+        ("nvidia", "qwen/qwen3.5-122b-a10b"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
@@ -533,7 +533,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"opencode-zen", "kilocode"}:
+    if provider in {"opencode-zen", "kilocode", "nvidia"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out
@@ -914,7 +914,6 @@ def _run_doctor_with_healthy_oauth_fallback(
     env_key: str,
     bad_key: str,
     failing_host: str,
-    gemini_oauth_status: dict,
     minimax_oauth_status: dict,
     xai_oauth_status: dict | None = None,
 ) -> str:
@@ -951,7 +950,6 @@ def _run_doctor_with_healthy_oauth_fallback(
 
     monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": True})
     monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-    monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: gemini_oauth_status)
     monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: minimax_oauth_status)
     _xai_status = xai_oauth_status if xai_oauth_status is not None else {}
     monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: _xai_status)
@@ -971,22 +969,12 @@ def _run_doctor_with_healthy_oauth_fallback(
 
 
 @pytest.mark.parametrize(
-    ("env_key", "bad_key", "failing_host", "gemini_oauth_status", "minimax_oauth_status", "xai_oauth_status", "unexpected_issue"),
+    ("env_key", "bad_key", "failing_host", "minimax_oauth_status", "xai_oauth_status", "unexpected_issue"),
     [
-        (
-            "GOOGLE_API_KEY",
-            "bad-gemini-key",
-            "googleapis.com",
-            {"logged_in": True, "email": "user@example.com"},
-            {},
-            None,
-            "Check GOOGLE_API_KEY in .env",
-        ),
         (
             "MINIMAX_API_KEY",
             "bad-minimax-key",
             "minimax.io",
-            {},
             {"logged_in": True, "region": "global"},
             None,
             "Check MINIMAX_API_KEY in .env",
@@ -995,7 +983,6 @@ def _run_doctor_with_healthy_oauth_fallback(
             "XAI_API_KEY",
             "bad-xai-key",
             "api.x.ai",
-            {},
             {},
             {"logged_in": True, "auth_mode": "oauth_pkce"},
             "Check XAI_API_KEY in .env",
@@ -1008,7 +995,6 @@ def test_run_doctor_ignores_invalid_direct_keys_when_oauth_fallback_is_healthy(
     env_key,
     bad_key,
     failing_host,
-    gemini_oauth_status,
     minimax_oauth_status,
     xai_oauth_status,
     unexpected_issue,
@@ -1019,7 +1005,6 @@ def test_run_doctor_ignores_invalid_direct_keys_when_oauth_fallback_is_healthy(
         env_key=env_key,
         bad_key=bad_key,
         failing_host=failing_host,
-        gemini_oauth_status=gemini_oauth_status,
         minimax_oauth_status=minimax_oauth_status,
         xai_oauth_status=xai_oauth_status,
     )
@@ -1061,16 +1046,6 @@ class TestHasHealthyOauthFallbackForXai:
         from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
         assert _has_healthy_oauth_fallback_for_apikey_provider("xai") is False
 
-    def test_xai_import_failure_does_not_affect_gemini(self, monkeypatch):
-        import sys
-        from hermes_cli import auth as _auth_mod
-        # xAI function missing, but Gemini is healthy
-        monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": True})
-        monkeypatch.delitem(sys.modules, "hermes_cli.doctor", raising=False)
-        from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
-        assert _has_healthy_oauth_fallback_for_apikey_provider("gemini") is True
-
 
 # ---------------------------------------------------------------------------
 # ◆ Auth Providers — xAI OAuth display in run_doctor()
@@ -1106,7 +1081,6 @@ class TestDoctorXaiOAuthStatus:
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", xai_auth_fn)
 
@@ -1181,7 +1155,6 @@ class TestDoctorXaiOAuthStatus:
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
 
@@ -1213,7 +1186,6 @@ class TestDoctorXaiOAuthStatus:
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": True})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
 
@@ -1274,7 +1246,6 @@ class TestDoctorCodexCliHintPlacement:
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": codex_logged_in})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
 
@@ -1316,12 +1287,16 @@ class TestDoctorCodexCliHintPlacement:
 
     def test_hint_never_attaches_to_minimax_row(self, monkeypatch, tmp_path):
         out = self._run(monkeypatch, tmp_path, codex_logged_in=False, codex_cli_present=False)
-        # The MiniMax OAuth row and the hint must not be adjacent — the hint
-        # belongs to the Codex auth row directly above it.
+        # The hint belongs to the Codex auth row that precedes it, never to the
+        # MiniMax row that follows (#27975). The MiniMax row itself must not be
+        # the hint line, and the hint must sit strictly above MiniMax.
         lines = [l for l in out.splitlines() if l.strip()]
+        codex_idx = next(i for i, l in enumerate(lines) if "OpenAI Codex auth" in l)
+        hint_idx = next(i for i, l in enumerate(lines) if self._hint_line() in l)
         minimax_idx = next(i for i, l in enumerate(lines) if "MiniMax OAuth" in l)
-        assert self._hint_line() not in lines[minimax_idx - 1]
-        assert minimax_idx + 1 >= len(lines) or self._hint_line() not in lines[minimax_idx + 1]
+        # Hint sits under Codex and above MiniMax; the MiniMax row is not the hint.
+        assert codex_idx < hint_idx < minimax_idx
+        assert self._hint_line() not in lines[minimax_idx]
 
 
 class TestDoctorStaleMaxIterationsDrift:

@@ -8,12 +8,14 @@ import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
+import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
-import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { storedSessionIdForNotification } from '../lib/session-ids'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
@@ -31,6 +33,8 @@ import {
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
   pinSession,
+  PREVIEW_PANE_ID,
+  restoreWorktree,
   setSidebarOverlayMounted,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
@@ -38,6 +42,8 @@ import {
   unpinSession
 } from '../store/layout'
 import { respondToApprovalAction } from '../store/native-notifications'
+import { setPetActivity } from '../store/pet'
+import { setPetOverlayOpenAppHandler, setPetOverlaySubmitHandler } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -47,17 +53,24 @@ import {
   normalizeProfileKey,
   refreshActiveProfile
 } from '../store/profile'
+import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
+import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
   $activeSessionId,
+  $attentionSessionIds,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
+  $messages,
   $messagingSessions,
+  $resumeExhaustedSessionId,
+  $resumeFailedSessionId,
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
   CRON_SECTION_LIMIT,
   getRecentlySettledSessionIds,
+  getRememberedSessionId,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   sessionPinId,
@@ -72,11 +85,13 @@ import {
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
+  setRememberedSessionId,
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
   setSessionsTotal
 } from '../store/session'
+import { onSessionsChanged } from '../store/session-sync'
 import { clearSessionTodos, setSessionTodos, todoListActive } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
@@ -98,7 +113,10 @@ import { useKeybinds } from './hooks/use-keybinds'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
+import { PetGenerateOverlay } from './pet-generate/pet-generate-overlay'
 import { RightSidebarPane } from './right-sidebar'
+import { FileActionDialogs } from './right-sidebar/file-actions'
+import { ReviewPane } from './right-sidebar/review'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
 import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
@@ -198,10 +216,13 @@ export function DesktopController() {
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
+  const resumeFailedSessionId = useStore($resumeFailedSessionId)
+  const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const terminalTakeover = useStore($terminalTakeover)
+  const reviewOpen = useStore($reviewOpen)
   const panesFlipped = useStore($panesFlipped)
   const profileScope = useStore($profileScope)
   // Below SIDEBAR_COLLAPSE_BREAKPOINT_PX there's no room for a docked rail —
@@ -270,16 +291,50 @@ export function DesktopController() {
     }
   }, [])
 
-  // Notification click: the main process already focused the window; jump to its session.
+  // Remember the open chat so a relaunch reopens it instead of an empty new-chat.
+  useEffect(() => {
+    if (routedSessionId) {
+      setRememberedSessionId(routedSessionId)
+    }
+  }, [routedSessionId])
+
+  // Restore that chat once, on cold start only (we're at the new-chat route and
+  // haven't navigated yet). A dead/deleted id self-clears via the exhausted latch
+  // below, so we never boot-loop into an error screen.
+  const restoredLastSessionRef = useRef(false)
+  useEffect(() => {
+    if (restoredLastSessionRef.current) {
+      return
+    }
+
+    restoredLastSessionRef.current = true
+    const last = getRememberedSessionId()
+
+    if (last && location.pathname === NEW_CHAT_ROUTE) {
+      navigate(sessionRoute(last), { replace: true })
+    }
+  }, [location.pathname, navigate])
+
+  useEffect(() => {
+    if (resumeExhaustedSessionId && getRememberedSessionId() === resumeExhaustedSessionId) {
+      setRememberedSessionId(null)
+    }
+  }, [resumeExhaustedSessionId])
+
+  // Notification click: the main process already focused the window; jump to its
+  // session. Notifications are tagged with the gateway *runtime* session id, but
+  // the chat route is keyed by the *stored* id — navigating with the runtime id
+  // resumes a non-existent stored session ("session not found") and strands the
+  // user. Translate runtime -> stored before navigating.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        navigate(sessionRoute(sessionId))
+        navigate(sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionIdRef.current)))
       }
     })
 
     return () => unsubscribe?.()
-  }, [navigate])
+  }, [navigate, runtimeIdByStoredSessionIdRef])
 
   // Notification action button (Approve/Reject) — resolve in place, no navigation.
   useEffect(() => {
@@ -459,9 +514,20 @@ export function DesktopController() {
     void refreshMessagingSessions()
   }, [profileScope, refreshCronSessions, refreshCronJobs, refreshMessagingSessions])
 
-  const loadMoreSessions = useCallback(() => {
+  const loadMoreSessions = useCallback(async () => {
     bumpSessionsLimit()
-    void refreshSessions()
+    await refreshSessions()
+  }, [refreshSessions])
+
+  // Another window mutated the shared session list (e.g. a chat started in the
+  // pop-out). Re-pull so the sidebar reflects it. Pop-outs have no sidebar, so
+  // only real windows bother.
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    return onSessionsChanged(() => void refreshSessions().catch(() => undefined))
   }, [refreshSessions])
 
   // ALL-profiles view pages one profile at a time: fetch that profile's next
@@ -523,7 +589,7 @@ export function DesktopController() {
     [activeSessionIdRef, updateSessionState]
   )
 
-  const { changeSessionCwd, refreshProjectBranch } = useCwdActions({
+  const { refreshProjectBranch } = useCwdActions({
     activeSessionId,
     activeSessionIdRef,
     onSessionRuntimeInfo: updateActiveSessionRuntimeInfo,
@@ -639,6 +705,7 @@ export function DesktopController() {
   const {
     archiveSession,
     branchCurrentSession,
+    branchStoredSession,
     createBackendSessionForSend,
     openSettings,
     removeSession,
@@ -699,7 +766,9 @@ export function DesktopController() {
     }
 
     lastGatewayProfileRef.current = activeGatewayProfile
-    void refreshCurrentModel()
+    // Force: the new profile has its own default, so reseed even if the composer
+    // already shows the previous profile's model.
+    void refreshCurrentModel(true)
     void refreshActiveProfile()
   }, [activeGatewayProfile, refreshCurrentModel])
 
@@ -722,11 +791,57 @@ export function DesktopController() {
     [branchCurrentSession, refreshSessions]
   )
 
+  // Clear a failed turn's red error banner from the transcript. Errors are
+  // renderer-local state (never persisted), so dismissing is purely a view +
+  // session-cache edit. A message that errored before emitting any visible
+  // text is a bare error placeholder → drop it entirely; one that streamed
+  // partial output then failed keeps its content and just sheds the error.
+  // Both the per-runtime cache AND the live $messages view must be updated:
+  // `preserveLocalAssistantErrors` re-grafts any still-errored message it
+  // finds in the view onto the next session.info flush, so clearing only the
+  // cache would let the heartbeat resurrect the banner.
+  const dismissError = useCallback(
+    (messageId: string) => {
+      const runtimeSessionId = activeSessionIdRef.current
+
+      if (!runtimeSessionId) {
+        return
+      }
+
+      const clearErrorIn = (messages: ChatMessage[]): ChatMessage[] =>
+        messages.flatMap(message => {
+          if (message.id !== messageId || !message.error) {
+            return [message]
+          }
+
+          if (!chatMessageText(message).trim() && !message.parts.some(part => part.type !== 'text')) {
+            return []
+          }
+
+          return [{ ...message, error: undefined, pending: false }]
+        })
+
+      // View first: the flush below reads $messages as the "current" baseline
+      // for error preservation, so the banner must be gone from it before the
+      // cache update triggers a re-sync.
+      setMessages(clearErrorIn($messages.get()))
+
+      updateSessionState(runtimeSessionId, state => ({
+        ...state,
+        messages: clearErrorIn(state.messages)
+      }))
+    },
+    [activeSessionIdRef, updateSessionState]
+  )
+
   const startSessionInWorkspace = useCallback(
     (path: null | string) => {
       startFreshSessionDraft()
 
-      const target = path?.trim()
+      // A worktree lane carries its own path; the trunk "+" can be path-less (the
+      // main checkout is implicit), so fall back to the active project's root
+      // instead of no-op'ing on null — that was "+ on main does nothing".
+      const target = path?.trim() || resolveNewSessionCwd()
 
       if (!target) {
         return
@@ -737,13 +852,49 @@ export function DesktopController() {
       setCurrentCwd(target)
       void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
         .then(info => {
-          setCurrentCwd(info.cwd || target)
+          const resolved = info.cwd || target
+
+          setCurrentCwd(resolved)
           setCurrentBranch(info.branch || '')
+
+          // An EXPLICIT target (a worktree/lane path — e.g. just-created via
+          // "convert a branch" / "new worktree") drills the sidebar into that
+          // project so the new lane is visible at once. Without this, a brand-new
+          // worktree session is invisible from the all-projects overview (the
+          // live overlay skips `.worktrees` rows, and the session.info cwd-follow
+          // only fires on a same-session move, not a fresh session). The
+          // path-less trunk "+" keeps the current scope untouched.
+          if (path?.trim()) {
+            restoreWorktree(resolved)
+            void followActiveSessionCwd(resolved)
+          }
         })
         .catch(() => undefined)
     },
     [requestGateway, startFreshSessionDraft]
   )
+
+  // Composer "branch off into a new worktree": the composer already created the
+  // worktree and cleared its draft; open a fresh session anchored to that tree,
+  // then prefill the task that kicked it off. startSessionInWorkspace owns the
+  // reset+cwd seed (it runs startFreshSessionDraft, which would otherwise stomp
+  // the cwd back to the default), so the prefill is dispatched right after — its
+  // deferred event lands once the fresh composer has remounted and rebound.
+  const startWorkSessionRequest = useStore($startWorkSessionRequest)
+  const lastStartWorkTokenRef = useRef(startWorkSessionRequest?.token ?? 0)
+
+  useEffect(() => {
+    if (!startWorkSessionRequest || startWorkSessionRequest.token === lastStartWorkTokenRef.current) {
+      return
+    }
+
+    lastStartWorkTokenRef.current = startWorkSessionRequest.token
+    startSessionInWorkspace(startWorkSessionRequest.path)
+
+    if (startWorkSessionRequest.draft) {
+      requestComposerInsert(startWorkSessionRequest.draft, { target: 'main' })
+    }
+  }, [startSessionInWorkspace, startWorkSessionRequest])
 
   const handleSkinCommand = useSkinCommand()
 
@@ -771,6 +922,53 @@ export function DesktopController() {
     sttEnabled,
     updateSessionState
   })
+
+  // The popped-out pet drives two actions back into the app: send a prompt, and
+  // open the most recent thread. Both are registered ONCE through refs that track
+  // the latest callbacks — re-registering on every `submitText`/`resumeSession`
+  // identity change left a brief window where the handler was nulled (cleanup
+  // before re-register), which could drop a submit fired from the overlay (e.g.
+  // creating a session from the new-session screen). The ref form keeps a stable,
+  // always-current handler. Primary window only — it owns the overlay.
+  const submitTextRef = useRef(submitText)
+  submitTextRef.current = submitText
+  const resumeSessionRef = useRef(resumeSession)
+  resumeSessionRef.current = resumeSession
+
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    setPetOverlaySubmitHandler(text => void submitTextRef.current(text))
+    // Mail icon: $sessions is ordered most-recent-first; the pet is global (not
+    // per session) so "most recent" is the right target. main.cjs already raised
+    // the window before forwarding this.
+    setPetOverlayOpenAppHandler(() => {
+      const recent = $sessions.get()[0]
+
+      if (recent?.id) {
+        void resumeSessionRef.current(recent.id)
+      }
+    })
+
+    return () => {
+      setPetOverlaySubmitHandler(null)
+      setPetOverlayOpenAppHandler(null)
+    }
+  }, [])
+
+  // Mirror "a session is blocked on the user" (clarify/approval) into the pet's
+  // awaitingInput flag so it shows the `waiting` pose. Lives on $petActivity so
+  // it rides the same atom the pop-out overlay mirrors — no session list needed
+  // there. Every window keeps its own in-window pet in sync.
+  useEffect(() => {
+    const sync = () => setPetActivity({ awaitingInput: $attentionSessionIds.get().length > 0 })
+
+    sync()
+
+    return $attentionSessionIds.listen(sync)
+  }, [])
 
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,
@@ -831,6 +1029,8 @@ export function DesktopController() {
     gatewayState,
     locationPathname: location.pathname,
     resumeSession,
+    resumeFailedSessionId,
+    resumeExhaustedSessionId,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
@@ -847,7 +1047,6 @@ export function DesktopController() {
     gatewayLogLines,
     gatewayState,
     inferenceStatus,
-    modelMenuContent,
     openAgents,
     freshDraftReady,
     openCommandCenterSection,
@@ -860,6 +1059,7 @@ export function DesktopController() {
     <ChatSidebar
       currentView={currentView}
       onArchiveSession={sessionId => void archiveSession(sessionId)}
+      onBranchSession={sessionId => void branchStoredSession(sessionId)}
       onDeleteSession={sessionId => void removeSession(sessionId)}
       onLoadMoreMessaging={loadMoreMessagingForPlatform}
       onLoadMoreProfileSessions={loadMoreSessionsForProfile}
@@ -888,6 +1088,7 @@ export function DesktopController() {
 
   const overlays = (
     <>
+      <RemoteDisplayBanner />
       {!isSecondaryWindow() && <DesktopInstallOverlay />}
       {!isSecondaryWindow() && (
         <DesktopOnboardingOverlay
@@ -907,7 +1108,9 @@ export function DesktopController() {
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
       <CommandPalette />
+      <PetGenerateOverlay />
       <SessionSwitcher />
+      <FileActionDialogs />
 
       {settingsOpen && (
         <Suspense fallback={null}>
@@ -969,6 +1172,7 @@ export function DesktopController() {
     <ChatView
       gateway={gatewayRef.current}
       maxVoiceRecordingSeconds={voiceMaxRecordingSeconds}
+      modelMenuContent={modelMenuContent}
       onAddContextRef={composer.addContextRefAttachment}
       onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
       onAttachDroppedItems={composer.attachDroppedItems}
@@ -980,6 +1184,7 @@ export function DesktopController() {
           void removeSession(selectedStoredSessionId)
         }
       }}
+      onDismissError={dismissError}
       onEdit={editMessage}
       onPasteClipboardImage={() => void composer.pasteClipboardImage()}
       onPickFiles={() => void composer.pickContextPaths('file')}
@@ -988,6 +1193,7 @@ export function DesktopController() {
       onReload={reloadFromMessage}
       onRemoveAttachment={id => void composer.removeAttachment(id)}
       onRestoreToMessage={restoreToMessage}
+      onRetryResume={sessionId => void resumeSession(sessionId, true)}
       onSteer={steerPrompt}
       onSubmit={submitText}
       onThreadMessagesChange={handleThreadMessagesChange}
@@ -1004,7 +1210,7 @@ export function DesktopController() {
   const previewPane = (
     <Pane
       disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
-      id="preview"
+      id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
       minWidth={PREVIEW_RAIL_MIN_WIDTH}
@@ -1032,11 +1238,40 @@ export function DesktopController() {
       side={railSide}
       width={FILE_BROWSER_DEFAULT_WIDTH}
     >
+      {/* Key on the project (cwd) so switching projects unmounts the old tree and
+          mounts a fresh one straight into its skeleton — no stale-then-blip. */}
       <RightSidebarPane
+        key={currentCwd || 'no-cwd'}
         onActivateFile={path => composer.insertContextPathInlineRef(path)}
         onActivateFolder={path => composer.insertContextPathInlineRef(path, true)}
-        onChangeCwd={changeSessionCwd}
       />
+    </Pane>
+  )
+
+  const reviewPane = (
+    <Pane
+      defaultOpen
+      // The diff pane only makes sense in a workspace, so force it shut when the
+      // session is detached — "No diffs" then only ever shows inside a project,
+      // never as a second empty panel next to the file browser.
+      // Docked (wide): `reviewOpen` gates it. Narrow: drop `reviewOpen` from the
+      // gate so the pane stays mounted as a collapsed overlay — `toggleReview`
+      // then slides it in/out via the forced-reveal pin, exactly like ⌘B for the
+      // sidebar. Still requires a repo (no diffs to show otherwise).
+      disabled={!chatOpen || !currentCwd.trim() || (!narrowViewport && !reviewOpen)}
+      forceCollapsed={narrowViewport}
+      hoverReveal
+      id={REVIEW_PANE_ID}
+      key="review"
+      maxWidth={FILE_BROWSER_MAX_WIDTH}
+      minWidth={FILE_BROWSER_MIN_WIDTH}
+      // Mobile overlay sits at its min width — compact, doesn't bury the chat.
+      overlayWidth={FILE_BROWSER_MIN_WIDTH}
+      resizable
+      side={railSide}
+      width={FILE_BROWSER_DEFAULT_WIDTH}
+    >
+      <ReviewPane key={currentCwd || 'no-cwd'} />
     </Pane>
   )
 
@@ -1132,6 +1367,7 @@ export function DesktopController() {
       */}
       {panesFlipped ? fileBrowserPane : terminalPane}
       {previewPane}
+      {reviewPane}
       {panesFlipped ? terminalPane : fileBrowserPane}
     </AppShell>
   )

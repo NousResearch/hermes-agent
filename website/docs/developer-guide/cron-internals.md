@@ -102,9 +102,74 @@ tick()
 
 ### Gateway Integration
 
-In gateway mode, the scheduler runs in a dedicated background thread (`_start_cron_ticker` in `gateway/run.py`) that calls `scheduler.tick()` every 60 seconds alongside message handling.
+In gateway mode, the cron **trigger** (the part that decides *when* a due job
+fires — "Axis B") is selected through a pluggable `CronScheduler` provider. The
+gateway calls `resolve_cron_scheduler()` (`cron/scheduler_provider.py`) and runs
+the resolved provider's `start()` in a dedicated background thread, alongside a
+separate gateway-housekeeping thread.
+
+The active provider is chosen by the `cron.provider` config key:
+
+- **empty (default)** → the built-in `InProcessCronScheduler`, which runs the
+  historical in-process loop calling `scheduler.tick()` every 60 seconds. This
+  is byte-identical to the pre-provider behavior.
+- **a named provider** (e.g. `chronos`, a managed-cron provider for
+  scale-to-zero deployments) → discovered from `plugins/cron/<name>/` or
+  `$HERMES_HOME/plugins/<name>/`.
+
+If a named provider is missing, fails to load, or reports `is_available() ==
+False`, the resolver falls back to the built-in with a warning — **cron is
+never left without a trigger.** The built-in provider lives in core
+(`cron/scheduler_provider.py`), not in `plugins/`, so the fallback can't be
+accidentally removed.
+
+What "firing" *means* (job execution + delivery) is unchanged and shared by all
+providers — it stays in `scheduler.run_job()` / `scheduler._deliver_result()`.
+A provider only controls the trigger, never execution.
 
 In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
+
+### Managed cron (Chronos) for scale-to-zero
+
+Hosted gateways can run the **Chronos** provider (`cron.provider: chronos`)
+instead of the built-in ticker. Chronos lets an idle gateway **scale to zero**
+and still fire cron jobs: rather than a 60-second in-process loop (which would
+keep the process awake), it asks Nous infrastructure to arm exactly **one
+managed one-shot per job at that job's real next-fire time**. At fire time Nous
+calls the gateway back over an authenticated webhook (`POST /api/cron/fire`);
+the gateway runs the job through the same `run_one_job` path as the built-in,
+then re-arms the next one-shot. Between fires the process can be fully stopped —
+it wakes only on a genuine fire, never on a periodic timer.
+
+The flow (the managed scheduler is provided by Nous; the agent holds no
+scheduler credentials):
+
+```
+create/update a cron job
+  → Chronos asks Nous to arm a one-shot at the job's next_run_at
+      (authenticated with the agent's existing Nous token)
+  → at fire time Nous calls the gateway: POST {callback_url}/api/cron/fire
+      (authenticated with a short-lived, purpose-scoped Nous-minted JWT)
+  → the gateway verifies the token, claims the job (store compare-and-set so
+    multi-replica deployments fire at-most-once), runs it, and re-arms the next
+    one-shot
+```
+
+Config (all non-secret; on hosted agents Nous sets these at provision time):
+
+| key | meaning |
+|---|---|
+| `cron.provider` | `chronos` to activate (empty = built-in ticker) |
+| `cron.chronos.portal_url` | Nous base URL (arming + the fire-token issuer) |
+| `cron.chronos.callback_url` | the gateway's own public base URL for inbound fires |
+| `cron.chronos.expected_audience` | this agent's fire-token audience |
+| `cron.chronos.nas_jwks_url` | key set for verifying the inbound fire token |
+
+If Chronos is misconfigured or the agent isn't logged into Nous,
+`resolve_cron_scheduler()` falls back to the built-in ticker (logged warning) —
+cron never loses its trigger. Recurring jobs re-arm after each fire; `repeat`-N
+jobs stop cleanly when the count is exhausted (no orphaned one-shot). The full
+agent↔Nous wire contract lives in `docs/chronos-managed-cron-contract.md`.
 
 ### Fresh Session Isolation
 

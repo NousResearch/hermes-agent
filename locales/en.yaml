@@ -181,8 +181,8 @@ gateway:
     home:                  "📂 **Home:** `{home}`"
 
   reasoning:
-    level_default:             "medium (default)"
-    level_disabled:            "none (disabled)"
+    level_default:             "Medium (default)"
+    level_disabled:            "None (disabled)"
     scope_session:             "session override"
     scope_global:              "global config"
     status:                    "🧠 **Reasoning Settings**\n\n**Effort:** `{level}`\n**Scope:** {scope}\n**Display:** {display}\n**Valid for current model:** {levels}\n\n_Usage:_ `/reasoning <level|reset|show|hide> [--global]`"

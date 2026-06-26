@@ -104,7 +104,7 @@ class TestReasoningCommand:
 
         result = await runner._handle_reasoning_command(_make_event("/reasoning"))
 
-        assert "**Effort:** `none (disabled)`" in result
+        assert "**Effort:** `None (disabled)`" in result
         assert "**Display:** on ✓" in result
         assert runner._reasoning_config == {"enabled": False}
         assert runner._show_reasoning is True
@@ -169,12 +169,18 @@ class TestReasoningCommand:
 
         bad = await runner._handle_reasoning_command(event)
         assert "Unknown argument" in bad
-        assert "low, medium, high, xhigh" in bad
+        assert "Low, Medium, High, Extra High" in bad
+        assert "low, medium, high, xhigh" not in bad
         assert session_key not in runner._session_reasoning_overrides
 
         good = await runner._handle_reasoning_command(_make_event("/reasoning extra high"))
         assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "xhigh"}
-        assert "`xhigh`" in good
+        assert "`Extra High`" in good
+        assert "`xhigh`" not in good
+
+        status = await runner._handle_reasoning_command(_make_event("/reasoning"))
+        assert "**Effort:** `Extra High`" in status
+        assert "**Valid for current model:** Low, Medium, High, Extra High" in status
 
     @pytest.mark.asyncio
     async def test_reasoning_global_clears_existing_session_override(self, tmp_path, monkeypatch):

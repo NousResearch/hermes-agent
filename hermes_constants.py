@@ -550,6 +550,14 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 CODEX_GPT55_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+_REASONING_EFFORT_LABELS = {
+    "none": "None",
+    "minimal": "Minimal",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "Extra High",
+}
 _REASONING_ALIASES = {
     "extra_high": "xhigh",
     "extra-high": "xhigh",
@@ -612,6 +620,26 @@ def normalize_reasoning_effort_for_model(
     if value in reasoning_efforts_for_model(provider, model):
         return value
     return None
+
+
+def reasoning_effort_display_label(effort: str | None) -> str:
+    """Return the human-facing title for a canonical reasoning effort.
+
+    Hermes stores and sends ``xhigh`` as the canonical/wire enum, but user
+    surfaces should say "Extra High" for parity with Desktop and vendor UX.
+    Unknown values are title-cased defensively so future enum additions don't
+    leak lower-case strings into Telegram/gateway status text.
+    """
+    raw = str(effort or "").strip()
+    if not raw:
+        return ""
+    normalized = _REASONING_ALIASES.get(raw.lower(), raw.lower())
+    return _REASONING_EFFORT_LABELS.get(normalized, raw.replace("_", " ").replace("-", " ").title())
+
+
+def format_reasoning_effort_labels(efforts: tuple[str, ...] | list[str]) -> str:
+    """Return a comma-separated human-facing label list for reasoning efforts."""
+    return ", ".join(reasoning_effort_display_label(effort) for effort in efforts)
 
 
 def parse_reasoning_effort(effort: str) -> dict | None:

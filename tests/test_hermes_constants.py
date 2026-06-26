@@ -8,8 +8,10 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    format_reasoning_effort_labels,
     is_codex_gpt55_model,
     normalize_reasoning_effort_for_model,
+    reasoning_effort_display_label,
     reasoning_efforts_for_model,
     agent_browser_runnable,
     find_hermes_node_executable,
@@ -356,6 +358,13 @@ class TestParseReasoningEffort:
         )
         assert normalize_reasoning_effort_for_model("Extra High", "openai-codex", "gpt-5.5") == "xhigh"
         assert normalize_reasoning_effort_for_model("minimal", "openai-codex", "gpt-5.5") is None
+        assert reasoning_effort_display_label("low") == "Low"
+        assert reasoning_effort_display_label("medium") == "Medium"
+        assert reasoning_effort_display_label("high") == "High"
+        assert reasoning_effort_display_label("xhigh") == "Extra High"
+        assert format_reasoning_effort_labels(reasoning_efforts_for_model("openai-codex", "gpt-5.5")) == (
+            "Low, Medium, High, Extra High"
+        )
 
 
 class TestSecureParentDir:

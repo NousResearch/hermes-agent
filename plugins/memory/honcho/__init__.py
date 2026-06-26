@@ -1415,12 +1415,20 @@ class HonchoMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Flush any remaining messages
-        if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
+        # Shut down the session manager (stops the honcho-async-writer thread
+        # by sending _ASYNC_SHUTDOWN into its queue and joining).  Without
+        # this, the async writer thread survives session teardown and leaks
+        # one thread per session (#46082).
+        if self._manager:
             try:
-                self._manager.flush_all()
+                self._manager.shutdown()
             except Exception:
                 pass
+            if not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
+                try:
+                    self._manager.flush_all()
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------

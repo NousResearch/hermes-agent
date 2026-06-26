@@ -3284,6 +3284,23 @@ class AIAgent:
         except Exception:
             pass
 
+        # 8. Shut down the memory provider and context engine.  This releases
+        # per-session background threads (e.g. Honcho's honcho-async-writer
+        # and honcho-prewarm-dialectic) and provider connections that would
+        # otherwise survive session teardown and accumulate as leaks.
+        #
+        # The gateway path (gateway/run.py) calls shutdown_memory_provider()
+        # explicitly at session boundaries, but close() is the single terminal
+        # path for CLI, TUI/dashboard, subagent, and cron contexts — all of
+        # which go through close() without calling shutdown_memory_provider().
+        #
+        # See #46082: dashboard process leaked ~2 Honcho threads per session
+        # because agent.close() never triggered the shutdown chain.
+        try:
+            self.shutdown_memory_provider()
+        except Exception:
+            pass
+
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
         Recover todo state from conversation history.

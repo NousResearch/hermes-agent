@@ -43,18 +43,25 @@ def stage2_text() -> str:
 
 
 def _seed_block(text: str) -> str:
-    """Extract the ``if [ ! -f "$HERMES_HOME/gateway_state.json" ] && … fi``
-    block that seeds the gateway state file from the bootstrap env var."""
-    m = re.search(
-        r'(if \[ ! -f "\$HERMES_HOME/gateway_state\.json" \] && \\\n'
-        r"(?:.*\n)*?fi)",
-        text,
+    """Extract the gateway_state.json bootstrap block."""
+    start = text.index('if [ ! -f "$HERMES_HOME/gateway_state.json" ] && \\')
+    end = text.index("\n\n# --- Sync bundled skills ---", start)
+    return text[start:end]
+
+
+def _auth_seed_block(text: str) -> str:
+    start = text.index(
+        'if [ ! -f "$HERMES_HOME/auth.json" ] && '
+        '[ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]; then'
     )
-    assert m, (
-        "stage2-hook.sh must contain the gateway_state.json bootstrap-seed block "
-        "guarded on HERMES_GATEWAY_BOOTSTRAP_STATE"
-    )
-    return m.group(1)
+    end = text.index("\n\n# gateway_state.json:", start)
+    return text[start:end]
+
+
+def _path_guard_functions(text: str) -> str:
+    start = text.index("path_has_symlink_component() {")
+    end = text.index("\n\nchown_hermes_tree() {", start)
+    return text[start:end]
 
 
 def test_seed_block_present_and_guarded(stage2_text: str) -> None:
@@ -99,6 +106,7 @@ def _run_seed(
         script = (
             "set -e\n"
             f'HERMES_HOME="{home}"\n'
+            f"{_path_guard_functions(text)}\n"
             # Stub privilege ops — the sandbox isn't root.
             "chown() { :; }\n"
             "chmod() { :; }\n"
@@ -132,6 +140,82 @@ def test_does_not_clobber_existing_state(stage2_text: str) -> None:
     existing = json.dumps({"gateway_state": "stopped", "pid": 123})
     out = _run_seed(stage2_text, env_value="running", preexisting=existing)
     assert out == existing, "seed must not clobber a persisted state file"
+
+
+def test_does_not_seed_gateway_state_through_symlink(
+    stage2_text: str,
+    tmp_path: Path,
+) -> None:
+    """A dangling gateway_state.json symlink must not become a host write."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash not available")
+    block = _seed_block(stage2_text)
+
+    home = tmp_path / "home"
+    home.mkdir()
+    outside_state = tmp_path / "outside-gateway-state.json"
+    state_file = home / "gateway_state.json"
+    try:
+        state_file.symlink_to(outside_state)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are not available on this platform")
+
+    script = (
+        "set -e\n"
+        f'HERMES_HOME="{home}"\n'
+        f"{_path_guard_functions(stage2_text)}\n"
+        "chown() { :; }\n"
+        "chmod() { :; }\n"
+        'export HERMES_GATEWAY_BOOTSTRAP_STATE="running"\n'
+        + block
+    )
+    script_path = tmp_path / "harness.sh"
+    script_path.write_text(script)
+
+    proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert not outside_state.exists()
+    assert state_file.is_symlink()
+    assert "refusing seed through symlinked path" in proc.stdout
+
+
+def test_does_not_seed_auth_json_through_symlink(
+    stage2_text: str,
+    tmp_path: Path,
+) -> None:
+    """A dangling auth.json symlink must not become a host write."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash not available")
+    block = _auth_seed_block(stage2_text)
+
+    home = tmp_path / "home"
+    home.mkdir()
+    outside_auth = tmp_path / "outside-auth.json"
+    auth_file = home / "auth.json"
+    try:
+        auth_file.symlink_to(outside_auth)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are not available on this platform")
+
+    script = (
+        "set -e\n"
+        f'HERMES_HOME="{home}"\n'
+        f"{_path_guard_functions(stage2_text)}\n"
+        "chown() { :; }\n"
+        "chmod() { :; }\n"
+        'export HERMES_AUTH_JSON_BOOTSTRAP="{\\"ok\\": true}"\n'
+        + block
+    )
+    script_path = tmp_path / "harness.sh"
+    script_path.write_text(script)
+
+    proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert not outside_auth.exists()
+    assert auth_file.is_symlink()
+    assert "refusing seed through symlinked path" in proc.stdout
 
 
 def test_no_seed_when_env_unset(stage2_text: str) -> None:

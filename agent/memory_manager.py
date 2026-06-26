@@ -204,7 +204,11 @@ class StreamingContextScrubber:
     # might type in normal conversation.
     _SIGNATURE = "[system note: the following is recalled memory context"
 
-    def __init__(self) -> None:
+    def __init__(self, enabled: bool = True) -> None:
+        # When disabled (single-user/local surfaces) feed() passes text through
+        # untouched: recalled memory in a reply is the operator's own data, so
+        # collapsing the block there is a false positive (#40170).
+        self._enabled: bool = enabled
         self._in_span: bool = False
         self._buf: str = ""
         self._at_block_boundary: bool = True
@@ -221,6 +225,8 @@ class StreamingContextScrubber:
         is held back in the internal buffer and surfaced on the next
         ``feed()`` call or discarded/emitted by ``flush()``.
         """
+        if not self._enabled:
+            return text or ""
         if not text:
             return ""
         buf = self._buf + text
@@ -272,6 +278,8 @@ class StreamingContextScrubber:
         truncated answer).  Otherwise the held-back partial-tag tail is
         emitted verbatim (it turned out not to be a real tag).
         """
+        if not self._enabled:
+            return ""
         if self._in_span:
             self._buf = ""
             self._in_span = False

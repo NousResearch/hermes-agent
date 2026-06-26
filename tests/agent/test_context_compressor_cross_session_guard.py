@@ -21,9 +21,15 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 # Stub out optional heavy dependencies not installed in the test environment
-sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
-sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
-sys.modules.setdefault("fal_client", types.SimpleNamespace())
+fire_module = types.ModuleType("fire")
+setattr(fire_module, "Fire", lambda *a, **k: None)
+sys.modules.setdefault("fire", fire_module)
+
+firecrawl_module = types.ModuleType("firecrawl")
+setattr(firecrawl_module, "Firecrawl", object)
+sys.modules.setdefault("firecrawl", firecrawl_module)
+
+sys.modules.setdefault("fal_client", types.ModuleType("fal_client"))
 
 from agent.context_compressor import ContextCompressor
 
@@ -55,6 +61,8 @@ def _make_compressor():
     c._context_probed = False
     c._last_compression_savings_pct = 100.0
     c._ineffective_compression_count = 0
+    c._aux_compression_context_length = 0
+    c._aux_context_overflow_warned = False
     c._last_summary_error = None
     c._last_summary_dropped_count = 0
     c._last_summary_fallback_used = False
@@ -143,3 +151,45 @@ def test_no_false_positive_when_previous_summary_already_none():
 
     # Should still be None — guard is no-op
     assert c._previous_summary is None
+
+
+def test_on_session_end_clears_all_per_session_compression_state():
+    """Natural session end must clear the same per-session state as /reset."""
+    c = _make_compressor()
+    c._previous_summary = "stale summary"
+    c._last_summary_error = "stale error"
+    c._last_summary_dropped_count = 3
+    c._last_summary_fallback_used = True
+    c._last_aux_model_failure_error = "aux failed"
+    c._last_aux_model_failure_model = "tiny-aux"
+    c._last_compression_savings_pct = 1.0
+    c._ineffective_compression_count = 2
+    c._summary_failure_cooldown_until = 123.0
+    c._last_compress_aborted = True
+    c._aux_context_overflow_warned = True
+    c._context_probed = True
+    c._context_probe_persistable = True
+    c.last_real_prompt_tokens = 99
+    c.last_compression_rough_tokens = 88
+    c.last_rough_tokens_when_real_prompt_fit = 77
+    c.awaiting_real_usage_after_compression = True
+
+    c.on_session_end("ended-session", [])
+
+    assert c._previous_summary is None
+    assert c._last_summary_error is None
+    assert c._last_summary_dropped_count == 0
+    assert c._last_summary_fallback_used is False
+    assert c._last_aux_model_failure_error is None
+    assert c._last_aux_model_failure_model is None
+    assert c._last_compression_savings_pct == 100.0
+    assert c._ineffective_compression_count == 0
+    assert c._summary_failure_cooldown_until == 0.0
+    assert c._last_compress_aborted is False
+    assert c._aux_context_overflow_warned is False
+    assert c._context_probed is False
+    assert c._context_probe_persistable is False
+    assert c.last_real_prompt_tokens == 0
+    assert c.last_compression_rough_tokens == 0
+    assert c.last_rough_tokens_when_real_prompt_fit == 0
+    assert c.awaiting_real_usage_after_compression is False

@@ -245,6 +245,11 @@ def check_compression_model_feasibility(agent: Any) -> None:
             custom_providers=agent._custom_providers,
         )
 
+        # Store the aux model's context length so compress() can proactively
+        # fall back to the main model when the compression window exceeds it.
+        # (#53008)
+        agent.context_compressor._aux_compression_context_length = aux_context or 0
+
         # Hard floor: the auxiliary compression model must have at least
         # MINIMUM_CONTEXT_LENGTH (64K) tokens of context.  The main model
         # is already required to meet this floor (checked earlier in
@@ -264,18 +269,26 @@ def check_compression_model_feasibility(agent: Any) -> None:
             )
 
         threshold = agent.context_compressor.threshold_tokens
-        if aux_context < threshold:
+        if aux_context and aux_context < threshold:
             # Auto-correct: lower the live session threshold so
             # compression actually works this session.  The hard floor
             # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
             # so the new threshold is always >= 64K.
             #
-            # The compression summariser sends a single user-role
-            # prompt (no system prompt, no tools) to the aux model, so
-            # new_threshold == aux_context is safe: the request is
-            # the raw messages plus a small summarisation instruction.
+            # Use an 80% safety margin instead of the full aux_context.
+            # The summariser prompt itself (window + instruction) fits
+            # within aux_context even at 100% — the original author's
+            # reasoning was correct on that.  But the POST-compression
+            # session (summary + protected head + protected tail) must
+            # also fall below the threshold to avoid re-triggering.
+            # With threshold = 100% of aux_context, a large protected
+            # tail (e.g. huge tool output) leaves no room: the post-
+            # compression session can't drop below 100%.  80% gives 20%
+            # headroom for the tail, making it far more likely that
+            # compression actually brings the session below the threshold.
+            # (#53008)
             old_threshold = threshold
-            new_threshold = aux_context
+            new_threshold = max(MINIMUM_CONTEXT_LENGTH, int(aux_context * 0.8))
             agent.context_compressor.threshold_tokens = new_threshold
             # Keep threshold_percent in sync so future main-model
             # context_length changes (update_model) re-derive from a
@@ -285,7 +298,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 agent.context_compressor.threshold_percent = (
                     new_threshold / main_ctx
                 )
-            safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
+            safe_pct = int((new_threshold / main_ctx) * 100) if main_ctx else 50
             # Build human-readable "model (provider)" labels for both
             # the main model and the compression model so users can
             # tell at a glance which provider each side is actually
@@ -312,13 +325,19 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 else _main_model
             )
             _aux_label = f"{aux_model} ({_aux_provider_label})"
+            _margin_pct = int((new_threshold / aux_context) * 100) if aux_context else 80
             msg = (
                 f"⚠ Compression model {_aux_label} context is "
                 f"{aux_context:,} tokens, but the main model "
                 f"{_main_label}'s compression threshold was "
                 f"{old_threshold:,} tokens. "
                 f"Auto-lowered this session's threshold to "
-                f"{new_threshold:,} tokens so compression can run.\n"
+                f"{new_threshold:,} tokens ({_margin_pct}% of the aux "
+                f"model's context, with a safety margin) so compression "
+                f"can run.\n"
+                f"  If the compression window grows beyond {aux_context:,} "
+                f"tokens, Hermes will automatically use the main model "
+                f"for that compression pass instead.\n"
                 f"  To make this permanent, edit config.yaml — either:\n"
                 f"  1. Use a larger compression model:\n"
                 f"       auxiliary:\n"

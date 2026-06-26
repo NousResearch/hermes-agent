@@ -8,12 +8,21 @@ Two-phase design:
      status_callback (gateway platforms)
 """
 
+from typing import Callable
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
+
+
+def _context_compressor(agent: AIAgent) -> ContextCompressor:
+    return getattr(agent, "context_compressor")
+
+
+def _set_emit_status(agent: AIAgent, callback: Callable[[str], None]) -> None:
+    setattr(agent, "_emit_status", callback)
 
 
 @pytest.fixture(autouse=True)
@@ -94,8 +103,9 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     assert "threshold:" in messages[0]
     # Warning stored for gateway replay
     assert agent._compression_warning is not None
-    # Threshold on the live compressor was actually lowered to aux_context.
-    assert agent.context_compressor.threshold_tokens == 80_000
+    # Threshold on the live compressor was lowered to 80% of aux_context
+    # (safety margin, #53008).
+    assert _context_compressor(agent).threshold_tokens == 64_000  # 80% of 80K
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)
@@ -119,6 +129,29 @@ def test_rejects_aux_below_minimum_context(mock_get_client, mock_ctx_len):
     assert "32,768" in err
     assert "64,000" in err
     assert "below the minimum" in err
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=64_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_threshold_floor_respected_at_minimum_aux_context(mock_get_client, mock_ctx_len):
+    """When aux_context == MINIMUM_CONTEXT_LENGTH (64K), the 80% safety
+    margin would give 51,200 — below the floor.  The threshold must be
+    clamped to MINIMUM_CONTEXT_LENGTH, not below it. (#53008)"""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "min-ctx-model")
+
+    _set_emit_status(agent, lambda msg: None)
+    agent._check_compression_model_feasibility()
+
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+    assert _context_compressor(agent).threshold_tokens == MINIMUM_CONTEXT_LENGTH, (
+        f"Threshold should be clamped to MINIMUM_CONTEXT_LENGTH ({MINIMUM_CONTEXT_LENGTH:,}) "
+        f"when 80% of aux_context would go below it, got "
+        f"{_context_compressor(agent).threshold_tokens:,}"
+    )
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=200_000)
@@ -405,7 +438,7 @@ def test_just_below_threshold_auto_corrects(mock_get_client, mock_ctx_len):
     assert len(messages) == 1
     assert "small-model" in messages[0]
     assert "Auto-lowered" in messages[0]
-    assert agent.context_compressor.threshold_tokens == 99_999
+    assert _context_compressor(agent).threshold_tokens == 79_999  # 80% of 99,999
 
 
 # ── Two-phase: __init__ + run_conversation replay ───────────────────

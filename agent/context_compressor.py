@@ -741,6 +741,7 @@ class ContextCompressor(ContextEngine):
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self._last_summary_error = None
         self._last_compress_aborted = False
+        self._aux_context_overflow_warned = False
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
@@ -777,6 +778,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0
         self._last_compress_aborted = False
+        self._aux_context_overflow_warned = False
         self._context_probed = False
         self._context_probe_persistable = False
         self.last_real_prompt_tokens = 0
@@ -950,6 +952,7 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
+        self._aux_context_overflow_warned = False
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
@@ -1129,6 +1132,9 @@ class ContextCompressor(ContextEngine):
         self.awaiting_real_usage_after_compression = False
 
         self.summary_model = summary_model_override or ""
+        # Call-scoped override used when an oversized compression window must
+        # bypass auxiliary.compression config and use the main runtime.
+        self._force_main_summary_runtime: bool = False
         self._session_db: Any = None
         self._session_id: str = ""
 
@@ -1143,6 +1149,13 @@ class ContextCompressor(ContextEngine):
         # Lets the boundary wrapper distinguish a completed rewrite from a
         # no-op/abort without inferring progress from message-list length.
         self._last_compression_made_progress: bool = False
+        # Aux compression model's context length, set by
+        # check_compression_model_feasibility().  When the compression
+        # window exceeds this, compress() proactively falls back to the
+        # main model instead of sending content the aux model cannot
+        # process.  (#53008)
+        self._aux_compression_context_length: int = 0
+        self._aux_context_overflow_warned: bool = False
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -2011,7 +2024,18 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # fall back to the model's native output ceiling.
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
-            if self.summary_model:
+            if getattr(self, "_force_main_summary_runtime", False):
+                # Explicit values must win over auxiliary.compression config.
+                # Merely omitting ``model`` would let call_llm resolve the same
+                # undersized auxiliary model again from config.yaml.
+                call_kwargs.update({
+                    "provider": self.provider or "auto",
+                    "model": self.model,
+                    "base_url": self.base_url or None,
+                    "api_key": self.api_key or None,
+                    "api_mode": self.api_mode or None,
+                })
+            elif self.summary_model:
                 call_kwargs["model"] = self.summary_model
             # Compression is atomic: protect the in-flight summary call from a
             # mid-turn gateway interrupt. Without this, an incoming user message
@@ -2996,7 +3020,56 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # Phase 3: Generate structured summary
         summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+
+        # Proactive main-model fallback (#53008): if the compression window
+        # (the middle turns sent to the summariser) exceeds the aux model's
+        # context window, the aux model cannot process it — the API call
+        # will either error out (context too long) or be silently truncated
+        # to a near-useless summary.  Fall back to the main model for this
+        # pass instead.  The aux model is restored afterwards so future
+        # passes (on a smaller post-compression session) can use it again.
+        #
+        # We compare the actual window size (turns_to_summarize), NOT the
+        # full session — the tail (protected recent messages) and head
+        # (system prompt + first exchange) are never sent to the summariser,
+        # so a session can be larger than the aux context while the window
+        # still fits.
+        _window_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+        _saved_summary_model = ""
+        _saved_force_main_runtime = getattr(self, "_force_main_summary_runtime", False)
+        _aux_context = getattr(self, "_aux_compression_context_length", 0)
+        if (
+            _aux_context > 0
+            and _window_tokens > _aux_context
+            and self.summary_model
+            and self.summary_model != self.model
+        ):
+            _saved_summary_model = self.summary_model
+            self.summary_model = ""
+            self._force_main_summary_runtime = True
+            if not getattr(self, "_aux_context_overflow_warned", False):
+                self._aux_context_overflow_warned = True
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression window (~%d tokens) exceeds the "
+                        "auxiliary compression model's context window "
+                        "(%d tokens) — using the main model for this "
+                        "compression pass. Consider a larger compression "
+                        "model or /new to start a fresh session.",
+                        _window_tokens,
+                        _aux_context,
+                    )
+
+        try:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+        finally:
+            # Restore the aux summary model for future passes — after
+            # compression the session may be small enough for the aux model
+            # again.  Use finally so the model is restored even if
+            # _generate_summary raises an unexpected exception. (#53008)
+            if _saved_summary_model:
+                self.summary_model = _saved_summary_model
+            self._force_main_summary_runtime = _saved_force_main_runtime
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):

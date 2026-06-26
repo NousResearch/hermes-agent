@@ -1,8 +1,6 @@
 """Test that skill_view registers required env vars in the passthrough registry."""
 
 import json
-import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

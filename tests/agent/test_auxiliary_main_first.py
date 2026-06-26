@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ── Text aux tasks — _resolve_auto ──────────────────────────────────────────
@@ -119,6 +118,64 @@ class TestResolveAutoMainFirst:
         assert client is chain_client
         assert model == "google/gemini-3-flash-preview"
 
+    def test_main_unavailable_uses_task_fallback_chain_before_builtin_chain(self):
+        """Auto aux resolution honors auxiliary.<task>.fallback_chain before built-ins."""
+        task_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="nvidia",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="qwen/qwen3.5-122b-a10b",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),  # main provider has no client
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(task_client, "task-free-model", "fallback_chain[0](openrouter)"),
+        ) as mock_task_chain, patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+        ) as mock_main_chain, patch(
+            "agent.auxiliary_client._try_openrouter",
+        ) as mock_openrouter:
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(task="title_generation")
+
+        assert client is task_client
+        assert model == "task-free-model"
+        mock_task_chain.assert_called_once_with(
+            "title_generation", "nvidia", reason="main provider unavailable")
+        mock_main_chain.assert_not_called()
+        mock_openrouter.assert_not_called()
+
+    def test_main_unavailable_uses_main_fallback_chain_before_builtin_chain(self):
+        """Auto aux resolution honors top-level fallback_providers before built-ins."""
+        main_fallback_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="nvidia",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="qwen/qwen3.5-122b-a10b",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),  # main provider has no client
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+            return_value=(main_fallback_client, "inclusionai/ring-2.6-1t:free", "openrouter"),
+        ) as mock_main_chain, patch(
+            "agent.auxiliary_client._try_openrouter",
+        ) as mock_openrouter:
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(task="title_generation")
+
+        assert client is main_fallback_client
+        assert model == "inclusionai/ring-2.6-1t:free"
+        mock_main_chain.assert_called_once_with(
+            "title_generation", "nvidia", reason="main provider unavailable")
+        mock_openrouter.assert_not_called()
+
     def test_no_main_config_uses_chain_directly(self):
         """No main provider configured → skip step 1, use chain (no regression)."""
         chain_client = MagicMock()
@@ -161,6 +218,35 @@ class TestResolveAutoMainFirst:
         # Runtime override wins
         assert mock_resolve.call_args.args[0] == "anthropic"
         assert mock_resolve.call_args.args[1] == "runtime-model"
+
+    def test_runtime_base_url_passed_for_named_api_key_provider(self):
+        """Named API-key providers inherit the live session endpoint for aux work."""
+        token_plan_url = "https://token-plan-sgp.xiaomimimo.com/v1"
+        with patch(
+            "agent.auxiliary_client._read_main_provider",
+            return_value="openrouter",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="config-model",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_resolve.return_value = (MagicMock(), "mimo-v2.5-pro")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            _resolve_auto(main_runtime={
+                "provider": "xiaomi",
+                "model": "mimo-v2.5-pro",
+                "base_url": token_plan_url,
+                "api_key": "tp-test-key",
+                "api_mode": "chat_completions",
+            })
+
+        assert mock_resolve.call_args.args[0] == "xiaomi"
+        assert mock_resolve.call_args.args[1] == "mimo-v2.5-pro"
+        assert mock_resolve.call_args.kwargs["explicit_base_url"] == token_plan_url
+        assert mock_resolve.call_args.kwargs["explicit_api_key"] == "tp-test-key"
+        assert mock_resolve.call_args.kwargs["api_mode"] == "chat_completions"
 
 
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────

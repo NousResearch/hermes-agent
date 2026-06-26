@@ -119,17 +119,20 @@ class BrowserUseBrowserProvider(BrowserProvider):
         return "Browser Use"
 
     def is_available(self) -> bool:
-        return self._get_config_or_none() is not None
+        return self._get_config_or_none(refresh_token=False) is not None
 
     # ------------------------------------------------------------------
     # Config resolution (direct API key OR managed Nous gateway)
     # ------------------------------------------------------------------
 
-    def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
+    def _get_config_or_none(self, *, refresh_token: bool = True) -> Optional[Dict[str, Any]]:
         # Import here to avoid a hard dependency at module-import time —
         # managed_tool_gateway pulls in the Nous auth stack which can be
         # heavy and is not needed for direct-API-key users.
-        from tools.managed_tool_gateway import resolve_managed_tool_gateway
+        from tools.managed_tool_gateway import (
+            peek_nous_access_token,
+            resolve_managed_tool_gateway,
+        )
         from tools.tool_backend_helpers import prefers_gateway
 
         # Direct API key wins unless the user has explicitly opted into the
@@ -142,7 +145,11 @@ class BrowserUseBrowserProvider(BrowserProvider):
                 "managed_mode": False,
             }
 
-        managed = resolve_managed_tool_gateway("browser-use")
+        # Keep availability scans off the synchronous OAuth refresh path.
+        managed = resolve_managed_tool_gateway(
+            "browser-use",
+            token_reader=None if refresh_token else peek_nous_access_token,
+        )
         if managed is None:
             return None
 

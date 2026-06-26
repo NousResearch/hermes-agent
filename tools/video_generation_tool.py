@@ -336,6 +336,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
     kwargs: Dict[str, Any] = {
         "model": model,
+        "_model_override_explicit": bool(model_override),
         "image_url": image_url,
         "reference_image_urls": reference_image_urls,
         "duration": duration,
@@ -418,9 +419,11 @@ _GENERIC_DESCRIPTION = (
     "endpoint. The backend and model family are user-configured via "
     "`hermes tools` → Video Generation; the agent does not pick them. "
     "Long-running generations may take 30 seconds to several minutes — "
-    "the call blocks until the video is ready. Returns either an HTTP "
-    "URL or an absolute file path in the `video` field; display it with "
-    "markdown ![description](url-or-path) and the gateway will deliver it."
+    "the call blocks until the video is ready. Returns the result in the "
+    "`video` field — either an HTTP URL or an absolute file path. To show "
+    "it to the user, reference that path/URL in your response using the "
+    "file-delivery convention for the current platform (your platform "
+    "guidance describes how files are delivered here)."
 )
 
 

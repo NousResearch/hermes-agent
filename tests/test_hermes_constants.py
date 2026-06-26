@@ -2,17 +2,23 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    agent_browser_runnable,
+    find_hermes_node_executable,
+    find_node_executable,
+    find_node_executable_on_path,
     get_default_hermes_root,
+    get_hermes_home,
+    iter_hermes_node_dirs,
     is_container,
     parse_reasoning_effort,
     secure_parent_dir,
+    with_hermes_node_path,
 )
 
 
@@ -69,6 +75,109 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
 
+    def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
+        """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
+        local_appdata = tmp_path / "LocalAppData"
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+        assert get_default_hermes_root() == local_appdata / "hermes"
+
+    def test_no_hermes_home_uses_windows_path_when_localappdata_missing(self, tmp_path, monkeypatch):
+        """Windows fallback still uses AppData/Local/hermes without LOCALAPPDATA."""
+        home = tmp_path / "Home"
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+        assert get_default_hermes_root() == home / "AppData" / "Local" / "hermes"
+
+
+class TestGetHermesHome:
+    """Tests for get_hermes_home() platform-aware fallback."""
+
+    def test_windows_fallback_uses_localappdata(self, tmp_path, monkeypatch):
+        """When HERMES_HOME is unset on Windows, use %LOCALAPPDATA%\\hermes."""
+        local_appdata = tmp_path / "LocalAppData"
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+
+        assert get_hermes_home() == local_appdata / "hermes"
+
+
+class TestHermesManagedNode:
+    def test_windows_node_dir_prefers_portable_root(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        bin_dir = node_dir / "bin"
+        node_dir.mkdir(parents=True)
+        bin_dir.mkdir()
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        assert iter_hermes_node_dirs() == [node_dir, bin_dir]
+
+    def test_windows_finds_npm_cmd_before_path(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        node_dir.mkdir(parents=True)
+        npm_cmd = node_dir / "npm.cmd"
+        npm_cmd.write_text("@echo off\n")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        assert find_hermes_node_executable("npm") == str(npm_cmd)
+
+    def test_windows_path_fallback_prefers_npm_cmd(self, tmp_path, monkeypatch):
+        bin_dir = tmp_path / "nodejs"
+        bin_dir.mkdir()
+        extensionless = bin_dir / "npm"
+        powershell = bin_dir / "npm.ps1"
+        npm_cmd = bin_dir / "npm.cmd"
+        extensionless.write_text("#!/usr/bin/env node\n")
+        powershell.write_text("Write-Output npm\n")
+        npm_cmd.write_text("@echo off\n")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        assert find_node_executable_on_path("npm") == str(npm_cmd)
+
+    def test_windows_node_executable_falls_back_to_safe_path_shim(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        bin_dir = tmp_path / "nodejs"
+        bin_dir.mkdir()
+        extensionless = bin_dir / "npm"
+        npm_cmd = bin_dir / "npm.cmd"
+        extensionless.write_text("#!/usr/bin/env node\n")
+        npm_cmd.write_text("@echo off\n")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        assert find_node_executable("npm") == str(npm_cmd)
+
+    def test_with_hermes_node_path_prepends_existing_managed_dirs(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        bin_dir = node_dir / "bin"
+        node_dir.mkdir(parents=True)
+        bin_dir.mkdir()
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        env = with_hermes_node_path({"PATH": "system-node"})
+        parts = env["PATH"].split(os.pathsep)
+
+        assert parts[:2] == [str(node_dir), str(bin_dir)]
+        assert parts[-1] == "system-node"
+
 
 class TestIsContainer:
     """Tests for is_container() — Docker/Podman detection."""
@@ -104,12 +213,66 @@ class TestIsContainer:
         """Returns False on a regular Linux host."""
         import builtins
         self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         cgroup_file = tmp_path / "cgroup"
         cgroup_file.write_text("12:memory:/\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text("22 21 0:20 / /sys rw shared:7 - sysfs sysfs rw\n")
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is False
+
+    def test_detects_kubernetes_env(self, monkeypatch):
+        """KUBERNETES_SERVICE_HOST env var triggers detection (k8s/k3s pod)."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+        assert is_container() is True
+
+    def test_detects_cgroup_kubepods(self, monkeypatch, tmp_path):
+        """/proc/1/cgroup containing 'kubepods' triggers detection."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("12:memory:/kubepods/besteffort/podabc\n")
         _real_open = builtins.open
         monkeypatch.setattr("builtins.open", lambda p, *a, **kw: _real_open(str(cgroup_file), *a, **kw) if p == "/proc/1/cgroup" else _real_open(p, *a, **kw))
-        assert is_container() is False
+        assert is_container() is True
+
+    def test_detects_cgroup_v2_via_mountinfo(self, monkeypatch, tmp_path):
+        """cgroup v2 (0::/ only) falls back to containerd marker in mountinfo."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")  # cgroup v2 — no runtime marker
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "1234 1233 0:42 /containerd/.../rootfs / rw - overlay overlay rw\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is True
 
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
@@ -264,3 +427,46 @@ class TestSecureParentDir:
         assert called_with[0] == (str(real_dir), 0o700)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
+class TestAgentBrowserRunnable:
+    """agent_browser_runnable() validates the resolved CLI actually runs.
+
+    Regression coverage for issue #48521: a dangling global symlink left by
+    agent-browser's npm postinstall is reported by ``which`` but fails at exec
+    with exit 127, silently breaking every browser tool. The validator must
+    reject it (and other non-runnable candidates) so callers fall through.
+    """
+
+    def _stub(self, tmp_path, name, body, mode=0o755):
+        p = tmp_path / name
+        p.write_text(body)
+        p.chmod(mode)
+        return p
+
+    def test_none_and_empty_rejected(self):
+        assert agent_browser_runnable(None) is False
+        assert agent_browser_runnable("") is False
+
+    def test_dangling_symlink_rejected(self, tmp_path):
+        link = tmp_path / "agent-browser"
+        link.symlink_to(tmp_path / "does-not-exist")
+        # exists() follows the link → False, so it's rejected without exec.
+        assert agent_browser_runnable(str(link)) is False
+
+    def test_runnable_binary_accepted(self, tmp_path):
+        good = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho 'agent-browser 0.27.1'\nexit 0\n")
+        assert agent_browser_runnable(str(good)) is True
+
+    def test_nonzero_exit_rejected(self, tmp_path):
+        bad = self._stub(tmp_path, "agent-browser", "#!/bin/sh\nexit 127\n")
+        assert agent_browser_runnable(str(bad)) is False
+
+    def test_not_executable_rejected(self, tmp_path):
+        noexec = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho hi\n", mode=0o644)
+        assert agent_browser_runnable(str(noexec)) is False
+
+    def test_npx_fallback_form_accepted(self):
+        # The "npx agent-browser" command form is not a real file; npx resolves
+        # the package at run time, so the validator trusts it without stat.
+        assert agent_browser_runnable("npx agent-browser") is True
+        assert agent_browser_runnable("/usr/local/bin/npx agent-browser") is True

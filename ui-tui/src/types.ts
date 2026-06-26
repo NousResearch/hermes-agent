@@ -2,6 +2,7 @@ export interface ActiveTool {
   context?: string
   id: string
   name: string
+  verboseArgs?: string
   startedAt?: number
 }
 
@@ -89,6 +90,8 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
+  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  allowPermanent?: boolean
   command: string
   description: string
 }
@@ -137,6 +140,8 @@ export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 
 export interface McpServerStatus {
   connected: boolean
+  disabled?: boolean
+  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
   name: string
   tools: number
   transport: string
@@ -162,6 +167,7 @@ export interface SessionInfo {
 }
 
 export interface Usage {
+  active_subagents?: number
   calls: number
   compressions?: number
   context_max?: number
@@ -169,6 +175,7 @@ export interface Usage {
   context_used?: number
   cost_status?: string
   cost_usd?: number
+  dev_credits_spent_micros?: number
   input: number
   output: number
   reasoning?: number

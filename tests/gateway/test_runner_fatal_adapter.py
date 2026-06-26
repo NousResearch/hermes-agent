@@ -11,7 +11,7 @@ class _FatalAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="token"), Platform.TELEGRAM)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._set_fatal_error(
             "telegram_token_lock",
             "Another local Hermes gateway is already using this Telegram bot token.",
@@ -33,7 +33,7 @@ class _RuntimeRetryableAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="token"), Platform.WHATSAPP)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:

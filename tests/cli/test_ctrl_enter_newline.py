@@ -51,8 +51,20 @@ def test_windows_terminal_session_preserves_newline():
             assert cli_mod._preserve_ctrl_enter_newline() is True
 
 
+def test_ghostty_tmux_session_preserves_ctrl_j_newline():
+    """Ghostty-inherited env survives tmux even when TERM_PROGRAM becomes tmux."""
+    import cli as cli_mod
+    with patch.object(sys, "platform", "linux"):
+        with patch.dict(
+            os.environ,
+            {"TERM": "tmux-256color", "TERM_PROGRAM": "tmux", "GHOSTTY_RESOURCES_DIR": "/usr/share/ghostty"},
+            clear=True,
+        ):
+            assert cli_mod._preserve_ctrl_enter_newline() is True
+
+
 def test_pure_local_linux_does_not_preserve():
-    """A bare local Linux TTY (no SSH/WSL/WT) keeps c-j → submit so docker exec
+    """A bare local Linux TTY (no SSH/WSL/WT/Ghostty) keeps c-j → submit so docker exec
     style Enter-as-LF stays usable."""
     import cli as cli_mod
     # Stub out /proc reads — those are the WSL fallback signal.

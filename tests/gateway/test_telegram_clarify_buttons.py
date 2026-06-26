@@ -4,11 +4,9 @@ Mirrors test_telegram_approval_buttons.py for the new ``send_clarify`` and
 ``cl:`` callback dispatch added in feat/clarify-gateway-buttons.
 """
 
-import asyncio
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -49,8 +47,8 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter
-from gateway.config import Platform, PlatformConfig
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from gateway.config import PlatformConfig
 
 
 def _make_adapter(extra=None):
@@ -405,7 +403,7 @@ class TestBaseAdapterClarifyFallback:
                 # Skip base __init__ — we're not exercising it
                 self.sent: list = []
 
-            async def connect(self): pass
+            async def connect(self, *, is_reconnect: bool = False): pass
             async def disconnect(self): pass
             async def send(self, chat_id, content, **kw):
                 self.sent.append({"chat_id": chat_id, "content": content})
@@ -438,7 +436,7 @@ class TestBaseAdapterClarifyFallback:
             name = "stub"
             def __init__(self):
                 self.sent: list = []
-            async def connect(self): pass
+            async def connect(self, *, is_reconnect: bool = False): pass
             async def disconnect(self): pass
             async def send(self, chat_id, content, **kw):
                 self.sent.append(content)

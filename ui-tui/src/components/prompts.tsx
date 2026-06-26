@@ -1,4 +1,4 @@
-import { Box, Text, useInput } from '@hermes/ink'
+import { Box, Text, useInput, wrapAnsi } from '@hermes/ink'
 import { useState } from 'react'
 
 import { isMac } from '../lib/platform.js'
@@ -7,9 +7,13 @@ import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
 import { TextInput } from './textInput.js'
 
-const OPTS = ['once', 'session', 'always', 'deny'] as const
+const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
+// tirith warning present → backend downgrades "always" to session scope, so drop it.
+const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
 const CMD_PREVIEW_LINES = 10
+
+type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 type ApprovalKey = {
   downArrow?: boolean
@@ -18,10 +22,7 @@ type ApprovalKey = {
   upArrow?: boolean
 }
 
-type ApprovalAction =
-  | { kind: 'choose'; choice: (typeof OPTS)[number] }
-  | { kind: 'move'; delta: -1 | 1 }
-  | { kind: 'noop' }
+type ApprovalAction = { kind: 'choose'; choice: ApprovalChoice } | { kind: 'move'; delta: -1 | 1 } | { kind: 'noop' }
 
 /**
  * Pure key-dispatch for the approval prompt — exported so the regression
@@ -31,40 +32,46 @@ type ApprovalAction =
  *
  * Esc and number keys both terminate the prompt; Esc maps to deny (parity
  * with the global Ctrl+C handler that already calls cancelOverlayFromCtrlC
- * for approvals).  Numbers 1..OPTS.length pick the labelled choice.  Enter
+ * for approvals).  Numbers 1..opts.length pick the labelled choice.  Enter
  * confirms the current selection.  ↑/↓ moves the selection within bounds.
  */
-export function approvalAction(ch: string, key: ApprovalKey, sel: number): ApprovalAction {
+export function approvalAction(
+  ch: string,
+  key: ApprovalKey,
+  sel: number,
+  opts: readonly ApprovalChoice[] = APPROVAL_OPTS
+): ApprovalAction {
   if (key.escape) {
     return { kind: 'choose', choice: 'deny' }
   }
 
   const n = parseInt(ch, 10)
 
-  if (n >= 1 && n <= OPTS.length) {
-    return { kind: 'choose', choice: OPTS[n - 1]! }
+  if (n >= 1 && n <= opts.length) {
+    return { kind: 'choose', choice: opts[n - 1]! }
   }
 
   if (key.return) {
-    return { kind: 'choose', choice: OPTS[sel]! }
+    return { kind: 'choose', choice: opts[sel]! }
   }
 
   if (key.upArrow && sel > 0) {
     return { kind: 'move', delta: -1 }
   }
 
-  if (key.downArrow && sel < OPTS.length - 1) {
+  if (key.downArrow && sel < opts.length - 1) {
     return { kind: 'move', delta: 1 }
   }
 
   return { kind: 'noop' }
 }
 
-export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
+export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
+  const opts = req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
 
   useInput((ch, key) => {
-    const action = approvalAction(ch, key, sel)
+    const action = approvalAction(ch, key, sel, opts)
 
     if (action.kind === 'choose') {
       onChoice(action.choice)
@@ -73,7 +80,15 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
     }
   })
 
-  const rawLines = req.command.split('\n')
+  // Wrap long single-line commands to the panel width instead of clipping the
+  // tail (mirrors the CLI approval panel fix — the full command must be
+  // reviewable before approving). Border + paddingX + inner padding ≈ 8 cols.
+  const innerWidth = Math.max(20, cols - 8)
+
+  const rawLines = req.command
+    .split('\n')
+    .flatMap(line => wrapAnsi(line, innerWidth, { hard: true, trim: false }).split('\n'))
+
   const shown = rawLines.slice(0, CMD_PREVIEW_LINES)
   const overflow = rawLines.length - shown.length
 
@@ -99,7 +114,7 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
 
       <Text />
 
-      {OPTS.map((o, i) => (
+      {opts.map((o, i) => (
         <Text key={o}>
           <Text bold={sel === i} color={sel === i ? t.color.warn : t.color.muted} inverse={sel === i}>
             {sel === i ? '▸ ' : '  '}
@@ -108,7 +123,7 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-4 quick pick · Esc/Ctrl+C deny</Text>
+      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{opts.length} quick pick · Esc/Ctrl+C deny</Text>
     </Box>
   )
 }
@@ -255,6 +270,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
 }
 
 interface ApprovalPromptProps {
+  cols?: number
   onChoice: (s: string) => void
   req: ApprovalReq
   t: Theme

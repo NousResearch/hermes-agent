@@ -1,4 +1,3 @@
-import json
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_swarm import (

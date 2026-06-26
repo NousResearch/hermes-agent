@@ -11,10 +11,8 @@ Tests cover:
 import threading
 import time
 import types
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ===========================================================================
@@ -416,6 +414,31 @@ class TestGatewaySurfacesNullResponse:
         )
 
         assert result == "Hello!"
+
+    def test_silent_drop_after_stop_surfaces_hint(self):
+        """Regression for #31884: after /stop, the next user message hits a
+        stale generation token in _run_agent and returns with api_calls=0,
+        no failure, no interruption. Without normalization the gateway
+        silently drops the turn (response=0 chars). Surface a retry hint
+        so the user knows the message was lost."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": "",
+            "api_calls": 0,
+            "failed": False,
+            "interrupted": False,
+            "partial": False,
+        }
+
+        response = agent_result.get("final_response") or ""
+        result = _normalize_empty_agent_response(
+            agent_result, response, history_len=10,
+        )
+
+        assert result, "Silent-drop turn must surface a user-facing hint"
+        lowered = result.lower()
+        assert "send it again" in lowered or "try again" in lowered
 
 
 # ===========================================================================

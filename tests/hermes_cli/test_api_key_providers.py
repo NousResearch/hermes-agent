@@ -427,6 +427,15 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "lm-token"
         assert creds["base_url"] == "http://lmstudio.remote:4321/v1"
 
+    def test_resolve_lmstudio_normalizes_native_api_base_url_from_env(self, monkeypatch):
+        monkeypatch.setenv("LM_API_KEY", "lm-token")
+        monkeypatch.setenv("LM_BASE_URL", "http://lmstudio.remote:4321/api/v1")
+
+        creds = resolve_api_key_provider_credentials("lmstudio")
+
+        assert creds["provider"] == "lmstudio"
+        assert creds["base_url"] == "http://lmstudio.remote:4321/v1"
+
     def test_resolve_lmstudio_no_api_key_substitutes_placeholder(self, monkeypatch):
         # No-auth LM Studio: when LM_API_KEY isn't set, runtime credentials
         # carry a placeholder so gateway/TUI/cron paths see the local server

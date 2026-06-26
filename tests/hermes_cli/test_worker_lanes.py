@@ -166,15 +166,11 @@ def test_dispatch_honors_lane_max_concurrency(kanban_home):
 
 
 def test_dispatch_honors_lane_max_concurrency_real_run(kanban_home):
-    # Non-dry-run regression guard (#21582): the lane's max_concurrency must be
-    # enforced on the REAL spawn path, not just under dry_run. The seed and the
-    # post-spawn increment used to gate on the global per-profile cap
-    # (_per_profile_cap) while the cap check and dry-run increment moved to the
-    # effective, lane-aware cap (_eff_cap). With only a lane cap set (no global
-    # cap), the real-run counter never incremented, so `current` stayed 0 and
-    # every task spawned — the cap was silently bypassed outside dry_run. With
-    # the bug this spawns all three; once the real-run increment is gated on
-    # _eff_cap it spawns exactly one.
+    # Regression guard (#21582): a lane's max_concurrency must be enforced on
+    # the real spawn path, not just under dry_run. With only a lane cap (no
+    # global per-profile cap), the real-run increment must gate on the
+    # effective cap (_eff_cap) — otherwise the counter never grows and every
+    # task spawns.
     calls: list[str] = []
     wl.register_worker_lane(_stub_lane("junie-x", max_concurrency=1, calls=calls))
     with kb.connect() as conn:

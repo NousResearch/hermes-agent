@@ -7087,13 +7087,6 @@ def _dispatch_once_locked(
         and max_in_progress_per_profile > 0
     ) else None
     _per_profile_running: dict[str, int] = {}
-    # Seed the in-flight counter unconditionally. A per-lane max_concurrency
-    # (resolved per-row below as part of _eff_cap) can impose an effective cap
-    # even when the global per-profile cap is unset, so the counter must
-    # reflect workers already running from earlier ticks regardless of
-    # _per_profile_cap. Gating this seed on _per_profile_cap let a lane-only
-    # cap leak across ticks (#21582). The query is a single grouped COUNT over
-    # the (small) running set, so running it every tick is cheap.
     for prow in conn.execute(
         "SELECT assignee, COUNT(*) AS n FROM tasks "
         "WHERE status = 'running' AND assignee IS NOT NULL "
@@ -7163,16 +7156,10 @@ def _dispatch_once_locked(
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue
-        # An assignee is spawnable if it names a Hermes profile (the default
-        # lane shape) OR a registered external worker lane (the plugin lane
-        # shape — a non-Hermes runner like a Junie/Codex CLI). Everything else
-        # (e.g. a control-plane terminal lane like ``orion-cc`` pulled via
-        # ``claim_task``) must NEVER auto-spawn: ``hermes -p <assignee>`` would
-        # crash on startup, get reaped as a zombie, the task would loop back to
-        # ``ready`` next tick, and we'd burn CPU forever
-        # (#kanban-dispatcher-crash-loop 2026-05-05). Bucket those as
-        # skipped_nonspawnable so health telemetry can tell them apart from
-        # genuinely unassigned work.
+        # Non-spawnable assignees (e.g. control-plane terminal lanes pulled via
+        # claim_task) go to skipped_nonspawnable, kept apart from
+        # skipped_unassigned so health telemetry can tell operator-unfixable
+        # lanes from genuinely unassigned work. See _assignee_is_spawnable.
         if not _assignee_is_spawnable(row_assignee):
             result.skipped_nonspawnable.append(row["id"])
             continue
@@ -7223,8 +7210,7 @@ def _dispatch_once_locked(
             # Increment per-assignee counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
-            # under-reports the capped subset (#21582). Track whenever an
-            # effective cap applies — global per-profile OR a per-lane cap.
+            # under-reports the capped subset (#21582).
             if _eff_cap is not None and row_assignee:
                 _per_profile_running[row_assignee] = (
                     _per_profile_running.get(row_assignee, 0) + 1
@@ -7282,10 +7268,7 @@ def _dispatch_once_locked(
             # Track the new in-flight count for this assignee so later
             # iterations in this same tick respect the effective cap — the
             # global per-profile cap OR a per-lane max_concurrency (#21582).
-            # Gating on _eff_cap (not just _per_profile_cap) keeps the real
-            # spawn path consistent with the cap check above and the dry-run
-            # increment; gating on the global cap alone let a lane-only cap be
-            # bypassed outside dry-run. Subsequent ticks re-query from the DB.
+            # Subsequent ticks re-query from the DB.
             if _eff_cap is not None and claimed.assignee:
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1

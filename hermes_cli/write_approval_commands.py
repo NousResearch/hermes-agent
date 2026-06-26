@@ -22,8 +22,7 @@ from tools import write_approval as wa
 
 
 def _fmt_state(subsystem: str) -> str:
-    on = wa.write_approval_enabled(subsystem)
-    return f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    return f"{subsystem}.write_approval = {wa.write_approval_mode(subsystem)}"
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +91,9 @@ def handle_pending_subcommand(
 
     if sub == "diff" and subsystem == wa.SKILLS:
         return _diff(rest)
+
+    if sub == "show":
+        return _show(subsystem, rest)
 
     if sub in {"approval", "mode"}:  # 'mode' kept as a back-compat alias
         return _set_approval(subsystem, rest, set_mode_fn)
@@ -181,29 +183,56 @@ def _diff(rest: List[str]) -> str:
     return header + "\n" + diff
 
 
-def _set_approval(subsystem: str, rest: List[str], set_mode_fn) -> str:
-    """Turn the approval gate on/off for a subsystem.
+def _show(subsystem: str, rest: List[str]) -> str:
+    """Show the full pending payload for a single staged write.
 
-    ``set_mode_fn`` (when provided) persists the new boolean to config.
+    Skills reuse the rich diff; memory shows the full staged payload so the
+    user can review the whole entry before approving (the pending *list* only
+    shows a one-line summary).
+    """
+    if not rest:
+        return f"Usage: /{subsystem} show <id>"
+    rec = wa.get_pending(subsystem, rest[0])
+    if not rec:
+        return f"No pending {subsystem} write with id '{rest[0]}'."
+    if subsystem == wa.SKILLS:
+        body = wa.skill_pending_diff(rec)
+    else:
+        payload = rec.get("payload", {})
+        body = json.dumps(payload, ensure_ascii=False, indent=2)
+    header = f"# Pending {subsystem} write {rec['id']}: {rec.get('summary', '')}\n"
+    return header + "\n" + body
+
+
+def _set_approval(subsystem: str, rest: List[str], set_mode_fn) -> str:
+    """Set the approval gate mode for a subsystem: ``off``/``on``/``background_only``.
+
+    ``set_mode_fn`` (when provided) persists the new value to config. It receives
+    ``True``/``False``/``"background_only"`` (not coerced to bool) so the 3-state
+    mode survives to config.yaml.
     """
     if not rest:
         return (f"{_fmt_state(subsystem)}\n"
-                f"Set with: /{subsystem} approval <on|off>")
+                f"Set with: /{subsystem} approval <off|on|background_only>")
     arg = rest[0].strip().lower()
     truthy = {"on", "true", "yes", "1", "enable", "enabled"}
     falsey = {"off", "false", "no", "0", "disable", "disabled"}
-    if arg in truthy:
-        enabled = True
+    bg_only = {"background_only", "background", "bg", "background_review"}
+    if arg in bg_only:
+        value = "background_only"
+    elif arg in truthy:
+        value = True
     elif arg in falsey:
-        enabled = False
+        value = False
     else:
-        return f"Invalid value '{arg}'. Use: on or off."
+        return f"Invalid value '{arg}'. Use: off, on, or background_only."
+    shown = value if isinstance(value, str) else ("on" if value else "off")
     if set_mode_fn is None:
-        val = "true" if enabled else "false"
+        saved = value if isinstance(value, str) else ("true" if value else "false")
         return (f"To change the {subsystem} approval gate, run:\n"
-                f"  hermes config set {subsystem}.write_approval {val}")
+                f"  hermes config set {subsystem}.write_approval {saved}")
     try:
-        set_mode_fn(enabled)
+        set_mode_fn(value)
     except Exception as e:
         return f"Failed to set {subsystem}.write_approval: {e}"
-    return f"{subsystem}.write_approval set to '{'on' if enabled else 'off'}'."
+    return f"{subsystem}.write_approval set to '{shown}'."

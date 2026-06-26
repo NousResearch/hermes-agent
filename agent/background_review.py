@@ -450,6 +450,24 @@ def summarize_background_review_actions(
             continue
         if not isinstance(data, dict) or not data.get("success"):
             continue
+        # Staged (write_approval background_only): the write was NOT applied — it
+        # sits in the pending store awaiting approval. Surface as a *proposal*
+        # (with pending id + approve/show command) rather than as applied work,
+        # in both ``on`` and ``verbose`` modes. ``off`` already returned [] above.
+        if data.get("staged"):
+            pid = data.get("pending_id", "")
+            staged_detail = call_details.get(tcid, {})
+            is_skill_staged = staged_detail.get("tool") == "skill_manage" or "gist" in data
+            if is_skill_staged:
+                gist = (data.get("gist") or staged_detail.get("name") or "skill change")
+                actions.append(
+                    f"📝 Skill proposed: {gist} (/skills diff {pid}, /skills approve {pid})"
+                )
+            else:
+                actions.append(
+                    f"📝 Memory proposed (/memory show {pid}, /memory approve {pid})"
+                )
+            continue
         message = data.get("message", "")
         detail = call_details.get(tcid, {})
         target = data.get("target", "") or detail.get("target", "")

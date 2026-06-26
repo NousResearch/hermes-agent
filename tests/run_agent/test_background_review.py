@@ -473,3 +473,39 @@ def test_skill_patch_off_silent_verbose_shows_diff():
     )
     assert len(verbose) == 1
     assert "demo" in verbose[0] and "→" in verbose[0]
+
+
+def test_fork_carries_background_review_write_origin(monkeypatch):
+    """Integration: the spawned review fork must carry
+    ``_memory_write_origin='background_review'`` BEFORE run_conversation.
+
+    This attribute is the source ``turn_context`` binds into the write-origin
+    ContextVar (turn_context.py:133), which is what gates ``background_only``
+    staging. If the fork stopped setting it, background writes would be
+    misclassified as foreground and applied directly.
+    """
+    captured = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            captured["origin_at_run"] = getattr(self, "_memory_write_origin", None)
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+    assert captured.get("origin_at_run") == "background_review"

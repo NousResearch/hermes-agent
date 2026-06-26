@@ -1534,10 +1534,17 @@ class CLICommandsMixin:
                    "Use: pending, approve <id>, reject <id>, approval <on|off>.")
         print(out)
 
-    def _save_write_approval(self, subsystem: str, enabled: bool):
-        """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
+    def _save_write_approval(self, subsystem: str, value):
+        """Persist <subsystem>.write_approval to config (for /memory|/skills approval).
+
+        ``value`` is ``True``/``False``/``"background_only"``. The 3-state string
+        is saved verbatim (not coerced to bool) so background_only survives.
+        """
         from cli import save_config_value
-        save_config_value(f"{subsystem}.write_approval", bool(enabled))
+        if isinstance(value, str):
+            save_config_value(f"{subsystem}.write_approval", value)
+        else:
+            save_config_value(f"{subsystem}.write_approval", bool(value))
 
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.

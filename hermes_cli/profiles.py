@@ -34,6 +34,10 @@ from typing import List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_WRAPPER_PROFILE_RE = re.compile(r"(?:^|[\s/\\])hermes(?:\.exe)?\s+-p\s+([a-z0-9][a-z0-9_-]{0,63}|default)\b")
+# Hermes wrapper scripts are tiny. Skipping larger executables in ~/.local/bin
+# keeps profile enumeration from reading binaries like uv/codex once per profile.
+_WRAPPER_SCAN_MAX_BYTES = 64 * 1024
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
@@ -486,6 +490,59 @@ def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
         pass
 
 
+def _iter_wrapper_candidates(wrapper_dir: Path):
+    """Yield plausible Hermes wrapper files without reading large binaries."""
+    if not wrapper_dir.is_dir():
+        return
+    is_windows = sys.platform == "win32"
+    for entry in sorted(wrapper_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        # Only our own wrappers are named with the alias and (on Windows) .bat.
+        if is_windows and entry.suffix != ".bat":
+            continue
+        if not is_windows and entry.suffix:
+            continue
+        try:
+            if entry.stat().st_size > _WRAPPER_SCAN_MAX_BYTES:
+                continue
+        except OSError:
+            continue
+        yield entry
+
+
+def _read_wrapper_profile(entry: Path) -> Optional[str]:
+    """Return the profile id referenced by a Hermes alias wrapper, if any."""
+    try:
+        content = entry.read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
+    match = _WRAPPER_PROFILE_RE.search(content)
+    if not match:
+        return None
+    return normalize_profile_name(match.group(1))
+
+
+def _scan_profile_aliases() -> dict[str, str]:
+    """Return profile id -> preferred wrapper alias from one wrapper-dir scan."""
+    wrapper_dir = _get_wrapper_dir()
+    aliases: dict[str, str] = {}
+    profile_named: dict[str, str] = {}
+    is_windows = sys.platform == "win32"
+    for entry in _iter_wrapper_candidates(wrapper_dir) or []:
+        profile = _read_wrapper_profile(entry)
+        if not profile:
+            continue
+        alias = entry.stem if is_windows else entry.name
+        if alias == profile:
+            profile_named[profile] = alias
+        elif profile not in aliases:
+            aliases[profile] = alias
+    for profile, alias in profile_named.items():
+        aliases.setdefault(profile, alias)
+    return aliases
+
+
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
     """Return the alias name of the wrapper that activates *profile_name*, or None.
 
@@ -499,35 +556,8 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
     so ``profile list``/``show`` surface the command the user actually typed.
     Results are sorted for deterministic output when several aliases match.
     """
-    wrapper_dir = _get_wrapper_dir()
-    if not wrapper_dir.is_dir():
-        return None
     canon = normalize_profile_name(profile_name)
-    is_windows = sys.platform == "win32"
-    needle = f"hermes -p {canon}"
-
-    custom: Optional[str] = None
-    profile_named: Optional[str] = None
-    for entry in sorted(wrapper_dir.iterdir()):
-        if not entry.is_file():
-            continue
-        # Only our own wrappers are named with the alias and (on Windows) .bat.
-        if is_windows and entry.suffix != ".bat":
-            continue
-        if not is_windows and entry.suffix:
-            continue
-        try:
-            content = entry.read_text()
-        except (OSError, UnicodeDecodeError):
-            continue
-        if needle not in content:
-            continue
-        alias = entry.stem if is_windows else entry.name
-        if alias == canon:
-            profile_named = alias
-        elif custom is None:
-            custom = alias
-    return custom if custom is not None else profile_named
+    return _scan_profile_aliases().get(canon)
 
 
 # ---------------------------------------------------------------------------
@@ -593,11 +623,50 @@ def _read_distribution_meta(profile_dir: Path) -> tuple:
 
 
 def _read_config_model(profile_dir: Path) -> tuple:
-    """Read model/provider from a profile's config.yaml. Returns (model, provider)."""
+    """Read model/provider from a profile's config.yaml. Returns (model, provider).
+
+    Profile listing/dashboard hot paths call this for every profile. Avoid a
+    full YAML parse of large config files when we only need two scalar values.
+    Fall back to YAML for odd legacy shapes.
+    """
     config_path = profile_dir / "config.yaml"
     if not config_path.exists():
         return None, None
     try:
+        lines = config_path.read_text(encoding="utf-8").splitlines()
+        in_model = False
+        model = None
+        provider = None
+        model_scalar = None
+        for raw in lines:
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            indent = len(raw) - len(raw.lstrip(" "))
+            if indent == 0:
+                if stripped.startswith("model:"):
+                    rest = stripped[len("model:"):].strip()
+                    if rest:
+                        model_scalar = rest.strip("'\"")
+                        break
+                    in_model = True
+                    continue
+                if in_model:
+                    break
+            if in_model and indent > 0:
+                if stripped.startswith("default:"):
+                    model = stripped[len("default:"):].strip().strip("'\"") or None
+                elif stripped.startswith("model:"):
+                    model = stripped[len("model:"):].strip().strip("'\"") or model
+                elif stripped.startswith("provider:"):
+                    provider = stripped[len("provider:"):].strip().strip("'\"") or None
+                if model and provider:
+                    return model, provider
+        if model_scalar is not None:
+            return model_scalar, None
+        if model or provider:
+            return model, provider
+
         import yaml
         with open(config_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
@@ -741,6 +810,7 @@ def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []
     wrapper_dir = _get_wrapper_dir()
+    alias_map = _scan_profile_aliases()
 
     # Default profile
     default_home = _get_default_hermes_home()
@@ -776,7 +846,7 @@ def list_profiles() -> List[ProfileInfo]:
             if not _PROFILE_ID_RE.match(name):
                 continue
             model, provider = _read_config_model(entry)
-            alias_name = find_alias_for_profile(name)
+            alias_name = alias_map.get(name)
             if alias_name:
                 is_windows = sys.platform == "win32"
                 alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)

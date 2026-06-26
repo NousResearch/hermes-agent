@@ -2054,6 +2054,42 @@ class TestAuxiliaryFallbackLayering:
 
         assert main_client.chat.completions.create.called
 
+    def test_compression_timeout_skips_same_provider_retry_and_uses_fallback(self, monkeypatch):
+        """Compression timeouts should fall back immediately, not retry the timed-out provider.
+
+        Compression is interrupt-protected in gateway sessions. If a summary
+        provider consumes the full request timeout, retrying the same provider
+        can make Telegram appear unresponsive for another full timeout before
+        fallback has a chance to run.
+        """
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = TimeoutError("Request timed out")
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from fallback"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "minimaxai/minimax-m3")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("nvidia", "minimaxai/minimax-m3", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "deepseek-v4-flash", "fallback_chain[0](deepseek)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+                timeout=1,
+            )
+
+        assert result.choices[0].message.content == "from fallback"
+        assert primary_client.chat.completions.create.call_count == 1
+        mock_chain.assert_called_once_with(
+            "compression", "nvidia", reason="connection error")
+        assert fallback_client.chat.completions.create.called
+        mock_main.assert_not_called()
+
     def test_explicit_provider_rate_limit_triggers_fallback(self, monkeypatch):
         """429 rate-limit on an explicit provider must trigger fallback (not be ignored).
 

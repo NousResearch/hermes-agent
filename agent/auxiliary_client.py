@@ -2628,6 +2628,43 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     return isinstance(status, int) and (status == 408 or 500 <= status < 600)
 
 
+def _is_timeout_transport_error(exc: Exception) -> bool:
+    """Return True when a transport error has already consumed its timeout.
+
+    Timeouts are distinct from short-lived disconnects: retrying the exact
+    same compression provider after the request deadline expires can block a
+    gateway session for another full auxiliary timeout before fallback has a
+    chance to run.
+    """
+    try:
+        from openai import APITimeoutError
+        if isinstance(exc, APITimeoutError):
+            return True
+    except ImportError:
+        pass
+    err_type = type(exc).__name__.lower()
+    err_lower = str(exc).lower()
+    return "timeout" in err_type or "timed out" in err_lower or "timeout" in err_lower
+
+
+def _should_retry_transient_same_provider(task: Optional[str], exc: Exception) -> bool:
+    """Decide whether an auxiliary transient error should get an immediate
+    retry against the same provider before provider/model fallback.
+
+    Context compression runs under interrupt protection so a mid-flight gateway
+    message cannot abort the summary and corrupt the handoff. That protection is
+    correct, but it makes same-provider timeout retries user-visible: the chat
+    appears stuck until the second full timeout elapses. Once a compression
+    provider has exhausted its request timeout, skip the same-target retry and
+    let the existing fallback chain run immediately.
+    """
+    if not _is_transient_transport_error(exc):
+        return False
+    if task == "compression" and _is_timeout_transport_error(exc):
+        return False
+    return True
+
+
 def _is_auth_error(exc: Exception) -> bool:
     """Detect auth failures that should trigger provider-specific refresh."""
     status = getattr(exc, "status_code", None)
@@ -5715,7 +5752,7 @@ def call_llm(
             return _validate_llm_response(
                 client.chat.completions.create(**kwargs), task)
         except Exception as transient_err:
-            if not _is_transient_transport_error(transient_err):
+            if not _should_retry_transient_same_provider(task, transient_err):
                 raise
             logger.info(
                 "Auxiliary %s: transient transport error; retrying once on "
@@ -6229,7 +6266,7 @@ async def async_call_llm(
             return _validate_llm_response(
                 await client.chat.completions.create(**kwargs), task)
         except Exception as transient_err:
-            if not _is_transient_transport_error(transient_err):
+            if not _should_retry_transient_same_provider(task, transient_err):
                 raise
             logger.info(
                 "Auxiliary %s (async): transient transport error; retrying "

@@ -1,0 +1,532 @@
+approval:
+  dangerous_header: '⚠️ ஆபத்தான கட்டளை: {description}'
+  choose_long: '[o]ஒருமுறை |[கள்]ஆணை |[a]எப்போதும் |[d]எனி'
+  choose_short: '[ஒருமுறை |[அமர்வு |[மறுக்கவும்'
+  prompt_long: 'தேர்வு [o/s/a/D]:'
+  prompt_short: 'தேர்வு [o/s/D]:'
+  timeout: ⏱ காலக்கெடு - கட்டளையை மறுக்கிறது
+  allowed_once: ✓ ஒரு முறை அனுமதிக்கப்படுகிறது
+  allowed_session: ✓ இந்த அமர்வுக்கு அனுமதிக்கப்பட்டது
+  allowed_always: ✓ நிரந்தர அனுமதிப் பட்டியலில் சேர்க்கப்பட்டது
+  denied: ✗ மறுக்கப்பட்டது
+  cancelled: ┇ ரத்து செய்யப்பட்டது
+  blocklist_message: இந்த கட்டளை நிபந்தனையற்ற தடுப்புப்பட்டியலில் உள்ளது மற்றும் அங்கீகரிக்க முடியாது.
+gateway:
+  approval_expired: ⚠️ ஒப்புதல் காலாவதியானது (முகவர் இனி காத்திருக்கவில்லை). மீண்டும் முயற்சிக்க முகவரிடம் கேளுங்கள்.
+  draining: ⏳ மறுதொடக்கம் செய்வதற்கு முன் {count} செயலில் உள்ள முகவர்(கள்) நிறுத்தப்படுகிறது...
+  goal_cleared: ✓ இலக்கு நிறைவேற்றப்பட்டது. ✓ இலக்கு நீக்கப்பட்டது.
+  no_active_goal: செயலில் இலக்கு இல்லை.
+  config_read_failed: '⚠️ config.yaml ஐப் படிக்க முடியவில்லை: {error}'
+  config_save_failed: '⚠️ கட்டமைப்பைச் சேமிக்க முடியவில்லை: {error}'
+  model:
+    error_prefix: 'பிழை: {error}'
+    switched: மாடல் `{model}`க்கு மாறியது
+    provider_label: 'வழங்குபவர்: {provider}'
+    context_label: 'சூழல்: {tokens} டோக்கன்கள்'
+    max_output_label: 'அதிகபட்ச வெளியீடு: {tokens} டோக்கன்கள்'
+    cost_label: 'செலவு: {cost}'
+    capabilities_label: 'திறன்கள்: {capabilities}'
+    prompt_caching_enabled: 'உடனடி கேச்சிங்: இயக்கப்பட்டது'
+    warning_prefix: 'எச்சரிக்கை: {warning}'
+    saved_global: config.yaml இல் சேமிக்கப்பட்டது (`--global`)
+    session_only_hint: _(இந்த அமர்வு மட்டும் — தொடர்ந்து இருக்க --global சேர்க்கவும்)_
+    current_label: 'நடப்பு: {provider} இல் `{model}`'
+    current_tag: (தற்போதைய)
+    more_models_suffix: (+{count} மேலும்)
+    usage_switch_model: '`/model <பெயர்>` — ஸ்விட்ச் மாடல்'
+    usage_switch_provider: '`/model <name> --provider <slug>` — சுவிட்ச் வழங்குநர்'
+    usage_persist: '`/மாடல் <பெயர்> --குளோபல்` — தொடர்கிறது'
+  agents:
+    header: 🤖 **Active Agents & Tasks**
+    active_agents: '**Active agents:** {count}'
+    this_chat: முகவர்கள் அல்லது இயங்கும் பணிகள் செயலில் இல்லை. 56. Not enough conversation to compress (need at least 4 messages). சுருக்க போதுமான உரையாடல் இல்லை (குறைந்தது 4  உரையாடல்கள் தேவை)
+    more: '... மேலும் {count}'
+    running_processes: '**Running background processes:** {count}'
+    async_jobs: '**Gateway async jobs:** {count}'
+    none: செயலில் உள்ள முகவர்கள் அல்லது இயங்கும் பணிகள் இல்லை.
+    state_starting: தொடங்குகிறது
+    state_running: ஓடுகிறது
+  approve:
+    no_pending: அங்கீகரிக்க எந்த கட்டளையும் நிலுவையில் இல்லை.
+    once_singular: ✅ கட்டளை அங்கீகரிக்கப்பட்டது.முகவர் மீண்டும் தொடங்குகிறார்...
+    once_plural: ✅ கட்டளைகள் அங்கீகரிக்கப்பட்டுள்ளன ({count} கட்டளைகள்).முகவர் மீண்டும் தொடங்குகிறார்...
+    session_singular: ✅ கட்டளை அங்கீகரிக்கப்பட்டது (இந்த அமர்வுக்கான முறை அங்கீகரிக்கப்பட்டது).முகவர் மீண்டும் தொடங்குகிறார்...
+    session_plural: ✅ Commands approved (pattern approved for this session) ({count} commands). The agent is resuming...
+    always_singular: ✅ கட்டளை அங்கீகரிக்கப்பட்டது (முறை நிரந்தரமாக அங்கீகரிக்கப்பட்டது).முகவர் மீண்டும் தொடங்குகிறார்...
+    always_plural: ✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming...
+  background:
+    usage: 'Usage: /background <prompt>
+
+      Example: /background Summarize the top HN stories today
+
+
+      Runs the prompt in a separate session. You can keep chatting — the result will appear here when done.'
+    started: '🔄 Background task started: "{preview}"
+
+      Task ID: {task_id}
+
+      You can keep chatting — results will appear when done.'
+  branch:
+    db_unavailable: அமர்வு தரவுத்தளம் கிடைக்கவில்லை.
+    no_conversation: கிளைக்கு உரையாடல் இல்லை - முதலில் ஒரு செய்தியை அனுப்பவும்.
+    create_failed: 'கிளையை உருவாக்க முடியவில்லை: {error}'
+    switch_failed: கிளை உருவாக்கப்பட்டது ஆனால் அதற்கு மாற முடியவில்லை.
+    branched_one: '⑂ Branched to **{title}** ({count} message copied)
+
+      Original: `{parent}`
+
+      Branch: `{new}`
+
+      Use `/resume` to switch back to the original.'
+    branched_many: '⑂ Branched to **{title}** ({count} messages copied)
+
+      Original: `{parent}`
+
+      Branch: `{new}`
+
+      Use `/resume` to switch back to the original.'
+  commands:
+    usage: 'பயன்பாடு: `/commands [பக்கம்]`'
+    skill_header: '⚡ **Skill Commands**:'
+    default_desc: ⏱ Pastes 6 மணிநேரத்தில் தானாக நீக்கப்படும்.
+    none: கட்டளைகள் இல்லை.
+    header: 📚 **Commands** ({total} total, page {page}/{total_pages})
+    nav_prev: '`/commands {page}` ← முந்தைய'
+    nav_next: அடுத்த → `/commands {page}`
+    out_of_range: _(கோரிய பக்கம் {requested} வரம்பிற்கு வெளியே உள்ளது, பக்கம் {page} காட்டுகிறது.)_
+  compress:
+    not_enough: சுருக்க போதுமான உரையாடல் இல்லை (குறைந்தது 4 செய்திகள் தேவை).
+    no_provider: எந்த வழங்குநரும் உள்ளமைக்கப்படவில்லை -- சுருக்க முடியாது.
+    nothing_to_do: இன்னும் சுருக்க எதுவும் இல்லை (டிரான்ஸ்கிரிப்ட் இன்னும் பாதுகாக்கப்பட்ட சூழலில் உள்ளது).
+    focus_line: 'கவனம்: "{topic}"'
+    summary_failed: ⚠️ Summary generation failed ({error}). {count} historical message(s) were removed and replaced with a placeholder; earlier context is no longer recoverable. Consider checking your auxiliary.compression
+      model configuration.
+    aborted: ⚠️ Compression aborted ({error}). No messages were dropped — conversation is unchanged. Run /compress to retry, /reset for a clean session, or check your auxiliary.compression model configuration.
+    aux_failed: ℹ️ Configured compression model `{model}` failed ({error}). Recovered using your main model — context is intact — but you may want to check `auxiliary.compression.model` in config.yaml.
+    failed: 'சுருக்கம் தோல்வியடைந்தது: {error}'
+  debug:
+    upload_failed: '✗ பிழைத்திருத்த அறிக்கையைப் பதிவேற்றுவதில் தோல்வி: {error}'
+    header: இந்த அமர்வில் இலக்குகளைப் பயன்படுத்த முடியாது.
+    auto_delete: ⏱ பேஸ்ட்கள் 6 மணிநேரத்தில் தானாக நீக்கப்படும்.
+    full_logs_hint: முழு பதிவு பதிவேற்றங்களுக்கு, CLI இலிருந்து `hermes debug share` ஐப் பயன்படுத்தவும்.
+    share_hint: ஆதரவுக்காக ஹெர்ம்ஸ் குழுவுடன் இந்த இணைப்புகளைப் பகிரவும்.
+  deny:
+    stale: ❌ கட்டளை மறுக்கப்பட்டது (அங்கீகாரம் பழையதாக இருந்தது).
+    no_pending: மறுக்க எந்த கட்டளையும் நிலுவையில் இல்லை.
+    denied_singular: ❌ கட்டளை மறுக்கப்பட்டது.
+    denied_plural: ❌ கட்டளைகள் மறுக்கப்பட்டன ({count} கட்டளைகள்).
+  fast:
+    not_supported: (சந்தா சேர்க்கப்பட்டது - {task_id} முடிந்ததும் அல்லது தடுக்கப்படும்போது உங்களுக்கு அறிவிக்கப்படும்)
+    status: '⚡ Priority Processing
+
+
+      Current mode: `{mode}`
+
+
+      _Usage:_ `/fast <normal|fast|status>`'
+    unknown_arg: '⚠️ Unknown argument: `{arg}`
+
+
+      **Valid options:** normal, fast, status'
+    saved: '⚡ ✓ Priority Processing: **{label}** (saved to config)
+
+      _(takes effect on next message)_'
+    session_only: '⚡ ✓ Priority Processing: **{label}** (this session only)'
+    label_fast: வேகமாக
+    label_normal: இயல்பானது
+    status_fast: வேகமாக
+    status_normal: சாதாரண
+  footer:
+    status: '📎 Runtime footer: **{state}**
+
+      Fields: `{fields}`
+
+      Platform: `{platform}`'
+    usage: 'off'
+    saved: '📎 Runtime footer: **{state}**{example}
+
+      _(saved globally — takes effect on next message)_'
+    example_line: '
+
+      Example: `{preview}`'
+    state_on: ஆன்
+    state_off: முடக்கப்பட்டுள்ளது
+  goal:
+    unavailable: இந்த அமர்வில் இலக்குகள் கிடைக்கவில்லை.
+    no_goal_set: இலக்கு நிர்ணயிக்கப்படவில்லை.
+    paused: '⏸ இலக்கு இடைநிறுத்தப்பட்டது: {goal}'
+    no_resume: மீண்டும் தொடங்க இலக்கு இல்லை.
+    resumed: '▶ Goal resumed: {goal}
+
+      Send any message to continue, or wait — I''ll take the next step on the next turn.'
+    invalid: 'தவறான இலக்கு: {error}'
+    set: '⊙ Goal set ({budget}-turn budget): {goal}
+
+      I''ll keep working until the goal is done, you pause/clear it, or the budget is exhausted.
+
+      Controls: /goal status · /goal pause · /goal resume · /goal clear'
+  help:
+    header: '📖 **Hermes Commands**
+
+      '
+    skill_header: '
+
+      ⚡ **Skill Commands** ({count} active):'
+    more_use_commands: '
+
+      ... and {count} more. Use `/commands` for the full paginated list.'
+  insights:
+    invalid_days: 'தவறான --நாட்கள் மதிப்பு: {value}'
+    error: 'நுண்ணறிவுகளை உருவாக்குவதில் பிழை: {error}'
+  kanban:
+    error_prefix: '⚠ கான்பன் பிழை: {error}'
+    subscribed_suffix: (சந்தா - {task_id} முடிந்ததும் அல்லது தடுக்கப்படும்போது உங்களுக்கு அறிவிக்கப்படும்)
+    truncated_suffix: … (துண்டிக்கப்பட்டது; முழு வெளியீட்டிற்கு உங்கள் முனையத்தில் `ஹெர்ம்ஸ் கான்பன் …` ஐப் பயன்படுத்தவும்)
+    no_output: (வெளியீடு இல்லை)
+  personality:
+    none_configured: '`{path}/config.yaml` இல் எந்த ஆளுமைகளும் உள்ளமைக்கப்படவில்லை'
+    header: '🎭 **Available Personalities**
+
+      '
+    none_option: • `none` — (no personality overlay)
+    item: • `{name}` — {preview}
+    usage: '
+
+      Usage: `/personality <name>`'
+    save_failed: '⚠️ ஆளுமை மாற்றத்தைச் சேமிக்க முடியவில்லை: {error}'
+    cleared: '🎭 Personality cleared — using base agent behavior.
+
+      _(takes effect on next message)_'
+    set_to: '🎭 Personality set to **{name}**
+
+      _(takes effect on next message)_'
+    unknown: 'Unknown personality: `{name}`
+
+
+      Available: {available}'
+  profile:
+    header: 👤 **Profile:** `{profile}`
+    home: 📂 **Home:** `{home}`
+  reasoning:
+    level_default: நடுத்தர (இயல்புநிலை)
+    level_disabled: எதுவும் இல்லை (ஊனமுற்றவர்)
+    scope_session: நிறுத்த பணிகள் இல்லை.
+    scope_global: உலகளாவிய கட்டமைப்பு
+    status: '🧠 **Reasoning Settings**
+
+
+      **Effort:** `{level}`
+
+      **Scope:** {scope}
+
+      **Display:** {display}
+
+
+      _Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`'
+    display_on: அன்று ✓
+    display_off: ஆஃப்
+    display_set_on: '🧠 ✓ Reasoning display: **ON**
+
+      Model thinking will be shown before each response on **{platform}**.'
+    display_set_off: '🧠 ✓ Reasoning display: **OFF** for **{platform}**'
+    reset_global_unsupported: ⚠️ `/reasoning reset --global` is not supported. Use `/reasoning <level> --global` to change the global default.
+    reset_done: 🧠 ✓ அமர்வு தர்க்கம் மேலெழுதப்பட்டது;உலகளாவிய கட்டமைப்பிற்கு மீண்டும் விழுகிறது.
+    unknown_arg: '⚠️ Unknown argument: `{arg}`
+
+
+      **Valid levels:** none, minimal, low, medium, high, xhigh
+
+      **Display:** show, hide
+
+      **Persist:** add `--global` to save beyond this session'
+    set_global: '🧠 ✓ Reasoning effort set to `{effort}` (saved to config)
+
+      _(takes effect on next message)_'
+    set_global_save_failed: '🧠 ✓ Reasoning effort set to `{effort}` (session only — config save failed)
+
+      _(takes effect on next message)_'
+    set_session: '🧠 ✓ Reasoning effort set to `{effort}` (session only — add `--global` to persist)
+
+      _(takes effect on next message)_'
+  reload_mcp:
+    cancelled: 🟡 /reload-mcp ரத்துசெய்யப்பட்டது.MCP கருவிகள் மாறவில்லை.
+    always_followup: 'ℹ️ Future `/reload-mcp` calls will run without confirmation. Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml.'
+    confirm_prompt: '⚠️ **Confirm /reload-mcp**
+
+
+      Reloading MCP servers rebuilds the tool set for this session and **invalidates the provider prompt cache** — the next message will re-send full input tokens.  On long-context or high-reasoning models
+      this can be expensive.
+
+
+      Choose:
+
+      • **Approve Once** — reload now
+
+      • **Always Approve** — reload now and silence this prompt permanently
+
+      • **Cancel** — leave MCP tools unchanged
+
+
+      _Text fallback: reply `/approve`, `/always`, or `/cancel`._'
+    header: '🔄 **MCP Servers Reloaded**
+
+      '
+    reconnected: '♻️ மீண்டும் இணைக்கப்பட்டது: {names}'
+    added: '➕ சேர்க்கப்பட்டது: {names}'
+    removed: '➖ அகற்றப்பட்டது: {names}'
+    none_connected: MCP சேவையகங்கள் இணைக்கப்படவில்லை.
+    tools_available: '
+
+      🔧 {tools} tool(s) available from {servers} server(s)'
+    failed: '❌ MCP மறுஏற்றம் தோல்வியடைந்தது: {error}'
+  reload_skills:
+    header: '🔄 **Skills Reloaded**
+
+      '
+    no_new: புதிய திறன்கள் எதுவும் கண்டறியப்படவில்லை.
+    total: '
+
+      📚 {count} skill(s) available'
+    added_header: ➕ **Added Skills:**
+    removed_header: ➖ **Removed Skills:**
+    item_with_desc: '- {name}: {desc}'
+    item_no_desc: '- {name}'
+    failed: '❌ திறன்களை மீண்டும் ஏற்ற முடியவில்லை: {error}'
+  reset:
+    header_default: ✨ அமர்வு மீட்டமைப்பு!புதிதாக ஆரம்பிக்கிறது.
+    header_new: ✨ புதிய அமர்வு தொடங்கியது!
+    header_titled: '✨ புதிய அமர்வு தொடங்கியது: {title}'
+    title_rejected: '
+
+      ⚠️ Title rejected: {error}'
+    title_error_untitled: '
+
+      ⚠️ {error} — session started untitled.'
+    title_empty_untitled: '
+
+      ⚠️ Title is empty after cleanup — session started untitled.'
+    tip: '
+
+      ✦ Tip: {tip}'
+  restart:
+    in_progress: ⏳ நுழைவாயில் மறுதொடக்கம் ஏற்கனவே செயலில் உள்ளது...
+    restarting: ♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`.
+  resume:
+    db_unavailable: அமர்வு தரவுத்தளம் கிடைக்கவில்லை.
+    parse_error: '⚠️ Could not parse `/resume` arguments: {error}.
+
+      Use quotes around titles with spaces, for example: `/resume "Project A Plan"`.'
+    matrix_no_named_sessions: 'No named sessions found for this Matrix room.
+
+      Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries.'
+    matrix_blocked_no_origin: '⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}`
+      if you intentionally want to cross room boundaries.'
+    matrix_blocked_other_room: '⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here.'
+    matrix_cross_room_success: '⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+
+      Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}'
+    no_named_sessions: 'No named sessions found.
+
+      Use `/title My Session` to name your current session, then `/resume My Session` to return to it later.'
+    list_header: செயல்பாட்டில் உள்ள முகவர்கள் மற்றும் பணிகள்
+    list_item: • **{title}**{preview_part}
+    list_item_numbered: '{index}. **{title}**{preview_part}'
+    list_preview_suffix: — _{preview}_
+    list_footer: கட்டளைகள் அங்கீகரிக்கப்பட்டன (இந்த அமர்வுக்கான அமைப்புமுறை அங்கீகரிக்கப்பட்டது) ({count} கட்டளைகள்). முகவர் மீண்டும் செயல்படத் தொடங்குகிறது...
+    list_footer_numbered: கட்டளைகள் முழுமையாக அங்கீகரிக்கப்பட்டன ({count} கட்டளைகள்). முகவர் மீண்டும் செயல்படத் தொடங்குகிறது...
+    list_failed: 'அமர்வுகளை பட்டியலிட முடியவில்லை: {error}'
+    out_of_range: 'Resume index {index} is out of range.
+
+      Use `/resume` with no arguments to see available sessions.'
+    not_found: 'No session found matching ''**{name}**''.
+
+      Use `/resume` with no arguments to see available sessions.'
+    already_on: 📌 Already on session **{name}**.
+    switch_failed: 'திறன் கட்டளைகள்:'
+    resumed_one: ↻ Resumed session **{title}** ({count} message). Conversation restored.
+    resumed_many: ↻ Resumed session **{title}** ({count} messages). Conversation restored.
+    resumed_no_count: ↻ Resumed session **{title}**. Conversation restored.
+  retry:
+    no_previous: '{model} failed ({error}). Recovered using your main model — context is intact — but you may want to check auxiliary.compression.model in config.yaml. அமைக்கப்பட்ட சுருக்க மாதிரி {model}
+      தோல்வியடைந்தது ({error}). உங்கள் முதன்மை மாதிரியைப் பயன்படுத்தி மீட்கப்பட்டது — சூழல் அப்படியே உள்ளது — ஆனால் நீங்கள் config.yaml-இல் உள்ள auxiliary.compression.model என்பதைச் சரிபார்க்கலாம்.'
+  rollback:
+    not_enabled: பிழைத்திருத்த அறிக்கை பதிவேற்றப்பட்டது
+    none_found: '{cwd}க்கான சோதனைச் சாவடிகள் எதுவும் இல்லை'
+    invalid_number: தவறான சோதனைச் சாவடி எண்.1-{max} ஐப் பயன்படுத்தவும்.
+    restored: '✅ Restored to checkpoint {hash}: {reason}
+
+      A pre-rollback snapshot was saved automatically.'
+    restore_failed: ❌ {error}
+  set_home:
+    save_failed: 'முகப்புச் சேனலைச் சேமிப்பதில் தோல்வி: {error}'
+    success: '✅ Home channel set to **{name}** (ID: {chat_id}).
+
+      Cron jobs and cross-platform messages will be delivered here.'
+  status:
+    header: 'Example: {preview} உதாரனம் {preview}'
+    matrix_scope_header: 'Send any message to continue, or wait — I''ll take the next step on the next turn. இலக்கு மீண்டும் தொடங்கப்பட்டது: {goal} தொடர ஏதேனும் செய்தியை அனுப்பவும் அல்லது காத்திருக்கவும்
+      — அடுத்த கட்டத்தில் நான் அடுத்த நடவடிக்கையை மேற்கொள்வேன்.'
+    matrix_scope_room: 'அறை: {room}'
+    matrix_scope_room_id: 'room_id: {room_id}'
+    matrix_scope_thread: 'thread_id: {thread_id}'
+    matrix_scope_mode: 'அமர்வு_ஸ்கோப்: {scope}'
+    matrix_scope_key: 'அமர்வு_கீ: {session_key}'
+    session_id: '**Session ID:** `{session_id}`'
+    title: '**Title:** {title}'
+    created: '**Created:** {timestamp}'
+    last_activity: '**Last Activity:** {timestamp}'
+    model: '**Model:** `{model}`'
+    model_provider: '**Model:** `{model}` ({provider})'
+    context: '**Context:** {used} / {total} ({pct}%)'
+    context_used: '**Context:** ~{used} tokens'
+    tokens: '**Cumulative API tokens (re-sent each call):** {tokens}'
+    agent_running: '**Agent Running:** {state}'
+    state_yes: 'பகுப்பாய்வுத் தகவல் காட்சி: {platform}-க்கு OFF செய்யப்பட்டது'
+    state_no: /reasoning reset --global is not supported. Use /reasoning <level> --global to change the global default. /reasoning reset --global என்பது ஆதரிக்கப்படவில்லை. பொதுவான இயல்புநிலையை (global default)
+      மாற்ற, /reasoning <level> --global என்பதைப் பயன்படுத்தவும்.
+    queued: '**Queued follow-ups:** {count}'
+    platforms: '**Connected Platforms:** {platforms}'
+  stop:
+    stopped_pending: '{effort} (session only — config save failed) _(takes effect on next message)_ பகுப்பாய்வு முயற்சி (reasoning effort) இவ்வாறு அமைக்கப்பட்டது: {effort} (இந்த அமர்வுக்கு மட்டும் — அமைப்பில்
+      சேமிக்க முடியவில்லை) _(அடுத்த செய்தியில் இது நடைமுறைக்கு வரும்)_'
+    stopped: '{effort} (session only — add --global to persist) _(takes effect on next message)_ பகுப்பாய்வு முயற்சி (reasoning effort) இவ்வாறு அமைக்கப்பட்டது: {effort} (இந்த அமர்வுக்கு மட்டும் — நிரந்தரமாக்க
+      --global என்பதைச் சேர்க்கவும்) _(அடுத்த செய்தியில் இது நடைமுறைக்கு வரும்)_'
+    no_active: '/reload-mcp calls will run without confirmation. Re-enable via approvals.mcp_reload_confirm: true in config.yaml. இனிவரும் /reload-mcp அழைப்புகள் உறுதிப்படுத்தல் இல்லாமலேயே இயங்கும். மீண்டும்
+      செயல்படுத்த, config.yaml-இல் approvals.mcp_reload_confirm: true என்பதை அமைக்கவும்.'
+  title:
+    db_unavailable: 'Reloading MCP servers rebuilds the tool set for this session and invalidates the provider prompt cache — the next message will re-send full input tokens. On long-context or high-reasoning
+      models this can be expensive. Choose: • Approve Once — reload now (5/7) • Always Approve — reload now and silence this prompt permanently • Cancel — leave MCP tools unchanged _Text fallback: reply
+      /approve , /always , or /cancel ._ /reload-mcp-ஐ உறுதிப்படுத்தவும் MCP சேவையகங்களை மீண்டும் ஏற்றும்போது (reload), இந்த அமர்வுக்கான கருவிகளின் தொகுப்பு (tool set) புதிதாக உருவாக்கப்படும் மற்றும் வழங்குநரின்
+      ''prompt cache'' செல்லாததாக்கப்படும் — அடுத்த செய்தியில் முழு உள்ளீட்டு டோக்கன்களும் (input tokens) மீண்டும் அனுப்பப்படும். நீண்ட சூழல் (long-context) அல்லது அதிக பகுத்தறிவுத் திறன் கொண்ட மாதிரிகளில்
+      (high-reasoning models) இது அதிக செலவு பிடிக்கக்கூடியதாக (அதாவது அதிக டோக்கன்களைப் பயன்படுத்துவதாக) இருக்கலாம். தேர்வு செய்யவும்: • ஒருமுறை அனுமதி — இப்போதே மீண்டும் ஏற்றவும் (5/7) • எப்போதும் அனுமதி
+      — இப்போதே மீண்டும் ஏற்றவும், இனி இந்தக் குறிப்பை (prompt) காட்ட வேண்டாம் • ரத்துசெய் — MCP கருவிகளை மாற்றாமல் அப்படியே விடவும் _மாற்று வழி: பதிலளிக்கவும்_ /approve , /always , அல்லது /cancel ._'
+    warn_prefix: ⚠️ {error}
+    empty_after_clean: 🔧 {tools} tool(s) available from {servers} server(s) servers} சேவையக(ங்)களிலிருந்து {tools} கருவி(கள்) கிடைக்கின்றன
+    set_to: '✏️ Session title set: **{title}**'
+    not_found: 📚 {count} skill(s) available {count} திறன்(கள்) கிடைக்கின்றன
+    current_with_title: '📌 Session: `{session_id}`
+
+      Title: **{title}**'
+    current_no_title: '📌 Session: `{session_id}`
+
+      No title set. Usage: `/title My Session Name`'
+  topic:
+    not_telegram_dm: '⚠️ Title rejected: {error} தலைப்பு நிராகரிக்கப்பட்டது: {error}'
+    no_session_db: ⚠️ {error} — session started untitled. {error} — அமர்வு தலைப்பு இல்லாமல் தொடங்கப்பட்டது.
+    unauthorized: ⚠️ Title is empty after cleanup — session started untitled. சுத்திகரிப்புக்குப் பிறகு தலைப்பு காலியாக உள்ளது — அமர்வு பெயரிடப்படாமல் தொடங்கப்பட்டது.
+    restore_needs_topic: '✦ Tip: {tip} குறிப்பு: {tip}'
+    topics_disabled: 'hermes gateway restart . கேட்வே (gateway) மறுதொடக்கம் செய்யப்படுகிறது. 60 வினாடிகளுக்குள் உங்களுக்கு அறிவிப்பு வரவில்லை என்றால், கன்சோலில் இருந்து பின்வரும் கட்டளையைப் பயன்படுத்தி
+      மறுதொடக்கம் செய்யவும்: hermes gateway restart'
+    topics_user_disallowed: '/resume arguments: {error}. Use quotes around titles with spaces, for example: /resume "Project A Plan" . /resume கட்டளையின் அளபுருக்களைப் (arguments) பகுப்பாய்வு செய்ய முடியவில்லை:
+      {error}. இடைவெளிகளைக் கொண்ட தலைப்புகளை மேற்கோள் குறிகளுக்குள் (quotes) குறிப்பிடவும், உதாரணமாக: /resume "Project A Plan"'
+    enable_failed: 'டெலிகிராம் தலைப்பு பயன்முறையை இயக்க முடியவில்லை: {error}'
+    bound_status: 'This topic is linked to:
+
+      Session: {label}
+
+      ID: {session_id}
+
+
+      Use /new to replace this topic with a fresh session.
+
+      For parallel work, open All Messages and send a message there to create another topic.'
+    thread_ready: '/resume --cross-room {name} if you intentionally want to resume it here. Matrix /resume தடுக்கப்பட்டது: பெயரிடப்பட்ட இந்த அமர்வுக்குப் பதிவுசெய்யப்பட்ட அறைத் தொடக்கம் (origin) எதுவும்
+      இல்லை, எனவே Hermes இயல்பாகவே தற்போதைய அறைக்குள் அதை மீண்டும் தொடங்காது. அறை எல்லைகளைத் தாண்டிச் செயல்பட நீங்கள் விரும்பினால் /resume --cross-room {name} என்பதைப் பயன்படுத்தவும்.'
+    untitled_session: 'Future messages in this room will use that transcript until /reset or another /resume . அறை-தாண்டிய (Cross-room) மறுதொடக்கம்: Matrix அறை {room}-க்குள் {title} மீண்டும் தொடங்கப்பட்டது.
+      /reset அல்லது மற்றொரு /resume கட்டளை வரும் வரை, இந்த அறையில் உள்ள எதிர்காலச் செய்திகள் அந்தப் பதிவையே (transcript) பயன்படுத்தும்.'
+  undo:
+    nothing: Use /title My Session to name your current session, then /resume My Session to return to it later. பெயரிடப்பட்ட அமர்வுகள் எதுவும் காணப்படவில்லை. உங்கள் தற்போதைய அமர்வுக்குப் பெயரிட /title My
+      Session என்பதையும், பின்னர் அதை மீண்டும் தொடர /resume My Session என்பதையும் பயன்படுத்தவும்.
+    removed: '↩️ Undid {turns} turn(s) ({count} message(s)).
+
+      Backed up to: "{preview}"
+
+      Copy/edit the text above and send it to re-prompt from here.'
+    invalid_count: தவறான எண்ணிக்கை "{arg}" — பயன்படுத்து /undo அல்லது /undo N.
+  update:
+    platform_not_messaging: (Keep as is)
+    not_git_repo: 'Usage: /resume <session name> ???'
+    hermes_cmd_not_found: 'Usage: /resume <session name> or /resume <number> (e.g. /resume 1 for the most recent) பயன்பாடு: /resume <session name> அல்லது /resume <number> (எ.கா. /resume 1 மிகச் சமீபத்திய
+      அமர்வுக்கு)'
+    start_failed: '✗ புதுப்பிப்பைத் தொடங்குவதில் தோல்வி: {error}'
+    starting: Use /resume with no arguments to see available sessions. '{name}' உடன் பொருந்தக்கூடிய அமர்வு எதுவும் கண்டறியப்படவில்லை. கிடைக்கக்கூடிய அமர்வுகளைப் பார்க்க, எந்தக் கூடுதல் அளபுருக்களும் (arguments)
+      இல்லாமல் /resume என்பதைப் பயன்படுத்தவும்.
+  usage:
+    rate_limits: ⏱️ **Rate Limits:** {state}
+    header_session: '{title} என்ற அமர்வு மீண்டும் தொடங்கப்பட்டது ({count} செய்தி). உரையாடல் மீட்டமைக்கப்பட்டது.'
+    label_model: 'மாதிரி: `{model}`'
+    label_input_tokens: 'உள்ளீடு டோக்கன்கள்: {count}'
+    label_cache_read: 'கேச் ரீட் டோக்கன்கள்: {count}'
+    label_cache_write: 'கேச் ரைட் டோக்கன்கள்: {count}'
+    label_output_tokens: 'வெளியீட்டு டோக்கன்கள்: {count}'
+    label_total: 'மொத்தம்: {count}'
+    label_api_calls: 'API அழைப்புகள்: {count}'
+    label_cost: 'விலை: {prefix}${amount}'
+    label_cost_included: 'தலைப்பு: {title}'
+    label_context: 'சூழல்: {used} / {total} ({pct}%)'
+    label_compressions: 'சுருக்கங்கள்: {count}'
+    header_session_info: '{model} மாதிரி (Model): {model}'
+    label_messages: 'செய்திகள்: {count}'
+    label_estimated_context: 'மதிப்பிடப்பட்ட சூழல்: ~{count} டோக்கன்கள்'
+    detailed_after_first: 'சூழல் (Context): ~{used} டோக்கன்கள்'
+    no_data: 'ஒட்டுமொத்த API டோக்கன்கள் (ஒவ்வொரு அழைப்பிலும் மீண்டும் அனுப்பப்படுபவை): {tokens}'
+  credits:
+    not_logged_in: 'ஏஜென்ட் இயங்குகிறது: {state}'
+  verbose:
+    not_enabled: 'வரிசையில் உள்ள நடவடிக்கைகள்: {count}'
+    mode_off: 'இணைக்கப்பட்ட தளங்கள்: {platforms}'
+    mode_new: 'அமர்வு தலைப்பு அமைக்கப்பட்டது: {title}'
+    mode_all: '{session_id} Title: {title} (6/7) அமர்வு: {session_id} தலைப்பு: {title} (6/7)'
+    mode_verbose: '{session_id} No title set. Usage: /title My Session Name அமர்வு: {session_id}'
+    saved_suffix: _(saved for **{platform}** — takes effect on next message)_
+    save_failed: '_(கட்டமைப்பில் சேமிக்க முடியவில்லை: {error})_'
+  voice:
+    enabled_voice_only: 'Voice mode enabled.
+
+      I''ll reply with voice when you send voice messages.
+
+      Use /voice tts to get voice replies for all messages.'
+    disabled_text: குரல் பயன்முறை முடக்கப்பட்டுள்ளது.உரை-மட்டும் பதில்கள்.
+    tts_enabled: 'Auto-TTS enabled.
+
+      All replies will include a voice message.'
+    status_mode: 'குரல் முறை: {label}'
+    status_channel: 'குரல் சேனல்: #{channel}'
+    status_participants: 'பங்கேற்பாளர்கள்: {count}'
+    status_member: '- {name}{status}'
+    speaking: (பேசும்)
+    enabled_short: குரல் பயன்முறை இயக்கப்பட்டது.
+    disabled_short: குரல் பயன்முறை முடக்கப்பட்டுள்ளது.
+    label_off: ஆஃப் (உரை மட்டும்)
+    label_voice_only: ஆன் (குரல் செய்திகளுக்கு குரல் பதில்)
+    label_all: TTS (அனைத்து செய்திகளுக்கும் குரல் பதில்)
+    help: '{toggle}
+
+
+      **How /voice works**
+
+      • `/voice on` — voice reply when you send a voice message
+
+      • `/voice tts` — voice reply to *every* message
+
+      • `/voice off` — back to text-only replies
+
+      • `/voice status` — show the current mode
+
+      • `/voice` (no argument) — quick toggle between on and off{channels}'
+    help_channels: '
+
+
+      **Live voice channels (Discord)**
+
+      • Join a voice channel first, then `/voice channel` — I''ll join, listen, and speak my replies
+
+      • `/voice leave` — disconnect from the voice channel'
+  yolo:
+    disabled: ⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval.
+    enabled: ⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution.
+  shared:
+    session_db_unavailable: அமர்வு தரவுத்தளம் கிடைக்கவில்லை.
+    session_db_unavailable_prefix: அமர்வு தரவுத்தளம் கிடைக்கவில்லை
+    session_not_found: தரவுத்தளத்தில் அமர்வு காணப்படவில்லை.
+    warn_passthrough: ⚠️ {error}

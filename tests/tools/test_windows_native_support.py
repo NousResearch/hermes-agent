@@ -1079,6 +1079,15 @@ class TestWindowlessGatewayRestartSpec:
         while every subsequent argument is preserved verbatim."""
         import hermes_cli.gateway_windows as gw
 
+        # Pre-import on the (Linux) host so the function's lazy
+        # ``from hermes_cli.gateway import PROJECT_ROOT`` resolves from
+        # sys.modules instead of re-importing under the win32 platform
+        # patch below — a fresh import would run gateway/status.py's
+        # ``if sys.platform == "win32": import msvcrt`` branch and crash on
+        # Linux CI with ModuleNotFoundError.
+        import hermes_cli.config  # noqa: F401
+        import hermes_cli.gateway  # noqa: F401
+
         argv = [
             "C:/venv/Scripts/python.exe",
             "-m",
@@ -1093,10 +1102,15 @@ class TestWindowlessGatewayRestartSpec:
         def fake_resolve(python_exe):
             return ("C:/base/pythonw.exe", Path("C:/venv"), ["C:/venv/Lib/site-packages"])
 
+        # Mock get_hermes_home too: the real one calls Path.resolve(), which
+        # consults sysconfig and raises ModuleNotFoundError under the win32
+        # platform patch on a Linux host.
         with mock.patch.object(gw.sys, "platform", "win32"), mock.patch.object(
             gw, "_resolve_detached_python", side_effect=fake_resolve
         ), mock.patch.object(
             gw, "_stable_gateway_working_dir", return_value="C:/hermes"
+        ), mock.patch(
+            "hermes_cli.config.get_hermes_home", return_value="C:/hermes"
         ):
             new_argv, cwd, env = gw.windowless_gateway_restart_spec(list(argv))
 

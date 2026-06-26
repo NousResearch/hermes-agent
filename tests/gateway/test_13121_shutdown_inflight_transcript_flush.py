@@ -70,11 +70,23 @@ class _FakeAgent:
         self.session_id = "sess-1"
 
 
+def _patch_runner(runner):
+    """Add stubs needed by the async _finalize_shutdown_agents."""
+    import types
+    async def _run_in_executor_with_context(self, fn, *args, **_kwargs):
+        return fn(*args)
+    runner._run_in_executor_with_context = types.MethodType(
+        _run_in_executor_with_context, runner
+    )
+    return runner
+
+
 class TestFinalizeShutdownFlushesInflightTranscript:
-    def test_inflight_messages_flushed_before_teardown(self):
+    @pytest.mark.asyncio
+    async def test_inflight_messages_flushed_before_teardown(self):
         """The mid-turn transcript (tail = pending tool result) is flushed
         to the session DB during shutdown finalization."""
-        runner = _make_runner()
+        runner = _patch_runner(_make_runner())
         inflight = [
             {"role": "user", "content": "scan the repo and summarise"},
             {"role": "assistant", "content": "", "tool_calls": [
@@ -84,42 +96,45 @@ class TestFinalizeShutdownFlushesInflightTranscript:
         ]
         agent = _FakeAgent(session_messages=inflight)
 
-        runner._finalize_shutdown_agents({"agent:main:discord:dm:42": agent})
+        await runner._finalize_shutdown_agents({"agent:main:discord:dm:42": agent})
 
         agent._flush_messages_to_session_db.assert_called_once_with(inflight)
         # Cleanup still happens after the flush.
         agent.close.assert_called_once()
 
-    def test_empty_session_messages_not_flushed(self):
+    @pytest.mark.asyncio
+    async def test_empty_session_messages_not_flushed(self):
         """An agent that ran no turns (empty list) triggers no flush — there
         is nothing in flight to persist."""
-        runner = _make_runner()
+        runner = _patch_runner(_make_runner())
         agent = _FakeAgent(session_messages=[])
 
-        runner._finalize_shutdown_agents({"k": agent})
+        await runner._finalize_shutdown_agents({"k": agent})
 
         agent._flush_messages_to_session_db.assert_not_called()
         agent.close.assert_called_once()
 
-    def test_missing_flush_method_is_tolerated(self):
+    @pytest.mark.asyncio
+    async def test_missing_flush_method_is_tolerated(self):
         """A stub agent without the flush method (object.__new__ test stubs)
         must not break shutdown — teardown still runs."""
-        runner = _make_runner()
+        runner = _patch_runner(_make_runner())
         agent = _FakeAgent(session_messages=[{"role": "user", "content": "x"}],
                            has_flush=False)
 
-        runner._finalize_shutdown_agents({"k": agent})
+        await runner._finalize_shutdown_agents({"k": agent})
 
         agent.close.assert_called_once()
 
-    def test_flush_exception_is_swallowed(self):
+    @pytest.mark.asyncio
+    async def test_flush_exception_is_swallowed(self):
         """A raising flush must not prevent teardown — a transcript-flush
         failure is best-effort, losing tool resources is worse."""
-        runner = _make_runner()
+        runner = _patch_runner(_make_runner())
         agent = _FakeAgent(session_messages=[{"role": "user", "content": "x"}])
         agent._flush_messages_to_session_db.side_effect = RuntimeError("db locked")
 
-        runner._finalize_shutdown_agents({"k": agent})
+        await runner._finalize_shutdown_agents({"k": agent})
 
         agent.close.assert_called_once()
 
@@ -128,7 +143,8 @@ class TestFinalizeShutdownFlushesInflightTranscript:
 # E2E: real AIAgent flush → real SessionDB → real load_transcript.
 # ─────────────────────────────────────────────────────────────────────────
 class TestShutdownTranscriptSurvivesResumeE2E:
-    def test_interrupted_turn_persisted_and_readable_on_resume(self, tmp_path, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_interrupted_turn_persisted_and_readable_on_resume(self, tmp_path, monkeypatch):
         """Drive the real flush path against a real SessionDB and confirm the
         in-flight turn is readable back through SessionStore.load_transcript —
         the exact path the resume logic reads on the next message."""
@@ -185,8 +201,8 @@ class TestShutdownTranscriptSurvivesResumeE2E:
 
         # Drive the gateway shutdown finalization with this real agent.
         from gateway.run import GatewayRunner
-        runner = object.__new__(GatewayRunner)
-        runner._finalize_shutdown_agents({"agent:main:discord:dm:7": agent})
+        runner = _patch_runner(object.__new__(GatewayRunner))
+        await runner._finalize_shutdown_agents({"agent:main:discord:dm:7": agent})
 
         # The in-flight turn must now be durable and readable via the SAME
         # path the resume logic uses (SessionStore.load_transcript → DB).
@@ -203,7 +219,8 @@ class TestShutdownTranscriptSurvivesResumeE2E:
         # branch in _handle_message_with_agent expects to handle.
         assert roles[-1] == "tool", roles
 
-    def test_graceful_agent_reflush_is_idempotent(self, tmp_path, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_graceful_agent_reflush_is_idempotent(self, tmp_path, monkeypatch):
         """An agent that already flushed via finalize_turn must not produce
         duplicate rows when _finalize_shutdown_agents re-flushes."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -236,8 +253,8 @@ class TestShutdownTranscriptSurvivesResumeE2E:
 
         # Shutdown re-flush of the SAME list identity must add nothing.
         from gateway.run import GatewayRunner
-        runner = object.__new__(GatewayRunner)
-        runner._finalize_shutdown_agents({"k": agent})
+        runner = _patch_runner(object.__new__(GatewayRunner))
+        await runner._finalize_shutdown_agents({"k": agent})
 
         after = db.get_messages_as_conversation(session_id)
         assert len(after) == 2, after

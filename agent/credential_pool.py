@@ -113,6 +113,12 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+# When a pool has no other credential to rotate to (the offending key is the
+# sole non-DEAD entry), a 1-hour bench means an hour of hard failures with
+# nothing to fall back to. Throttles (429/403/5xx) are transient and reset in
+# seconds, so a sole credential cools down briefly instead — same rationale as
+# the short 401 cooldown above. Provider-supplied reset_at still overrides.
+EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS = 60   # 1 minute
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -248,13 +254,25 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
-def _exhausted_ttl(error_code: Optional[int]) -> int:
-    """Return cooldown seconds based on the HTTP status that caused exhaustion."""
+def _exhausted_ttl(error_code: Optional[int], *, sole_credential: bool = False) -> int:
+    """Return cooldown seconds based on the HTTP status that caused exhaustion.
+
+    When *sole_credential* is True the pool has no other entry to rotate to, so
+    a long bench just blocks the only key. Transient throttles (429 and the
+    catch-all default, which covers 403/5xx/unknown) are capped to a brief
+    cooldown so the sole key can recover — mirroring the short 401 path. 401
+    keeps its own (already short) TTL; 402 (billing/quota) keeps the full bench
+    since a quick retry can't help.
+    """
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
-    if error_code == 429:
-        return EXHAUSTED_TTL_429_SECONDS
-    return EXHAUSTED_TTL_DEFAULT_SECONDS
+    base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
+    # Sole credential: shorten only TRANSIENT throttles (429 rate-limit, 403
+    # edge-throttle, 5xx server, or unknown). 402 (billing/quota) is a genuine
+    # exhaustion where a quick retry can't help, so it keeps the full bench.
+    if sole_credential and error_code != 402:
+        return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
+    return base
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
@@ -335,14 +353,16 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     return normalized
 
 
-def _exhausted_until(entry: PooledCredential) -> Optional[float]:
+def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
     if entry.last_status != STATUS_EXHAUSTED:
         return None
     reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
     if reset_at is not None:
         return reset_at
     if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(entry.last_error_code)
+        return entry.last_status_at + _exhausted_ttl(
+            entry.last_error_code, sole_credential=sole_credential
+        )
     return None
 
 
@@ -1320,6 +1340,12 @@ class CredentialPool:
         cleared_any = False
         entries_to_prune: List[str] = []
         available: List[PooledCredential] = []
+        # DEAD entries never re-enter rotation, so if at most one non-DEAD entry
+        # exists there is nothing to rotate to: an exhausted sole credential
+        # should cool down briefly rather than bench the only key for an hour.
+        sole_credential = sum(
+            1 for e in self._entries if e.last_status != STATUS_DEAD
+        ) <= 1
         for entry in self._entries:
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
@@ -1395,7 +1421,7 @@ class CredentialPool:
                 # the re-auth case for OAuth singletons.
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
-                exhausted_until = _exhausted_until(entry)
+                exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 if exhausted_until is not None and now < exhausted_until:
                     continue
                 if clear_expired:

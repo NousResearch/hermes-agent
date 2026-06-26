@@ -8,7 +8,9 @@ description: "Set up Hermes Agent as a Microsoft Teams bot"
 
 Connect Hermes Agent to Microsoft Teams as a bot. Unlike Slack's Socket Mode, Teams delivers messages by calling a **public HTTPS webhook**, so your instance needs a publicly reachable endpoint — either a dev tunnel (local dev) or a real domain (production).
 
-Need meeting summaries from Microsoft Graph events rather than normal bot conversations? Use the dedicated setup page: [Teams Meetings](/docs/user-guide/messaging/teams-meetings).
+Need meeting summaries from Microsoft Graph events rather than normal bot conversations? Use the dedicated setup page: [Teams Meetings](/user-guide/messaging/teams-meetings).
+
+> Run `hermes gateway setup` and pick **Microsoft Teams** for a guided walk-through.
 
 ## How the Bot Responds
 
@@ -21,6 +23,15 @@ Need meeting summaries from Microsoft Graph events rather than normal bot conver
 Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically before processing.
 
 ---
+
+For source or local installs, include the Teams extra so the bundled adapter can
+import the Microsoft Teams SDK:
+
+```bash
+uv sync --extra teams
+# or, for editable installs:
+uv pip install -e ".[teams]"
+```
 
 ## Step 1: Install the Teams CLI
 
@@ -168,7 +179,7 @@ Clicking a button resolves the approval inline and replaces the card with the de
 
 ### Meeting Summary Delivery (Teams Meeting Pipeline)
 
-When the [Teams meeting pipeline plugin](/docs/user-guide/messaging/msgraph-webhook) is enabled, this adapter also handles outbound delivery of meeting summaries — one Teams integration surface, not two. After a meeting's transcript is summarized, the writer posts the summary into your chosen Teams target.
+When the [Teams meeting pipeline plugin](/user-guide/messaging/msgraph-webhook) is enabled, this adapter also handles outbound delivery of meeting summaries — one Teams integration surface, not two. After a meeting's transcript is summarized, the writer posts the summary into your chosen Teams target.
 
 Pipeline summary delivery is configured under the `teams` platform entry alongside the bot config:
 
@@ -193,7 +204,7 @@ platforms:
 | Mode | Use when | Trade-off |
 |------|----------|-----------|
 | `incoming_webhook` | Simple "post a summary into this channel" with a static Teams-generated URL. | No reply threading, no reactions, shows as the webhook's configured identity. |
-| `graph` | Threaded channel posts or 1:1/group chat posts under the bot's identity via Microsoft Graph. | Requires the [Graph app registration](/docs/guides/microsoft-graph-app-registration) with `ChannelMessage.Send` (channel) or `Chat.ReadWrite.All` (chat) application permissions. |
+| `graph` | Threaded channel posts or 1:1/group chat posts under the bot's identity via Microsoft Graph. | Requires the [Graph app registration](/guides/microsoft-graph-app-registration) with `ChannelMessage.Send` (channel) or `Chat.ReadWrite.All` (chat) application permissions. |
 
 If the `teams_pipeline` plugin is **not** enabled, these settings are inert — they only wire up when the pipeline runtime binds to the Graph webhook ingress.
 
@@ -248,5 +259,5 @@ Treat `TEAMS_CLIENT_SECRET` like a password — rotate it periodically via the A
 
 ## Related Docs
 
-- [Teams Meetings](/docs/user-guide/messaging/teams-meetings)
-- [Operate the Teams Meeting Pipeline](/docs/guides/operate-teams-meeting-pipeline)
+- [Teams Meetings](/user-guide/messaging/teams-meetings)
+- [Operate the Teams Meeting Pipeline](/guides/operate-teams-meeting-pipeline)

@@ -171,6 +171,250 @@ class TestHooksInert:
         mod.on_post_tool_call(tool_name="read_file", args={}, result="ok", task_id="t", session_id="s")
 
 
+class TestPayloadSanitization:
+    def test_safe_value_redacts_base64_data_uri_instead_of_truncating(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        import importlib
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        payload = "data:image/png;base64," + ("a" * 20000)
+        result = mod._safe_value(payload)
+
+        assert result == {
+            "type": "data_uri",
+            "media_type": "image/png",
+            "omitted": True,
+            "length": len(payload),
+        }
+
+    def test_serialize_messages_redacts_data_uri_parts(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        import importlib
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        payload = "data:image/jpeg;base64," + ("b" * 20000)
+        serialized = mod._serialize_messages([
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": payload}}]}
+        ])
+
+        assert serialized[0]["content"][0]["image_url"]["url"] == {
+            "type": "data_uri",
+            "media_type": "image/jpeg",
+            "omitted": True,
+            "length": len(payload),
+        }
+
+
+class TestTraceScopeKey:
+    def _fresh_plugin(self):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+    def test_trace_key_scopes_by_turn_id_when_available(self):
+        plugin = self._fresh_plugin()
+
+        key_a = plugin._trace_key("task-1", "session-1", turn_id="turn-a")
+        key_b = plugin._trace_key("task-1", "session-1", turn_id="turn-b")
+
+        assert key_a != key_b
+        assert "turn:turn-a" in key_a
+        assert "turn:turn-b" in key_b
+
+    def test_trace_key_scopes_by_api_request_id_when_turn_missing(self):
+        plugin = self._fresh_plugin()
+
+        key_a = plugin._trace_key("task-1", "session-1", api_request_id="req-a")
+        key_b = plugin._trace_key("task-1", "session-1", api_request_id="req-b")
+
+        assert key_a != key_b
+        assert "api:req-a" in key_a
+        assert "api:req-b" in key_b
+
+    def test_trace_key_keeps_legacy_shape_without_turn_or_api_id(self):
+        plugin = self._fresh_plugin()
+        assert plugin._trace_key("task-1", "session-1") == "task-1"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end collision regression: two turns of ONE gateway session must not
+# share trace state.  The helper-level tests above prove _trace_key returns
+# distinct keys; this drives the real pre/post hooks to prove the keys are
+# actually threaded through so the second turn gets its own root trace.
+#
+# Gateway reality this reproduces:
+#   * task_id == session_id for every turn        (gateway/run.py)
+#   * turn_id is unique per turn                   (turn_context.py)
+#   * api_call_count resets to 1 each turn         (conversation_loop.py)
+#
+# Before the turn/request scoping, _trace_key collapsed to the constant
+# session_id.  That worked only because _finish_trace pops the key on a clean
+# turn end.  When turn 1 does NOT finalize (interrupted, tool-only final step,
+# or empty final content), its state lingered under session_id and turn 2
+# silently merged into turn 1's trace instead of opening its own.
+# ---------------------------------------------------------------------------
+
+
+class TestTurnTraceIsolation:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    @staticmethod
+    def _fake_client(started):
+        """A minimal Langfuse stand-in that records each root trace opened.
+
+        ``_start_root_trace`` calls ``create_trace_id`` then opens a root via
+        ``start_as_current_observation(...)`` (a context manager whose
+        ``__enter__`` returns the root span).  We record one entry per root
+        actually opened so the test can count distinct traces.
+        """
+
+        class _Span:
+            def update(self, **kw):
+                pass
+
+            def end(self, **kw):
+                pass
+
+            def set_trace_io(self, **kw):
+                pass
+
+            def start_observation(self, **kw):
+                return _Span()
+
+        class _RootCM:
+            def __enter__(self):
+                return _Span()
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kw):
+                started.append(kw.get("trace_context", {}).get("trace_id"))
+                return _RootCM()
+
+            def flush(self):
+                pass
+
+        return _Client()
+
+    def _run_turn(self, mod, *, session, turn_n, finalize):
+        """Drive one turn through the request-scoped hooks the gateway fires."""
+        task_id = session  # gateway sets task_id == session_id
+        turn_id = f"{session}:{task_id}:turn{turn_n}"
+        api_call_count = 1  # resets every turn
+        api_request_id = f"{turn_id}:api:{api_call_count}"
+
+        mod.on_pre_llm_request(
+            task_id=task_id,
+            session_id=session,
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=api_call_count,
+            request_messages=[{"role": "user", "content": "hi"}],
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+        )
+        # finalize=False => leave a tool call on the final response so
+        # _finish_trace is skipped and the turn's state lingers.
+        mod.on_post_llm_call(
+            task_id=task_id,
+            session_id=session,
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=api_call_count,
+            assistant_content_chars=5 if finalize else 0,
+            assistant_tool_call_count=0 if finalize else 1,
+            usage={"input_tokens": 10, "output_tokens": 5},
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+        )
+
+    def test_unfinalized_turn_does_not_capture_next_turn(self, monkeypatch):
+        """A turn that never finalizes must not absorb the following turn."""
+        mod = self._fresh_plugin()
+        started: list = []
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: self._fake_client(started))
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        # Turn 1 ends without finalizing (its final step still has a tool call).
+        self._run_turn(mod, session="sess-iso", turn_n=1, finalize=False)
+        # Turn 2 is a normal, fully finalizing turn in the SAME session.
+        self._run_turn(mod, session="sess-iso", turn_n=2, finalize=True)
+
+        # Each turn opened its OWN root trace.  On the pre-fix code the second
+        # turn reused turn 1's lingering state and only one trace was opened.
+        assert len(started) == 2
+
+        # Turn 2 finalized and was popped by _finish_trace; only turn 1's
+        # (non-finalizing) state lingers.  Assert the surviving key is turn 1's
+        # and that turn 2 never merged into it — `all(...)` over an empty set
+        # would pass vacuously, so pin the exact surviving key instead.
+        keys = list(mod._TRACE_STATE.keys())
+        assert len(keys) == 1
+        assert "turn1" in keys[0]
+        assert "turn2" not in keys[0]
+
+    def test_pre_and_post_hooks_share_one_key_within_a_turn(self, monkeypatch):
+        """turn_id is preferred over api_request_id so the turn-scoped
+        post_llm_call (which carries no api_request_id) still resolves to the
+        same key as the request-scoped pre/post_api_request hooks.  If the
+        ordering were reversed, finalization would silently break."""
+        mod = self._fresh_plugin()
+        turn_id = "S:T:turnX"
+        api_request_id = f"{turn_id}:api:1"
+
+        k_pre_api = mod._trace_key("T", "S", turn_id=turn_id, api_request_id=api_request_id)
+        k_post_api = mod._trace_key("T", "S", turn_id=turn_id, api_request_id=api_request_id)
+        k_post_turn = mod._trace_key("T", "S", turn_id=turn_id, api_request_id="")
+
+        assert k_pre_api == k_post_api == k_post_turn
+
+    def test_non_finalizing_turns_do_not_grow_state_unboundedly(self, monkeypatch):
+        """Per-turn keys mean a turn that never finalizes leaves a lingering
+        entry.  Without a cap that grows once per non-finalizing turn forever;
+        the LRU eviction must bound _TRACE_STATE at _MAX_TRACE_STATE.
+        """
+        mod = self._fresh_plugin()
+        started: list = []
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: self._fake_client(started))
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        monkeypatch.setattr(mod, "_MAX_TRACE_STATE", 8)
+        mod._TRACE_STATE.clear()
+
+        # Far more non-finalizing turns than the cap.
+        for n in range(50):
+            self._run_turn(mod, session="sess-leak", turn_n=n, finalize=False)
+
+        assert len(mod._TRACE_STATE) <= 8
+        # The survivors are the most-recently-updated turns (LRU eviction).
+        surviving = sorted(int(k.rsplit("turn", 1)[1]) for k in mod._TRACE_STATE)
+        assert surviving == list(range(42, 50))
+
+    def test_trace_key_strings_unchanged_by_refactor(self):
+        """Pin the exact key strings across all task/session/turn/api
+        combinations so the _scope_prefix extraction can never silently change
+        a key (keys are matched across hooks; a drift breaks finalization)."""
+        mod = self._fresh_plugin()
+        tk = mod._trace_key
+        assert tk("t", "s", turn_id="u") == "task:t:turn:u"
+        assert tk("", "s", turn_id="u") == "session:s:turn:u"
+        assert tk("t", "s", api_request_id="r") == "task:t:api:r"
+        assert tk("", "s", api_request_id="r") == "session:s:api:r"
+        assert tk("t", "s") == "t"                       # legacy: bare task_id
+        assert tk("", "s") == "session:s"
+        # turn_id wins over api_request_id when both are present.
+        assert tk("t", "s", turn_id="u", api_request_id="r") == "task:t:turn:u"
+
+
 # ---------------------------------------------------------------------------
 # Placeholder-credential guard (#23823).
 #
@@ -704,3 +948,76 @@ class TestToolObservationKeying:
         assert ended["output"] == {"status": "done"}
         assert not state.tools
 
+
+class TestUsageFromSanitizedResponse:
+    """Regression: ``post_api_request`` delivers ``response`` as a sanitized
+    dict (no ``.usage`` attribute) plus a separate ``usage`` summary dict. The
+    post-call handler must read the ``usage`` dict instead of treating the dict
+    response as a usage-bearing object and dropping all token/cost data."""
+
+    def _setup(self, mod, monkeypatch):
+        # Active client so on_post_llm_call does not early-return.
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        observation = object()
+        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
+        state.generations[mod._request_key(1)] = observation
+        monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
+        captured = {}
+
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+            captured["usage_details"] = usage_details
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
+        return captured
+
+    def test_sanitized_dict_response_uses_usage_dict(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        captured = self._setup(mod, monkeypatch)
+
+        # A plain dict has no ``.usage`` attribute — mirrors post_api_request.
+        mod.on_post_llm_call(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            model="gemini-3-flash-preview",
+            response={"model": "gemini-3-flash-preview", "usage": {"input_tokens": 100, "output_tokens": 20}},
+            usage={"input_tokens": 100, "output_tokens": 20},
+            assistant_content_chars=42,
+        )
+
+        # Before the fix the dict response shadowed the usage dict and tokens
+        # were lost (usage_details == {}).
+        assert captured["usage_details"] == {"input": 100, "output": 20}
+
+    def test_real_response_object_with_usage_still_used(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        captured = self._setup(mod, monkeypatch)
+
+        # A response object that genuinely carries usage must still take the
+        # response-object path (post_llm_call / legacy behavior).
+        seen = {}
+
+        def fake_usage_and_cost(resp, **_):
+            seen["resp"] = resp
+            return {"input": 7, "output": 3}, {}
+
+        monkeypatch.setattr(mod, "_usage_and_cost", fake_usage_and_cost)
+
+        class _Resp:
+            usage = {"prompt_tokens": 7, "completion_tokens": 3}
+
+        resp = _Resp()
+        mod.on_post_llm_call(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            model="gemini-3-flash-preview",
+            response=resp,
+            usage={"input_tokens": 999, "output_tokens": 999},
+            assistant_content_chars=42,
+        )
+
+        assert seen["resp"] is resp
+        assert captured["usage_details"] == {"input": 7, "output": 3}

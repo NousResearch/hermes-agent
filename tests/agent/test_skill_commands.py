@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
@@ -124,6 +126,30 @@ class TestScanSkillCommands:
 
         assert "/knowledge-brain" in result
         assert result["/knowledge-brain"]["name"] == "knowledge-brain"
+
+    def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
+        """Slash commands should load skills symlinked under the local skills dir."""
+        external_root = tmp_path / "external"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        real_skill_dir = _make_skill(
+            external_root,
+            "impeccable",
+            body="Apply impeccable design craft.",
+        )
+        symlink_path = skills_root / "impeccable"
+        try:
+            symlink_path.symlink_to(real_skill_dir, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            result = scan_skill_commands()
+            message = build_skill_invocation_message("/impeccable")
+
+        assert "/impeccable" in result
+        assert message is not None
+        assert "Apply impeccable design craft." in message
 
     def test_get_skill_commands_rescans_when_platform_scope_changes(self, tmp_path):
         """Platform-specific disabled-skill caches must not leak across platforms.
@@ -530,10 +556,11 @@ Generate some audio.
             raising=False,
         )
 
-        with patch.dict(
-            os.environ, {"HERMES_SESSION_PLATFORM": "telegram"}, clear=False
-        ):
-            with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            from gateway.session_context import clear_session_vars, set_session_vars
+
+            tokens = set_session_vars(platform="telegram")
+            try:
                 _make_skill(
                     tmp_path,
                     "test-skill",
@@ -545,6 +572,8 @@ Generate some audio.
                 )
                 scan_skill_commands()
                 msg = build_skill_invocation_message("/test-skill", "do stuff")
+            finally:
+                clear_session_vars(tokens)
 
         assert msg is not None
         assert "local cli" in msg.lower()

@@ -7,8 +7,8 @@ without requiring the ``piper-tts`` package to actually be installed
 """
 
 import json
-import os
 import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -220,7 +220,7 @@ class TestGeneratePiperTts:
 
         # The SynthesisConfig import happens inline inside _generate_piper_tts
         # via ``from piper import SynthesisConfig``. Inject a fake piper
-        # module so that import resolves.
+        # module so that that import resolves.
         monkeypatch.setitem(sys.modules, "piper", FakePiperModule)
 
         config = {
@@ -239,6 +239,96 @@ class TestGeneratePiperTts:
         kwargs = fake_syn_cls.call_args.kwargs
         assert kwargs["length_scale"] == 2.0
         assert kwargs["volume"] == 0.8
+
+    def test_speaker_id_passed_through_to_synconfig(self, tmp_path, monkeypatch):
+        """speaker_id flows from config to SynthesisConfig when set."""
+        model = self._prepare_voice_files(tmp_path)
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
+
+        fake_syn_cls = MagicMock()
+        monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(SynthesisConfig=fake_syn_cls))
+
+        config = {"piper": {"voice": str(model), "speaker_id": 2}}
+        tts_tool._generate_piper_tts("hi", str(tmp_path / "out.wav"), config)
+
+        fake_syn_cls.assert_called_once()
+        assert fake_syn_cls.call_args.kwargs["speaker_id"] == 2
+
+    def test_speaker_id_alone_triggers_synconfig(self, tmp_path, monkeypatch):
+        """Setting ONLY speaker_id (no other advanced knobs) still constructs SynthesisConfig.
+
+        Regression guard: has_advanced must include speaker_id, otherwise
+        this knob gets silently dropped on the simplest configuration.
+        """
+        model = self._prepare_voice_files(tmp_path)
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
+
+        fake_syn_cls = MagicMock()
+        monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(SynthesisConfig=fake_syn_cls))
+
+        config = {"piper": {"voice": str(model), "speaker_id": 1}}
+        tts_tool._generate_piper_tts("hi", str(tmp_path / "out.wav"), config)
+
+        fake_syn_cls.assert_called_once()
+
+    def test_speaker_id_default_zero_when_unset(self, tmp_path, monkeypatch):
+        """No speaker_id in config → SynthesisConfig.speaker_id == 0 (Piper's default)."""
+        model = self._prepare_voice_files(tmp_path)
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
+
+        fake_syn_cls = MagicMock()
+        monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(SynthesisConfig=fake_syn_cls))
+
+        config = {"piper": {"voice": str(model), "length_scale": 1.5}}
+        tts_tool._generate_piper_tts("hi", str(tmp_path / "out.wav"), config)
+
+        assert fake_syn_cls.call_args.kwargs["speaker_id"] == 0
+
+    def test_speaker_id_bool_rejected_to_zero(self, tmp_path, monkeypatch):
+        """True/False would coerce to 1/0 and hide a config mistake — reject outright."""
+        model = self._prepare_voice_files(tmp_path)
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
+
+        fake_syn_cls = MagicMock()
+        monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(SynthesisConfig=fake_syn_cls))
+
+        for bad in (True, False):
+            fake_syn_cls.reset_mock()
+            config = {"piper": {"voice": str(model), "speaker_id": bad}}
+            tts_tool._generate_piper_tts("hi", str(tmp_path / f"out-{bad}.wav"), config)
+            assert fake_syn_cls.call_args.kwargs["speaker_id"] == 0
+
+    def test_speaker_id_non_int_dropped_to_zero(self, tmp_path, monkeypatch):
+        """Unparseable config (string, list, dict) drops to 0 instead of raising."""
+        model = self._prepare_voice_files(tmp_path)
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
+
+        fake_syn_cls = MagicMock()
+        monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(SynthesisConfig=fake_syn_cls))
+
+        for bad in ("two", [1, 2], {"k": 1}, None):
+            fake_syn_cls.reset_mock()
+            config = {"piper": {"voice": str(model), "speaker_id": bad}}
+            tts_tool._generate_piper_tts("hi", str(tmp_path / f"out-{type(bad).__name__}.wav"), config)
+            assert fake_syn_cls.call_args.kwargs["speaker_id"] == 0
+
+    def test_speaker_id_does_not_invalidate_voice_cache(self, tmp_path, monkeypatch):
+        """Switching speaker_id between calls must NOT trigger a model reload.
+
+        PiperVoice is bound to a model, not a speaker — speaker is applied
+        per-call via syn_config.speaker_id. The voice cache should serve the
+        same PiperVoice instance for the same (model, cuda) regardless of
+        how many distinct speaker_ids the user cycles through.
+        """
+        model = self._prepare_voice_files(tmp_path)
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
+
+        for speaker in (0, 1, 2, 3):
+            config = {"piper": {"voice": str(model), "speaker_id": speaker}}
+            tts_tool._generate_piper_tts("hi", str(tmp_path / f"out-{speaker}.wav"), config)
+
+        # Only one PiperVoice.load() call across four calls with different speakers.
+        assert _StubPiperVoice.loaded == [str(model)]
 
 
 # ---------------------------------------------------------------------------

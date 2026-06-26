@@ -105,3 +105,76 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
+
+    def test_list_does_not_crash_when_repeat_is_null(self, tmp_cron_dir, capsys):
+        """A one-shot job can be persisted with ``"repeat": null``. `cron
+        list` must render it as ∞ rather than crashing on .get(...)\\.get."""
+        from cron.jobs import load_jobs, save_jobs
+
+        create_job(prompt="One shot", schedule="every 1h")
+        # Force the present-but-null shape that .get("repeat", {}) mishandles.
+        jobs = load_jobs()
+        jobs[0]["repeat"] = None
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        assert "Repeat:    ∞" in out
+
+
+class TestGatewayNotRunningWarning:
+    """`cron create` / `cron list` must warn when the gateway (and thus the
+    cron ticker) isn't running, since jobs only fire inside the gateway.
+    Regression guard for #51038 — the most common cron 'jobs never fired'
+    report was simply a gateway that was never started.
+    """
+
+    def test_create_warns_when_gateway_absent(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="0 11 * * *",
+                prompt="Daily report",
+                name="Daily 1130",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                no_agent=False,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Created job" in out
+        assert "Gateway is not running" in out
+
+    def test_create_silent_when_gateway_running(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4242])
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="0 11 * * *",
+                prompt="Daily report",
+                name="Daily 1130",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                no_agent=False,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Created job" in out
+        assert "Gateway is not running" not in out
+
+    def test_list_warns_when_gateway_absent(self, tmp_cron_dir, capsys, monkeypatch):
+        create_job(prompt="Daily report", schedule="0 11 * * *")
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        cron_command(Namespace(cron_command="list", all=True))
+        out = capsys.readouterr().out
+        assert "Gateway is not running" in out

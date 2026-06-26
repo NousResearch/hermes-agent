@@ -225,6 +225,33 @@ To find a channel ID in Mattermost: open the channel, click the channel name hea
 
 When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
 
+## Channel allowlist (`allowed_channels`)
+
+Restrict the bot to a fixed set of Mattermost channels. When set, the bot **only** responds in channels whose ID appears in the list — messages from any other channel are silently ignored, even if the bot is `@mentioned`.
+
+**DMs are exempt** from this filter, so authorized users can always reach the bot in a direct message.
+
+```yaml
+mattermost:
+  allowed_channels:
+    - "abc123def456ghi789jkl012mno"   # #ops
+    - "xyz987uvw654rst321opq098nml"   # #incident-response
+```
+
+Or via env var (comma-separated):
+
+```bash
+MATTERMOST_ALLOWED_CHANNELS="abc123def456ghi789jkl012mno,xyz987uvw654rst321opq098nml"
+```
+
+Behavior:
+
+- Empty / unset → no restriction (fully backward compatible).
+- Non-empty → channel ID must be on the list, or the message is dropped before any other gating (mention requirement, `MATTERMOST_FREE_RESPONSE_CHANNELS`, etc.) runs.
+- Find a channel ID via the Mattermost UI → channel header → "View Info", or read it from the channel URL.
+
+See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
+
 ## Troubleshooting
 
 ### Bot is not responding to messages

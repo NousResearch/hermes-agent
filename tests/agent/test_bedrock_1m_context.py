@@ -1,7 +1,7 @@
 """Tests for the 1M-context beta header on AWS Bedrock Claude models.
 
 Claude Opus 4.6/4.7 and Sonnet 4.6 support a 1M context window, but on AWS
-Bedrock (and Azure AI Foundry) that window is still gated behind the
+Bedrock (and Microsoft Foundry) that window is still gated behind the
 ``context-1m-2025-08-07`` beta header as of 2026-04. Without it, Bedrock
 caps these models at 200K even though ``model_metadata.py`` advertises 1M.
 
@@ -61,4 +61,3 @@ class TestBedrockContext1MBeta:
         # Other common betas still present — no regression.
         assert "interleaved-thinking-2025-05-14" in beta_header
         assert "fine-grained-tool-streaming-2025-05-14" in beta_header
-

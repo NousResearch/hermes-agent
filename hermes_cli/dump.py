@@ -16,10 +16,19 @@ from pathlib import Path
 from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, load_config
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 
 
 def _get_git_commit(project_root: Path) -> str:
-    """Return short git commit hash, or '(unknown)'."""
+    """Return short git commit hash, or '(unknown)'.
+
+    Source installs and dev images resolve this live via ``git rev-parse``.
+    The published Docker image excludes ``.git`` from the build context, so
+    that lookup always fails — we fall back to the baked-in build SHA written
+    to ``<project_root>/.hermes_build_sha`` by the Dockerfile's
+    ``HERMES_GIT_SHA`` build-arg (see ``hermes_cli/build_info.py``).
+    The output format is identical regardless of source.
+    """
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short=8", "HEAD"],
@@ -27,10 +36,48 @@ def _get_git_commit(project_root: Path) -> str:
             cwd=str(project_root),
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            value = result.stdout.strip()
+            if value:
+                return value
     except Exception:
         pass
+
+    # Fall back to the build-time baked SHA (populated in published Docker
+    # images, absent otherwise).  Defers the import so the dump module
+    # stays cheap on non-dump code paths.
+    try:
+        from hermes_cli.build_info import get_build_sha
+        baked = get_build_sha(short=8)
+        if baked:
+            return baked
+    except Exception:
+        pass
+
     return "(unknown)"
+
+
+def _get_git_commit_date(project_root: Path) -> str:
+    """Return the date the HEAD commit was authored (YYYY-MM-DD), or ''.
+
+    Resolves live via ``git log`` on source installs.  The published Docker
+    image excludes ``.git``, so this returns '' there — the dump line simply
+    drops the date suffix in that case (the baked SHA still identifies the
+    build).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cd", "--date=short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(project_root),
+        )
+        if result.returncode == 0:
+            value = result.stdout.strip()
+            if value:
+                return value
+    except Exception:
+        pass
+
+    return ""
 
 
 def _redact(value: str) -> str:
@@ -69,6 +116,8 @@ def _count_skills(hermes_home: Path) -> int:
         return 0
     count = 0
     for item in skills_dir.rglob("SKILL.md"):
+        if is_excluded_skill_path(item):
+            continue
         count += 1
     return count
 
@@ -206,12 +255,12 @@ def run_dump(args):
     hermes_home = get_hermes_home()
 
     try:
-        from hermes_cli import __version__, __release_date__
+        from hermes_cli import __version__
     except ImportError:
         __version__ = "(unknown)"
-        __release_date__ = ""
 
     commit = _get_git_commit(project_root)
+    commit_date = _get_git_commit_date(project_root)
 
     try:
         config = load_config()
@@ -227,9 +276,24 @@ def run_dump(args):
     except Exception:
         profile = "(default)"
 
-    # Terminal backend
+    # Terminal backend — report the EFFECTIVE backend, not just config.yaml.
+    # ``terminal.backend`` in config.yaml is bridged to the TERMINAL_ENV env var,
+    # but a TERMINAL_ENV set directly in .env / the shell overrides config and is
+    # what terminal_tool actually uses (tools/terminal_tool.py reads TERMINAL_ENV).
+    # Reporting only the config value hides that override and sends users chasing
+    # the wrong cause when the agent runs in a docker/podman sandbox even though
+    # config says "local" (and vice-versa). run_dump() has already loaded .env,
+    # so os.environ reflects the real override here.
     terminal_cfg = config.get("terminal", {})
-    backend = terminal_cfg.get("backend", "local")
+    config_backend = terminal_cfg.get("backend", "local")
+    env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    if env_backend and env_backend != str(config_backend).strip().lower():
+        backend = (
+            f"{env_backend}  (TERMINAL_ENV overrides config.yaml "
+            f"terminal.backend={config_backend})"
+        )
+    else:
+        backend = config_backend
 
     # OpenAI SDK version
     try:
@@ -243,10 +307,14 @@ def run_dump(args):
 
     lines = []
     lines.append("--- hermes dump ---")
+    # Identify the build by commit + the date that commit was made, resolved
+    # live via git.  __release_date__ (the package release date) is
+    # intentionally NOT shown here — it reads like a wall-clock timestamp and
+    # confuses support triage.  The commit date is the real "as-of" date.
     ver_str = f"{__version__}"
-    if __release_date__:
-        ver_str += f" ({__release_date__})"
     ver_str += f" [{commit}]"
+    if commit_date:
+        ver_str += f" ({commit_date})"
     lines.append(f"version:          {ver_str}")
     lines.append(f"os:               {os_info}")
     lines.append(f"python:           {sys.version.split()[0]}")
@@ -276,7 +344,6 @@ def run_dump(args):
         ("DASHSCOPE_API_KEY", "dashscope"),
         ("HF_TOKEN", "huggingface"),
         ("NVIDIA_API_KEY", "nvidia"),
-        ("AI_GATEWAY_API_KEY", "ai_gateway"),
         ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
         ("OPENCODE_GO_API_KEY", "opencode_go"),
         ("KILOCODE_API_KEY", "kilocode"),
@@ -294,6 +361,17 @@ def run_dump(args):
             display = _redact(val)
         else:
             display = "set" if val else "not set"
+        # A credential added via `hermes auth add openrouter` lives in the
+        # credential pool, not as an env var — surface it so the dump doesn't
+        # misleadingly read "not set" while `hermes auth list` shows it (#42130).
+        if not val and label == "openrouter":
+            try:
+                from agent.credential_pool import load_pool as _load_pool
+
+                if _load_pool("openrouter").has_credentials():
+                    display = "set (auth pool)"
+            except Exception:
+                pass
         lines.append(f"  {label:<20} {display}")
 
     # Features summary

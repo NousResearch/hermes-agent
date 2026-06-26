@@ -43,6 +43,25 @@ class TestWhitespaceDifference:
         assert count == 1
         assert "bar" in new
 
+    def test_boundary_space_after_normalized_match_is_preserved(self):
+        new, count, strategy, err = fuzzy_find_and_replace("foo   bar baz", "foo bar", "XY")
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "XY baz"
+
+    def test_operator_space_after_normalized_call_match_is_preserved(self):
+        content = "result = compute(a,  b) + tail"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content,
+            "compute(a, b)",
+            "compute(a, b, c)",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "result = compute(a, b, c) + tail"
+
 
 class TestIndentDifference:
     def test_different_indentation(self):

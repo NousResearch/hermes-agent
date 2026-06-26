@@ -768,9 +768,13 @@ def _map_normalized_positions(original: str, normalized: str,
         else:
             orig_end = orig_start + (norm_end - norm_start)
         
-        # Expand to include trailing whitespace that was normalized
-        while orig_end < len(original) and original[orig_end] in ' \t':
-            orig_end += 1
+        # Expand only over trailing whitespace that was part of the
+        # normalized match. If the matched region ended on a non-whitespace
+        # character, the following whitespace belongs to the next token and
+        # must be preserved.
+        if orig_end > orig_start and original[orig_end - 1] in ' \t':
+            while orig_end < len(original) and original[orig_end] in ' \t':
+                orig_end += 1
         
         original_matches.append((orig_start, min(orig_end, len(original))))
     

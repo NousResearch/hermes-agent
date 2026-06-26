@@ -52,6 +52,20 @@ export interface BrowserManageResponse {
   messages?: string[]
 }
 
+export interface SessionCompressResponse {
+  after_messages?: number
+  after_tokens?: number
+  before_messages?: number
+  before_tokens?: number
+  removed?: number
+  summary?: {
+    headline?: string
+    noop?: boolean
+    note?: null | string
+    token_line?: string
+  }
+}
+
 export interface SessionSteerResponse {
   // 'queued' == accepted into the live turn's steer slot (injected at the next
   // tool-result boundary); 'rejected' == no live tool window, caller queues.

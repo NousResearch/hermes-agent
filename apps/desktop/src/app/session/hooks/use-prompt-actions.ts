@@ -71,6 +71,7 @@ import type {
   HandoffRequestResponse,
   HandoffStateResponse,
   ImageAttachResponse,
+  SessionCompressResponse,
   SessionSteerResponse,
   SessionTitleResponse,
   SlashExecResponse
@@ -221,7 +222,14 @@ function friendlyRemoteAttachError(err: unknown, label: string): Error {
   return new Error(`${label} is too large to upload to the remote gateway${cap}.`)
 }
 
-type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+type GatewayRequest = <T>(
+  method: string,
+  params?: Record<string, unknown>,
+  timeoutMs?: number,
+  signal?: AbortSignal
+) => Promise<T>
+
+const SESSION_COMPRESS_TIMEOUT_MS = 120_000
 
 /**
  * Stage one file/image attachment into the session workspace and return the
@@ -324,7 +332,7 @@ interface PromptActionsOptions {
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
   refreshSessions: () => Promise<void>
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
@@ -1043,6 +1051,8 @@ export function usePromptActions({
           await submitPromptText(message)
         }
 
+        let slashExecError: unknown = null
+
         try {
           const result = await requestGateway<unknown>('slash.exec', {
             session_id: sessionId,
@@ -1062,8 +1072,11 @@ export function usePromptActions({
           renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
 
           return
-        } catch {
-          // Fall back to command.dispatch for skill/send/alias directives.
+        } catch (err) {
+          // Fall back to command.dispatch for skill/send/alias directives. Keep
+          // the original error so worker failures do not get hidden behind a
+          // generic "not a quick/plugin/skill command" response.
+          slashExecError = err
         }
 
         try {
@@ -1079,7 +1092,16 @@ export function usePromptActions({
 
           await handleDispatch(dispatch)
         } catch (err) {
-          renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          const dispatchMessage = err instanceof Error ? err.message : String(err)
+
+          if (slashExecError && /not a quick\/plugin\/skill command/i.test(dispatchMessage)) {
+            const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
+            renderSlashOutput(`error: /${name} failed: ${original}`)
+
+            return
+          }
+
+          renderSlashOutput(`error: ${dispatchMessage}`)
         }
       }
 
@@ -1092,6 +1114,63 @@ export function usePromptActions({
         },
         branch: async () => {
           await branchCurrentSession()
+        },
+        compress: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+          const focusTopic = ctx.arg.trim()
+
+          try {
+            const result = await requestGateway<SessionCompressResponse>(
+              'session.compress',
+              {
+                session_id: sessionId,
+                ...(focusTopic ? { focus_topic: focusTopic } : {})
+              },
+              SESSION_COMPRESS_TIMEOUT_MS
+            )
+            const summary = result?.summary
+
+            if (summary?.headline) {
+              renderSlashOutput(
+                [summary.headline, summary.token_line, summary.note]
+                  .filter((line): line is string => Boolean(line))
+                  .join('\n')
+              )
+
+              return
+            }
+
+            const beforeMessages = result?.before_messages
+            const afterMessages = result?.after_messages
+            const beforeTokens = result?.before_tokens
+            const afterTokens = result?.after_tokens
+
+            if (typeof beforeMessages === 'number' && typeof afterMessages === 'number') {
+              const headline =
+                beforeMessages === afterMessages
+                  ? `No changes from compression: ${afterMessages} messages`
+                  : `Compressed: ${beforeMessages} → ${afterMessages} messages`
+              const tokenLine =
+                typeof beforeTokens === 'number' && typeof afterTokens === 'number'
+                  ? `Approx request size: ~${beforeTokens.toLocaleString()} → ~${afterTokens.toLocaleString()} tokens`
+                  : null
+
+              renderSlashOutput([headline, tokenLine].filter((line): line is string => Boolean(line)).join('\n'))
+
+              return
+            }
+
+            const removed = result?.removed ?? 0
+            renderSlashOutput(removed > 0 ? `compressed ${removed} messages` : 'nothing to compress')
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
         },
         // /yolo maps to the status-bar YOLO control — a per-session approval
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm

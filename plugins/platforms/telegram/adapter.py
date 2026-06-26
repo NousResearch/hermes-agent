@@ -424,6 +424,10 @@ class TelegramAdapter(BasePlatformAdapter):
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
+    # Upper bound on how long the album flush waits for sibling items whose
+    # photo download is still in flight before sending what it has. Guards
+    # against a single stuck download wedging the whole album.
+    MEDIA_GROUP_MAX_WAIT_SECONDS = 8.0
     _GENERAL_TOPIC_THREAD_ID = "1"
 
     # Telegram's edit_message applies MarkdownV2 formatting only on the
@@ -512,6 +516,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
+        # In-flight album-item photo downloads per media_group_id. Album items
+        # arrive as rapid separate updates but each photo must be downloaded
+        # before it can be buffered; the flush waits while this is > 0 so a
+        # slow/sequential download can't split the album.
+        self._media_group_pending: Dict[str, int] = {}
         # Buffer rapid text messages so Telegram client-side splits of long
         # messages are aggregated into a single MessageEvent.  Lower defaults
         # (0.3s / 1.0s instead of 0.6s / 2.0s) let short replies stream
@@ -2673,6 +2682,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.gather(*pending_media_group_tasks, return_exceptions=True)
         self._media_group_tasks.clear()
         self._media_group_events.clear()
+        self._media_group_pending.clear()
 
         if self._app:
             try:
@@ -6608,6 +6618,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
         msg = update.message
 
+        # Album item: register its arrival BEFORE the slow photo download so the
+        # debounce flush waits for every sibling and the whole album reaches the
+        # model as one turn (fixes "sent N photos, model saw 1"). Matched 1:1 by
+        # the post-download _queue_media_group_event() which decrements the count.
+        _arrival_media_group_id = getattr(msg, "media_group_id", None)
+        if _arrival_media_group_id is not None:
+            self._note_media_group_arrival(str(_arrival_media_group_id))
+
         msg_type = self._media_message_type(msg)
 
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
@@ -6849,13 +6867,43 @@ class TelegramAdapter(BasePlatformAdapter):
 
         await self.handle_message(event)
 
+    def _note_media_group_arrival(self, media_group_id: str) -> None:
+        """Mark that an album item UPDATE has arrived, before its photo download.
+
+        Telegram delivers an album as several rapid updates sharing one
+        media_group_id, but each item's photo must be downloaded (a network
+        round-trip) before it can be buffered in ``_queue_media_group_event``.
+        If the debounce only restarted *after* the download, a slow or
+        sequentially-dispatched download could let the first item's flush fire
+        before its siblings finished downloading — splitting the album so only
+        the first image reached the model (the classic "I sent 2 photos, the
+        model saw 1" bug). Resetting the debounce on ARRIVAL and counting the
+        in-flight download keeps the whole album together regardless of how
+        long the per-photo download takes.
+        """
+        self._media_group_pending[media_group_id] = (
+            self._media_group_pending.get(media_group_id, 0) + 1
+        )
+        self._reschedule_media_group_flush(media_group_id)
+
+    def _reschedule_media_group_flush(self, media_group_id: str) -> None:
+        """(Re)start the debounce flush for an album, cancelling any prior one."""
+        prior_task = self._media_group_tasks.get(media_group_id)
+        if prior_task:
+            prior_task.cancel()
+        self._media_group_tasks[media_group_id] = asyncio.create_task(
+            self._flush_media_group_event(media_group_id)
+        )
+
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Buffer Telegram media-group items so albums arrive as one logical event.
 
         Telegram delivers albums as multiple updates with a shared media_group_id.
         If we forward each item immediately, the gateway thinks the second image is a
         new user message and interrupts the first. We debounce briefly and merge the
-        attachments into a single MessageEvent.
+        attachments into a single MessageEvent. Called once per item AFTER its photo
+        download completes; ``_note_media_group_arrival`` is called on arrival before
+        the download so the flush waits for every sibling.
         """
         existing = self._media_group_events.get(media_group_id)
         if existing is None:
@@ -6866,24 +6914,38 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 
-        prior_task = self._media_group_tasks.get(media_group_id)
-        if prior_task:
-            prior_task.cancel()
+        # This item's download is done; one fewer in-flight sibling.
+        if media_group_id in self._media_group_pending:
+            self._media_group_pending[media_group_id] = max(
+                0, self._media_group_pending[media_group_id] - 1
+            )
 
-        self._media_group_tasks[media_group_id] = asyncio.create_task(
-            self._flush_media_group_event(media_group_id)
-        )
+        self._reschedule_media_group_flush(media_group_id)
 
     async def _flush_media_group_event(self, media_group_id: str) -> None:
+        task = asyncio.current_task()
         try:
             await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
+            # Don't flush a partial album: if a sibling item's photo is still
+            # downloading, wait for it (bounded by MEDIA_GROUP_MAX_WAIT_SECONDS).
+            waited = 0.0
+            while (
+                self._media_group_pending.get(media_group_id, 0) > 0
+                and waited < self.MEDIA_GROUP_MAX_WAIT_SECONDS
+            ):
+                await asyncio.sleep(0.1)
+                waited += 0.1
             event = self._media_group_events.pop(media_group_id, None)
+            self._media_group_pending.pop(media_group_id, None)
             if event is not None:
                 await self.handle_message(event)
         except asyncio.CancelledError:
             return
         finally:
-            self._media_group_tasks.pop(media_group_id, None)
+            # Only clear the slot if it still points at THIS task — a newer
+            # reschedule may have replaced us.
+            if self._media_group_tasks.get(media_group_id) is task:
+                self._media_group_tasks.pop(media_group_id, None)
 
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """

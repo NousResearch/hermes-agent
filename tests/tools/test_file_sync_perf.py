@@ -12,7 +12,17 @@ import time
 
 import pytest
 
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- 
+# Platform guard: the perf benchmark uses LocalEnvironment(cwd="/tmp") and
+# asserts wall-clock latency thresholds tuned for a POSIX shell.  On Windows
+# the MSYS/bash spawn path and /tmp resolution differ, so skip to avoid
+# spurious timing failures.
+# --------------------------------------------------------------------------- 
+pytestmark = pytest.mark.skipif(
+    __import__("sys").platform == "win32",
+    reason="Perf benchmark uses /tmp and POSIX-tuned timing thresholds",
+)
+
 # Backend fixtures
 # ---------------------------------------------------------------------------
 

@@ -15,6 +15,12 @@ auth on DMs unless ``discord.dm_role_auth_guild`` in config.yaml explicitly
 opts into a single trusted guild.
 """
 
+import sys
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
+
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 

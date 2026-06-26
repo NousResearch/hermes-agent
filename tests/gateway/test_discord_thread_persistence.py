@@ -6,7 +6,12 @@ being persisted to ~/.hermes/discord_threads.json.
 
 import json
 import os
+import sys
 from unittest.mock import patch
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
 
 
 

@@ -2,6 +2,7 @@
 
 import os
 import re
+import sys
 import pytest
 import subprocess
 from pathlib import Path
@@ -643,6 +644,17 @@ class TestSearchPathValidation:
 
 
 class TestSearchFilesFallbackHiddenPaths:
+    """Tests that use real subprocess.run(shell=True) to invoke ``find``.
+
+    The fallback ``find`` command is POSIX-specific and the shell=True path
+    differs on Windows (cmd.exe vs bash). Skip on win32.
+    """
+
+    pytestmark = pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Fallback find tests use real shell=True subprocess (POSIX only)",
+    )
+
     def _make_env(self):
         env = MagicMock()
         env.cwd = "/"

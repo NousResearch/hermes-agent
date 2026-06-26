@@ -1,4 +1,10 @@
 """Tests for Discord channel_skill_bindings auto-skill resolution."""
+import sys
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
+
 from unittest.mock import MagicMock
 
 

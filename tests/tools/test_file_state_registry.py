@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
 import unittest
+
+import pytest
 
 from tools import file_state
 from tools.file_tools import (
@@ -212,7 +215,16 @@ class FileToolsIntegrationTests(unittest.TestCase):
 
     These exercise the wiring: read_file_tool → registry.record_read,
     write_file_tool / patch_tool → check_stale + lock_path + note_write.
+
+    NOTE: These call read_file_tool/write_file_tool/patch_tool with real
+    paths, which go through _get_file_ops → LocalEnvironment → real shell.
+    Skip on Windows where POSIX shell semantics are unavailable.
     """
+
+    pytestmark = pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Integration tests exercise real LocalEnvironment shell (POSIX only)",
+    )
 
     def setUp(self) -> None:
         file_state.get_registry().clear()

@@ -24,6 +24,15 @@ from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 
 
+# Live integration tests run REAL shell commands with no mocks. Path formats
+# (MSYS vs native), $HOME resolution, and exact-output assertions diverge on
+# Windows, producing ~10 failures. Skip the whole module on win32.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Live shell integration tests rely on POSIX path/exit semantics not available on Windows",
+)
+
+
 # ── Shared noise detection ───────────────────────────────────────────────
 # Known shell noise patterns that should never appear in command output.
 

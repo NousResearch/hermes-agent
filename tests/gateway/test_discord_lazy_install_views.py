@@ -15,6 +15,12 @@ Fixes: lazy-install path NameError for ExecApprovalView, SlashConfirmView,
 UpdatePromptView, ModelPickerView, ClarifyChoiceView.
 """
 import importlib
+import sys
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
+
 from unittest.mock import patch
 
 

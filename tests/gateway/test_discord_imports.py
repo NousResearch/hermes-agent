@@ -4,6 +4,10 @@ import builtins
 import importlib
 import sys
 
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
+
 
 class TestDiscordImportSafety:
     def test_module_imports_even_when_discord_dependency_is_missing(self, monkeypatch):

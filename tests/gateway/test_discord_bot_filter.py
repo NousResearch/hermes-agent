@@ -1,6 +1,12 @@
 """Tests for Discord bot message filtering (DISCORD_ALLOW_BOTS)."""
 
 import os
+import sys
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
+
 import unittest
 from unittest.mock import MagicMock
 

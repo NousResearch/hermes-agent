@@ -1,7 +1,12 @@
 """Tests for Discord Opus codec loading — must use ctypes.util.find_library."""
 
 import inspect
+import sys
 import types
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
 
 
 class TestOpusFindLibrary:

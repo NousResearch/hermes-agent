@@ -1367,6 +1367,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     client_kwargs = dict(client_kwargs)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
+    # >>> argus-acp fork: streaming Claude Code ACP client (render-oriented).
+    if agent.provider == "claude-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://claude"):
+        from agent.claude_acp_client import ClaudeACPClient
+
+        client = ClaudeACPClient(**client_kwargs)
+        _ra().logger.info(
+            "Claude ACP client created (%s, shared=%s) %s",
+            reason, shared, agent._client_log_context(),
+        )
+        return client
+    # <<< argus-acp fork
     if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
         from agent.copilot_acp_client import CopilotACPClient
 

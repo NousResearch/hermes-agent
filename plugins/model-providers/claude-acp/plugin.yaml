@@ -1,0 +1,5 @@
+name: claude-acp-provider
+kind: model-provider
+version: 1.0.0
+description: Claude Code via streaming ACP — native tool/thinking traces, Max auth
+author: tjtorres (argus-acp fork)

@@ -363,6 +363,31 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "in doubt and the calls are independent, batch them."
 )
 
+# Up-front workflow announcement. The user wants to see which workflow was
+# chosen before the work starts. This instruction used to live only in the
+# on-demand `user-workflow-routing` skill body, which never entered the active
+# context — so the block was emitted ~0 times. Promoting it to the always-on
+# system prompt is the display path (enforcement is a separate, later step).
+WORKFLOW_DISPLAY_GUIDANCE = (
+    "# Announce the workflow up front\n"
+    "For any Level 1+ task (anything that edits files, runs tests, calls "
+    "agents/tools, makes external calls, or changes state), emit a compact "
+    "`[Workflow]` block as the FIRST line of your response, before doing the "
+    "work. Skip it for Level 0 conversational/explanatory answers, when the "
+    "user explicitly asked for a quick/raw answer, and when the response must "
+    "follow a strict machine-readable contract (JSON-only, a required schema, "
+    "or a structured tool/parser format) — there, omit the block entirely so "
+    "the output stays parseable.\n"
+    "Format (2-5 lines, plain text):\n"
+    "[Workflow: <short type label, e.g. standard feature impl> · Risk L<0-4>]\n"
+    "- <Stage> (<model/agent>): <purpose>\n"
+    "- Gates: <plan/approval/reviewer/tests, or \"none\">\n"
+    "Reflect the ACTUAL plan you will run; if routing changes mid-task, update "
+    "the block. Never list the same model as both implementer and adversarial "
+    "reviewer for quality-sensitive work. Keep it an honest, compact routing "
+    "summary — the full plan and evidence still belong later in the response."
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

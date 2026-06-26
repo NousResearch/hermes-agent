@@ -954,6 +954,14 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # Up-front [Workflow] announcement guidance — short prompt block telling
+        # the model to emit a compact `[Workflow: ... · Risk L<0-4>]` block as
+        # the first line of any Level 1+ response (file edits, tests, tool/agent
+        # calls, state changes), naming each stage's model and purpose.  Skipped
+        # for Level 0 conversational answers.  This is the display path only;
+        # hard enforcement is a separate concern under ``workflow_guardrails``.
+        # Costs ~120 tokens in the cached system prompt.  Set False to disable.
+        "workflow_display_guidance": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

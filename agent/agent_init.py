@@ -1279,6 +1279,14 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Up-front [Workflow] announcement toggle.  Default True.  Sibling of the
+    # other prompt-guidance toggles (task_completion / parallel_tool_call) and
+    # kept under ``agent.*`` for the same reason: it injects a static guidance
+    # block into the system prompt.  Deliberately NOT tied to the enforcement
+    # namespace (``workflow_guardrails.enabled`` / final_gate_mode), so display
+    # and the later hard-enforcement phase can be toggled independently.
+    agent._workflow_display_guidance = bool(_agent_section.get("workflow_display_guidance", True))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

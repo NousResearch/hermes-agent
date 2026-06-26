@@ -96,3 +96,44 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestWorkflowDisplayGuidance:
+    """The [Workflow] announce instruction must live in the always-on system
+    prompt, not only in the on-demand user-workflow-routing skill (which never
+    entered active context, so the block was emitted 0 times)."""
+
+    def test_injected_when_enabled(self):
+        agent = _make_agent(
+            valid_tool_names=["read_file"],
+            _workflow_display_guidance=True,
+        )
+        stable = _stable_prompt(agent)
+        assert "[Workflow:" in stable
+        # Must carve out strict machine-readable contracts so JSON/schema
+        # responses are not corrupted by a prepended workflow block.
+        assert "machine-readable" in stable
+
+    def test_absent_when_disabled(self):
+        agent = _make_agent(
+            valid_tool_names=["read_file"],
+            _workflow_display_guidance=False,
+        )
+        assert "[Workflow:" not in _stable_prompt(agent)
+
+    def test_absent_without_tools(self):
+        # No tools → conversational (Level 0) → nothing to announce.
+        agent = _make_agent(
+            valid_tool_names=[],
+            _workflow_display_guidance=True,
+        )
+        assert "[Workflow:" not in _stable_prompt(agent)
+
+    def test_default_on_when_flag_absent(self):
+        # getattr(..., True): an agent built without the attribute (older code
+        # path / partial init) must still get the guidance — default-on.
+        agent = _make_agent(valid_tool_names=["read_file"])
+        delattr(agent, "_workflow_display_guidance") if hasattr(
+            agent, "_workflow_display_guidance"
+        ) else None
+        assert "[Workflow:" in _stable_prompt(agent)

@@ -14339,17 +14339,17 @@ def cmd_telemetry(args):
     if action == "status":
         print("Telemetry status")
         print("─" * 56)
-        print(f"  Local plane:     {'on' if local_enabled else 'off'} "
+        print(f"  Local telemetry:   {'on' if local_enabled else 'off'} "
               f"(telemetry.local)")
-        print(f"  Aggregate plane: {'on' if aggregate_enabled else 'off'} "
+        print(f"  Aggregate metrics: {'on' if aggregate_enabled else 'off'} "
               f"(opt-in; consent_state={consent_state})")
         if consent_state != policy.CONSENT_AGGREGATE and allow_aggregate:
-            print("                   opt in: hermes config set telemetry.consent_state aggregate")
+            print("                     opt in: hermes config set telemetry.consent_state aggregate")
         if not allow_aggregate:
-            print("                   ⚠ allow_aggregate is false (egress hard-disabled)")
-        print(f"  Install id:      {install_id}")
-        print("  Upload:          DISABLED — no server yet. Aggregate is computed "
-              "locally only.")
+            print("                     ⚠ allow_aggregate is false (egress hard-disabled)")
+        print(f"  Install id:        {install_id}")
+        print("  Upload:            DISABLED — no server yet. Aggregate metrics are "
+              "computed locally only.")
         print()
         # Export posture — where YOUR data can flow (never Nous). Values only;
         # lock-state is managed scope's concern, surfaced by its own tooling.
@@ -14371,12 +14371,12 @@ def cmd_telemetry(args):
                 print(f"                    SDK: {_sdk}")
             else:
                 print("    OTLP:           disabled (telemetry.export.otlp.enabled)")
-            # Content gate (trajectories plane) + redaction posture.
+            # Content gate (telemetry.trajectories) + redaction posture.
             if redaction.content_export_enabled(config):
-                print(f"    Content export: on (trajectories plane) — message "
+                print(f"    Content export: on (trajectories enabled) — message "
                       f"content exportable")
             else:
-                print("    Content export: off (trajectories plane) — structural "
+                print("    Content export: off (trajectories disabled) — structural "
                       "telemetry only")
             print("    Secret redaction: on (always)")
             print(f"    PII redaction:    {redaction.content_mode_for(config)}")
@@ -14468,7 +14468,7 @@ def cmd_telemetry(args):
         content_ok = redaction.content_export_enabled(config)
         if want_content and not content_ok:
             print("⚠ --include-content ignored: telemetry.trajectories.enabled is false.")
-            print("  Enable the trajectories plane (admin/config) to export message content.")
+            print("  Enable trajectories (admin/config) to export message content.")
             print("  Exporting structural telemetry only.")
 
         if not getattr(args, "out", None):

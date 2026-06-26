@@ -1,4 +1,4 @@
-"""Typed local-plane telemetry events.
+"""Typed local telemetry events.
 
 These dataclasses are the rows written to the local JSONL log and the ``tel_*``
 SQLite tables. They record the values observed for each run — model id, provider, tool
@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, Optional
 
-# ── local-plane events (real values) ────────────────────────────────────────
+# ── local telemetry events (real values) ────────────────────────────────────
 
 
 def _now_ns() -> int:

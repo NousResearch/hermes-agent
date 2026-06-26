@@ -3,7 +3,7 @@
 Two data domains, both written to an operator-chosen destination:
 
   * Telemetry: the tel_* rows + events.jsonl (structural observability).
-  * Content (opt-in via the trajectories plane): sessions + messages, with every
+  * Content (opt-in via telemetry.trajectories): sessions + messages, with every
     content field (message body, reasoning, raw tool-call args) passed through the
     redaction pipeline (secrets always stripped; PII per content_redaction).
 
@@ -103,10 +103,10 @@ def export(
 ) -> Dict[str, int]:
     """Write telemetry (+ optional content) to ``out``. Returns counts.
 
-    ``include_content`` is honored only when the trajectories plane is enabled in
+    ``include_content`` is honored only when telemetry.trajectories is enabled in
     ``config``; otherwise content is forced off and only structural data is written.
     """
-    # Trajectories gate: a flag cannot override the consent plane.
+    # Trajectories gate: a flag cannot override the config setting.
     content_allowed = include_content and redaction.content_export_enabled(config)
     counts = {"telemetry": 0, "sessions": 0, "content_included": int(content_allowed)}
 

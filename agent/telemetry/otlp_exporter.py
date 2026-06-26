@@ -16,7 +16,7 @@ Notes:
     and is fail-isolated, so an export error cannot affect a run.
 
 Spans carry structural telemetry by default. Message content is included only when the
-trajectories plane is enabled, and always passes through the export redaction pipeline.
+trajectories is enabled, and always passes through the export redaction pipeline.
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ def _make_provider(config: Dict[str, Any]):
     sdk = _require_sdk()
     resource = sdk["Resource"].create({
         "service.name": "hermes-agent",
-        "telemetry.plane": "local",  # never aggregate
+        "telemetry.scope": "local",  # never aggregate metrics
     })
     provider = sdk["TracerProvider"](resource=resource)
     processor = sdk["BatchSpanProcessor"](build_exporter(config))
@@ -129,7 +129,7 @@ def _make_provider(config: Dict[str, Any]):
 
 # ── event -> span attribute mapping (real values) ───────────────────────────
 def _span_attrs(ev: Dict[str, Any]) -> Dict[str, Any]:
-    """Span attributes for an event — the real recorded values (local plane)."""
+    """Span attributes for an event — the real recorded values (local telemetry)."""
     kind = ev.get("event")
     attrs: Dict[str, Any] = {"hermes.event": kind or "unknown"}
     keep_by_kind = {

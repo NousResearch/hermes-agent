@@ -2,7 +2,7 @@
 
 Invariants:
   * Secrets ALWAYS stripped, every mode, no flag disables it.
-  * Content gated by the trajectories plane, not a redaction mode.
+  * Content gated by telemetry.trajectories, not a redaction mode.
   * PII stripped in 'pii' mode; structure preserved (codec-aware).
 """
 

@@ -11,7 +11,9 @@
 #
 services:
   gateway:
-    image: nousresearch/hermes-agent:latest
+    # Fork GHCR image — includes Weixin QR onboarding + dashboard auth fixes.
+    # Override with HERMES_FORK_IMAGE to use a different image (e.g. upstream Docker Hub).
+    image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
     container_name: hermes
     restart: unless-stopped
     volumes:
@@ -22,7 +24,7 @@ services:
     command: ["gateway", "run"]
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
+    image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
     container_name: hermes-dashboard
     restart: unless-stopped
     depends_on:

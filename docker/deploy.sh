@@ -15,7 +15,7 @@
 # What this script does:
 #   1. Clones JZKK720/hermes-agent (skipped if already cloned)
 #   2. Creates the data/ directory and seeds data/.env from template
-#   3. Recreates the stack from the published upstream Docker Hub image with:
+#   3. Recreates the stack from the fork's GHCR-published image with:
 #      docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
 # ============================================================================
 
@@ -73,7 +73,7 @@ else
 fi
 
 # ── Pull + recreate ───────────────────────────────────────────────────────────
-log "Refreshing the published upstream Docker Hub Hermes image and recreating services..."
+log "Refreshing the fork's GHCR-published Hermes image and recreating services..."
 docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
 
 echo ""

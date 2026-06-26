@@ -7,7 +7,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
-import { hydrateLiveSessionInflight, liveSessionInflightMessages, writeActiveSessionFile } from '../app/useSessionLifecycle.js'
+import {
+  hydrateLiveSessionInflight,
+  liveSessionInflightMessages,
+  writeActiveSessionFile
+} from '../app/useSessionLifecycle.js'
 
 describe('writeActiveSessionFile', () => {
   let dir = ''
@@ -28,7 +32,6 @@ describe('writeActiveSessionFile', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ session_id: 'actual_session' })
   })
 })
-
 
 describe('live session activation in-flight state', () => {
   beforeEach(() => {

@@ -128,6 +128,24 @@ def test_running_profile_is_registered_and_autostarted(tmp_path: Path) -> None:
     assert not (svc / "down").exists()
 
 
+def test_registered_profile_has_finish_script(tmp_path: Path) -> None:
+    """The finish script must be written so s6 stops restarting on
+    fatal config errors (exit 78 → exit 125).  See #51228."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "coder", state="running")
+
+    reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    finish = scandir / "gateway-coder" / "finish"
+    assert finish.exists()
+    assert finish.stat().st_mode & 0o111  # executable
+    text = finish.read_text()
+    assert "78" in text
+    assert "125" in text
+
+
 def test_stopped_profile_is_registered_but_not_started(tmp_path: Path) -> None:
     scandir = tmp_path / "run-service"; scandir.mkdir()
     _make_profile(tmp_path, "writer", state="stopped")

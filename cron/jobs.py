@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_default_hermes_root, get_hermes_home
+from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_default_hermes_root().resolve()
+HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
@@ -248,12 +248,6 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
-    # Legacy jobs (created before per-job profile scoping) have no profile
-    # field. Default them to "default" so the scheduler treats them as
-    # root-profile jobs — matching their pre-existing behaviour.
-    prof = normalized.get("profile")
-    normalized["profile"] = (str(prof).strip() if isinstance(prof, str) and prof.strip() else "default")
-
     return normalized
 
 
@@ -272,43 +266,6 @@ def _secure_file(path: Path):
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
-
-
-def current_profile_name() -> str:
-    """Return the active profile name for the process creating a job.
-
-    ``~/.hermes``              -> ``"default"``
-    ``~/.hermes/profiles/X``   -> ``"X"``
-
-    Used at create time to tag a job with the profile whose environment
-    (.env / config.yaml / credentials) it should execute under, so the
-    job runs as its owning profile regardless of which profile's ticker
-    picks it up from the shared root store (#32091).
-    """
-    try:
-        from agent.file_safety import _resolve_active_profile_name
-        return _resolve_active_profile_name() or "default"
-    except Exception:
-        return "default"
-
-
-def resolve_profile_home(profile_name: Optional[str]) -> Optional[Path]:
-    """Map a job's ``profile`` name to the HERMES_HOME it should run under.
-
-    ``"default"`` / empty / ``None`` -> the root home (``get_default_hermes_root()``).
-    ``"<name>"``                      -> ``<root>/profiles/<name>``.
-
-    Returns ``None`` when the named profile directory does not exist, so the
-    scheduler can fall back to the ticker's own home and log a warning rather
-    than pointing a job at a missing profile.
-    """
-    name = (profile_name or "").strip()
-    if not name or name == "default":
-        return get_default_hermes_root().resolve()
-    candidate = (get_default_hermes_root() / "profiles" / name).resolve()
-    if candidate.is_dir():
-        return candidate
-    return None
 
 
 def ensure_dirs():
@@ -402,8 +359,19 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
             # Make naive timestamps timezone-aware at parse time so the stored
             # value doesn't depend on the system timezone matching at check time.
+            #
+            # Anchor to the CONFIGURED Hermes timezone, not the server's local
+            # timezone. The due-check (`get_due_jobs`) compares `next_run_at`
+            # against `hermes_time.now()`, which uses the configured zone. If a
+            # naive "20:07" were interpreted as server-local (e.g. UTC) while
+            # now() runs in Asia/Kolkata, the stored instant would land hours
+            # off from the user's wall-clock intent — far enough that one-shots
+            # never become due and recurring jobs fire at the wrong time. Using
+            # the configured zone makes "20:07" mean 20:07 on the same clock the
+            # scheduler checks against (#51021).
             if dt.tzinfo is None:
-                dt = dt.astimezone()  # Interpret as local timezone
+                hermes_tz = _hermes_now().tzinfo
+                dt = dt.replace(tzinfo=hermes_tz)
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
@@ -658,44 +626,10 @@ def get_ticker_success_age() -> Optional[float]:
 # Job CRUD Operations
 # =============================================================================
 
-_WARNED_ORPHAN_STORE = False
-
-
-def _warn_if_orphaned_profile_store() -> None:
-    """Loudly warn (once) if the root store is empty but a profile-local
-    jobs.json exists from before #32091's root-anchoring fix.
-
-    Such a file is now unreachable (the store anchors at the default root, not
-    the active profile). The jobs in it were already orphaned pre-fix (the
-    profile-less gateway never read them), so this is not a regression — but a
-    user who could SEE them in `cron list` under their profile would otherwise
-    find them silently gone. Point them at the path instead of failing silent.
-    """
-    global _WARNED_ORPHAN_STORE
-    if _WARNED_ORPHAN_STORE:
-        return
-    try:
-        active = get_hermes_home().resolve()
-        if active == HERMES_DIR:
-            return  # not in a profile; nothing could be orphaned
-        legacy = active / "cron" / "jobs.json"
-        if legacy.exists():
-            _WARNED_ORPHAN_STORE = True
-            logger.warning(
-                "Cron jobs now live at %s (shared across profiles). A legacy "
-                "profile-local store exists at %s and is no longer read; "
-                "re-create those jobs or move them into the root store. (#32091)",
-                JOBS_FILE, legacy,
-            )
-    except Exception:
-        pass  # best-effort advisory; never block load_jobs
-
-
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
     if not JOBS_FILE.exists():
-        _warn_if_orphaned_profile_store()
         return []
 
     _strict_retry = False  # track whether we used the strict=False fallback
@@ -798,6 +732,45 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _resolve_default_model_snapshot() -> Optional[str]:
+    """Resolve the global default model the same way the cron ticker does.
+
+    Mirrors the unpinned-model resolution in ``cron/scheduler.py`` ``run_job``:
+    read ``config.yaml`` ``model.default`` (or the ``model`` alias / bare string
+    form), applying the managed-scope overlay and env expansion. Used by
+    ``create_job`` to snapshot the default model for unpinned jobs so a later
+    swap of the global default is detected at fire time (#44585).
+
+    Returns the resolved model string, or ``None`` if config is missing/empty
+    or resolution fails (fail-open — caller treats ``None`` as "no snapshot").
+    """
+    try:
+        import yaml
+        from hermes_cli.config import _expand_env_vars
+
+        cfg_path = get_hermes_home() / "config.yaml"
+        if not cfg_path.exists():
+            return None
+        with cfg_path.open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        try:
+            from hermes_cli import managed_scope
+            cfg = managed_scope.apply_managed_overlay(cfg)
+        except Exception:
+            pass
+        cfg = _expand_env_vars(cfg)
+        model_cfg = cfg.get("model") or {}
+        if isinstance(model_cfg, str):
+            return model_cfg.strip() or None
+        if isinstance(model_cfg, dict):
+            default = model_cfg.get("default") or model_cfg.get("model")
+            if isinstance(default, str):
+                return default.strip() or None
+        return None
+    except Exception:
+        return None
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -815,7 +788,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
-    profile: Optional[str] = None,
+    attach_to_session: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -860,13 +833,6 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
-        profile: Optional Hermes profile name the job should EXECUTE under
-                (its .env / config.yaml / credentials). Defaults to the active
-                profile of the session creating the job. The shared root store
-                holds every profile's jobs (#32091); this field is what scopes
-                a job's runtime environment to its owning profile so it runs
-                with that profile's permissions regardless of which ticker
-                picks it up.
 
     Returns:
         The created job dict
@@ -901,11 +867,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
-    # Tag the job with the profile whose environment it should execute under.
-    # When the caller does not pass one explicitly, capture the active profile
-    # of the session creating the job so a job created under `hermes -p donna`
-    # runs as donna even though it now lives in the shared root store (#32091).
-    normalized_profile = (str(profile).strip() if isinstance(profile, str) else "") or current_profile_name()
+    normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -926,6 +888,47 @@ def create_job(
 
     prompt_text = _coerce_job_text(prompt)
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
+
+    # Provider/model-drift guard (#44585). When the caller does NOT pin a
+    # provider and/or model, the job follows the global default — model.default
+    # in config.yaml and whatever resolve_runtime_provider() picks at fire time.
+    # That global state can change (e.g. a temporary switch to a paid provider
+    # OR a paid model like claude-fable-5 on the SAME provider), and an unpinned
+    # job would then silently inherit it and spend real money. To detect that,
+    # snapshot what resolution WOULD pick *right now*, at creation, for each
+    # axis the job leaves unpinned. The fire-time guard (run_job) fails closed
+    # when an unpinned job's currently-resolved provider OR model differs from
+    # its snapshot.
+    #
+    # Only captured for agent-backed jobs (no_agent script jobs make no paid
+    # inference). Each axis is snapshotted only when that axis is unpinned —
+    # a pinned provider/model doesn't drift with global state. Fail-open to None
+    # on any resolution error so job creation never breaks; a missing snapshot
+    # preserves the legacy no-guard behaviour for that axis.
+    provider_snapshot: Optional[str] = None
+    model_snapshot: Optional[str] = None
+    if not normalized_no_agent:
+        if normalized_provider is None:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                _runtime_kwargs = {"requested": None}
+                if normalized_base_url:
+                    _runtime_kwargs["explicit_base_url"] = normalized_base_url
+                _snap = resolve_runtime_provider(**_runtime_kwargs)
+                _snap_provider = str(_snap.get("provider") or "").strip().lower()
+                provider_snapshot = _snap_provider or None
+            except Exception:
+                provider_snapshot = None
+        if normalized_model is None:
+            # Mirror the fire-time unpinned-model resolution (run_job reads
+            # config.yaml model.default / model). Capture that value so a later
+            # swap of the global default model is detected even when the
+            # provider is unchanged (e.g. a premium model on the same endpoint).
+            try:
+                model_snapshot = _resolve_default_model_snapshot() or None
+            except Exception:
+                model_snapshot = None
+
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -934,6 +937,11 @@ def create_job(
         "skill": normalized_skills[0] if normalized_skills else None,
         "model": normalized_model,
         "provider": normalized_provider,
+        # Provider/model resolution captured at creation for unpinned jobs
+        # (#44585). None for pinned axes, no_agent jobs, resolution failures, and
+        # any pre-existing job written before these fields existed (back-compat).
+        "provider_snapshot": provider_snapshot,
+        "model_snapshot": model_snapshot,
         "base_url": normalized_base_url,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
@@ -959,8 +967,12 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
-        "profile": normalized_profile,
     }
+    # Only persist attach_to_session when explicitly set, so existing jobs and
+    # the common case stay byte-identical (absent key => fall back to the
+    # global cron.mirror_delivery config, default off).
+    if normalized_attach is not None:
+        job["attach_to_session"] = normalized_attach
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -1485,16 +1497,64 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     return due
 
 
+# Per-run cron output (`cron/output/<job>/<timestamp>.md`) is written once per
+# execution. Unlike the quick-snapshot store (`hermes_cli.backup`, capped at 20)
+# it had no retention, so a frequently-scheduled job on a long-running deploy
+# accumulated one file per run forever and could fill the disk (#52383). Keep the
+# most recent N files per job; a non-positive value disables pruning (opt-out).
+_CRON_OUTPUT_DEFAULT_KEEP = 50
+
+
+def _cron_output_keep() -> int:
+    """Resolve the per-job output-file retention cap from config (``cron.output_retention``)."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        return int(cron_cfg.get("output_retention", _CRON_OUTPUT_DEFAULT_KEEP))
+    except Exception:
+        return _CRON_OUTPUT_DEFAULT_KEEP
+
+
+def _prune_job_output(job_output_dir: Path, keep: int) -> int:
+    """Remove the oldest ``*.md`` run-output files beyond *keep*. Returns count deleted.
+
+    Mirrors the quick-snapshot retention in ``hermes_cli.backup._prune_quick_snapshots``:
+    output filenames are timestamp-based (``%Y-%m-%d_%H-%M-%S.md``) so a reverse
+    lexical sort orders newest-first, and everything past *keep* is the tail to
+    drop. A non-positive *keep* disables pruning. Pruning failures are swallowed
+    so they can never break output saving.
+    """
+    if keep <= 0:
+        return 0
+    try:
+        files = sorted(
+            (f for f in job_output_dir.glob("*.md") if f.is_file()),
+            key=lambda f: f.name,
+            reverse=True,
+        )
+    except OSError:
+        return 0
+    deleted = 0
+    for stale in files[keep:]:
+        try:
+            stale.unlink()
+            deleted += 1
+        except OSError as exc:
+            logger.debug("Failed to prune cron output %s: %s", stale.name, exc)
+    return deleted
+
+
 def save_job_output(job_id: str, output: str):
     """Save job output to file."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
-    
+
     timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
     output_file = job_output_dir / f"{timestamp}.md"
-    
+
     fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -1509,7 +1569,10 @@ def save_job_output(job_id: str, output: str):
         except OSError:
             pass
         raise
-    
+
+    # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
+    _prune_job_output(job_output_dir, _cron_output_keep())
+
     return output_file
 
 

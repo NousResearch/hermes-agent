@@ -5,6 +5,7 @@ import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
@@ -74,34 +75,30 @@ export function ModelPill({
 
   if (!model.modelMenuContent) {
     return (
-      <Button
-        aria-label={copy.openModelPicker}
-        className={pillClass}
-        disabled={disabled}
-        onClick={() => setModelPickerOpen(true)}
-        title={copy.openModelPicker}
-        type="button"
-        variant="ghost"
-      >
-        {label}
-      </Button>
-    )
-  }
-
-  return (
-    <DropdownMenu onOpenChange={setOpen} open={open}>
-      <DropdownMenuTrigger asChild>
+      <Tip label={copy.openModelPicker} side="top">
         <Button
-          aria-label={title}
+          aria-label={copy.openModelPicker}
           className={pillClass}
           disabled={disabled}
-          title={title}
+          onClick={() => setModelPickerOpen(true)}
           type="button"
           variant="ghost"
         >
           {label}
         </Button>
-      </DropdownMenuTrigger>
+      </Tip>
+    )
+  }
+
+  return (
+    <DropdownMenu onOpenChange={setOpen} open={open}>
+      <Tip label={title} side="top">
+        <DropdownMenuTrigger asChild>
+          <Button aria-label={title} className={pillClass} disabled={disabled} type="button" variant="ghost">
+            {label}
+          </Button>
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end" className="w-64 p-0" side="top" sideOffset={8}>
         <ModelMenuCloseContext.Provider value={() => setOpen(false)}>
           {model.modelMenuContent}

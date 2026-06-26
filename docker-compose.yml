@@ -66,8 +66,8 @@ services:
   hermes-web:
     <<: *hermes-common
     container_name: hermes-web
-    # --insecure is required here because the upstream dashboard now guards 0.0.0.0 binds by default.
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+    # Bind to 127.0.0.1 — upstream 0.17+ refuses 0.0.0.0 without auth configured.
+    command: ["dashboard", "--host", "127.0.0.1", "--port", "9119", "--no-open"]
     volumes:
       - ./data:/opt/data
       - ./docker/hermes-config.yaml:/opt/hermes/cli-config.yaml.example:ro

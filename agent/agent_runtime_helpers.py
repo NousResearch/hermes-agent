@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.timeouts import get_provider_request_timeout
+from hermes_cli.timeouts import get_provider_follow_redirects, get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
@@ -54,6 +54,22 @@ def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
     import run_agent
     return run_agent
+
+
+def _resolve_follow_redirects(agent: Any) -> bool:
+    """Resolve whether the LLM API client should follow HTTP redirects.
+
+    Reads ``providers.<id>.follow_redirects`` from config.yaml via
+    ``hermes_cli.timeouts.get_provider_follow_redirects``. Defensive: any
+    failure (missing config, broken YAML, missing provider) returns False
+    so client construction is never blocked by config hiccups.
+    """
+    try:
+        provider_id = getattr(agent, "provider", None) or ""
+        model = getattr(agent, "model", None)
+        return bool(get_provider_follow_redirects(provider_id, model))
+    except Exception:
+        return False
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
@@ -1714,6 +1730,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             if "http_client" not in safe_kwargs:
                 keepalive_http = agent._build_keepalive_http_client(
                     base_url, verify=httpx_verify,
+                    follow_redirects=_resolve_follow_redirects(agent),
                 )
                 if keepalive_http is not None:
                     safe_kwargs["http_client"] = keepalive_http
@@ -1745,6 +1762,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(
             client_kwargs.get("base_url", ""), verify=httpx_verify,
+            follow_redirects=_resolve_follow_redirects(agent),
         )
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http

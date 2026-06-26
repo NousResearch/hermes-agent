@@ -137,6 +137,22 @@ model:
 #     models:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
+#
+# `follow_redirects: true` opts the LLM API client into following HTTP redirects
+# (httpx's default is to NOT follow).  Set it on a provider that issues a
+# 301/302/307/308 to a different path or host on the first request.  A
+# model-level `follow_redirects` under `models.<model>` overrides the
+# provider-level value.  Off by default; behavior is unchanged unless you set
+# it.
+#
+# providers:
+#   redirect-provider:
+#     base_url: https://api.example.com/v1
+#     follow_redirects: true
+#   openai-codex:
+#     models:
+#       gpt-5.4:
+#         follow_redirects: false    # Opt this model out even if provider says true
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)

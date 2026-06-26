@@ -3927,7 +3927,9 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
+    def _build_keepalive_http_client(
+        base_url: str = "", *, verify: Any = True, follow_redirects: bool = False
+    ) -> Any:
         """Build an httpx.Client with proactive idle-connection reaping.
 
         Previously this method injected a custom ``httpx.HTTPTransport``
@@ -3951,9 +3953,18 @@ class AIAgent:
         ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
         the plain no-proxy mounts (a mounted transport owns the SSL context
         for its scheme).
+
+        ``follow_redirects`` opts a provider into transparent HTTP redirect
+        following (off by default so redirects surface as errors instead of
+        silently re-pointing the API base URL).
         """
         try:
             import httpx as _httpx
+
+            if "api.githubcopilot.com" in str(base_url or "").lower():
+                return _httpx.Client(
+                    verify=verify, follow_redirects=follow_redirects
+                )
 
             # Explicitly read proxy settings so requests route through
             # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
@@ -3992,6 +4003,7 @@ class AIAgent:
                 proxy=_proxy,
                 mounts=_mounts or None,
                 verify=verify,
+                follow_redirects=follow_redirects,
             )
         except Exception:
             return None

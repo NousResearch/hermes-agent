@@ -91,6 +91,12 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+### Following Provider Redirects
+
+By default, the LLM API client does NOT follow HTTP redirects (httpx's native default), so any provider that issues a 301/302/307/308 to a different path or host will fail with a redirect response instead of being followed. Some providers (e.g. TheGrid.ai) issue a 307/308 to a different path on the same host on the first request and rely on the client to follow it.
+
+To opt in, set `providers.<id>.follow_redirects: true` in `config.yaml`. A model-specific override at `providers.<id>.models.<model>.follow_redirects` wins over the provider-level value. This is opt-in only — behavior is unchanged for every provider that does not have it set.
+
 ## Update Behavior
 
 `hermes update` settings live under `updates` in `config.yaml`:

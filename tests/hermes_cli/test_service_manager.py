@@ -673,6 +673,30 @@ def test_render_run_script_uses_replace_to_take_over_stale_holder() -> None:
     )
 
 
+def test_render_finish_script_exits_125_on_ex_config() -> None:
+    """The finish script must translate exit 78 (EX_CONFIG) into exit 125
+    (permanent failure) so s6 stops restarting on fatal config errors.
+    See #51228."""
+    text = S6ServiceManager._render_finish_script()
+    assert '[ "$1" = "78" ]' in text
+    assert "exit 125" in text
+    assert "exit 0" in text
+
+
+def test_s6_register_writes_finish_script(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """The finish script must be written alongside the run script."""
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.register_profile_gateway("coder")
+
+    finish_path = s6_scandir / "gateway-coder" / "finish"
+    assert finish_path.is_file()
+    assert finish_path.stat().st_mode & 0o111  # executable
+    assert "78" in finish_path.read_text()
+    assert "125" in finish_path.read_text()
+
+
 def test_s6_register_rejects_invalid_profile_name(s6_scandir) -> None:
     mgr = S6ServiceManager(scandir=s6_scandir)
     with pytest.raises(ValueError):

@@ -1410,6 +1410,7 @@ class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     MAX_MESSAGE_LENGTH = 8000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
@@ -1640,7 +1641,7 @@ class FeishuAdapter(BasePlatformAdapter):
             .build()
         )
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Feishu/Lark."""
         if not FEISHU_AVAILABLE:
             logger.error("[Feishu] lark-oapi not installed")

@@ -1066,12 +1066,48 @@ def _media_delivery_denied_paths() -> List[Path]:
         denied.append(home / sub)
     # The active Hermes profile and shared Hermes root both contain control
     # files and credentials. Only cache subdirectories under them are
-    # explicitly allowlisted above.
+    # explicitly allowlisted above (matched BEFORE this denylist in
+    # validate_media_delivery_path, so generated media still delivers).
+    #
+    # These are the per-file credential / secret stores that live at the
+    # HERMES_HOME root. The set mirrors the canonical read guard in
+    # agent/file_safety.py (get_read_block_error / build_write_denied_*) so the
+    # delivery (read/exfil) side can't trail the write side: a credential the
+    # agent is forbidden to write or read must also never be auto-attached to a
+    # chat reply. Enumerated explicitly per-file rather than denying the whole
+    # tree, so skills/, logs/, and ad-hoc agent-written files under ~/.hermes
+    # stay deliverable (see #32090, #34425).
+    _ROOT_CREDENTIAL_FILES = (
+        ".env",
+        "auth.json",
+        "auth.lock",
+        "credentials",
+        "config.yaml",
+        # Anthropic PKCE / OAuth refresh credential store.
+        ".anthropic_oauth.json",
+        # Google Workspace skill: auto-refreshing OAuth token (mtime bumps
+        # every turn, which defeated the strict-mode recency window) plus the
+        # pending-exchange session/verifier file.
+        "google_token.json",
+        "google_oauth_pending.json",
+        os.path.join("auth", "google_oauth.json"),
+        # Webhook subscription HMAC secrets.
+        "webhook_subscriptions.json",
+        # Bitwarden Secrets Manager plaintext disk cache.
+        os.path.join("cache", "bws_cache.json"),
+    )
+    # Directory trees whose every child is credential material. (MCP OAuth
+    # tokens under mcp-tokens/ are handled by the sibling targeted PR #37222;
+    # session/kanban SQLite stores by #41071 — kept out of this diff to avoid
+    # overlap.)
+    _ROOT_CREDENTIAL_DIRS = (
+        "pairing",
+    )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
-        denied.append(hermes_root / ".env")
-        denied.append(hermes_root / "auth.json")
-        denied.append(hermes_root / "credentials")
-        denied.append(hermes_root / "config.yaml")
+        for rel in _ROOT_CREDENTIAL_FILES:
+            denied.append(hermes_root / rel)
+        for rel in _ROOT_CREDENTIAL_DIRS:
+            denied.append(hermes_root / rel)
     return denied
 
 
@@ -1190,9 +1226,12 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
             return str(resolved)
 
     # Non-strict mode (default): accept anything not on the denylist.
-    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
-    # ~/.hermes/auth.json, etc. — so the obvious prompt-injection sites
-    # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``) remain rejected.
+    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, and the
+    # credential/secret stores under the Hermes root (~/.hermes/.env,
+    # auth.json, .anthropic_oauth.json, google_token.json, pairing/, ...) —
+    # so the obvious prompt-injection / credential-exfil sites
+    # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``,
+    # ``MEDIA:~/.hermes/google_token.json``) remain rejected.
     if not _media_delivery_strict_mode():
         if _path_under_denied_prefix(resolved):
             return None
@@ -1245,6 +1284,33 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ts": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",
+}
+
+
+# ---------------------------------------------------------------------------
+# Text-injection extension allowlist
+#
+# Files whose contents are safe to inline into the prompt (UTF-8 text) when
+# small enough. This is intentionally an extension/MIME gate, NOT a blind
+# UTF-8 decode: binary formats like PDF/zip/docx can begin with decodable
+# ASCII headers and must never be inlined. Any uploaded file is still cached
+# and surfaced to the agent regardless of whether it lands in this set —
+# this only controls inline-vs-path-pointer for the prompt.
+# ---------------------------------------------------------------------------
+
+_TEXT_INJECT_EXTENSIONS = {
+    ".txt", ".md", ".markdown", ".csv", ".tsv", ".log",
+    ".json", ".jsonl", ".ndjson", ".xml", ".yaml", ".yml", ".toml",
+    ".ini", ".cfg", ".conf", ".env", ".properties",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat",
+    ".c", ".h", ".cpp", ".cc", ".hpp", ".cs", ".java", ".kt",
+    ".go", ".rs", ".rb", ".php", ".pl", ".lua", ".r", ".jl",
+    ".swift", ".m", ".scala", ".clj", ".ex", ".exs", ".erl",
+    ".sql", ".graphql", ".proto", ".tf", ".hcl",
+    ".dockerfile", ".makefile", ".cmake", ".gradle",
+    ".rst", ".tex", ".srt", ".vtt", ".diff", ".patch",
 }
 
 
@@ -1454,9 +1520,10 @@ def cache_media_bytes(
 
     ``default_kind`` ("image"/"video"/"audio"/"document") biases classification
     when the extension/MIME are ambiguous — e.g. a Telegram native photo whose
-    file has no usable name. Unsupported document types return None so the
-    caller can record an "unsupported" note. Images that fail validation
-    (``cache_image_from_bytes`` raises ValueError) also return None.
+    file has no usable name. Any non-image/video/audio file is cached as a
+    document and surfaced to the agent (arbitrary types get
+    ``application/octet-stream``); only images that fail validation
+    (``cache_image_from_bytes`` raises ValueError) return None.
     """
     from tools.credential_files import to_agent_visible_cache_path
 
@@ -1492,11 +1559,20 @@ def cache_media_bytes(
         out_mime = mime if mime.startswith("audio/") else f"audio/{aud_ext.lstrip('.')}"
         return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
 
-    if ext not in SUPPORTED_DOCUMENT_TYPES:
-        return None
-
-    path = cache_document_from_bytes(data, filename or f"document{ext}")
-    return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_DOCUMENT_TYPES[ext], "document", display or f"document{ext}")
+    # Any other file type is cached and surfaced to the agent as a local path
+    # so it can be inspected with terminal / read_file / etc. Authorization to
+    # talk to the agent is the gate that matters — once a user is allowed to
+    # message it, the file-extension allowlist must not silently drop their
+    # uploads. Known extensions keep their precise MIME; everything else is
+    # tagged application/octet-stream (or the caller-supplied MIME) so the
+    # agent knows it's an arbitrary file and reaches for terminal tools.
+    fallback_name = filename or (f"document{ext}" if ext else "document.bin")
+    path = cache_document_from_bytes(data, fallback_name)
+    if ext in SUPPORTED_DOCUMENT_TYPES:
+        out_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+    else:
+        out_mime = mime if mime else "application/octet-stream"
+    return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
 
 
 class MessageType(Enum):
@@ -1667,6 +1743,9 @@ class SendResult:
     # stream consumer can send the missing tail instead of marking a clipped
     # response complete.
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+    # Server-requested retry delay in seconds (e.g. Telegram FloodWait retry_after).
+    # When present, _send_with_retry() honors this instead of its default backoff.
+    retry_after: Optional[float] = None
     # When the adapter had to split an oversized payload across multiple
     # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
     # ``message_id`` is the LAST visible message id (so subsequent edits target
@@ -2040,6 +2119,14 @@ class BasePlatformAdapter(ABC):
     # set this to False to stay correct-by-default.
     supports_async_delivery: bool = True
 
+    # Whether this adapter's ``send()`` splits long content into multiple
+    # messages via ``truncate_message()``.  When True, the delivery router
+    # (gateway/delivery.py) skips gateway-level truncation and lets the
+    # adapter chunk natively — preserving full output on platforms that
+    # support multi-message delivery (Discord, Telegram, …).  Default False
+    # (conservative); adapters verified to chunk in ``send()`` set True.
+    splits_long_messages: bool = False
+
     # The command prefix users can always TYPE on this platform to reach
     # Hermes commands.  Default "/" (most platforms deliver "/approve" etc.
     # as plain message text).  Platforms where typing a leading "/" is
@@ -2157,6 +2244,38 @@ class BasePlatformAdapter(ABC):
         Adapters that own their access policy override this to return ``True``.
         Adapters that delegate access control to the gateway leave it ``False``
         (the default).
+        """
+        return False
+
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """Whether inbound on this adapter was already authorized UPSTREAM.
+
+        Distinct from ``enforces_own_access_policy``: that flag describes an
+        adapter that enforces a LOCAL, config-driven access surface
+        (``dm_policy: allowlist`` / ``allow_from``) the gateway can mirror. This
+        flag describes an adapter whose authorization is performed by a TRUSTED
+        UPSTREAM over an authenticated transport — there is no local policy to
+        consult, and the env allowlist (``{PLATFORM}_ALLOWED_USERS``) does not
+        apply because the sender identity isn't a platform account the operator
+        configures here.
+
+        The relay adapter is the sole user: it fronts the Team Gateway
+        connector over a per-instance-authenticated WebSocket, and the connector
+        performs owner-only author-binding resolution BEFORE delivering — a
+        message only reaches this gateway because the connector resolved it to
+        THIS instance's bound user (``user_instance_binding``). The author id is
+        read off the event the connector observed, never gateway-asserted. So an
+        inbound relay event carries an authorization decision already made by a
+        trusted, authenticated upstream; default-denying it (no env allowlist ⇒
+        deny) is incorrect.
+
+        This is NOT a fail-open: it is authorization DELEGATED to a trusted
+        upstream that authenticated the transport (the relay WS secret) and
+        enforced owner-only binding, as opposed to authorization being ABSENT.
+        It only takes effect for an adapter that explicitly overrides this to
+        ``True``; every network-exposed direct adapter leaves it ``False`` and
+        the env-allowlist default-deny continues to apply unchanged.
         """
         return False
 
@@ -2515,10 +2634,21 @@ class BasePlatformAdapter(ABC):
         self._session_store = session_store
     
     @abstractmethod
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
         Connect to the platform and start receiving messages.
-        
+
+        Args:
+            is_reconnect: False on a cold first boot (the gateway is
+                starting this platform for the first time); True when the
+                reconnect watcher is re-establishing a platform that was
+                previously running and dropped after an outage. Adapters
+                that buffer a server-side update queue (e.g. Telegram's Bot
+                API) should preserve that queue when ``is_reconnect`` is
+                True so messages sent during the outage are delivered rather
+                than silently discarded. Adapters with no such queue may
+                ignore the flag.
+
         Returns True if connection was successful.
         """
         pass
@@ -3676,9 +3806,16 @@ class BasePlatformAdapter(ABC):
             return result
 
         if is_network:
-            # Retry with exponential backoff for transient errors
+            # Retry with exponential backoff for transient errors.
+            # Honor server-requested retry_after (e.g. Telegram FloodWait)
+            # when present — it is authoritative over our backoff schedule.
+            server_retry_after = result.retry_after
             for attempt in range(1, max_retries + 1):
-                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                if server_retry_after is not None:
+                    delay = server_retry_after + random.uniform(0, 1)
+                    server_retry_after = None  # only honor once per send
+                else:
+                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 logger.warning(
                     "[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s",
                     self.name, attempt, max_retries, delay, error_str,
@@ -3694,6 +3831,8 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
+                if result.retry_after is not None:
+                    server_retry_after = result.retry_after
                 if not (result.retryable or self._is_retryable_error(error_str)):
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:
@@ -4892,8 +5031,27 @@ class BasePlatformAdapter(ABC):
                 # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
-                    del self._session_tasks[session_key]
-                    self._release_session_guard(session_key, guard=interrupt_event)
+                    self._cleanup_finished_session_task(session_key, interrupt_event)
+    
+    def _cleanup_finished_session_task(
+        self, session_key: str, interrupt_event: Optional[asyncio.Event]
+    ) -> None:
+        """Release the session guard for a finished owner task, then drop its
+        ``_session_tasks`` entry ONLY if the guard was actually released.
+
+        Release-then-conditional-delete is the #48300 fix: when a concurrent
+        path (reset/new command, drain handoff) swapped ``_active_sessions[key]``
+        to a different guard, ``_release_session_guard`` skips on the guard
+        mismatch and the lock stays installed. If we deleted ``_session_tasks``
+        unconditionally (the old order), ``_session_task_is_stale`` would later
+        see no owner task and report "not stale", so the orphaned guard would
+        never be healed — a permanent session deadlock. Keeping the done-task
+        entry when the guard survives lets the on-entry self-heal detect the
+        stale lock and clear it on the next inbound message.
+        """
+        self._release_session_guard(session_key, guard=interrupt_event)
+        if session_key not in self._active_sessions:
+            self._session_tasks.pop(session_key, None)
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.

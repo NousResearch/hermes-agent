@@ -87,9 +87,11 @@ export const opsCommands: SlashCommand[] = [
       // Parse arg: `now` / `always` skip the confirmation gate.
       // `always` additionally persists approvals.mcp_reload_confirm=false.
       const a = (arg || '').trim().toLowerCase()
+
       const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
         session_id: ctx.sid
       }
+
       if (a === 'now' || a === 'approve' || a === 'once' || a === 'yes') {
         params.confirm = true
       } else if (a === 'always') {
@@ -103,16 +105,20 @@ export const opsCommands: SlashCommand[] = [
           ctx.guarded<ReloadMcpResponse>(r => {
             if (r.status === 'confirm_required') {
               ctx.transcript.sys(r.message || '/reload-mcp requires confirmation')
+
               return
             }
+
             if (r.status === 'reloaded') {
               ctx.transcript.sys(
                 params.always
                   ? 'MCP servers reloaded · future /reload-mcp will run without confirmation'
                   : 'MCP servers reloaded'
               )
+
               return
             }
+
             ctx.transcript.sys('reload complete')
           })
         )
@@ -488,6 +494,7 @@ export const opsCommands: SlashCommand[] = [
       const query = rest.join(' ').trim()
       const { rpc } = ctx.gateway
       const { panel, sys } = ctx.transcript
+
       const runViaSlashWorker = () => {
         ctx.gateway.gw
           .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })

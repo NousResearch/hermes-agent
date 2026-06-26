@@ -49,6 +49,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
         "execute_code",  # children should reason step-by-step, not write scripts
+        "cronjob",  # no scheduling more work in the parent's name
     ]
 )
 
@@ -119,7 +120,7 @@ def _get_subagent_approval_callback():
 # toolset to request explicitly — the correct mechanism for nested
 # delegation is role='orchestrator', which re-adds "delegation" in
 # _build_child_agent regardless of this exclusion.
-_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "moa", "rl"})
+_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "rl"})
 _SUBAGENT_TOOLSETS = sorted(
     name
     for name, defn in TOOLSETS.items()
@@ -130,6 +131,12 @@ _SUBAGENT_TOOLSETS = sorted(
 _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+# One-shot guard: the high-concurrency cost advisory is emitted at most once
+# per process. _get_max_concurrent_children() runs on every get_definitions()
+# schema rebuild (via _build_top_level_description / _build_tasks_param_description),
+# so without this flag a config of max_concurrent_children>10 spams the log on
+# every turn / agent spawn even when delegate_task is never called.
+_HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected unless max_spawn_depth raised.
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
 # stays as the default fallback and is still the symbol tests import.
@@ -374,11 +381,14 @@ def _get_max_concurrent_children() -> int:
         try:
             result = max(1, int(val))
             if result > 10:
-                logger.warning(
-                    "delegation.max_concurrent_children=%d: each child consumes API tokens "
-                    "independently. High values multiply cost linearly.",
-                    result,
-                )
+                global _HIGH_CONCURRENCY_WARNED
+                if not _HIGH_CONCURRENCY_WARNED:
+                    _HIGH_CONCURRENCY_WARNED = True
+                    logger.warning(
+                        "delegation.max_concurrent_children=%d: each child consumes API tokens "
+                        "independently. High values multiply cost linearly.",
+                        result,
+                    )
             return result
         except (TypeError, ValueError):
             logger.warning(
@@ -757,12 +767,21 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets that contain only blocked tools."""
+    """Remove toolsets that contain only blocked tools.
+
+    The strip set is derived from DELEGATE_BLOCKED_TOOLS plus the explicit
+    composite/scenario toolsets (delegation, code_execution) that have no
+    one-to-one tool. This keeps the blocklist and the strip set in lockstep
+    so new blocked tools can't silently leak through as toolset names.
+    """
+    # Composite toolsets that should never pass through to children, even
+    # though their individual tools aren't all in DELEGATE_BLOCKED_TOOLS.
+    _COMPOSITE_BLOCKED_TOOLSETS = frozenset({"delegation", "code_execution"})
     blocked_toolset_names = {
-        "delegation",
-        "clarify",
-        "memory",
-        "code_execution",
+        name
+        for name, defn in TOOLSETS.items()
+        if name in _COMPOSITE_BLOCKED_TOOLSETS
+        or all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 

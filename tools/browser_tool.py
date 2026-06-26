@@ -68,6 +68,7 @@ from agent.auxiliary_client import call_llm
 from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 try:
     from tools.website_policy import check_website_access
@@ -915,8 +916,7 @@ def _run_chrome_fallback_command(
                 # the CLI mid-turn. The agent thread's subprocess spawn
                 # unwound MainThread's prompt_toolkit loop that way — see
                 # diag log: "asyncio.CancelledError → KeyboardInterrupt".
-                _CREATE_NO_WINDOW = 0x08000000
-                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                _popen_extra["creationflags"] = windows_hide_flags()
                 _popen_extra["close_fds"] = True
                 _si = subprocess.STARTUPINFO()
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
@@ -2196,8 +2196,7 @@ def _run_browser_command(
                 # See matching block at the other Popen site — CREATE_NO_WINDOW
                 # only, NO CREATE_NEW_PROCESS_GROUP (cancels asyncio loop task
                 # on Python 3.11 Windows → KeyboardInterrupt in CLI MainThread).
-                _CREATE_NO_WINDOW = 0x08000000
-                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                _popen_extra["creationflags"] = windows_hide_flags()
                 _popen_extra["close_fds"] = True
                 _si = subprocess.STARTUPINFO()
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
@@ -2759,19 +2758,34 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     # Use fill command (clears then types)
     result = _run_browser_command(effective_task_id, "fill", [ref, text])
 
+    from agent.display import (
+        redact_browser_typed_text_for_display,
+        redact_tool_args_for_display,
+    )
+
+    display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {})["text"]
+
     if result.get("success"):
         response = {
             "success": True,
-            "typed": text,
+            # Run typed text through the secret-pattern redactor so API keys /
+            # tokens don't leak into tool progress or chat history.  Normal
+            # text passes through unchanged.  The raw value was already sent
+            # to the browser command above.
+            "typed": display_text,
             "element": ref
         }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        response = _copy_fallback_warning(response, result)
+        response = redact_browser_typed_text_for_display(response, text)
+        return json.dumps(response, ensure_ascii=False)
     else:
         response = {
             "success": False,
             "error": result.get("error", f"Failed to type into {ref}")
         }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        response = _copy_fallback_warning(response, result)
+        response = redact_browser_typed_text_for_display(response, text)
+        return json.dumps(response, ensure_ascii=False)
 
 
 def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:

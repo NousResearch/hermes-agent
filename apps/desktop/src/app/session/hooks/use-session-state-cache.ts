@@ -146,6 +146,7 @@ export function useSessionStateCache({
     // jerks the scroll position while the user is reading. Skip the publish when
     // the merged result is content-identical to what's already on screen.
     const currentMessages = $messages.get()
+
     // On a thread switch `$messages` still holds the *previous* thread, so
     // preserving its local errors would graft that thread's failed turn (e.g.
     // an out-of-funds error) onto this one — then cascade it everywhere as the

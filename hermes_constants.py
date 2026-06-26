@@ -277,16 +277,187 @@ def _candidate_node_command_names(command: str) -> list[str]:
     return [f"{base}.cmd", f"{base}.exe", base]
 
 
+_HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))
+_managed_node_heal_attempted = False
+_NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
+
+
+def node_tool_runnable(path: str | None) -> bool:
+    """Return True only when *path* is a Node/npm/npx binary that actually runs.
+
+    Hermes-managed Node trees live under ``$HERMES_HOME/node`` (or a profile's
+    ``HERMES_HOME``). A partial upgrade or interrupted install can leave
+    ``bin/npm`` behind while ``lib/cli.js`` is missing — the wrapper exists but
+    immediately throws ``MODULE_NOT_FOUND``. ``find_hermes_node_executable``
+    used to trust file presence alone, so ``hermes update`` would pick that
+    broken npm and fail the Node refresh / web UI build.
+
+    Probe with ``--version`` (same pattern as :func:`agent_browser_runnable`) so
+    broken managed wrappers are detected before use.
+    """
+    if not path:
+        return False
+    candidate = Path(path)
+    if sys.platform == "win32":
+        if not candidate.is_file():
+            return False
+    elif not os.path.exists(path) or not os.access(path, os.X_OK):
+        return False
+
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            timeout=10,
+            env=with_hermes_node_path(),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return result.returncode == 0
+
+
+def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
+    """Return True when any Hermes-managed node/npm/npx shim exists on disk."""
+    names = set()
+    for command in ("node", "npm", "npx"):
+        names.update(_candidate_node_command_names(command))
+    for directory in iter_hermes_node_dirs(home):
+        for name in names:
+            candidate = directory / name
+            if candidate.is_file() and (
+                sys.platform == "win32" or os.access(candidate, os.X_OK)
+            ):
+                return True
+    return False
+
+
+def _heal_managed_node_windows() -> bool:
+    """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows."""
+    import re
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
+    if arch in ("amd64", "x86_64"):
+        node_arch = "x64"
+    elif arch == "arm64":
+        node_arch = "arm64"
+    elif arch in ("x86",):
+        node_arch = "x86"
+    else:
+        return False
+
+    home = get_hermes_home()
+    index_url = f"https://nodejs.org/dist/latest-v{_HERMES_NODE_TARGET_MAJOR}.x/"
+    try:
+        with urllib.request.urlopen(index_url, timeout=60) as response:
+            index_html = response.read().decode("utf-8", errors="replace")
+    except OSError:
+        return False
+
+    match = re.search(
+        rf"node-v{_HERMES_NODE_TARGET_MAJOR}\.\d+\.\d+-win-{node_arch}\.zip",
+        index_html,
+    )
+    if not match:
+        return False
+
+    zip_name = match.group(0)
+    download_url = f"{index_url}{zip_name}"
+    try:
+        with urllib.request.urlopen(download_url, timeout=300) as response:
+            zip_bytes = response.read()
+    except OSError:
+        return False
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            zip_path = tmp_path / zip_name
+            zip_path.write_bytes(zip_bytes)
+            extract_dir = tmp_path / "extract"
+            extract_dir.mkdir()
+            with zipfile.ZipFile(zip_path) as archive:
+                archive.extractall(extract_dir)
+            extracted = next(extract_dir.glob("node-v*"), None)
+            if extracted is None or not extracted.is_dir():
+                return False
+            target = home / "node"
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.move(str(extracted), str(target))
+    except OSError:
+        return False
+
+    return node_tool_runnable(str(target / "node.exe"))
+
+
+def heal_hermes_managed_node() -> bool:
+    """Redownload Hermes-managed Node when the tree exists but is broken.
+
+    Runs at most once per process. POSIX installs shell out to
+    ``heal_managed_node`` in ``scripts/lib/node-bootstrap.sh``; Windows
+    downloads the portable zip directly (same source as ``install.ps1``).
+    """
+    global _managed_node_heal_attempted
+    if _managed_node_heal_attempted:
+        return False
+    if not hermes_managed_node_tree_present():
+        return False
+    _managed_node_heal_attempted = True
+
+    if sys.platform == "win32":
+        return _heal_managed_node_windows()
+
+    if not _NODE_BOOTSTRAP_SCRIPT.is_file():
+        return False
+
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'source "{_NODE_BOOTSTRAP_SCRIPT}" && heal_managed_node',
+            ],
+            env={**os.environ, "HERMES_HOME": str(get_hermes_home())},
+            capture_output=True,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def find_hermes_node_executable(command: str) -> str | None:
-    """Return a Hermes-managed Node/npm executable path, if installed."""
+    """Return a Hermes-managed Node/npm executable path, healing broken trees."""
     names = _candidate_node_command_names(command)
+    broken_present = False
     for directory in iter_hermes_node_dirs():
         for name in names:
             candidate = directory / name
             if candidate.is_file() and (
                 sys.platform == "win32" or os.access(candidate, os.X_OK)
             ):
-                return str(candidate)
+                resolved = str(candidate)
+                if node_tool_runnable(resolved):
+                    return resolved
+                broken_present = True
+    if broken_present and heal_hermes_managed_node():
+        for directory in iter_hermes_node_dirs():
+            for name in names:
+                candidate = directory / name
+                if candidate.is_file() and (
+                    sys.platform == "win32" or os.access(candidate, os.X_OK)
+                ):
+                    resolved = str(candidate)
+                    if node_tool_runnable(resolved):
+                        return resolved
     return None
 
 
@@ -319,12 +490,19 @@ def find_node_executable_on_path(command: str) -> str | None:
 
 
 def find_node_executable(command: str) -> str | None:
-    """Resolve a Node.js command, preferring Hermes-managed installs.
+    """Resolve a Node.js command, preferring healthy Hermes-managed installs.
 
     This is for Hermes-owned subprocesses that should not be broken by a bad,
-    missing, or elevation-triggering system Node/npm on PATH.
+    missing, or elevation-triggering system Node/npm on PATH. When a managed
+    tree exists but cannot be healed, returns ``None`` instead of falling back
+    to system npm on PATH.
     """
-    return find_hermes_node_executable(command) or find_node_executable_on_path(command)
+    managed = find_hermes_node_executable(command)
+    if managed:
+        return managed
+    if hermes_managed_node_tree_present():
+        return None
+    return find_node_executable_on_path(command)
 
 
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:

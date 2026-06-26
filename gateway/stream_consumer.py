@@ -47,6 +47,15 @@ _NEW_SEGMENT = object()
 _COMMENTARY = object()
 
 
+def _stream_debug_snippet(text: str, *, limit: int = 180) -> str:
+    """Compact tail snippet for stream-delivery diagnostics."""
+    if not text:
+        return ""
+    snippet = text[-limit:]
+    snippet = re.sub(r"MEDIA:[^\s]+", "MEDIA:[redacted]", snippet)
+    return snippet.replace("\r", "\\r").replace("\n", "\\n")
+
+
 @dataclass
 class StreamConsumerConfig:
     """Runtime config for a single stream consumer instance."""
@@ -582,6 +591,18 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
+                    logger.debug(
+                        "Stream consumer finalizing: chat_id=%s accumulated_len=%d message_id=%s "
+                        "already_sent=%s fallback_final=%s final_sent=%s final_delivered=%s tail=%r",
+                        self.chat_id,
+                        len(self._accumulated),
+                        self._message_id,
+                        self._already_sent,
+                        self._fallback_final_send,
+                        self._final_response_sent,
+                        self._final_content_delivered,
+                        _stream_debug_snippet(self._accumulated),
+                    )
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the

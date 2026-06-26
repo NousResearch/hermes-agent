@@ -109,6 +109,22 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 MAX_COMMANDS_PER_SCOPE = 30
 
 
+def _telegram_debug_snippet(text: str, *, limit: int = 180) -> str:
+    """Return a compact, log-safe tail snippet for delivery diagnostics."""
+    if not text:
+        return ""
+    snippet = text[-limit:]
+    # Keep logs single-line and avoid leaking local attachment paths.
+    snippet = re.sub(r"MEDIA:[^\s]+", "MEDIA:[redacted]", snippet)
+    snippet = snippet.replace("\r", "\\r").replace("\n", "\\n")
+    return snippet
+
+
+def _telegram_has_open_code_fence(text: str) -> bool:
+    """Best-effort detector for unbalanced markdown code fences."""
+    return text.count("```") % 2 == 1
+
+
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
 
@@ -2180,6 +2196,18 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
+            logger.debug(
+                "[%s] Telegram send prepared: content_len=%d formatted_utf16=%d chunks=%d "
+                "reply_to=%s thread_id=%s open_code_fence=%s tail=%r",
+                self.name,
+                len(content),
+                utf16_len(formatted),
+                len(chunks),
+                bool(reply_to),
+                thread_id,
+                _telegram_has_open_code_fence(content),
+                _telegram_debug_snippet(content),
+            )
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
             
@@ -2244,6 +2272,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
+                        logger.debug(
+                            "[%s] Telegram chunk send start: chunk=%d/%d attempt=%d utf16=%d "
+                            "parse_mode=MarkdownV2 reply_to=%s thread_id=%s open_code_fence=%s tail=%r",
+                            self.name,
+                            i + 1,
+                            len(chunks),
+                            _send_attempt + 1,
+                            utf16_len(chunk),
+                            bool(reply_to_id),
+                            effective_thread_id,
+                            _telegram_has_open_code_fence(chunk),
+                            _telegram_debug_snippet(chunk),
+                        )
                         # Try Markdown first, fall back to plain text if it fails
                         try:
                             msg = await self._bot.send_message(
@@ -2258,7 +2299,15 @@ class TelegramAdapter(BasePlatformAdapter):
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                                logger.warning(
+                                    "[%s] Telegram chunk MarkdownV2 failed: chunk=%d/%d utf16=%d "
+                                    "error=%s; falling back to plain text",
+                                    self.name,
+                                    i + 1,
+                                    len(chunks),
+                                    utf16_len(chunk),
+                                    md_error,
+                                )
                                 plain_chunk = _strip_mdv2(chunk)
                                 msg = await self._bot.send_message(
                                     chat_id=int(chat_id),
@@ -2378,6 +2427,14 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+                logger.info(
+                    "[%s] Telegram chunk send ok: chunk=%d/%d message_id=%s utf16=%d",
+                    self.name,
+                    i + 1,
+                    len(chunks),
+                    getattr(msg, "message_id", None),
+                    utf16_len(chunk),
+                )
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,

@@ -71,7 +71,9 @@ def _safe_backup(path: str, *, keep: int = DEFAULT_KEEP_BACKUPS) -> str:
     src = sqlite3.connect(path)
     try:
         try:
-            # quote the destination (VACUUM INTO won't take a bound param)
+            # bind the destination as a parameter (safe against odd path chars).
+            # Some SQLite builds reject a bound param for VACUUM INTO's target and
+            # raise OperationalError -> we fall through to the online-backup API.
             src.execute("VACUUM INTO ?", (backup,))
         except sqlite3.OperationalError:
             # SQLite < 3.27: online-backup API (also checkpoint-consistent)

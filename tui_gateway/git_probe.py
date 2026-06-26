@@ -53,6 +53,8 @@ def run_git(cwd: str, *args: str) -> str:
             timeout=_GIT_TIMEOUT,
             check=False,
             stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:

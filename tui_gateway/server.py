@@ -271,6 +271,8 @@ class _SlashWorker:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             bufsize=1,
             cwd=os.getcwd(),
@@ -8993,7 +8995,7 @@ def _(rid, params: dict) -> dict:
             str(pdf_path), str(out_prefix),
         ]
         try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace")
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
@@ -11022,6 +11024,8 @@ def _(rid, params: dict) -> dict:
             cwd=os.getcwd(),
             env=os.environ.copy(),
             stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
         )
         parts = [r.stdout or "", r.stderr or ""]
         out = "\n".join(p for p in parts if p).strip() or "(no output)"
@@ -11083,6 +11087,8 @@ def _(rid, params: dict) -> dict:
                 text=True,
                 timeout=30,
                 stdin=subprocess.DEVNULL,
+                encoding="utf-8",
+                errors="replace",
             )
             output = (
                 (r.stdout or "")
@@ -13408,7 +13414,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(), encoding="utf-8", errors="replace",
             stdin=subprocess.DEVNULL,
         )
         return _ok(

@@ -109,6 +109,7 @@ def adapter(monkeypatch):
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_FREE_RESPONSE_THREAD_CHANNELS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
         "DISCORD_ALLOWED_CHANNELS",
@@ -315,6 +316,43 @@ def test_discord_free_response_channels_int_list(adapter, monkeypatch):
     adapter.config.extra["free_response_channels"] = [1491973769726791812, 99999]
 
     assert adapter._discord_free_response_channels() == {"1491973769726791812", "99999"}
+
+
+def test_discord_free_response_thread_channels_int_list(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_THREAD_CHANNELS", raising=False)
+    adapter.config.extra["free_response_thread_channels"] = [1491973769726791812, 99999]
+
+    assert adapter._discord_free_response_thread_channels() == {
+        "1491973769726791812",
+        "99999",
+    }
+
+
+def test_threaded_free_response_allows_human_mention_without_bot_mention(
+    adapter, monkeypatch
+):
+    monkeypatch.setenv("DISCORD_IGNORE_NO_MENTION", "true")
+    adapter.config.extra["free_response_thread_channels"] = ["789"]
+    human = SimpleNamespace(id=1234, bot=False)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="can you ask them?",
+        mentions=[human],
+    )
+
+    assert adapter._discord_should_ignore_human_mentions(message) is False
+
+
+def test_human_mention_is_still_filtered_outside_free_response(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_IGNORE_NO_MENTION", "true")
+    human = SimpleNamespace(id=1234, bot=False)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="can you ask them?",
+        mentions=[human],
+    )
+
+    assert adapter._discord_should_ignore_human_mentions(message) is True
 
 
 @pytest.mark.asyncio
@@ -683,6 +721,31 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "casual chat in free-response channel"
     assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_thread_channel_keeps_auto_thread(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_THREAD_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="threaded chat without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "threaded chat without mention"
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
 
 
 
@@ -1485,4 +1548,3 @@ async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatc
     await adapter._handle_message(message)
 
     adapter._fetch_channel_context.assert_not_awaited()
-

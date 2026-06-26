@@ -23,6 +23,7 @@ CostSource = Literal[
     "official_docs_snapshot",
     "user_override",
     "custom_contract",
+    "raw_response",
     "none",
 ]
 
@@ -817,7 +818,34 @@ def normalize_usage(
         cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens,
         reasoning_tokens=reasoning_tokens,
+        raw_usage=response_usage.model_dump() if hasattr(response_usage, "model_dump") else None,
     )
+
+
+def _extract_raw_cost(raw_usage: dict[str, Any] | None) -> Decimal | None:
+    """Extract exact cost from raw API response usage, if present.
+
+    Some providers (Polza, OpenRouter with per-request cost) return the
+    actual billed amount in the usage response. This is more accurate
+    than catalog-based estimation.
+    """
+    if not raw_usage:
+        return None
+    # Polza: usage.cost_rub — precise RUB cost per request
+    cost_rub = raw_usage.get("cost_rub")
+    if cost_rub is not None:
+        try:
+            return Decimal(str(cost_rub))
+        except Exception:
+            pass
+    # Generic: usage.cost — some proxies return total cost directly
+    cost = raw_usage.get("cost")
+    if cost is not None:
+        try:
+            return Decimal(str(cost))
+        except Exception:
+            pass
+    return None
 
 
 def estimate_usage_cost(
@@ -836,6 +864,18 @@ def estimate_usage_cost(
             source="none",
             label="included",
             pricing_version="included-route",
+        )
+
+    # If the provider returned exact cost in raw usage (e.g. Polza cost_rub),
+    # use it directly — it's more accurate than catalog-based estimation.
+    raw_cost = _extract_raw_cost(usage.raw_usage)
+    if raw_cost is not None:
+        return CostResult(
+            amount_usd=raw_cost,
+            status="estimated",
+            source="raw_response",
+            label="actual",
+            pricing_version="provider-raw-cost",
         )
 
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)

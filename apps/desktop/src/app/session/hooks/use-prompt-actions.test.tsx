@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
+import { $backgroundStatusBySession, reconcileBackgroundProcesses } from '@/store/composer-status'
+import { $gateway } from '@/store/gateway'
 import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -703,6 +705,101 @@ describe('usePromptActions restoreToMessage', () => {
       truncate_before_user_ordinal: 0
     })
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
+  })
+})
+
+describe('usePromptActions cancelRun preserves background work', () => {
+  // Regression: promoting a queued message while busy (or hitting Stop) routes
+  // through cancelRun. cancelRun is a PLAIN interrupt — the conversation
+  // timeline is preserved — so it must NOT kill the session's background
+  // processes. The backend's session.interrupt deliberately leaves
+  // terminal(background=true) processes running; the renderer used to call
+  // resetSessionBackground() here, which issued process.kill for every running
+  // process and nuked the user's in-flight background work on every queue-send.
+  beforeEach(() => {
+    $busy.set(false)
+    $backgroundStatusBySession.set({})
+    $messages.set([
+      { id: 'u1', role: 'user', parts: [textPart('first prompt')] },
+      { id: 'a1', role: 'assistant', parts: [textPart('first answer')] }
+    ])
+  })
+
+  afterEach(() => {
+    cleanup()
+    $busy.set(false)
+    $messages.set([])
+    $backgroundStatusBySession.set({})
+    $gateway.set(null)
+    vi.restoreAllMocks()
+  })
+
+  function seedRunningBackgroundProcess() {
+    // A live background process attributed to this runtime session.
+    reconcileBackgroundProcesses(RUNTIME_SESSION_ID, [
+      { command: 'sleep 600', session_id: 'proc_live_1', status: 'running' }
+    ] as never)
+  }
+
+  function installRecordingGateway(): { calls: { method: string; params?: Record<string, unknown> }[] } {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    $gateway.set({
+      request: async (method: string, params?: Record<string, unknown>) => {
+        calls.push({ method, params })
+        return {} as never
+      }
+    } as never)
+    return { calls }
+  }
+
+  it('does NOT kill running background processes on a plain interrupt', async () => {
+    seedRunningBackgroundProcess()
+    const gateway = installRecordingGateway()
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={$messages.get()}
+      />
+    )
+
+    await handle!.cancelRun()
+
+    // The interrupt itself must still be sent to the backend...
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
+    // ...but NO process.kill may be issued by the cancel path.
+    expect(gateway.calls.some(c => c.method === 'process.kill')).toBe(false)
+    // ...and the running row must survive in the UI (work still alive).
+    const rows = $backgroundStatusBySession.get()[RUNTIME_SESSION_ID] ?? []
+    expect(rows.map(r => r.id)).toEqual(['proc_live_1'])
+    expect(rows[0]!.state).toBe('running')
+  })
+
+  it('still kills background processes on a true rewind (restoreToMessage)', async () => {
+    // Contrast case: restore/edit abandons the spawning turns, so killing the
+    // now-orphaned background processes there remains correct.
+    seedRunningBackgroundProcess()
+    const gateway = installRecordingGateway()
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={$messages.get()}
+      />
+    )
+
+    await handle!.restoreToMessage('u1')
+
+    expect(gateway.calls.some(c => c.method === 'process.kill' && c.params?.process_id === 'proc_live_1')).toBe(true)
+    expect($backgroundStatusBySession.get()[RUNTIME_SESSION_ID] ?? []).toEqual([])
   })
 })
 

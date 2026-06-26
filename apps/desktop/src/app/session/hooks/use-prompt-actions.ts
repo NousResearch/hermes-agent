@@ -1541,7 +1541,15 @@ export function usePromptActions({
 
     clearSessionTodos(sessionId)
     clearSessionSubagents(sessionId)
-    resetSessionBackground(sessionId)
+    // NOTE: do NOT call resetSessionBackground() here. A plain interrupt
+    // (the Stop button, or promoting a queued message via "send now while
+    // busy") preserves the conversation timeline — it does not discard turns.
+    // The backend's session.interrupt deliberately does NOT kill the session's
+    // background processes (terminal(background=true) is meant to outlive a
+    // turn), so the renderer must not kill them either. resetSessionBackground
+    // belongs only on the true rewind paths (restoreToMessage / editMessage),
+    // where the spawning turns are genuinely abandoned. Calling it here nuked
+    // the user's in-flight background work on every queue-send / Stop.
 
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })

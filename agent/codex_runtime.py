@@ -203,6 +203,7 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 reasoning_tokens=canonical_usage.reasoning_tokens,
                 estimated_cost_usd=float(cost_result.amount_usd)
                 if cost_result.amount_usd is not None else None,
+                estimated_cost_currency=cost_result.currency,
                 cost_status=cost_result.status,
                 cost_source=cost_result.source,
                 billing_provider=agent.provider,

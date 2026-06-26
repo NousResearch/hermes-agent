@@ -509,6 +509,7 @@ class SessionEntry:
     cache_write_tokens: int = 0
     total_tokens: int = 0
     estimated_cost_usd: float = 0.0
+    estimated_cost_currency: str = "USD"
     cost_status: str = "unknown"
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
@@ -568,7 +569,9 @@ class SessionEntry:
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
+            "estimated_cost_currency": self.estimated_cost_currency,
             "cost_status": self.cost_status,
+            "cost_source": self.cost_source,
             "expiry_finalized": self.expiry_finalized,
             "suspended": self.suspended,
             "resume_pending": self.resume_pending,
@@ -634,6 +637,7 @@ class SessionEntry:
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
+            estimated_cost_currency=data.get("estimated_cost_currency", "USD"),
             cost_status=data.get("cost_status", "unknown"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),
             suspended=data.get("suspended", False),

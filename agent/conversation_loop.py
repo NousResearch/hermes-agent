@@ -1915,6 +1915,7 @@ def run_conversation(
                         agent.session_estimated_cost_usd += float(cost_result.amount_usd)
                     agent.session_cost_status = cost_result.status
                     agent.session_cost_source = cost_result.source
+                    agent.session_cost_currency = cost_result.currency
 
                     # Persist token counts to session DB for /insights.
                     # Do this for every platform with a session_id so non-CLI
@@ -1942,6 +1943,7 @@ def run_conversation(
                                 reasoning_tokens=canonical_usage.reasoning_tokens,
                                 estimated_cost_usd=float(cost_result.amount_usd)
                                 if cost_result.amount_usd is not None else None,
+                                estimated_cost_currency=cost_result.currency,
                                 cost_status=cost_result.status,
                                 cost_source=cost_result.source,
                                 billing_provider=agent.provider,

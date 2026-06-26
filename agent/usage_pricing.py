@@ -74,6 +74,7 @@ class CostResult:
     status: CostStatus
     source: CostSource
     label: str
+    currency: str = "USD"
     fetched_at: Optional[datetime] = None
     pricing_version: Optional[str] = None
     notes: tuple[str, ...] = ()
@@ -822,30 +823,32 @@ def normalize_usage(
     )
 
 
-def _extract_raw_cost(raw_usage: dict[str, Any] | None) -> Decimal | None:
-    """Extract exact cost from raw API response usage, if present.
+def _extract_raw_cost_and_currency(raw_usage: dict[str, Any] | None) -> tuple[Decimal | None, str]:
+    """Extract exact cost and currency from raw API response usage.
 
-    Some providers (Polza, OpenRouter with per-request cost) return the
-    actual billed amount in the usage response. This is more accurate
-    than catalog-based estimation.
+    Returns (cost, currency). Providers like Polza return usage.cost_rub
+    with the precise RUB amount billed per request. Other providers may
+    return usage.cost in USD.
+
+    When no raw cost data is found, returns (None, "USD").
     """
     if not raw_usage:
-        return None
+        return None, "USD"
     # Polza: usage.cost_rub — precise RUB cost per request
     cost_rub = raw_usage.get("cost_rub")
     if cost_rub is not None:
         try:
-            return Decimal(str(cost_rub))
+            return Decimal(str(cost_rub)), "RUB"
         except Exception:
             pass
     # Generic: usage.cost — some proxies return total cost directly
     cost = raw_usage.get("cost")
     if cost is not None:
         try:
-            return Decimal(str(cost))
+            return Decimal(str(cost)), "USD"
         except Exception:
             pass
-    return None
+    return None, "USD"
 
 
 def estimate_usage_cost(
@@ -868,10 +871,11 @@ def estimate_usage_cost(
 
     # If the provider returned exact cost in raw usage (e.g. Polza cost_rub),
     # use it directly — it's more accurate than catalog-based estimation.
-    raw_cost = _extract_raw_cost(usage.raw_usage)
+    raw_cost, raw_currency = _extract_raw_cost_and_currency(usage.raw_usage)
     if raw_cost is not None:
         return CostResult(
             amount_usd=raw_cost,
+            currency=raw_currency,
             status="estimated",
             source="raw_response",
             label="actual",

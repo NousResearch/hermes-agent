@@ -623,6 +623,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     billing_base_url TEXT,
     billing_mode TEXT,
     estimated_cost_usd REAL,
+    estimated_cost_currency TEXT NOT NULL DEFAULT 'USD',
     actual_cost_usd REAL,
     cost_status TEXT,
     cost_source TEXT,
@@ -1753,6 +1754,7 @@ class SessionDB:
         cache_write_tokens: int = 0,
         reasoning_tokens: int = 0,
         estimated_cost_usd: Optional[float] = None,
+        estimated_cost_currency: Optional[str] = None,
         actual_cost_usd: Optional[float] = None,
         cost_status: Optional[str] = None,
         cost_source: Optional[str] = None,
@@ -1785,6 +1787,7 @@ class SessionDB:
                    cache_write_tokens = ?,
                    reasoning_tokens = ?,
                    estimated_cost_usd = COALESCE(?, 0),
+                   estimated_cost_currency = COALESCE(?, estimated_cost_currency),
                    actual_cost_usd = CASE
                        WHEN ? IS NULL THEN actual_cost_usd
                        ELSE ?
@@ -1806,6 +1809,7 @@ class SessionDB:
                    cache_write_tokens = cache_write_tokens + ?,
                    reasoning_tokens = reasoning_tokens + ?,
                    estimated_cost_usd = COALESCE(estimated_cost_usd, 0) + COALESCE(?, 0),
+                   estimated_cost_currency = COALESCE(?, estimated_cost_currency),
                    actual_cost_usd = CASE
                        WHEN ? IS NULL THEN actual_cost_usd
                        ELSE COALESCE(actual_cost_usd, 0) + ?
@@ -1826,6 +1830,7 @@ class SessionDB:
             cache_write_tokens,
             reasoning_tokens,
             estimated_cost_usd,
+            estimated_cost_currency,
             actual_cost_usd,
             actual_cost_usd,
             cost_status,

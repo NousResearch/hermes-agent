@@ -1,0 +1,16 @@
+The System Brand Design Document proof serving log — flat-color revision
+URL PDF: http://100.115.116.22:8793/the-system-brand-design-doc-20260626/the-system-brand-design-doc-20260626.pdf
+URL HTML: http://100.115.116.22:8793/the-system-brand-design-doc-20260626/the-system-brand-design-doc-20260626.html
+URL brand-system-map: http://100.115.116.22:8793/the-system-brand-design-doc-20260626/brand-system-map.json
+URL contact sheet: http://100.115.116.22:8793/the-system-brand-design-doc-20260626/the-system-brand-design-doc-contact-sheet.png
+Port: 8793
+Docroot: /Users/jacknicklaus/agent-lab/state/public-proofs
+Server command: python3 -m http.server 8793 --directory /Users/jacknicklaus/agent-lab/state/public-proofs
+SHA256 PDF: d3aef4dea778908e4ac69a6165140a6efb4459fb0aea3e04aee8304621e03885
+SHA256 HTML: 7c076012455180240b4baa3ffb8101aefd094bafb22642c92df8b2a9e17e2317
+SHA256 brand-system-map: cf2e5da7e8dc38a4157a0842b8c885b2765010b5b8dfb0d54c076fecade80586
+SHA256 contact sheet: 7e86287211be22cc169b00316403b4254a5f08bc28373bec4b89a3c09f628054
+Scope check: server is scoped to public-proofs, not local-pages.
+Positive checks: PDF/HTML/map/contact sheet returned 200 with non-empty bytes.
+Negative checks: /QUEUE.md returned 404; /golf-darin-memory-inventory/ returned 404.
+QA: PDF round-tripped to 8-page contact sheet; visible identity marks and color swatches verified; decorative gradients reduced in favor of true flat brand colors.

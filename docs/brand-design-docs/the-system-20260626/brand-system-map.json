@@ -1,0 +1,225 @@
+{
+  "schema_version": "brand-system-map.v1",
+  "brand": {
+    "name": "The System",
+    "slug": "the-system",
+    "context": "house brand / default coach-agent brand",
+    "status": "approved default"
+  },
+  "tokens": {
+    "identity": {
+      "primary_logo": {
+        "path": "assets/logo-stacked-wordmark.webp",
+        "source": "operator-supplied official logo assets, 2026-06-24",
+        "status": "source_backed"
+      },
+      "wordmark": {
+        "path": "assets/logo-stacked-wordmark.webp",
+        "source": "operator-supplied official logo assets, 2026-06-24",
+        "status": "source_backed"
+      },
+      "icon": {
+        "path": "assets/logo-ts-monogram.webp",
+        "source": "operator-supplied official logo assets, 2026-06-24",
+        "status": "source_backed"
+      },
+      "combined_lockup": {
+        "path": "assets/logo-combined-lockup.webp",
+        "source": "operator-supplied official logo assets, 2026-06-24",
+        "status": "source_backed"
+      },
+      "fallback": "Use The System identity as the default house brand only when no coach-specific brand has been approved."
+    },
+    "color": {
+      "primary": {
+        "hex": "#234C3D",
+        "usage": "cover field, masthead, primary rules, section anchors"
+      },
+      "primary_dark": {
+        "hex": "#102819",
+        "usage": "deep cover gradient, high-contrast footer fields"
+      },
+      "accent": {
+        "hex": "#D4A84B",
+        "usage": "ornaments, thin rules, badges, precision accents"
+      },
+      "accent_deep": {
+        "hex": "#C4903A",
+        "usage": "secondary gold details and hover/print accents"
+      },
+      "background": {
+        "hex": "#F4ECDD",
+        "usage": "page background, soft panels, warm default canvas"
+      },
+      "paper": {
+        "hex": "#FBF7EF",
+        "usage": "document page surface and cards"
+      },
+      "text": {
+        "hex": "#050C08",
+        "usage": "primary copy"
+      },
+      "muted": {
+        "hex": "#6B6254",
+        "usage": "captions, metadata, source notes"
+      }
+    },
+    "typography": {
+      "heading": {
+        "family": "Playfair Display / Georgia",
+        "fallback": "Georgia, serif",
+        "usage": "cover title, section titles, premium display moments"
+      },
+      "body": {
+        "family": "DM Sans / Aptos",
+        "fallback": "Aptos, Helvetica Neue, Arial, sans-serif",
+        "usage": "body copy, cards, recap narrative"
+      },
+      "caption": {
+        "family": "DM Mono / SFMono-Regular",
+        "fallback": "Menlo, monospace",
+        "usage": "eyebrows, labels, source notes, metadata"
+      }
+    },
+    "layout": {
+      "page_rhythm": "premium editorial; large margins; generous whitespace; disciplined cards and rules",
+      "border_radius": "24-36px",
+      "rule_weight": "1-2px gold or green rules",
+      "spacing_scale": [
+        "8",
+        "14",
+        "22",
+        "34",
+        "56",
+        "88"
+      ],
+      "chrome": "true-color fields, thin gold rules, soft cream cards, understated monogram stamps; avoid decorative gradients unless explicitly brand-sourced"
+    },
+    "imagery": {
+      "style": "restrained, premium golf/product editorial; use diagrams or photography only when source-backed and useful",
+      "allowed_sources": [
+        "operator-approved The System assets",
+        "coach-approved lesson imagery",
+        "owned product screenshots"
+      ],
+      "avoid": [
+        "third-party logos",
+        "uncleared sponsor marks",
+        "cartoon sports motifs",
+        "generic AI stock imagery"
+      ]
+    },
+    "voice": {
+      "tone": "calm, precise, premium, useful, operator-grade",
+      "avoid": [
+        "generic AI prose",
+        "hype",
+        "fake intimacy",
+        "salesy coach-speak",
+        "tech-bro minimalism"
+      ]
+    }
+  },
+  "components": {
+    "brand_doc_cover": {
+      "logo_slot": "tokens.identity.primary_logo",
+      "background": "tokens.color.primary flat field",
+      "accent_rule": "tokens.color.accent",
+      "title_type": "tokens.typography.heading"
+    },
+    "brand_snapshot_card": {
+      "label_color": "tokens.color.accent",
+      "body_type": "tokens.typography.body"
+    },
+    "identity_panel": {
+      "primary_mark": "tokens.identity.primary_logo",
+      "support_mark": "tokens.identity.icon",
+      "combined_lockup": "tokens.identity.combined_lockup"
+    },
+    "color_swatch_grid": {
+      "swatches": [
+        "tokens.color.primary",
+        "tokens.color.primary_dark",
+        "tokens.color.accent",
+        "tokens.color.background",
+        "tokens.color.paper",
+        "tokens.color.text"
+      ]
+    },
+    "lesson_recap_header": {
+      "logo_slot": "tokens.identity.primary_logo",
+      "rule_color": "tokens.color.primary",
+      "metadata_type": "tokens.typography.caption"
+    },
+    "lesson_recap_section_divider": {
+      "title_type": "tokens.typography.heading",
+      "rule_color": "tokens.color.accent"
+    },
+    "lesson_recap_card": {
+      "border_color": "tokens.color.accent",
+      "accent_color": "tokens.color.primary",
+      "body_type": "tokens.typography.body"
+    },
+    "lesson_recap_footer": {
+      "logo_or_icon": "tokens.identity.icon",
+      "text_color": "tokens.color.muted",
+      "rule_color": "tokens.color.accent"
+    },
+    "slide_title": {
+      "logo_slot": "tokens.identity.icon",
+      "title_type": "tokens.typography.heading",
+      "accent_rule": "tokens.color.accent"
+    },
+    "slide_content_card": {
+      "border_color": "tokens.color.accent",
+      "heading_type": "tokens.typography.heading",
+      "body_type": "tokens.typography.body"
+    }
+  },
+  "provenance": {
+    "source_urls": [
+      "https://www.thesystem.golf/"
+    ],
+    "source_files": [
+      "docs/logo-stacked-wordmark.webp",
+      "docs/logo-ts-monogram.webp",
+      "docs/logo-combined-lockup.webp",
+      "docs/default-the-system-brand-spec-2026-06-24.md",
+      "docs/default-the-system-brand-design-doc-2026-06-24.md",
+      "docs/the-system-brand-book-composed-2026-06-24.html"
+    ],
+    "source_backed": [
+      "official logo family",
+      "green/gold/cream visual system",
+      "premium restrained editorial posture",
+      "default house-brand role for coach agents"
+    ],
+    "inferred": [
+      "component-slot vocabulary mapped to canonical Brand Design Document template"
+    ],
+    "needs_approval": []
+  },
+  "downstream_rules": {
+    "premium_lesson_recap": [
+      "Use The System as fallback shell only when no coach brand is approved.",
+      "Lead with clean title hierarchy, restrained green/gold chrome, and useful lesson structure.",
+      "Keep coach/student content dominant; brand should support, not overpower."
+    ],
+    "slide_template": [
+      "Use monogram as small seal, not a large decorative watermark unless on divider slides.",
+      "Use accent gold as rule/badge only; avoid filling large body areas with gold."
+    ],
+    "branded_documents": [
+      "Use cream paper, green mastheads, gold rules, and serif display titles for premium house-brand surfaces.",
+      "Prefer flat true brand colors over gradients; use deep green, cream, and gold directly."
+    ]
+  },
+  "qa": {
+    "rendered_pdf_checked": true,
+    "identity_visible": true,
+    "swatches_visible": true,
+    "token_map_valid_json": true,
+    "contact_sheet": "the-system-brand-design-doc-contact-sheet.png",
+    "revision_note": "Reduced decorative gradients; uses flat true brand colors."
+  }
+}

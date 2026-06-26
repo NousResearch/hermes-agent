@@ -651,6 +651,102 @@ def _tool_other_split(rows, parent_tokens, estimator):
     return (len(tool), tool_tokens, len(other), other_tokens)
 
 
+def _inturn_content_struct(content):
+    """Structural (NON-``str()``-flattened) content key for alignment matching.
+
+    ``str(content)`` can collide two structurally-different list/dict rows (the
+    in-turn path carries list/multipart content — the #95 lineage), so the cut
+    search compares content by shape: a scalar passes through; a list compares
+    element-wise by ``(type, text)``. Used ONLY to compare a replayed sanitized
+    slice against the comp-side kept tail — never rendered.
+    """
+    if isinstance(content, list):
+        out = []
+        for b in content:
+            if isinstance(b, dict):
+                out.append(("part", b.get("type"), _part_text(b)))
+            else:
+                out.append(("part", None, b if isinstance(b, str) else repr(b)))
+        return tuple(out)
+    if isinstance(content, str):
+        return ("scalar", content)
+    return ("scalar", repr(content))
+
+
+def _inturn_tool_calls_struct(tool_calls):
+    """Structural key for an assistant row's ``tool_calls``.
+
+    The sanitizer PRESERVES assistant tool_calls (and uses them to decide which
+    stub tool-results to insert), so two assistant rows with identical sanitized
+    visible content but DIFFERENT tool calls are distinct rows — omitting
+    tool_calls from the match key would let a wrong cut compare equal and produce
+    a reconciled-but-wrong folded/kept split (Greptile P1, PR #106). Normalize by
+    the call ``id`` + function name/arguments when present (dict-order-independent),
+    falling back to ``repr`` for an unexpected shape.
+    """
+    if not tool_calls:
+        return ()
+    out = []
+    for call in tool_calls:
+        if isinstance(call, dict):
+            fn = call.get("function")
+            if isinstance(fn, dict):
+                out.append((call.get("id"), fn.get("name"), fn.get("arguments")))
+            else:
+                out.append((call.get("id"), call.get("name"), call.get("arguments"), repr(fn)))
+        else:
+            out.append(repr(call))
+    return tuple(out)
+
+
+def _inturn_norm_row(m):
+    return (
+        m.get("role"),
+        _inturn_content_struct(m.get("content")),
+        m.get("tool_call_id"),
+        _inturn_tool_calls_struct(m.get("tool_calls")),
+    )
+
+
+def _inturn_norm(msgs):
+    return tuple(_inturn_norm_row(m) for m in msgs)
+
+
+def find_inturn_kept_cut(messages, comp_kept, sanitize, fresh_tail_count, *, slack=8):
+    """Whole-tail-replay alignment: the index ``cut`` such that the REAL LCM
+    sanitizer applied to ``messages[cut:]`` reproduces the comp-side kept tail.
+
+    The LCM active context is ``[anchor] + [summaries] + sanitize(fresh tail)``,
+    where the fresh tail is a contiguous suffix of ``messages`` (possibly shortened
+    by an assembly budget). The sanitizer's drop + stub-insert are TAIL-GLOBAL
+    (``_sanitize_tool_pairs`` operates on the whole tail as a set), so a per-row
+    predicate cannot reproduce them — only replaying the batch sanitizer over a
+    candidate slice can. We therefore search ``cut`` and accept on EXACT equality
+    of ``sanitize(messages[cut:])`` to ``comp_kept`` (never a token sum, so a wrong
+    cut cannot pass). The search starts at the expected boundary
+    (``len(messages) - fresh_tail_count``) and expands outward, so the common case
+    is one replay and the budget-trimmed shorter tail (true cut *interior*) is still
+    covered. Returns the cut index, or ``None`` when no slice in the window
+    reproduces ``comp_kept`` (→ caller fails ``validate()`` → honest two-line
+    degrade). ``sanitize`` must be the engine's real
+    ``_sanitize_active_context_messages`` bound method.
+    """
+    if sanitize is None or not fresh_tail_count:
+        return None
+    target = _inturn_norm(comp_kept)
+    n = len(messages)
+    expected = max(0, n - int(fresh_tail_count))
+    lo = max(0, n - int(fresh_tail_count) - int(slack))
+    candidates = sorted(range(lo, n + 1), key=lambda c: (abs(c - expected), c))
+    for cut in candidates:
+        try:
+            if _inturn_norm(sanitize(messages[cut:])) == target:
+                return cut
+        except Exception:
+            continue
+    return None
+
+
 def build_inturn_stats(
     *,
     messages: List[dict],
@@ -658,17 +754,38 @@ def build_inturn_stats(
     estimator,
     engine_is_lcm: bool = False,
     on_tag_missing=None,
+    sanitize=None,
+    fresh_tail_count=None,
 ) -> "CompactionStats":
     """Build a reconciling ``CompactionStats`` for the in-turn (LCM) done-site.
 
     The in-turn path does NOT role-filter — the whole input ``messages`` list is
     the population, so ``cleared == 0`` and ``eligible == pre``. The compressed
-    output splits into summary message(s) (LCM markers), the leading anchor
-    (role == "system" / preserved-objective), and the kept tail (remainder);
-    ``folded = eligible - kept``. All token sums use the SAME ``estimator`` over
-    each subset (message-level — consistent, never the request-level estimate).
+    output is ``[anchor] + [summaries] + sanitize(fresh tail)``.
 
-    Caller validates + degrades on failure (e.g. an exotic compressed shape).
+    There are TWO distinct "kept" populations that must NOT be conflated (the
+    PR #101 lesson, here on the in-turn path):
+
+    * **comp-side kept** (``kept_rows``) = the actual fresh tail in ``compressed``,
+      AFTER the LCM sanitizer stripped assistant content / dropped empty rows /
+      inserted synthetic tool stubs. Feeds the POST identity + the user-facing
+      "kept N recent chat" display.
+    * **pre-side kept** (``kept_pre_rows``) = the RAW ``messages`` rows that became
+      that tail. Feeds the PRE identity (``cleared + folded + kept_pre == pre``).
+
+    When the engine's real ``sanitize`` + ``fresh_tail_count`` are supplied, the
+    cut between folded | kept-tail is found by whole-tail replay
+    (:func:`find_inturn_kept_cut`) so ``folded`` AND ``kept_pre`` are both measured
+    pre-side over a true partition of ``messages`` → PRE reconciles even when the
+    sanitizer made the comp tail diverge from its raw originals. Without them
+    (built-in / overflow / manual paths, or a legacy caller), it falls back to the
+    pre-side complement of the comp-kept rows (``_fold_rows``), where ``kept_pre``
+    is left unset and the property defaults to comp-side (equal by construction on
+    a non-sanitizing engine). If alignment fails (no slice reproduces the comp
+    tail), ``folded``/``kept_pre`` are set so ``validate()`` fails → the caller
+    degrades to the honest two-line announce.
+
+    Caller validates + degrades on failure.
     """
     pre_msgs = list(messages or [])
     comp = list(compressed or [])
@@ -685,14 +802,36 @@ def build_inturn_stats(
 
     pre_messages = len(pre_msgs)
     eligible_count = pre_messages  # no role filter on the in-turn path
-    kept_messages = len(kept_rows)
-    folded_count = eligible_count - kept_messages
+    kept_messages = len(kept_rows)          # comp-side (POST identity + display)
     summary_messages = len(summary_rows)
     anchor_messages = len(anchor_rows)
-    post_messages = kept_messages + summary_messages + anchor_messages
+    post_messages = len(comp)               # MEASURED, not derived (no tautology)
 
-    fold_rows = _fold_rows(pre_msgs, kept_rows)
-    folded_tokens = int(estimator(fold_rows))
+    # ── Pre-side partition: folded | kept_pre (the PRE identity) ──
+    # Prefer whole-tail replay alignment when the real sanitizer + fresh_tail are
+    # available (handles strip/drop/stub correctly). Fall back to the comp-kept
+    # complement otherwise. ``kept_pre_*`` stay None on the fallback path (legacy /
+    # non-sanitizing) so the _kept_pre_* property defaults to comp-side.
+    kept_pre_messages = None
+    kept_pre_tokens = None
+    cut = None
+    if sanitize is not None and fresh_tail_count:
+        cut = find_inturn_kept_cut(pre_msgs, kept_rows, sanitize, fresh_tail_count)
+    if cut is not None:
+        kept_pre_rows = pre_msgs[cut:]
+        fold_rows = pre_msgs[:cut]
+        kept_pre_messages = len(kept_pre_rows)
+        kept_pre_tokens = int(estimator(kept_pre_rows)) if kept_pre_rows else 0
+        folded_count = len(fold_rows)
+    else:
+        # Fallback: folded = pre rows NOT signature-matching the comp-kept tail.
+        # (Correct when the engine does not sanitize the tail — built-in / legacy;
+        # on a sanitizing engine with no sanitize fn passed, this is the OLD
+        # mixed-side behavior and validate() will fail → safe two-line degrade.)
+        fold_rows = _fold_rows(pre_msgs, kept_rows)
+        folded_count = eligible_count - kept_messages
+
+    folded_tokens = int(estimator(fold_rows)) if fold_rows else 0
     # Optional tool/other sub-split of the folded population (derive-by-subtraction,
     # parent `folded_tokens` untouched). Degrade to None on any failure (D-6).
     _ftc = _ftt = _foc = _fot = None
@@ -706,13 +845,15 @@ def build_inturn_stats(
         post_messages=post_messages,
         eligible_count=eligible_count,
         kept_messages=kept_messages,
+        kept_pre_messages=kept_pre_messages,
         summary_messages=summary_messages,
         anchor_messages=anchor_messages,
         cleared_count=0,
         folded_count=folded_count,
         pre_tokens=int(estimator(pre_msgs)),
         post_tokens=int(estimator(comp)),
-        kept_tokens=int(estimator(kept_rows)),
+        kept_tokens=int(estimator(kept_rows)) if kept_rows else 0,
+        kept_pre_tokens=kept_pre_tokens,
         summary_tokens=int(estimator(summary_rows)) if summary_rows else 0,
         anchor_tokens=int(estimator(anchor_rows)) if anchor_rows else 0,
         cleared_tokens=0,

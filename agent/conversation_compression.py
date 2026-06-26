@@ -1185,6 +1185,8 @@ def compress_context(
                 compressed=compressed,
                 estimator=_est,
                 engine_is_lcm=(_engine_name == "lcm"),
+                sanitize=getattr(_cc, "_sanitize_active_context_messages", None),
+                fresh_tail_count=getattr(_cc, "protect_last_n", None),
                 on_tag_missing=lambda: _warn_compaction_stats_once(
                     agent, "COMPACTION_STATS_TAG_MISSING in-turn"
                 ),

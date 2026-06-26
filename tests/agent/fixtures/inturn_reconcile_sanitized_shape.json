@@ -1,0 +1,4896 @@
+{
+ "messages": [
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 0</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_0",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_1",
+   "content": "tool output 1 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 2 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 3</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_3",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_4",
+   "content": "tool output 4 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 5 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 6</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_6",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_7",
+   "content": "tool output 7 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 8 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 9</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_9",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_10",
+   "content": "tool output 10 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 11 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 12</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_12",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_13",
+   "content": "tool output 13 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 14 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 15</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_15",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_16",
+   "content": "tool output 16 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 17 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 18</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_18",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_19",
+   "content": "tool output 19 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 20 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 21</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_21",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_22",
+   "content": "tool output 22 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 23 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 24</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_24",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_25",
+   "content": "tool output 25 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 26 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 27</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_27",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_28",
+   "content": "tool output 28 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 29 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 30</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_30",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_31",
+   "content": "tool output 31 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 32 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 33</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_33",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_34",
+   "content": "tool output 34 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 35 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 36</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_36",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_37",
+   "content": "tool output 37 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 38 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 39</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_39",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_40",
+   "content": "tool output 40 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 41 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 42</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_42",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_43",
+   "content": "tool output 43 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 44 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 45</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_45",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_46",
+   "content": "tool output 46 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 47 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 48</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_48",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_49",
+   "content": "tool output 49 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 50 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 51</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_51",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_52",
+   "content": "tool output 52 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 53 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 54</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_54",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_55",
+   "content": "tool output 55 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 56 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 57</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_57",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_58",
+   "content": "tool output 58 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 59 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 60</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_60",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_61",
+   "content": "tool output 61 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 62 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 63</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_63",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_64",
+   "content": "tool output 64 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 65 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 66</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_66",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_67",
+   "content": "tool output 67 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 68 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 69</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_69",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_70",
+   "content": "tool output 70 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 71 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 72</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_72",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_73",
+   "content": "tool output 73 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 74 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 75</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_75",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_76",
+   "content": "tool output 76 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 77 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 78</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_78",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_79",
+   "content": "tool output 79 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 80 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 81</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_81",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_82",
+   "content": "tool output 82 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 83 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 84</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_84",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_85",
+   "content": "tool output 85 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 86 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 87</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_87",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_88",
+   "content": "tool output 88 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 89 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 90</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_90",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_91",
+   "content": "tool output 91 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 92 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 93</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_93",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_94",
+   "content": "tool output 94 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 95 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 96</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_96",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_97",
+   "content": "tool output 97 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 98 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 99</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_99",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_100",
+   "content": "tool output 100 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 101 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 102</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_102",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_103",
+   "content": "tool output 103 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 104 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 105</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_105",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_106",
+   "content": "tool output 106 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 107 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 108</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_108",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_109",
+   "content": "tool output 109 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 110 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 111</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_111",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_112",
+   "content": "tool output 112 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 113 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 114</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_114",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_115",
+   "content": "tool output 115 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 116 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 117</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_117",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_118",
+   "content": "tool output 118 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 119 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 120</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_120",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_121",
+   "content": "tool output 121 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 122 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 123</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_123",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_124",
+   "content": "tool output 124 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 125 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 126</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_126",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_127",
+   "content": "tool output 127 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 128 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 129</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_129",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_130",
+   "content": "tool output 130 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 131 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 132</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_132",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_133",
+   "content": "tool output 133 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 134 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 135</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_135",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_136",
+   "content": "tool output 136 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 137 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 138</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_138",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_139",
+   "content": "tool output 139 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 140 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 141</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_141",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_142",
+   "content": "tool output 142 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 143 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 144</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_144",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_145",
+   "content": "tool output 145 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 146 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 147</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_147",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_148",
+   "content": "tool output 148 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 149 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 150</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_150",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_151",
+   "content": "tool output 151 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 152 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 153</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_153",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_154",
+   "content": "tool output 154 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 155 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 156</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_156",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_157",
+   "content": "tool output 157 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 158 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 159</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_159",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_160",
+   "content": "tool output 160 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 161 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 162</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_162",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_163",
+   "content": "tool output 163 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 164 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 165</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_165",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_166",
+   "content": "tool output 166 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 167 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 168</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_168",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_169",
+   "content": "tool output 169 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 170 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 171</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_171",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_172",
+   "content": "tool output 172 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 173 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 174</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_174",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_175",
+   "content": "tool output 175 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 176 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 177</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_177",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_178",
+   "content": "tool output 178 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 179 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 180</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_180",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_181",
+   "content": "tool output 181 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 182 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 183</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_183",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_184",
+   "content": "tool output 184 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 185 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 186</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_186",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_187",
+   "content": "tool output 187 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 188 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 189</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_189",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_190",
+   "content": "tool output 190 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 191 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 192</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_192",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_193",
+   "content": "tool output 193 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 194 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 195</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_195",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_196",
+   "content": "tool output 196 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 197 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 198</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_198",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_199",
+   "content": "tool output 199 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 200 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 201</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_201",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_202",
+   "content": "tool output 202 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 203 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 204</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_204",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_205",
+   "content": "tool output 205 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 206 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 207</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_207",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_208",
+   "content": "tool output 208 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 209 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 210</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_210",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_211",
+   "content": "tool output 211 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 212 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 213</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_213",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_214",
+   "content": "tool output 214 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 215 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 216</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_216",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_217",
+   "content": "tool output 217 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 218 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 219</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_219",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_220",
+   "content": "tool output 220 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 221 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 222</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_222",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_223",
+   "content": "tool output 223 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 224 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 225</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_225",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_226",
+   "content": "tool output 226 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 227 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 228</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_228",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_229",
+   "content": "tool output 229 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 230 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 231</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_231",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_232",
+   "content": "tool output 232 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 233 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 234</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_234",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_235",
+   "content": "tool output 235 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 236 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 237</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_237",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_238",
+   "content": "tool output 238 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 239 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 240</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_240",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_241",
+   "content": "tool output 241 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 242 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 243</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_243",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_244",
+   "content": "tool output 244 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 245 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 246</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_246",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_247",
+   "content": "tool output 247 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 248 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 249</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_249",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_250",
+   "content": "tool output 250 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 251 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 252</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_252",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_253",
+   "content": "tool output 253 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 254 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 255</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_255",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_256",
+   "content": "tool output 256 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 257 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 258</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_258",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_259",
+   "content": "tool output 259 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 260 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 261</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_261",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_262",
+   "content": "tool output 262 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 263 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 264</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_264",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_265",
+   "content": "tool output 265 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 266 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 267</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_267",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_268",
+   "content": "tool output 268 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 269 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 270</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_270",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_271",
+   "content": "tool output 271 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 272 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 273</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_273",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_274",
+   "content": "tool output 274 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 275 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 276</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_276",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_277",
+   "content": "tool output 277 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 278 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 279</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_279",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_280",
+   "content": "tool output 280 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 281 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 282</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_282",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_283",
+   "content": "tool output 283 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 284 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 285</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_285",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_286",
+   "content": "tool output 286 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 287 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 288</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_288",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_289",
+   "content": "tool output 289 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 290 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 291</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_291",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_292",
+   "content": "tool output 292 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 293 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 294</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_294",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_295",
+   "content": "tool output 295 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 296 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 297</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_297",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_298",
+   "content": "tool output 298 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 299 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 300</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_300",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_301",
+   "content": "tool output 301 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 302 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 303</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_303",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_304",
+   "content": "tool output 304 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 305 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 306</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_306",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_307",
+   "content": "tool output 307 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 308 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 309</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_309",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_310",
+   "content": "tool output 310 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 311 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 312</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_312",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_313",
+   "content": "tool output 313 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 314 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 315</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_315",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_316",
+   "content": "tool output 316 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 317 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 318</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_318",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_319",
+   "content": "tool output 319 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 320 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 321</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_321",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_322",
+   "content": "tool output 322 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 323 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 324</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_324",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_325",
+   "content": "tool output 325 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 326 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 327</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_327",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_328",
+   "content": "tool output 328 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 329 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 330</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_330",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_331",
+   "content": "tool output 331 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 332 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 333</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_333",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_334",
+   "content": "tool output 334 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 335 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 336</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_336",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_337",
+   "content": "tool output 337 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 338 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 339</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_339",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_340",
+   "content": "tool output 340 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 341 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 342</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_342",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_343",
+   "content": "tool output 343 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 344 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 345</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_345",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_346",
+   "content": "tool output 346 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 347 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 348</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_348",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_349",
+   "content": "tool output 349 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 350 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 351</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_351",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_352",
+   "content": "tool output 352 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 353 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 354</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_354",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_355",
+   "content": "tool output 355 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 356 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 357</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_357",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_358",
+   "content": "tool output 358 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 359 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 360</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_360",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_361",
+   "content": "tool output 361 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 362 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 363</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_363",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_364",
+   "content": "tool output 364 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 365 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 366</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_366",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_367",
+   "content": "tool output 367 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 368 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 369</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_369",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_370",
+   "content": "tool output 370 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 371 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 372</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_372",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_373",
+   "content": "tool output 373 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 374 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 375</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_375",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_376",
+   "content": "tool output 376 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 377 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 378</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_378",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_379",
+   "content": "tool output 379 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 380 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 381</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_381",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_382",
+   "content": "tool output 382 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 383 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 384</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_384",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_385",
+   "content": "tool output 385 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 386 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 387</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_387",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_388",
+   "content": "tool output 388 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 389 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 390</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_390",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_391",
+   "content": "tool output 391 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 392 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 393</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_393",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_394",
+   "content": "tool output 394 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 395 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 396</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_396",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_397",
+   "content": "tool output 397 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 398 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 399</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_399",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_400",
+   "content": "tool output 400 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 401 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 402</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_402",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_403",
+   "content": "tool output 403 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 404 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 405</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_405",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_406",
+   "content": "tool output 406 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 407 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 408</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_408",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_409",
+   "content": "tool output 409 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 410 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 411</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_411",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_412",
+   "content": "tool output 412 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 413 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 414</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_414",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_415",
+   "content": "tool output 415 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 416 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 417</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_417",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_418",
+   "content": "tool output 418 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 419 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 420</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_420",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_421",
+   "content": "tool output 421 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 422 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 423</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_423",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_424",
+   "content": "tool output 424 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 425 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 426</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_426",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_427",
+   "content": "tool output 427 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 428 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 429</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_429",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_430",
+   "content": "tool output 430 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 431 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 432</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_432",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_433",
+   "content": "tool output 433 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 434 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 435</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_435",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_436",
+   "content": "tool output 436 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 437 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 438</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_438",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_439",
+   "content": "tool output 439 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 440 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 441</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_441",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_442",
+   "content": "tool output 442 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 443 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 444</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_444",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_445",
+   "content": "tool output 445 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 446 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 447</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_447",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_448",
+   "content": "tool output 448 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 449 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 450</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_450",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_451",
+   "content": "tool output 451 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 452 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 453</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_453",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_454",
+   "content": "tool output 454 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 455 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 456</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_456",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_457",
+   "content": "tool output 457 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 458 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 459</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_459",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_460",
+   "content": "tool output 460 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 461 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 462</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_462",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_463",
+   "content": "tool output 463 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 464 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 465</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_465",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_466",
+   "content": "tool output 466 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 467 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 468</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_468",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_469",
+   "content": "tool output 469 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 470 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 471</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_471",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_472",
+   "content": "tool output 472 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 473 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 474</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_474",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_475",
+   "content": "tool output 475 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 476 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 477</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_477",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_478",
+   "content": "tool output 478 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 479 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 480</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_480",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_481",
+   "content": "tool output 481 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 482 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 483</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_483",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_484",
+   "content": "tool output 484 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 485 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 486</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_486",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_487",
+   "content": "tool output 487 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 488 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 489</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_489",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_490",
+   "content": "tool output 490 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 491 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 492</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_492",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_493",
+   "content": "tool output 493 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 494 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 495</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_495",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_496",
+   "content": "tool output 496 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 497 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 498</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_498",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_499",
+   "content": "tool output 499 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 500 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 501</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_501",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_502",
+   "content": "tool output 502 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 503 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 504</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_504",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_505",
+   "content": "tool output 505 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 506 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 507</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_507",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_508",
+   "content": "tool output 508 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 509 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 510</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_510",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_511",
+   "content": "tool output 511 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 512 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 513</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_513",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_514",
+   "content": "tool output 514 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 515 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 516</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_516",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_517",
+   "content": "tool output 517 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 518 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 519</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_519",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_520",
+   "content": "tool output 520 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 521 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 522</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_522",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_523",
+   "content": "tool output 523 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 524 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 525</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_525",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_526",
+   "content": "tool output 526 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 527 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 528</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_528",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_529",
+   "content": "tool output 529 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 530 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 531</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_531",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_532",
+   "content": "tool output 532 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 533 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 534</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_534",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_535",
+   "content": "tool output 535 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 536 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 537</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_537",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_538",
+   "content": "tool output 538 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 539 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 540</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_540",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_541",
+   "content": "tool output 541 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 542 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 543</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_543",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_544",
+   "content": "tool output 544 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 545 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 546</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_546",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_547",
+   "content": "tool output 547 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 548 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 549</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_549",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_550",
+   "content": "tool output 550 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 551 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 552</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_552",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_553",
+   "content": "tool output 553 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 554 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 555</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_555",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_556",
+   "content": "tool output 556 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 557 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 558</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_558",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_559",
+   "content": "tool output 559 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 560 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 561</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_561",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_562",
+   "content": "tool output 562 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 563 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 564</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_564",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_565",
+   "content": "tool output 565 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 566 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 567</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_567",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_568",
+   "content": "tool output 568 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 569 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 570</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_570",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_571",
+   "content": "tool output 571 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 572 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 573</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_573",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_574",
+   "content": "tool output 574 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 575 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 576</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_576",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_577",
+   "content": "tool output 577 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 578 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 579</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_579",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_580",
+   "content": "tool output 580 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 581 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 582</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_582",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_583",
+   "content": "tool output 583 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 584 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 585</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_585",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_586",
+   "content": "tool output 586 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 587 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 588</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_588",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_589",
+   "content": "tool output 589 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 590 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 591</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_591",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_592",
+   "content": "tool output 592 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 593 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 594</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_594",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_595",
+   "content": "tool output 595 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 596 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 597</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_597",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_598",
+   "content": "tool output 598 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "role": "user",
+   "content": "user message 599 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "user",
+   "content": "user message 600 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 601 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 601."
+  },
+  {
+   "role": "user",
+   "content": "user message 602 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 603 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 603."
+  },
+  {
+   "role": "user",
+   "content": "user message 604 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 605 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 605."
+  },
+  {
+   "role": "user",
+   "content": "user message 606 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 607 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 607."
+  },
+  {
+   "role": "user",
+   "content": "user message 608 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 609 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 609."
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>only internal</thinking>"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 611 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 611."
+  },
+  {
+   "role": "user",
+   "content": "user message 612 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 613 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 613."
+  },
+  {
+   "role": "user",
+   "content": "user message 614 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>deciding 615</thinking>",
+   "tool_calls": [
+    {
+     "id": "call_615",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "user",
+   "content": "user message 616 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 617 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 617."
+  },
+  {
+   "role": "user",
+   "content": "user message 618 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 619 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 619."
+  },
+  {
+   "role": "user",
+   "content": "user message 620 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 621 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 621."
+  },
+  {
+   "role": "user",
+   "content": "user message 622 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 623 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 623."
+  },
+  {
+   "role": "user",
+   "content": "user message 624 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 625 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 625."
+  },
+  {
+   "role": "user",
+   "content": "user message 626 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 627 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 627."
+  },
+  {
+   "role": "user",
+   "content": "user message 628 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 629 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 629."
+  },
+  {
+   "role": "user",
+   "content": "user message 630 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "<thinking>internal reasoning 631 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</thinking>Visible answer 631."
+  }
+ ],
+ "compressed": [
+  {
+   "role": "system",
+   "content": "objective anchor"
+  },
+  {
+   "role": "assistant",
+   "content": "[Recent Summary (d0, node 5)] folded chat condensed zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz [Expand for details: x]",
+   "_lcm_summary": true
+  },
+  {
+   "role": "user",
+   "content": "user message 600 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 601."
+  },
+  {
+   "role": "user",
+   "content": "user message 602 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 603."
+  },
+  {
+   "role": "user",
+   "content": "user message 604 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 605."
+  },
+  {
+   "role": "user",
+   "content": "user message 606 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 607."
+  },
+  {
+   "role": "user",
+   "content": "user message 608 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 609."
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 611."
+  },
+  {
+   "role": "user",
+   "content": "user message 612 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 613."
+  },
+  {
+   "role": "user",
+   "content": "user message 614 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_615",
+     "type": "function",
+     "function": {
+      "name": "terminal",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "content": "[Result from earlier conversation \u2014 see context summary above]",
+   "tool_call_id": "call_615"
+  },
+  {
+   "role": "user",
+   "content": "user message 616 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 617."
+  },
+  {
+   "role": "user",
+   "content": "user message 618 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 619."
+  },
+  {
+   "role": "user",
+   "content": "user message 620 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 621."
+  },
+  {
+   "role": "user",
+   "content": "user message 622 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 623."
+  },
+  {
+   "role": "user",
+   "content": "user message 624 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 625."
+  },
+  {
+   "role": "user",
+   "content": "user message 626 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 627."
+  },
+  {
+   "role": "user",
+   "content": "user message 628 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 629."
+  },
+  {
+   "role": "user",
+   "content": "user message 630 wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  {
+   "role": "assistant",
+   "content": "Visible answer 631."
+  }
+ ],
+ "true_kept_count": 32,
+ "fresh_tail_count": 32,
+ "sanitizer_source_sha1": "1b7d5354ab470012645a7ad9f39f0aba8e3bbd7c",
+ "_note": "Generated by gen_inturn_reconcile_fixture.py; comp kept tail is real _sanitize_active_context_messages output. Regenerate if the parity test fails."
+}

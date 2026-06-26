@@ -27,6 +27,11 @@ _TINY_PNG = base64.b64decode(
     b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 )
 
+# PNG header only — IDAT does not zlib-decompress (LLM-hallucinated test fixture).
+_CORRUPT_PNG = base64.b64decode(
+    b"iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAFElEQVR4nGP8z8Dwn4EIwESJ5gAAVQ4CH1evYJQAAAAASUVORK5CYII="
+)
+
 
 # ─── _supports_media_in_tool_results ─────────────────────────────────────────
 
@@ -138,6 +143,18 @@ class TestVisionAnalyzeNative:
         )
         assert isinstance(result, dict)
         assert result.get("_multimodal") is True
+
+    def test_corrupt_png_rejected_before_native_embed(self, tmp_path):
+        """Header-only PNG bytes must not enter conversation history."""
+        img = tmp_path / "bad.png"
+        img.write_bytes(_CORRUPT_PNG)
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(img), "what is this?")
+        )
+        assert isinstance(result, str)
+        parsed = json.loads(result)
+        assert parsed.get("success") is False
+        assert "Only real image files" in parsed.get("error", "")
 
     def test_oversized_image_resized_under_embed_cap(self, tmp_path):
         """Regression for the wedged-session incident (May 2026).

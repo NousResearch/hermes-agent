@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import uuid
+import zlib
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
@@ -106,13 +107,43 @@ async def _validate_image_url_async(url: str) -> bool:
     return await async_is_safe_url(url)
 
 
+def _png_zlib_payload_is_valid(image_path: Path) -> bool:
+    """Return True when a PNG file's concatenated IDAT stream decompresses."""
+    try:
+        data = image_path.read_bytes()
+    except OSError:
+        return False
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+
+    idat_parts: list[bytes] = []
+    offset = 8
+    while offset + 8 <= len(data):
+        length = int.from_bytes(data[offset : offset + 4], "big")
+        chunk_type = data[offset + 4 : offset + 8]
+        chunk_end = offset + 8 + length + 4
+        if chunk_end > len(data):
+            return False
+        if chunk_type == b"IDAT":
+            idat_parts.append(data[offset + 8 : offset + 8 + length])
+        offset = chunk_end
+
+    if not idat_parts:
+        return False
+    try:
+        zlib.decompress(b"".join(idat_parts))
+    except zlib.error:
+        return False
+    return True
+
+
 def _detect_image_mime_type(image_path: Path) -> Optional[str]:
     """Return a MIME type when the file looks like a supported image."""
     with image_path.open("rb") as f:
         header = f.read(64)
 
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
+        return "image/png" if _png_zlib_payload_is_valid(image_path) else None
     if header.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
     if header.startswith((b"GIF87a", b"GIF89a")):

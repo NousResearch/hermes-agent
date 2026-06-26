@@ -2637,57 +2637,43 @@ def run_conversation(
                 ):
                     _retry.orphaned_tool_use_retry_attempted = True
                     try:
-                        from agent.anthropic_adapter import _strip_orphaned_tool_blocks
-                        # Find which tool_use IDs are orphaned in api_messages
-                        # (Anthropic format) before stripping
+                        # Detect orphaned tool_call IDs from the canonical
+                        # messages list (OpenAI-style: assistant has tool_calls,
+                        # result is role=tool with tool_call_id).
+                        # api_messages at this point is still pre-conversion
+                        # (the Anthropic adapter converts internally), so we
+                        # must detect from canonical messages, not api_messages.
                         _orphaned_ids: set = set()
-                        for _am in api_messages:
-                            if not (isinstance(_am, dict) and _am.get("role") == "assistant"):
+                        for _ci, _cm in enumerate(messages):
+                            if not isinstance(_cm, dict):
                                 continue
-                            if not isinstance(_am.get("content"), list):
+                            if _cm.get("role") != "assistant":
                                 continue
-                            _use_ids = {
-                                b["id"] for b in _am["content"]
-                                if isinstance(b, dict) and b.get("type") == "tool_use" and "id" in b
+                            _tcs = _cm.get("tool_calls") or []
+                            if not _tcs:
+                                continue
+                            _tc_ids = {tc.get("id") for tc in _tcs if tc.get("id")}
+                            # Find matching role=tool messages anywhere after
+                            _result_ids = {
+                                m.get("tool_call_id")
+                                for m in messages[_ci + 1:]
+                                if isinstance(m, dict) and m.get("role") == "tool"
                             }
-                            if not _use_ids:
-                                continue
-                            # Find next user msg
-                            _idx = api_messages.index(_am)
-                            _next_user = next(
-                                (m for m in api_messages[_idx + 1:]
-                                 if isinstance(m, dict) and m.get("role") == "user"),
-                                None,
-                            )
-                            _result_ids = set()
-                            if _next_user and isinstance(_next_user.get("content"), list):
-                                _result_ids = {
-                                    b.get("tool_use_id")
-                                    for b in _next_user["content"]
-                                    if isinstance(b, dict) and b.get("type") == "tool_result"
-                                }
-                            _orphaned_ids |= (_use_ids - _result_ids)
+                            _orphaned_ids |= (_tc_ids - _result_ids)
 
-                        # Strip from wire payload (api_messages)
-                        _strip_orphaned_tool_blocks(api_messages)
-
-                        # Also clean canonical messages (OpenAI style):
-                        # remove assistant tool_calls entries whose IDs are
-                        # orphaned, and the matching role=tool messages.
+                        # Clean canonical messages
                         _stripped_canonical = 0
                         if _orphaned_ids:
-                            _to_remove_tool_call_ids: set = set(_orphaned_ids)
                             _i = 0
                             while _i < len(messages):
                                 _cm = messages[_i]
                                 if not isinstance(_cm, dict):
                                     _i += 1
                                     continue
-                                # Remove orphaned tool_calls from assistant msgs
                                 if _cm.get("role") == "assistant" and isinstance(_cm.get("tool_calls"), list):
                                     _kept = [
                                         tc for tc in _cm["tool_calls"]
-                                        if tc.get("id") not in _to_remove_tool_call_ids
+                                        if tc.get("id") not in _orphaned_ids
                                     ]
                                     if len(_kept) != len(_cm["tool_calls"]):
                                         _stripped_canonical += len(_cm["tool_calls"]) - len(_kept)
@@ -2695,17 +2681,17 @@ def run_conversation(
                                             _cm["tool_calls"] = _kept
                                         else:
                                             _cm.pop("tool_calls", None)
-                                # Remove orphaned role=tool messages
-                                if _cm.get("role") == "tool" and _cm.get("tool_call_id") in _to_remove_tool_call_ids:
+                                if _cm.get("role") == "tool" and _cm.get("tool_call_id") in _orphaned_ids:
                                     messages.pop(_i)
                                     _stripped_canonical += 1
                                     continue
                                 _i += 1
                     except Exception as _strip_exc:
                         logger.warning(
-                            "%sOrphaned tool_use recovery: strip helper failed: %s",
+                            "%sOrphaned tool_use recovery: strip failed: %s",
                             agent.log_prefix, _strip_exc,
                         )
+                        _orphaned_ids = set()
                         _stripped_canonical = 0
                     agent._vprint(
                         f"{agent.log_prefix}⚠️  Orphaned tool_use detected — "

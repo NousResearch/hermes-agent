@@ -377,8 +377,10 @@ CURATOR_REVIEW_PROMPT = (
     "bodies + `references/`, `templates/`, and `scripts/` subfiles for "
     "session-specific detail — not one-session-one-skill micro-entries.\n\n"
     "Hard rules — do not violate:\n"
-    "1. DO NOT touch bundled or hub-installed skills. The candidate list "
-    "below is already filtered to agent-created skills only.\n"
+    "1. DO NOT touch bundled, hub-installed, or external-dir skills "
+    "(`skills.external_dirs`). The candidate list below is already filtered "
+    "to local curator-managed skills only; external skills are externally "
+    "owned and read-only to this background curator.\n"
     "2. DO NOT delete any skill. Archiving (moving the skill's directory "
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
@@ -469,8 +471,9 @@ CURATOR_REVIEW_PROMPT = (
     "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
     "forwarding target. This drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
-    "  - terminal                       — mv a sibling into the archive "
-    "OR move its content into a support subfile\n\n"
+    "  - terminal                       — move LOCAL candidate content into "
+    "a support subfile when package integrity requires it; never mv, cp, rm, "
+    "patch, or rewrite bundled, hub-installed, or external-dir skills\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
     "class-level umbrella and none of the proposed merges would improve "
     "discoverability. 'This is narrow but distinct from its siblings' "
@@ -1843,6 +1846,14 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0
+        # Tag this fork as autonomous background curation so skill_manage's
+        # background-review write guard fires. Without this the fork inherits
+        # the default "assistant_tool" origin, is_background_review() is False,
+        # and the external/bundled/hub-installed skill_manage guards never
+        # trigger during the curation pass they exist to protect against.
+        # turn_context.py binds this onto the write-origin ContextVar at turn
+        # start (see agent/turn_context.py).
+        review_agent._memory_write_origin = "background_review"
 
         # Redirect the forked agent's stdout/stderr to /dev/null while it
         # runs so its tool-call chatter doesn't pollute the foreground

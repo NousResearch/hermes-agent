@@ -859,7 +859,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         asyncio.create_task(_notify())
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)

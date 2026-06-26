@@ -4016,7 +4016,6 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
 
 def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=None):
     from run_agent import AIAgent
-    from hermes_cli.runtime_provider import resolve_runtime_provider
 
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell.  The agent snapshots its tool list
@@ -4085,11 +4084,9 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
                 # Failing identity recovery, still hand the base_url to the
                 # direct-alias branch so pool/env credentials resolve for it.
                 resolve_kwargs["explicit_base_url"] = override_base_url
-        runtime = resolve_runtime_provider(
-            requested=requested_provider,
-            target_model=model or None,
-            **resolve_kwargs,
-        )
+        resolve_kwargs["requested"] = requested_provider
+        resolve_kwargs["target_model"] = model or None
+        runtime = _resolve_runtime_with_fallback(resolve_kwargs)
         # The switch already resolved concrete credentials/endpoint; honor them
         # so a custom/named endpoint survives the rebuild even if global
         # resolution would pick a different one.
@@ -4105,10 +4102,10 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
             model = model_override
         if provider_override:
             requested_provider = provider_override
-        runtime = resolve_runtime_provider(
-            requested=requested_provider,
-            target_model=model or None,
-        )
+        runtime = _resolve_runtime_with_fallback({
+            "requested": requested_provider,
+            "target_model": model or None,
+        })
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
@@ -7568,14 +7565,17 @@ def _(rid, params: dict) -> dict:
     # stuck (a crash/desync that skipped the run loop's `finally`), force-clear it
     # so the session can't be permanently bricked at 4009 "session busy" — every
     # send/restore/resume would otherwise reject until a full backend restart.
-    # A genuinely live turn is left alone: its cooperative interrupt + `finally`
-    # release `running` the normal way; clearing it here would let a second turn
-    # race the first on the same session.
+    # Always tell the agent to interrupt when the session claims a run is active:
+    # stale flags are cleared below, and fresh turns clear the interrupt flag at
+    # entry. This keeps a stale/missing thread handle from making Stop a no-op.
     run_thread = session.get("_run_thread")
     run_thread_alive = run_thread is not None and run_thread.is_alive()
-    should_interrupt = bool(session.get("running")) and run_thread_alive
+    should_interrupt = bool(session.get("running"))
     if should_interrupt and hasattr(session["agent"], "interrupt"):
         session["agent"].interrupt()
+    with session["history_lock"]:
+        session["_turn_cancel_requested"] = True
+        session["queued_prompt"] = None
     if not run_thread_alive:
         with session["history_lock"]:
             if session.get("running"):
@@ -7906,6 +7906,7 @@ def _(rid, params: dict) -> dict:
                 except Exception as exc:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
         session["running"] = True
+        session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
 
@@ -7932,6 +7933,11 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
                 _clear_inflight_turn(session)
             return
+        with session["history_lock"]:
+            if session.get("_turn_cancel_requested") or not session.get("running"):
+                session["running"] = False
+                _clear_inflight_turn(session)
+                return
         _run_prompt_submit(rid, sid, session, text)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
@@ -8588,7 +8594,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 file=sys.stderr,
             )
 
-    threading.Thread(target=run, daemon=True).start()
+    run_thread = threading.Thread(target=run, daemon=True)
+    session["_run_thread"] = run_thread
+    run_thread.start()
 
 
 @method("clipboard.paste")

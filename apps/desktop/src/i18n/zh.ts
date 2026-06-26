@@ -1516,7 +1516,8 @@ export const zh: Translations = {
       noBranches: '未找到分支',
       removeWorktree: '移除工作树',
       removeWorktreeFailed: '无法移除工作树（存在未提交更改？）',
-      removeWorktreeConfirm: '从 git 中移除（删除工作树目录，但保留分支），或仅从侧边栏隐藏该泳道并将工作树保留在磁盘上。',
+      removeWorktreeConfirm:
+        '从 git 中移除（删除工作树目录，但保留分支），或仅从侧边栏隐藏该泳道并将工作树保留在磁盘上。',
       removeWorktreeDirty: '此工作树有未提交的更改。强制移除（丢弃这些更改），或仅隐藏泳道并保留在磁盘上。',
       forceRemove: '强制移除',
       enter: label => `打开 ${label}`,

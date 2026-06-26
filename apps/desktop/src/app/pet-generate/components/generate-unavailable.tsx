@@ -16,7 +16,9 @@ export function GenerateUnavailable({ onSetup }: GenerateUnavailableProps) {
         <PawPrint className="size-5" />
       </span>
       <div className="space-y-1.5">
-        <p className="text-[length:var(--conversation-text-font-size)] font-semibold">Add an image backend to generate</p>
+        <p className="text-[length:var(--conversation-text-font-size)] font-semibold">
+          Add an image backend to generate
+        </p>
         <p className="mx-auto max-w-[19rem] text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-tertiary)">
           Hatching a custom pet needs a provider that can ground on a reference image.
         </p>

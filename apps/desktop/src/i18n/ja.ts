@@ -1438,7 +1438,8 @@ export const ja = defineLocale({
       copyPath: 'パスをコピー',
       removeFromSidebar: 'サイドバーから削除',
       createFailed: 'プロジェクトを作成できませんでした',
-      deleteConfirm: 'Hermes から保存済みプロジェクトを削除します。ファイル・git リポジトリ・ワークツリーはそのまま残ります。',
+      deleteConfirm:
+        'Hermes から保存済みプロジェクトを削除します。ファイル・git リポジトリ・ワークツリーはそのまま残ります。',
       startWork: '新しいワークツリー',
       newWorktreeTitle: '新しいワークツリー',
       newWorktreeDesc: 'このワークツリーのブランチ名を入力してください。',
@@ -2031,7 +2032,8 @@ export const ja = defineLocale({
     unsavedChanges: '未保存の変更',
     saveFailed: message => `保存できませんでした：${message}`,
     diskChangedTitle: 'ファイルがディスク上で変更されました',
-    diskChangedBody: 'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',
+    diskChangedBody:
+      'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',
     overwrite: '上書き',
     discardReload: '破棄して再読み込み',
     console: {

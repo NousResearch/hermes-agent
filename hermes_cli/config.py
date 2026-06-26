@@ -3272,6 +3272,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "FREEBUFF_TOKEN": {
+        "description": "Upstream Codebuff/Freebuff Bearer token (from ~/.config/manicode/credentials.json)",
+        "prompt": "Freebuff auth token",
+        "url": "https://freebuff.com/cli",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "FREEBUFF_PROXY_API_KEY": {
+        "description": "Local freebuff2api proxy API key (Hermes → 127.0.0.1 only)",
+        "prompt": "Freebuff local proxy API key",
+        "url": None,
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "OLLAMA_API_KEY": {
         "description": "Ollama Cloud API key (ollama.com — cloud-hosted open models)",
         "prompt": "Ollama Cloud API key",

@@ -1,0 +1,6 @@
+name: freebuff-provider
+kind: model-provider
+version: 0.1.0
+description: Freebuff free-tier models via local OpenAI-compatible proxy
+author: zapabob
+homepage: https://freebuff.com/cli

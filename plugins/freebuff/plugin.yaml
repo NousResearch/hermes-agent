@@ -1,0 +1,15 @@
+name: freebuff
+version: 0.2.0
+description: "Freebuff TUI + Hermes AI via local OpenAI proxy (freebuff2api)."
+author: zapabob
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+provides_tools:
+  - freebuff_status
+  - freebuff_doctor
+  - freebuff_launch
+provides_cli:
+  - freebuff

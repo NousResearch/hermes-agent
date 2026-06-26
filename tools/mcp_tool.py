@@ -4781,16 +4781,23 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
     ]
 
 
-def _normalize_name_filter(value: Any, label: str) -> set[str]:
-    """Normalize include/exclude config to a set of tool names."""
+def _normalize_name_filter(value: Any, label: str) -> Optional[frozenset]:
+    """Normalize include/exclude config to a frozenset of tool names.
+
+    Returns ``None`` when the config key is absent/null or malformed (i.e.
+    "no filter" — honour the backward-compatible default). Returns a
+    (possibly empty) ``frozenset`` when the key is explicitly present, so
+    callers can distinguish ``include: []`` ("block everything") from
+    ``include: null`` / missing key ("no filter, register all").
+    """
     if value is None:
-        return set()
+        return None
     if isinstance(value, str):
-        return {value}
+        return frozenset([value])
     if isinstance(value, (list, tuple, set)):
-        return {str(item) for item in value}
+        return frozenset(str(item) for item in value)
     logger.warning("MCP config %s must be a string or list of strings; ignoring %r", label, value)
-    return set()
+    return None
 
 
 def _parse_boolish(value: Any, default: bool = True) -> bool:
@@ -4966,9 +4973,12 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     exclude_set = _normalize_name_filter(tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude")
 
     def _should_register(tool_name: str) -> bool:
-        if include_set:
+        # ``include_set is not None`` (even when empty) means an explicit
+        # include filter was configured — an empty ``include: []`` blocks
+        # every tool rather than falling through to "register all".
+        if include_set is not None:
             return tool_name in include_set
-        if exclude_set:
+        if exclude_set is not None:
             return tool_name not in exclude_set
         return True
 

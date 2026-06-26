@@ -355,6 +355,10 @@ class WeComAdapter(BasePlatformAdapter):
                     await self._open_connection()
                     backoff_idx = 0
                     self._mark_connected()
+                    # Clear stale req_id caches tied to the old WebSocket
+                    # session so replies don't reuse invalidated req_ids.
+                    self._reply_req_ids.clear()
+                    self._last_chat_req_ids.clear()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
@@ -1379,7 +1383,32 @@ class WeComAdapter(BasePlatformAdapter):
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id:
-                response = await self._send_reply_markdown(reply_req_id, content)
+                try:
+                    response = await self._send_reply_markdown(
+                        reply_req_id, content
+                    )
+                except RuntimeError as reply_exc:
+                    # errcode 846605 means the req_id is stale (WebSocket
+                    # session changed).  Fall back to proactive send which
+                    # does not require a bound req_id.
+                    if "846605" in str(reply_exc):
+                        logger.info(
+                            "[%s] req_id stale (846605), falling back to %s",
+                            self.name,
+                            APP_CMD_SEND,
+                        )
+                        response = await self._send_request(
+                            APP_CMD_SEND,
+                            {
+                                "chatid": chat_id,
+                                "msgtype": "markdown",
+                                "markdown": {
+                                    "content": content[:self.MAX_MESSAGE_LENGTH]
+                                },
+                            },
+                        )
+                    else:
+                        raise
             else:
                 response = await self._send_request(
                     APP_CMD_SEND,

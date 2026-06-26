@@ -539,6 +539,26 @@ class AtlasMemoryProvider(MemoryProvider):
         resp.raise_for_status()
         return resp.json()
 
+    def _today(self) -> dict:
+        """GET /v1/today — the Atlas "cockpit" (army-of-one ask_routes:get_today).
+
+        Returns the parsed JSON verbatim: ``upcoming_meetings`` (today-onward
+        CalendarEvents) and ``overdue_emails`` (most-recent EmailMessages),
+        each a list of TimelineEntry dicts ``{iri, kind, canonical_name,
+        event_time, summary}`` straight from the graph (SPARQL, no LLM cost).
+        Reuses the existing ATLAS_BASE_URL + bearer client surface; no new
+        Atlas endpoint is introduced. Raises on HTTP error — the /daily
+        fetcher catches and degrades the calendar/inbox sections.
+        """
+        import httpx
+        url = f"{self._base_url.rstrip('/')}/v1/today"
+        resp = httpx.get(
+            url, headers=self._headers(), timeout=_READ_TIMEOUT_SECS + 3.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
     @staticmethod
     def _format_ingest_status(stats: dict) -> str:
         """Render /v1/stats into a one-paragraph human summary of what's ingested."""

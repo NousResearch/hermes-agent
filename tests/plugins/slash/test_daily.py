@@ -75,22 +75,134 @@ def _make_atlas_ask(responses: dict[str, dict]):
     return _ask
 
 
-async def _stub_calendar_ok() -> SourceResult:
-    return SourceResult(
-        key="calendar",
-        status="ok",
-        items=("9am Anthropic intro call",),
-        citations=("https://calendar.google.com/event/abc",),
-    )
+def _make_today_fetch(payload: dict):
+    """Build a fake ``today_fetcher`` returning a fixed /v1/today payload."""
+
+    async def _fetch() -> dict:
+        return payload
+
+    return _fetch
 
 
-async def _stub_inbox_ok() -> SourceResult:
-    return SourceResult(
-        key="inbox",
-        status="ok",
-        items=("Sarah replied re: term sheet (unread)",),
-        citations=("https://mail.google.com/mail/u/0/#inbox/xyz",),
+# A /v1/today payload with one meeting + one email (both derive to ``ok``).
+_TODAY_OK = {
+    "upcoming_meetings": [
+        {
+            "iri": "https://atlas/event/abc",
+            "kind": "calendar_event",
+            "canonical_name": "Anthropic intro call",
+            "event_time": "2026-06-26T09:00:00+00:00",
+            "summary": None,
+        }
+    ],
+    "overdue_emails": [
+        {
+            "iri": "https://atlas/email/xyz",
+            "kind": "email",
+            "canonical_name": "Sarah replied re: term sheet",
+            "event_time": "2026-06-26T08:00:00+00:00",
+            "summary": None,
+        }
+    ],
+    "pending_drafts": [],
+    "agent_runs": [],
+}
+
+
+def _today_ok():
+    return _make_today_fetch(_TODAY_OK)
+
+
+# ---------------------------------------------------------------------------
+# /v1/today derivation (calendar + inbox)
+# ---------------------------------------------------------------------------
+
+
+def _today_payload(meetings=None, emails=None, **extra) -> dict:
+    payload = {
+        "upcoming_meetings": meetings or [],
+        "overdue_emails": emails or [],
+        "pending_drafts": [],
+        "agent_runs": [],
+    }
+    payload.update(extra)
+    return payload
+
+
+def _entry(name: str, iri: str, event_time: str | None = None) -> dict:
+    return {
+        "iri": iri,
+        "kind": "calendar_event",
+        "canonical_name": name,
+        "event_time": event_time,
+        "summary": None,
+    }
+
+
+def test_calendar_from_today_maps_meetings_with_time_and_citation():
+    payload = _today_payload(
+        meetings=[
+            _entry("Anthropic intro call", "https://atlas/event/abc", "2026-06-26T10:00:00+00:00"),
+        ]
     )
+    sr = daily_mod._calendar_from_today(payload)
+    assert sr.key == "calendar"
+    assert sr.status == "ok"
+    assert len(sr.items) == 1
+    # The bullet must name the meeting and surface its start time (HH:MM).
+    assert "Anthropic intro call" in sr.items[0]
+    assert "10:00" in sr.items[0]
+    assert sr.citations == ("https://atlas/event/abc",)
+
+
+def test_calendar_from_today_untimed_event_falls_back_to_name_only():
+    payload = _today_payload(meetings=[_entry("All-day offsite", "https://atlas/event/d", None)])
+    sr = daily_mod._calendar_from_today(payload)
+    assert sr.status == "ok"
+    assert sr.items[0] == "All-day offsite"
+
+
+def test_calendar_from_today_caps_at_five():
+    payload = _today_payload(
+        meetings=[_entry(f"Meeting {i}", f"https://atlas/event/{i}") for i in range(8)]
+    )
+    sr = daily_mod._calendar_from_today(payload)
+    assert len(sr.items) == 5
+    assert len(sr.citations) == 5
+
+
+def test_calendar_from_today_empty_when_no_meetings():
+    sr = daily_mod._calendar_from_today(_today_payload())
+    assert sr.status == "empty"
+    assert sr.items == ()
+
+
+def test_calendar_from_today_error_passthrough():
+    sr = daily_mod._calendar_from_today({"error": "Atlas temporarily unavailable"})
+    assert sr.status == "error"
+    assert "Atlas temporarily unavailable" in sr.error
+
+
+def test_inbox_from_today_maps_emails_with_citation():
+    payload = _today_payload(
+        emails=[_entry("Re: term sheet", "https://atlas/email/xyz", "2026-06-26T08:30:00+00:00")]
+    )
+    sr = daily_mod._inbox_from_today(payload)
+    assert sr.key == "inbox"
+    assert sr.status == "ok"
+    assert sr.items[0] == "Re: term sheet"
+    assert sr.citations == ("https://atlas/email/xyz",)
+
+
+def test_inbox_from_today_empty_when_no_emails():
+    sr = daily_mod._inbox_from_today(_today_payload())
+    assert sr.status == "empty"
+
+
+def test_inbox_from_today_error_passthrough():
+    sr = daily_mod._inbox_from_today({"error": "breaker open"})
+    assert sr.status == "error"
+    assert "breaker open" in sr.error
 
 
 # ---------------------------------------------------------------------------
@@ -277,8 +389,7 @@ def test_gather_brief_all_sources_present():
     bundle = asyncio.run(
         daily_mod._gather_brief(
             atlas_ask=atlas_ask,
-            calendar_fetcher=_stub_calendar_ok,
-            inbox_fetcher=_stub_inbox_ok,
+            today_fetcher=_today_ok(),
             orchestrator_base_url="https://orch.example",
             httpx_module=fake_httpx,
         )
@@ -293,6 +404,38 @@ def test_gather_brief_all_sources_present():
     assert bundle.atlas_all_empty is False
 
 
+def test_gather_brief_today_timeout_marks_both_calendar_and_inbox():
+    """A slow /v1/today must degrade BOTH calendar and inbox to timeout."""
+
+    async def _slow_today() -> dict:
+        await asyncio.sleep(60)
+        return _TODAY_OK
+
+    bundle = asyncio.run(
+        daily_mod._gather_brief(
+            atlas_ask=_make_atlas_ask({}),
+            today_fetcher=_slow_today,
+            orchestrator_base_url="",
+        )
+    )
+    assert bundle.calendar.status == "timeout"
+    assert bundle.inbox.status == "timeout"
+
+
+def test_gather_brief_today_error_propagates_to_both_sections():
+    """An Atlas breaker-open ({"error": ...}) surfaces in calendar AND inbox."""
+    bundle = asyncio.run(
+        daily_mod._gather_brief(
+            atlas_ask=_make_atlas_ask({}),
+            today_fetcher=_make_today_fetch({"error": "Atlas temporarily unavailable"}),
+            orchestrator_base_url="",
+        )
+    )
+    assert bundle.calendar.status == "error"
+    assert bundle.inbox.status == "error"
+    assert "unavailable" in bundle.calendar.error
+
+
 def test_partial_failure_atlas_timeout_does_not_kill_other_sources():
     """AC3 — partial-failure path: one slow source doesn't starve the brief."""
 
@@ -304,8 +447,7 @@ def test_partial_failure_atlas_timeout_does_not_kill_other_sources():
     bundle = asyncio.run(
         daily_mod._gather_brief(
             atlas_ask=_slow_ask,
-            calendar_fetcher=_stub_calendar_ok,
-            inbox_fetcher=_stub_inbox_ok,
+            today_fetcher=_today_ok(),
             orchestrator_base_url="",
         )
     )
@@ -328,19 +470,14 @@ def test_fanout_budget_caps_total_wall_clock(monkeypatch):
         await asyncio.sleep(60)
         return {}
 
-    async def _hang_cal():
+    async def _hang_today():
         await asyncio.sleep(60)
-        return SourceResult(key="calendar", status="ok")
-
-    async def _hang_inbox():
-        await asyncio.sleep(60)
-        return SourceResult(key="inbox", status="ok")
+        return _TODAY_OK
 
     bundle = asyncio.run(
         daily_mod._gather_brief(
             atlas_ask=_hang_ask,
-            calendar_fetcher=_hang_cal,
-            inbox_fetcher=_hang_inbox,
+            today_fetcher=_hang_today,
             orchestrator_base_url="",
         )
     )
@@ -500,8 +637,7 @@ def test_build_daily_brief_end_to_end_json_shape():
     })
     cfg = DailyHandlerConfig(
         atlas_ask=atlas_ask,
-        calendar_fetcher=_stub_calendar_ok,
-        inbox_fetcher=_stub_inbox_ok,
+        today_fetcher=_today_ok(),
         orchestrator_base_url="",
     )
     payload = asyncio.run(build_daily_brief(cfg))

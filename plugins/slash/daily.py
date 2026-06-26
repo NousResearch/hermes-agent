@@ -4,15 +4,17 @@ Fans out in parallel to five sources and synthesizes a 3-bullet brief
 in Slack block-kit shape. Sources (all via ``asyncio.gather`` with a
 10s wall-clock budget):
 
-1. **Calendar** — today's events from the Google Calendar MCP. The
-   MCPGateway plumbing isn't wired yet (Plan 008 is "Not Started" as of
-   2026-05-31), so the Calendar fetcher is a stub returning ``[]`` with
-   a ``TODO 008`` marker. The fan-out shape and timeout / degradation
-   behavior are real, so the moment 008 lands the real fetcher drops
-   in without touching the synthesizer or the block-kit builder.
+1. **Calendar** — today-onward events, derived from the Atlas
+   ``GET /v1/today`` cockpit (``upcoming_meetings``). There is no live
+   Google path in the deployed runtime (Plan 008's MCPGateway is a stub,
+   no Google creds in Fargate), but Phase 1 ingests Calendar into the
+   Atlas graph, so the brief reads them back via one SPARQL-backed
+   round-trip — no LLM cost.
 
-2. **Inbox** — top unread/starred Gmail threads in the last 24h. Same
-   MCPGateway dependency, same stubbing strategy.
+2. **Inbox** — most-recent email threads, derived from the SAME
+   ``GET /v1/today`` payload (``overdue_emails``). Calendar + inbox share
+   one fetch; the two ``_*_from_today`` derivers split it into two
+   ``SourceResult``s.
 
 3. **Atlas open commitments** — ``atlas_ask`` with
    ``intent_hint="commitment_audit"``. Goes through the existing
@@ -146,35 +148,150 @@ class BriefBundle:
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_calendar_stub() -> SourceResult:
-    """Calendar fan-out — stubbed until Plan 008 MCPGateway lands.
+# ---------------------------------------------------------------------------
+# Calendar + Inbox via the Atlas /v1/today cockpit
+# ---------------------------------------------------------------------------
+#
+# There is NO live-Google path in the deployed Hermes runtime (Plan 008's
+# MCPGateway is a stub, no Google credentials in Fargate). But Phase 1 now
+# ingests Gmail + Calendar bodies into the Atlas graph, and Atlas exposes a
+# purpose-built cockpit endpoint — ``GET /v1/today`` (army-of-one
+# ask_routes:get_today) — that returns ``upcoming_meetings`` (today-onward
+# CalendarEvents) and ``overdue_emails`` (most-recent EmailMessages) straight
+# from the graph via SPARQL (no LLM cost). So calendar + inbox are derived
+# from ONE round-trip to that endpoint, not from a separate live data source.
+#
+# Each list item is a TimelineEntry: {iri, kind, canonical_name, event_time,
+# summary}. The two pure ``_*_from_today`` functions turn one payload into the
+# two SourceResults; ``_default_today_fetch`` is the wired source.
 
-    TODO(008): wire to ``mcp__plugin_blake-ops_google-workspace__calendar_listEvents``
-    via the MCPGateway connection pool. For now we return an explicit
-    "empty (stubbed)" status so the brief honestly shows the gap.
+
+def _short_when(event_time: Optional[str]) -> str:
+    """Render an ISO-8601 ``event_time`` as a compact ``HH:MM`` for the bullet.
+
+    Returns ``""`` if the value is missing or unparseable, so an untimed /
+    all-day event degrades to name-only rather than showing a bogus time.
     """
-    return SourceResult(
-        key="calendar",
-        status="empty",
-        items=(),
-        citations=(),
-        error="MCPGateway not wired (Plan 008 pending)",
-    )
+    if not event_time:
+        return ""
+    raw = str(event_time).strip()
+    try:
+        from datetime import datetime
+
+        # Normalise a trailing Z to an explicit offset for fromisoformat.
+        normalised = raw.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalised)
+        return dt.strftime("%H:%M")
+    except (ValueError, TypeError):
+        return ""
 
 
-async def _fetch_inbox_stub() -> SourceResult:
-    """Inbox fan-out — stubbed until Plan 008 MCPGateway lands.
+def _entries_to_items(
+    entries: list, *, with_time: bool
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Map a list of TimelineEntry dicts to (items, citations), capped at 5."""
+    items: list[str] = []
+    citations: list[str] = []
+    for e in entries[:5]:
+        if not isinstance(e, dict):
+            continue
+        name = str(e.get("canonical_name") or "").strip()
+        if not name:
+            continue
+        if with_time:
+            when = _short_when(e.get("event_time"))
+            items.append(f"{when} — {name}" if when else name)
+        else:
+            items.append(name)
+        iri = str(e.get("iri") or "").strip()
+        if iri:
+            citations.append(iri)
+    return tuple(items), tuple(citations)
 
-    TODO(008): wire to ``mcp__plugin_blake-ops_google-workspace__gmail_search``
-    with ``q="(is:unread OR is:starred) newer_than:1d"`` and limit 10.
+
+def _calendar_from_today(payload: dict) -> SourceResult:
+    """Derive the calendar SourceResult from a ``/v1/today`` payload."""
+    if not isinstance(payload, dict):
+        return SourceResult(key="calendar", status="error", error="non-dict today response")
+    if payload.get("error"):
+        return SourceResult(key="calendar", status="error", error=str(payload["error"]))
+    meetings = payload.get("upcoming_meetings") or []
+    items, citations = _entries_to_items(meetings, with_time=True)
+    status = "ok" if items else "empty"
+    return SourceResult(key="calendar", status=status, items=items, citations=citations)
+
+
+def _inbox_from_today(payload: dict) -> SourceResult:
+    """Derive the inbox SourceResult from a ``/v1/today`` payload."""
+    if not isinstance(payload, dict):
+        return SourceResult(key="inbox", status="error", error="non-dict today response")
+    if payload.get("error"):
+        return SourceResult(key="inbox", status="error", error=str(payload["error"]))
+    emails = payload.get("overdue_emails") or []
+    items, citations = _entries_to_items(emails, with_time=False)
+    status = "ok" if items else "empty"
+    return SourceResult(key="inbox", status=status, items=items, citations=citations)
+
+
+def _derive_calendar_inbox(
+    today_task: "asyncio.Task[dict]",
+) -> tuple[SourceResult, SourceResult]:
+    """Map the bounded ``/v1/today`` task into (calendar, inbox) results.
+
+    A cancelled task (fan-out budget exceeded) or a ``_status`` sentinel
+    (per-source timeout / transport error from ``_bounded_today``) degrades
+    BOTH sections identically — they share the one round-trip. Otherwise the
+    pure ``_*_from_today`` derivers run (which themselves handle the
+    breaker-open ``{"error": ...}`` payload and the normal case).
     """
-    return SourceResult(
-        key="inbox",
-        status="empty",
-        items=(),
-        citations=(),
-        error="MCPGateway not wired (Plan 008 pending)",
-    )
+    if today_task.cancelled():
+        ts = SourceResult(key="calendar", status="timeout", error="fan-out budget exceeded")
+        return ts, SourceResult(key="inbox", status="timeout", error="fan-out budget exceeded")
+    try:
+        payload = today_task.result()
+    except Exception as exc:  # noqa: BLE001
+        err = f"{type(exc).__name__}: {exc}"
+        return (
+            SourceResult(key="calendar", status="error", error=err),
+            SourceResult(key="inbox", status="error", error=err),
+        )
+    sentinel = payload.get("_status") if isinstance(payload, dict) else None
+    if sentinel in ("timeout", "error"):
+        err = str(payload.get("error") or sentinel)
+        return (
+            SourceResult(key="calendar", status=sentinel, error=err),
+            SourceResult(key="inbox", status=sentinel, error=err),
+        )
+    return _calendar_from_today(payload), _inbox_from_today(payload)
+
+
+async def _default_today_fetch() -> dict:
+    """Fetch ``GET /v1/today`` through the in-process Atlas memory provider.
+
+    Mirrors ``_default_atlas_ask``: the provider's ``_today`` is a synchronous
+    httpx call, so we offload to a thread to keep the fan-out parallel. If the
+    provider isn't loaded / Atlas is disabled, we return an empty payload so
+    calendar + inbox degrade to "empty" rather than erroring. A breaker-open /
+    transport failure surfaces as ``{"error": ...}`` so the sections honestly
+    show the degradation.
+    """
+    try:
+        from plugins.memory.atlas import AtlasMemoryProvider  # type: ignore
+    except Exception as exc:
+        logger.info("[daily] atlas memory provider unavailable: %s", exc)
+        return {}
+
+    provider = AtlasMemoryProvider()
+    if not provider.is_available():
+        return {}
+
+    def _call() -> dict:
+        try:
+            return provider._today()
+        except Exception as exc:  # noqa: BLE001 - degrade, don't crash the brief
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    return await asyncio.to_thread(_call)
 
 
 def _summarize_atlas_response(payload: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -347,22 +464,23 @@ async def _default_atlas_ask(question: str, intent_hint: str) -> dict:
 async def _gather_brief(
     *,
     atlas_ask: Callable[[str, str], Awaitable[dict]] | None = None,
-    calendar_fetcher: Callable[[], Awaitable[SourceResult]] | None = None,
-    inbox_fetcher: Callable[[], Awaitable[SourceResult]] | None = None,
+    today_fetcher: Callable[[], Awaitable[dict]] | None = None,
     orchestrator_base_url: str | None = None,
     httpx_module: Any = None,
 ) -> BriefBundle:
-    """Run all six fan-outs in parallel with a shared 10s budget.
+    """Run all fan-outs in parallel with a shared 10s budget.
 
-    Each task is wrapped in ``asyncio.wait_for(PER_SOURCE_TIMEOUT_SECS)``
+    Calendar + inbox share a single ``/v1/today`` round-trip (the
+    ``today`` task): one fetch, two derived ``SourceResult``s. The three
+    Atlas ``ask`` streams and the orchestrator status run as their own
+    tasks. Each task is wrapped in ``asyncio.wait_for(PER_SOURCE_TIMEOUT_SECS)``
     so a single slow source can't starve the others, and the outer
-    ``asyncio.wait`` honours the overall ``FANOUT_BUDGET_SECS``. Any
+    ``asyncio.wait_for`` honours the overall ``FANOUT_BUDGET_SECS``. Any
     task still pending at budget expiry is cancelled and marked
-    ``timeout``.
+    ``timeout`` — for ``today`` that degrades BOTH calendar and inbox.
     """
     atlas_ask = atlas_ask or _default_atlas_ask
-    calendar_fetcher = calendar_fetcher or _fetch_calendar_stub
-    inbox_fetcher = inbox_fetcher or _fetch_inbox_stub
+    today_fetcher = today_fetcher or _default_today_fetch
     if orchestrator_base_url is None:
         orchestrator_base_url = os.getenv("ORCHESTRATOR_BASE_URL", "")
 
@@ -376,9 +494,21 @@ async def _gather_brief(
         except Exception as exc:
             return SourceResult(key=key, status="error", error=f"{type(exc).__name__}: {exc}")
 
+    async def _bounded_today() -> dict:
+        """The /v1/today fetch as a dict-returning bounded task.
+
+        Returns a sentinel ``{"_status": ...}`` on timeout/error so the
+        calendar/inbox derivation can map it to per-section status.
+        """
+        try:
+            return await asyncio.wait_for(today_fetcher(), timeout=PER_SOURCE_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
+            return {"_status": "timeout", "error": "per-source timeout"}
+        except Exception as exc:
+            return {"_status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    today_task = asyncio.create_task(_bounded_today())
     tasks: dict[str, asyncio.Task[SourceResult]] = {
-        "calendar": asyncio.create_task(_bounded(calendar_fetcher(), "calendar")),
-        "inbox": asyncio.create_task(_bounded(inbox_fetcher(), "inbox")),
         "orchestrator": asyncio.create_task(
             _bounded(
                 _fetch_orchestrator_status(orchestrator_base_url, httpx_module=httpx_module),
@@ -391,19 +521,23 @@ async def _gather_brief(
             _bounded(_fetch_atlas(key, question, hint, atlas_ask=atlas_ask), key)
         )
 
+    all_tasks = [today_task, *tasks.values()]
     try:
         await asyncio.wait_for(
-            asyncio.gather(*tasks.values(), return_exceptions=True),
+            asyncio.gather(*all_tasks, return_exceptions=True),
             timeout=FANOUT_BUDGET_SECS,
         )
     except asyncio.TimeoutError:
         # Budget exceeded — cancel anything still pending. Each task
         # cancelled this way will surface as ``timeout`` below.
-        for t in tasks.values():
+        for t in all_tasks:
             if not t.done():
                 t.cancel()
         # Drain cancellations so the event loop isn't holding refs.
-        await asyncio.gather(*tasks.values(), return_exceptions=True)
+        await asyncio.gather(*all_tasks, return_exceptions=True)
+
+    # Derive calendar + inbox from the single /v1/today result.
+    calendar, inbox = _derive_calendar_inbox(today_task)
 
     results: dict[str, SourceResult] = {}
     for key, task in tasks.items():
@@ -417,8 +551,8 @@ async def _gather_brief(
 
     elapsed = time.monotonic() - start
     return BriefBundle(
-        calendar=results.get("calendar", SourceResult(key="calendar", status="error", error="missing")),
-        inbox=results.get("inbox", SourceResult(key="inbox", status="error", error="missing")),
+        calendar=calendar,
+        inbox=inbox,
         commitments=results.get("commitments", SourceResult(key="commitments", status="error", error="missing")),
         contradictions=results.get("contradictions", SourceResult(key="contradictions", status="error", error="missing")),
         contacts_overdue=results.get("contacts_overdue", SourceResult(key="contacts_overdue", status="error", error="missing")),
@@ -638,8 +772,7 @@ class DailyHandlerConfig:
     """
 
     atlas_ask: Optional[Callable[[str, str], Awaitable[dict]]] = None
-    calendar_fetcher: Optional[Callable[[], Awaitable[SourceResult]]] = None
-    inbox_fetcher: Optional[Callable[[], Awaitable[SourceResult]]] = None
+    today_fetcher: Optional[Callable[[], Awaitable[dict]]] = None
     orchestrator_base_url: Optional[str] = None
     httpx_module: Any = None
 
@@ -653,8 +786,7 @@ async def build_daily_brief(config: Optional[DailyHandlerConfig] = None) -> dict
     cfg = config or DailyHandlerConfig()
     bundle = await _gather_brief(
         atlas_ask=cfg.atlas_ask,
-        calendar_fetcher=cfg.calendar_fetcher,
-        inbox_fetcher=cfg.inbox_fetcher,
+        today_fetcher=cfg.today_fetcher,
         orchestrator_base_url=cfg.orchestrator_base_url,
         httpx_module=cfg.httpx_module,
     )

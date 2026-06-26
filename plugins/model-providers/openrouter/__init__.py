@@ -155,7 +155,14 @@ class OpenRouterProfile(ProviderProfile):
                 if cfg.get("enabled", True) is not False and effort and effort != "none":
                     top_level["verbosity"] = effort
             elif reasoning_config is not None:
-                extra_body["reasoning"] = dict(reasoning_config)
+                # Non-Anthropic model: degrade Anthropic-only `max` to the
+                # OpenAI/xAI ceiling so a global `max` doesn't 400 here. Only
+                # the effort field is touched; all other keys pass through.
+                from agent.model_metadata import clamp_effort_for_openai_compat
+                rc = dict(reasoning_config)
+                if rc.get("effort") is not None:
+                    rc["effort"] = clamp_effort_for_openai_compat(rc.get("effort"))
+                extra_body["reasoning"] = rc
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 

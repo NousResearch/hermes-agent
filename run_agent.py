@@ -4986,6 +4986,11 @@ class AIAgent:
         else:
             requested_effort = "medium"
 
+        if requested_effort == "max":
+            # Anthropic-only `max` -> `xhigh`, which then degrades to the
+            # model's real ceiling via the steps below (no GitHub model
+            # currently exposes `xhigh`, so this lands on `high`, not `medium`).
+            requested_effort = "xhigh"
         if requested_effort == "xhigh" and "high" in supported_efforts:
             requested_effort = "high"
         elif requested_effort not in supported_efforts:

@@ -13,12 +13,13 @@ from __future__ import annotations
 from typing import List, Optional
 
 # LM Studio accepts these top-level reasoning_effort values via its
-# OpenAI-compatible chat.completions endpoint.
+# OpenAI-compatible chat.completions endpoint. `max` is clamped to `xhigh`
+# (Anthropic-only) before checking model-level allowed_options.
 _LM_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 
 # Toggle-style models publish allowed_options as ["off","on"] in /api/v1/models.
 # Map them onto the OpenAI-compatible request vocabulary.
-_LM_EFFORT_ALIASES = {"off": "none", "on": "medium"}
+_LM_EFFORT_ALIASES = {"off": "none", "on": "medium", "max": "xhigh"}
 
 
 def resolve_lmstudio_effort(

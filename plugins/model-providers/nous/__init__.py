@@ -30,6 +30,12 @@ class NousProfile(ProviderProfile):
                 if rc.get("enabled") is False:
                     pass  # Nous omits reasoning when disabled
                 else:
+                    # Degrade Anthropic-only `max` to the non-Anthropic ceiling.
+                    # Nous Portal serves Nous's own (non-Anthropic) models, so
+                    # `max` always degrades here; model passed for guard symmetry.
+                    from agent.model_metadata import clamp_effort_for_openai_compat
+                    if rc.get("effort") is not None:
+                        rc["effort"] = clamp_effort_for_openai_compat(rc.get("effort"))
                     extra_body["reasoning"] = rc
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}

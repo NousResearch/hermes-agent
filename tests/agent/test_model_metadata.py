@@ -29,6 +29,7 @@ from agent.model_metadata import (
     save_context_length,
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
+    clamp_effort_for_openai_compat,
 )
 
 
@@ -1524,3 +1525,17 @@ class TestGrok43StaleCacheGuard:
                 slug, base_url=base, api_key="", provider="xai"
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
+
+
+# =========================================================================
+# Reasoning-effort ceiling clamp (LOCAL PATCH: provider-safe `max`)
+# =========================================================================
+
+class TestClampEffortForOpenAICompat:
+    """`max` is Anthropic-only; non-Anthropic emitters degrade to `xhigh`."""
+
+    def test_clamp(self):
+        assert clamp_effort_for_openai_compat("max") == "xhigh"
+        assert clamp_effort_for_openai_compat("xhigh") == "xhigh"
+        assert clamp_effort_for_openai_compat("high") == "high"
+        assert clamp_effort_for_openai_compat(None) is None

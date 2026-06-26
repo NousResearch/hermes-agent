@@ -194,6 +194,30 @@ class TestOpenRouterParity:
         )
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
+    def test_max_effort_clamped_for_non_anthropic(self, transport):
+        """LOCAL PATCH: `max` degrades to `xhigh` for non-Anthropic OpenRouter."""
+        kw = transport.build_kwargs(
+            model="deepseek/deepseek-chat",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("openrouter"),
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "xhigh"}
+
+    def test_non_max_effort_passes_through_unchanged(self, transport):
+        """LOCAL PATCH: only `max` is touched; `high` passes through."""
+        kw = transport.build_kwargs(
+            model="deepseek/deepseek-chat",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("openrouter"),
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "high"}
+
 
 class TestNousParity:
     """Nous: product tags, reasoning, omit when disabled."""

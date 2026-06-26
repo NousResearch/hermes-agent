@@ -357,6 +357,22 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+# ── Reasoning-effort ceiling normalization ───────────────────────────────
+# ``max`` is the TOP of Anthropic's adaptive-thinking ladder
+# (low<medium<high<xhigh<max) and is Anthropic-only. OpenAI Responses and
+# xAI Grok reject it with HTTP 400 (OpenAI verified live 2026-06-21:
+# "Invalid value: 'max'. Supported: none,minimal,low,medium,high,xhigh";
+# xAI rejection inferred from the same OpenAI-compat effort vocabulary, not
+# yet live-probed). A single global ``agent.reasoning_effort: max`` must stay
+# model-agnostic, so NON-Anthropic emitters route the resolved effort through
+# this helper, which degrades ``max`` to the OpenAI/xAI ceiling ``xhigh``.
+#
+# `max` is Anthropic-only; non-Anthropic emitters degrade to `xhigh`.
+def clamp_effort_for_openai_compat(effort: str | None) -> str | None:
+    """Degrade ``max`` → ``xhigh`` for non-Anthropic emit sites."""
+    return "xhigh" if effort == "max" else effort
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",

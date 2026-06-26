@@ -164,6 +164,10 @@ class ResponsesApiTransport(ProviderTransport):
 
         _effort_clamp = {"minimal": "low"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
+        # Anthropic-only `max` -> OpenAI/xAI ceiling `xhigh` (this transport only
+        # ever serves non-Anthropic Responses families: OpenAI codex + xAI Grok).
+        from agent.model_metadata import clamp_effort_for_openai_compat
+        reasoning_effort = clamp_effort_for_openai_compat(reasoning_effort)
 
         response_tools = _responses_tools(tools)
 

@@ -1,0 +1,10 @@
+name: kavenegar
+label: Kavenegar (کاوه‌نگار)
+kind: platform
+version: 1.0.0
+description: Kavenegar (کاوه‌نگار) adapter.
+author: Hermes Core Team
+requires_env:
+  - name: KAVENEGAR_API_KEY\n    description: "KAVENEGAR_API_KEY"\n    prompt: "KAVENEGAR_API_KEY"\n    password: true\n
+optional_env:
+  - name: KAVENEGAR_SENDER\n    description: "KAVENEGAR_SENDER"\n    prompt: "KAVENEGAR_SENDER"\n    password: false\n

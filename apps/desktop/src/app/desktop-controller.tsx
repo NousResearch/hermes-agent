@@ -1191,7 +1191,7 @@ export function DesktopController() {
       }}
       onDismissError={dismissError}
       onEdit={editMessage}
-      onPasteClipboardImage={() => void composer.pasteClipboardImage()}
+      onPasteClipboardImage={opts => composer.pasteClipboardImage(opts)}
       onPickFiles={() => void composer.pickContextPaths('file')}
       onPickFolders={() => void composer.pickContextPaths('folder')}
       onPickImages={() => void composer.pickImages()}

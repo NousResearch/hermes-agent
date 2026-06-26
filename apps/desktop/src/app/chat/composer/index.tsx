@@ -784,6 +784,16 @@ export function ChatBar({
     if (!pastedText) {
       event.preventDefault()
 
+      // Under WSL2/WSLg the Windows host clipboard doesn't bridge *images* to
+      // the Linux clipboard the DOM paste event reads, so a host screenshot
+      // arrives as an empty paste (no blobs, no text). Fall back to the main
+      // process, which pulls the image straight off the Windows clipboard.
+      // Silent so a genuinely-empty paste doesn't pop a "no image" warning.
+      if (onPasteClipboardImage) {
+        triggerHaptic('selection')
+        void onPasteClipboardImage({ silent: true })
+      }
+
       return
     }
 

@@ -165,11 +165,17 @@ class MemGatewayProvider(MemoryProvider):
         if importlib.util.find_spec('mcp') is None:
             return False
         cfg = _load_config()
-        # Cloud mode needs a key; a localhost URL is allowed keyless.
         url = cfg.get('api_url', '')
         if cfg.get('api_key'):
             return True
-        return 'localhost' in url or '127.0.0.1' in url
+        # Keyless mode only for a true loopback *host* — a substring match on
+        # 'localhost' would trust URLs like 'https://localhost@example.com/mcp'
+        # whose hostname is example.com, leaking memory to a non-local endpoint
+        # (Codex PR #30 review). Parse the URL and require an exact loopback host.
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or '').lower()
+        return host in ('localhost', '127.0.0.1', '::1')
 
     def get_config_schema(self):
         return [

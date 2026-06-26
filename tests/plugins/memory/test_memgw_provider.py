@@ -185,3 +185,31 @@ class TestConfig:
         p.save_config({'api_url': 'http://x/mcp', 'prefetch_method': 'reflect'}, str(tmp_path))
         saved = json.loads((tmp_path / 'memgw.json').read_text())
         assert saved['prefetch_method'] == 'reflect'
+
+
+# ── Codex PR #30 review follow-ups ──────────────────────────────────────
+
+
+class TestKeylessLocalModeHostParsing:
+    """#15: keyless mode must require an exact loopback *host*, not a substring."""
+
+    def test_userinfo_with_localhost_is_not_trusted(self, monkeypatch):
+        # 'localhost' appears in userinfo, but the real host is example.com.
+        monkeypatch.setenv('MEMGW_API_URL', 'https://localhost@example.com/mcp')
+        monkeypatch.delenv('MEMGW_API_KEY', raising=False)
+        assert MemGatewayProvider().is_available() is False
+
+    def test_loopback_ipv4_host_available_keyless(self, monkeypatch):
+        monkeypatch.setenv('MEMGW_API_URL', 'http://127.0.0.1:8081/mcp')
+        monkeypatch.delenv('MEMGW_API_KEY', raising=False)
+        assert MemGatewayProvider().is_available() is True
+
+    def test_non_loopback_host_with_localhost_substring_not_trusted(self, monkeypatch):
+        monkeypatch.setenv('MEMGW_API_URL', 'http://localhost.evil.example.com/mcp')
+        monkeypatch.delenv('MEMGW_API_KEY', raising=False)
+        assert MemGatewayProvider().is_available() is False
+
+    def test_ipv6_loopback_available_keyless(self, monkeypatch):
+        monkeypatch.setenv('MEMGW_API_URL', 'http://[::1]:8081/mcp')
+        monkeypatch.delenv('MEMGW_API_KEY', raising=False)
+        assert MemGatewayProvider().is_available() is True

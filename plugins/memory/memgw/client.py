@@ -55,7 +55,15 @@ class MemGatewayClient:
     def _run_sync(self, coro: Any) -> Any:
         loop = self._ensure_loop()
         future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(timeout=self._timeout + 5.0)
+        try:
+            return future.result(timeout=self._timeout + 5.0)
+        except TimeoutError:
+            # Cancel the coroutine so a stalled MCP endpoint doesn't leave a
+            # pending HTTP session running on the shared loop after the caller
+            # has already recorded a failure / opened the breaker (Codex PR
+            # #30 review). cancel() propagates to the underlying asyncio Task.
+            future.cancel()
+            raise
 
     # -- MCP call ------------------------------------------------------------
 

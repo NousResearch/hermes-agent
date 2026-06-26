@@ -2637,31 +2637,25 @@ def run_conversation(
                 ):
                     _retry.orphaned_tool_use_retry_attempted = True
                     try:
-                        # Detect orphaned tool_call IDs from the canonical
-                        # messages list (OpenAI-style: assistant has tool_calls,
-                        # result is role=tool with tool_call_id).
-                        # api_messages at this point is still pre-conversion
-                        # (the Anthropic adapter converts internally), so we
-                        # must detect from canonical messages, not api_messages.
-                        _orphaned_ids: set = set()
-                        for _ci, _cm in enumerate(messages):
-                            if not isinstance(_cm, dict):
-                                continue
-                            if _cm.get("role") != "assistant":
-                                continue
-                            _tcs = _cm.get("tool_calls") or []
-                            if not _tcs:
-                                continue
-                            _tc_ids = {tc.get("id") for tc in _tcs if tc.get("id")}
-                            # Find matching role=tool messages anywhere after
-                            _result_ids = {
-                                m.get("tool_call_id")
-                                for m in messages[_ci + 1:]
-                                if isinstance(m, dict) and m.get("role") == "tool"
-                            }
-                            _orphaned_ids |= (_tc_ids - _result_ids)
+                        # Parse the orphaned tool_use IDs directly from the
+                        # Anthropic error message.  The error looks like:
+                        #   "messages.N: `tool_use` ids were found without
+                        #    `tool_result` blocks immediately after:
+                        #    toolu_xxx, toolu_yyy."
+                        # We cannot rely on detecting orphans from the
+                        # canonical messages (OpenAI-style tool_calls) because
+                        # the pair IS present there — the adjacency breaks
+                        # during Anthropic adapter conversion, e.g. when
+                        # context compaction injects a synthetic user message
+                        # between an assistant tool_use and its tool_result.
+                        import re as _re
+                        _err_str = str(api_error or "")
+                        _orphaned_ids: set = set(
+                            _re.findall(r"toolu_[A-Za-z0-9]+", _err_str)
+                        )
 
-                        # Clean canonical messages
+                        # Remove these IDs from canonical messages so the
+                        # next api_messages rebuild produces valid adjacency.
                         _stripped_canonical = 0
                         if _orphaned_ids:
                             _i = 0

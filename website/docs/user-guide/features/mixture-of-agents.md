@@ -128,12 +128,12 @@ The MoA configuration beats its strongest component (opus-4.8) by ~6 points, con
 
 MoA is built so the **main conversation's prompt cache is never broken**. Selecting a MoA preset is a normal model selection: it does not mutate past context, swap toolsets, or rebuild the system prompt mid-conversation. Your conversation history, system prompt, and tool schema stay byte-stable, so the cached prefix every other model relies on is preserved exactly as it would be for a plain model. Switching to or away from a MoA preset costs the same cache invalidation as any other `/model` switch — no more.
 
-What MoA *does* trade, on purpose, is per-iteration caching on the two internal call types:
+The two internal call types behave differently, and only one of them gives up caching:
 
 - **Reference models** receive a trimmed, deterministic view of the conversation (system prompt and tool transcript stripped — see the loop above). Because that view is a stable function of the stable history, a reference model's own prompt prefix is reusable across iterations. References are short advisory calls with no tools.
 - **The aggregator** is the acting model. Each iteration, the freshly generated reference outputs are appended to the latest user turn as private guidance. That guidance is regenerated every iteration and is non-deterministic, so the aggregator gets reduced prompt-cache reuse from the injection point downward. The stable prefix above the injection still caches normally.
 
-This is the intended cost of Mixture of Agents: you pay extra reference calls plus reduced aggregator-side per-iteration caching in exchange for multiple model perspectives on hard tasks. The cache guarantee that matters — the long-lived conversation prefix shared with the rest of Hermes — is fully intact.
+This is the intended cost of Mixture of Agents: reference models keep their caching, the aggregator gives up some per-iteration reuse, and you pay extra reference calls — in exchange for multiple model perspectives on hard tasks. The cache guarantee that matters — the long-lived conversation prefix shared with the rest of Hermes — is fully intact.
 
 ## Notes
 

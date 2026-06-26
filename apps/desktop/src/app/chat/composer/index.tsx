@@ -63,6 +63,7 @@ import { $statusItemsBySession } from '@/store/composer-status'
 import { notify } from '@/store/notifications'
 import { $previewStatusBySession } from '@/store/preview-status'
 import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
+import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
@@ -229,6 +230,11 @@ export function ChatBar({
   const statusItemsBySession = useStore($statusItemsBySession)
   const previewStatusBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
+  // not interrupt it — there's nothing actively running to stop, and stopping
+  // would discard a question the user may want to come back to. The blocking
+  // prompt owns its own dismissal (Skip, Reject, dialog close).
+  const awaitingInput = useStore($activeSessionAwaitingInput)
   // Pop-out is a shared, persisted state — but secondary windows (the Ctrl+Shift+N
   // tiny window, subagent watch windows) always start docked and can't pop out:
   // a floating composer makes no sense in a single-session side window, and it
@@ -1214,8 +1220,10 @@ export function ChatBar({
         return
       }
 
-      // Otherwise Esc interrupts the running turn (Stop-button parity).
-      if (busy) {
+      // Otherwise Esc interrupts the running turn (Stop-button parity) — unless
+      // the turn is parked waiting on the user, where Esc must not discard the
+      // pending prompt.
+      if (busy && !awaitingInput) {
         event.preventDefault()
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
@@ -1779,7 +1787,10 @@ export function ChatBar({
   const escCancelRef = useRef<(event: globalThis.KeyboardEvent) => void>(() => {})
 
   escCancelRef.current = (event: globalThis.KeyboardEvent) => {
-    if (event.key !== 'Escape' || event.defaultPrevented || !busy) {
+    // `awaitingInput`: the turn is parked on a clarify / approval / sudo / secret
+    // prompt, which owns Esc (or is meant to persist) — never cancel the stream
+    // out from under it.
+    if (event.key !== 'Escape' || event.defaultPrevented || !busy || awaitingInput) {
       return
     }
 

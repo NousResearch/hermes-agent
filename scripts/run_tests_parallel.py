@@ -285,7 +285,11 @@ def _run_one_file(
     # ``FileNotFoundError: ... '/tmp/pytest-of-runner/pytest-17'`` during the
     # ``tmp_path`` fixture setup of an otherwise-unrelated test. Isolating
     # basetemp per subprocess removes the shared-directory race entirely.
-    basetemp = Path(tempfile.mkdtemp(prefix="hermes_pt_"))
+    # NOTE: the prefix deliberately avoids the substring "hermes" — the
+    # conftest.py live-system guard blocks any subprocess whose args mention
+    # hermes/python (e.g. a test rg/grep over its own tmp tree), so a basetemp
+    # path containing "hermes" would trip that guard for tmp_path-using tests.
+    basetemp = Path(tempfile.mkdtemp(prefix="pt_par_"))
     cmd = [
         sys.executable, "-m", "pytest",
         "--basetemp", str(basetemp),

@@ -30,6 +30,7 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
+from agent.zai_prompt_policy import apply_zai_special_prompt
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -1539,6 +1540,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
+        api_messages = apply_zai_special_prompt(agent, api_messages)
         if agent.prefill_messages:
             sys_offset = 1 if effective_system else 0
             for idx, pfm in enumerate(agent.prefill_messages):

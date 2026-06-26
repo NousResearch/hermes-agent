@@ -31,6 +31,8 @@ import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 _GIT_TIMEOUT = 1.5
 _WARM_WORKERS = 8
 
@@ -50,9 +52,20 @@ def run_git(cwd: str, *args: str) -> str:
             ["git", "-C", cwd, *args],
             capture_output=True,
             text=True,
+            # git emits UTF-8 (paths, branch names) on Windows too; without an
+            # explicit codec the reader thread decodes with the locale ANSI page
+            # (e.g. cp950 on zh-Hant Windows) and raises UnicodeDecodeError on a
+            # non-ASCII repo path, spamming gateway-crash _readerthread logs.
+            encoding="utf-8",
+            errors="replace",
             timeout=_GIT_TIMEOUT,
             check=False,
             stdin=subprocess.DEVNULL,
+            # CREATE_NO_WINDOW on Windows: the gateway/dashboard runs windowless
+            # (pythonw), so each bare git spawn would otherwise allocate a fresh
+            # console window. The Projects-tree scan runs several git commands
+            # per repo, flashing dozens of console/Windows Terminal windows.
+            creationflags=windows_hide_flags(),
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:

@@ -10,6 +10,11 @@ The platform provides two subscription plans:
 
 Both plans share the same Anthropic-compatible /api/coding endpoint.
 
+Prompt caching: Ark's /api/coding endpoint supports Anthropic-style
+cache_control markers (documented in the official plan overview).
+Hermes enables caching for Ark providers and hosts automatically
+via anthropic_prompt_cache_policy().
+
 IMPORTANT — model list maintenance:
   Ark's /models endpoint returns 124+ stale model IDs from the full
   platform catalog, not the user's actual subscription. This provider

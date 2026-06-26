@@ -54,9 +54,11 @@ Both plans use the same endpoints:
 
 | Endpoint | Protocol | Extra Cost | Prompt Caching | Recommended |
 |----------|----------|:----------:|:--------------:|:-----------:|
-| `https://ark.cn-beijing.volces.com/api/coding` | Anthropic Messages | ❌ No | ✅ Yes | ✅ **USE THIS** |
+| `https://ark.cn-beijing.volces.com/api/coding` | Anthropic Messages | ❌ No | ✅ Yes (verified) | ✅ **USE THIS** |
 | `https://ark.cn-beijing.volces.com/api/coding/v3` | OpenAI Chat | ❌ No | ❌ No | OK (no cache) |
 | `https://ark.cn-beijing.volces.com/api/v3` | Responses API | ⚠️ **YES** | N/A | ❌ **NEVER USE** |
+
+> **Prompt caching confirmed**: Ark's Anthropic endpoint honors `cache_control` markers. Hermes automatically enables caching for Ark when detected via provider name (`volcengine-ark`, `ark`, `volcengine`) or hostname (`ark.cn-beijing.volces.com`). The system prompt and last 3 messages are cached with 5-minute TTL, reducing input costs by ~75% on multi-turn conversations. Without caching, the full system prompt (including tool definitions and skills) is re-billed on every turn.
 
 ### Why `/api/coding` (Anthropic) is the Best Choice
 
@@ -213,3 +215,4 @@ custom_providers:
 | Account flagged / banned | Using Coding Plan outside coding tools | Switch to Agent Plan |
 | `max_tokens` 400 error on OpenAI endpoint | Server ceiling < 65536 (e.g., 32768 for kimi-k2.7) | Use `anthropic_messages` protocol instead |
 | User-Agent 400 error on OpenAI endpoint | Ark blocks default OpenAI SDK UA | Use `anthropic_messages` protocol instead |
+| Quota drains too fast, `cache_read_input_tokens: 0` | Provider not in caching whitelist | Ensure provider name is `volcengine-ark` or host is `ark.cn-beijing.volces.com` — Hermes auto-enables caching for these |

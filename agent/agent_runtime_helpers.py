@@ -1335,6 +1335,23 @@ def anthropic_prompt_cache_policy(
         if is_minimax_provider or is_minimax_host:
             return True, True
 
+    # Volcengine Ark (火山引擎): Anthropic-compatible /api/coding endpoint
+    # with documented prompt caching support.  The Ark docs explicitly state
+    # caching reduces costs on the Anthropic endpoint — the /api/coding
+    # path is the recommended route specifically *because* it has caching.
+    # Without cache_control markers, every turn re-bills the full system
+    # prompt + history, burning through the subscription quota rapidly.
+    # https://www.volcengine.com/docs/82379/2366394
+    if is_anthropic_wire:
+        is_ark_provider = provider_lower in {
+            "volcengine-ark", "ark", "volcengine",
+        }
+        is_ark_host = base_url_host_matches(
+            eff_base_url, "ark.cn-beijing.volces.com"
+        )
+        if is_ark_provider or is_ark_host:
+            return True, True
+
     # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
     # transport that accepts Anthropic-style cache_control markers and
     # rewards them with real cache hits.  Without this branch

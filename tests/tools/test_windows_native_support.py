@@ -1122,3 +1122,45 @@ class TestWindowlessGatewayRestartSpec:
         assert env["VIRTUAL_ENV"] == str(Path("C:/venv"))
         assert "PYTHONPATH" in env
         assert "site-packages" in env["PYTHONPATH"]
+
+    def test_windows_normalizes_non_python_gateway_launcher(self):
+        """Captured wrapper argv must not be replayed after update.
+
+        Regression guard for the post-update Windows resume path: if an
+        unmapped gateway was captured as ``hermes.exe gateway run``, replaying
+        that launcher can leave a terminal window open.  Normalize it to the
+        same direct windowless argv used by a clean gateway start.
+        """
+        import hermes_cli.gateway_windows as gw
+
+        argv = [
+            "C:/Users/me/AppData/Local/hermes/hermes-agent/venv/Scripts/hermes.exe",
+            "--profile",
+            "work",
+            "gateway",
+            "run",
+        ]
+        canonical = (
+            ["C:/base/pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"],
+            "C:/hermes",
+            {"VIRTUAL_ENV": "C:/venv", "PYTHONPATH": "C:/hermes"},
+        )
+
+        with mock.patch.object(gw.sys, "platform", "win32"), mock.patch.object(
+            gw,
+            "_resolve_detached_python",
+            side_effect=AssertionError("hermes.exe is a launcher, not Python"),
+        ), mock.patch.object(gw, "_build_gateway_argv", return_value=canonical):
+            new_argv, cwd, env = gw.windowless_gateway_restart_spec(list(argv))
+
+        assert new_argv == [
+            "C:/base/pythonw.exe",
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "work",
+            "gateway",
+            "run",
+        ]
+        assert cwd == "C:/hermes"
+        assert env == {"VIRTUAL_ENV": "C:/venv", "PYTHONPATH": "C:/hermes"}

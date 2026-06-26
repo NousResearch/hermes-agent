@@ -8422,18 +8422,27 @@ def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
 
 
 def _wait_for_windows_update_gateway_exit(
-    pids: list[int], *, timeout: float
+    pids: list[int], *, timeout: float, pid_paths: dict[int, Path] | None = None
 ) -> set[int]:
     """Wait for the given gateway PIDs to exit, returning survivors."""
     if not pids:
         return set()
 
-    from gateway.status import _pid_exists
+    from gateway.status import _pid_exists, get_running_pid
 
+    pid_paths = pid_paths or {}
     remaining = set(pids)
     deadline = _time.monotonic() + max(timeout, 0.0)
     while remaining and _time.monotonic() < deadline:
         for pid in list(remaining):
+            pid_path = pid_paths.get(pid)
+            if pid_path is not None:
+                try:
+                    if get_running_pid(pid_path, cleanup_stale=False) != pid:
+                        remaining.discard(pid)
+                        continue
+                except Exception:
+                    pass
             try:
                 if not _pid_exists(pid):
                     remaining.discard(pid)
@@ -8444,6 +8453,13 @@ def _wait_for_windows_update_gateway_exit(
 
     survivors: set[int] = set()
     for pid in remaining:
+        pid_path = pid_paths.get(pid)
+        if pid_path is not None:
+            try:
+                if get_running_pid(pid_path, cleanup_stale=False) != pid:
+                    continue
+            except Exception:
+                pass
         try:
             if _pid_exists(pid):
                 survivors.add(pid)
@@ -8518,12 +8534,14 @@ def _pause_windows_gateways_for_update() -> dict | None:
 
     profiles: dict[str, int] = {}
     mapped_pids = []
+    mapped_pid_paths: dict[int, Path] = {}
     for pid in running_pids:
         proc = profile_processes.get(pid)
         if proc is None:
             continue
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
+        mapped_pid_paths[int(pid)] = Path(proc.path) / "gateway.pid"
         _write_update_planned_stop_marker(Path(proc.path), int(pid))
 
     print("→ Stopping Windows gateway process(es) before updating Hermes...")
@@ -8534,6 +8552,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     survivors = _wait_for_windows_update_gateway_exit(
         mapped_pids,
         timeout=drain_timeout,
+        pid_paths=mapped_pid_paths,
     )
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes]
 

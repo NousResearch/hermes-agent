@@ -475,8 +475,9 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
     waited_for = []
 
-    def fake_wait(pids, *, timeout):
+    def fake_wait(pids, *, timeout, pid_paths=None):
         waited_for.extend(pids)
+        assert pid_paths == {101: profile_home / "gateway.pid"}
         return set()
 
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", fake_wait)
@@ -521,6 +522,30 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     # An unmapped PID whose argv we captured is respawnable, so we must NOT
     # tell the user to restart it manually.
     assert "Restart manually after update" not in captured
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_wait_for_windows_update_gateway_exit_treats_cleared_pid_file_as_stopped(
+    _winp,
+    monkeypatch,
+    tmp_path,
+):
+    """Mapped Windows gateways can clear their runtime files before the
+    pythonw process vanishes.  Once the profile pid file no longer resolves to
+    the old PID, update can resume instead of waiting the full drain timeout."""
+    import gateway.status as status_mod
+
+    pid_path = tmp_path / "gateway.pid"
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: True)
+    monkeypatch.setattr(status_mod, "get_running_pid", lambda *_a, **_k: None)
+
+    survivors = cli_main._wait_for_windows_update_gateway_exit(
+        [101],
+        timeout=30.0,
+        pid_paths={101: pid_path},
+    )
+
+    assert survivors == set()
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)

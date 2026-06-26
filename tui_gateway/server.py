@@ -5222,6 +5222,18 @@ def _(rid, params: dict) -> dict:
             # so proceed into the lazy branch with empty history; the live mirror
             # streams the whole turn anyway and the row exists by upgrade time.
             found = {}
+        elif _find_live_session_by_key(target) is not None:
+            # No DB row yet, but the gateway is STILL HOLDING this session live
+            # in memory. This is the orchestrator renderer-recycle case: a brand
+            # new TUI (composer up, no prompt typed yet) defers its DB row until
+            # the first turn, so a renderer that dies before any prompt has a
+            # live in-memory session but no persisted row. Without this branch
+            # the resume hard-failed "session not found" and the respawned
+            # renderer cold-started a blank session — losing the live session the
+            # gateway was still anchoring. Fall through with empty `found`; the
+            # fast path below (_find_live_session_by_key) reuses the live session
+            # and rebinds its transport to the reconnecting renderer.
+            found = {}
         else:
             return _err(rid, 4007, "session not found")
 

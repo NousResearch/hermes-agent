@@ -8,9 +8,11 @@ import type { FrameEvent } from '@hermes/ink'
 import { DASHBOARD_TUI_MODE, TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
+import { startHeartbeat } from './lib/heartbeat.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
+import { triggerRecycle } from './lib/recycleBridge.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
 
@@ -106,6 +108,44 @@ const stopMemoryMonitor = startMemoryMonitor({
     process.stderr.write(
       `hermes-tui: heap climbing fast (${formatBytes(snap.heapUsed)}) — a large tool output or long session may be straining memory\n`
     )
+  },
+  // STAGE 0 proactive relief: in the warn regime, actively prune Ink content
+  // caches so a long render-bound session gets relief instead of warning
+  // forever. The eviction previously only ran above the `high` (≈5.6GB)
+  // watermark, which a 1GB session never reaches — that gap is why a long
+  // render-bound session sat at ~1GB/35% CPU. `evictInkCaches('half')` is the recoverable
+  // prune (keeps the user running); it's the same call the monitor used at
+  // `high`, now reachable in the warn band.
+  onWarnRelief: async () => {
+    try {
+      const { evictInkCaches } = (await import('@hermes/ink')) as { evictInkCaches?: (level: 'all' | 'half') => unknown }
+      evictInkCaches?.('half')
+    } catch {
+      // best-effort; relief is opportunistic
+    }
+  },
+  // STAGE 0 → STAGE 1 hand-off: pressure persisted in the warn band despite
+  // pruning + GC for sustainedTicks (≈60s) — a genuine render-tree blowup.
+  // Record the breadcrumb now (Stage 1 promotes this into a seamless renderer
+  // recycle: persist scroll+sid, exit 0, supervisor respawns + resumes).
+  onSustainedPressure: snap => {
+    recordParentLifecycle(`memory-sustained-pressure heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)} — relief insufficient, recycle candidate`)
+    // Stage 1: attempt a SEAMLESS recycle. triggerRecycle() only fires in
+    // attach mode under the orchestrator (canRecycle()): it persists scroll+sid
+    // and exits 0, the supervisor respawns a fresh renderer that resumes the
+    // live session (the durable gateway kept the in-flight turn). In spawned-
+    // gateway mode it returns false and we fall back to the warning, since
+    // exiting there would kill the session.
+    if (triggerRecycle()) {
+      recordParentLifecycle('memory-sustained-pressure → seamless recycle initiated')
+      process.stderr.write(
+        `hermes-tui: recycling renderer to shed memory (session preserved on the gateway)\n`
+      )
+      return
+    }
+    process.stderr.write(
+      `hermes-tui: sustained heap pressure (${formatBytes(snap.heapUsed)}) after prune+GC — long session may benefit from a fresh renderer (auto-recycle requires the session orchestrator)\n`
+    )
   }
 })
 
@@ -114,6 +154,13 @@ if (process.env.HERMES_HEAPDUMP_ON_START === '1') {
 }
 
 process.on('beforeExit', () => stopMemoryMonitor())
+
+// Stage 3 frozen-detection: when running under the session orchestrator
+// (HERMES_TUI_HEARTBEAT_FILE set), touch a liveness file on a timer. If the
+// renderer's event loop wedges, the timer stops, the file goes stale, and the
+// orchestrator's reaper recycles this frozen renderer. No-op when unset.
+const stopHeartbeat = startHeartbeat()
+process.on('beforeExit', () => stopHeartbeat())
 
 const [ink, { App }, { logFrameEvent }, { trackFrame }] = await Promise.all([
   import('@hermes/ink'),

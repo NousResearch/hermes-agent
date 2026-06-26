@@ -24,10 +24,46 @@ export interface MemoryMonitorOptions {
   // class of death diagnosable instead of silent.
   onWarn?: (snap: MemorySnapshot) => void
   warnBytes?: number
+  // STAGE 0 (proactive renderer GC): the warn regime (≈600MB, well below the
+  // `high` watermark) is exactly where a long render-bound session lives —
+  // heap climbs, GC churns, the Node parent pegs CPU, and input lags, but the
+  // existing eviction (gated on `high` ≈70% of an 8GB ceiling) NEVER fires. So
+  // a 1GB session warns forever and never gets relief. These hooks make the
+  // warn regime ACT instead of only logging.
+  //
+  // onWarnRelief: invoked when warn pressure is detected, BEFORE onWarn, to
+  // prune Ink content caches + force a GC pass. Returning the post-prune heap
+  // (or void) lets the monitor decide if relief worked.
+  onWarnRelief?: () => void | Promise<void>
+  // onSustainedPressure: invoked when heap stays at/above warnBytes for
+  // `sustainedTicks` consecutive ticks DESPITE relief — i.e. pruning didn't
+  // help, this is a genuine render-tree blowup. The entry uses this to trigger
+  // a graceful, seamless renderer recycle (Stage 1) rather than waiting for the
+  // session to wedge or OOM. Fired at most once per sustained episode.
+  onSustainedPressure?: (snap: MemorySnapshot) => void
+  // Consecutive warn-regime ticks at/above warnBytes after relief before
+  // onSustainedPressure fires. Default 6 (≈60s at the 10s interval).
+  sustainedTicks?: number
 }
 
 const GB = 1024 ** 3
 const MB = 1024 ** 2
+
+// STAGE 0: force a V8 GC pass when the runtime exposes it (node --expose-gc).
+// In the warn regime the heap is churning faster than incremental GC reclaims;
+// a forced major GC after pruning Ink caches materially drops RSS and cuts the
+// GC-thrash CPU. No-ops silently when global.gc is unavailable so this is safe
+// in any runtime. Cheap: a single synchronous major GC every ≥10s tick.
+function forceGcIfAvailable(): void {
+  try {
+    const gc = (globalThis as { gc?: () => void }).gc
+    if (typeof gc === 'function') {
+      gc()
+    }
+  } catch {
+    // best-effort; never let a GC hiccup break the monitor tick
+  }
+}
 
 // Resolve the exit / dump thresholds RELATIVE to the actual V8 heap ceiling
 // (--max-old-space-size, 8GB for the TUI) instead of hardcoding 2.5GB. The old
@@ -93,11 +129,23 @@ export function startMemoryMonitor({
   onCritical,
   onHigh,
   onWarn,
-  warnBytes = 600 * MB
+  warnBytes = 600 * MB,
+  onWarnRelief,
+  onSustainedPressure,
+  sustainedTicks = 6
 }: MemoryMonitorOptions = {}): () => void {
   const { critical, high } = resolveThresholds(criticalBytes, highBytes)
   const dumped = new Set<Exclude<MemoryLevel, 'normal'>>()
   const inFlight = new Set<Exclude<MemoryLevel, 'normal'>>()
+
+  // STAGE 0 proactive-GC state. `warnPressureTicks` counts consecutive ticks
+  // at/above warnBytes (below `high`); once relief has run and pressure
+  // persists for `sustainedTicks`, onSustainedPressure fires once. `reliefInFlight`
+  // guards against overlapping async relief passes. `sustainedFired` re-arms
+  // only after heap falls back below warnBytes.
+  let warnPressureTicks = 0
+  let reliefInFlight = false
+  let sustainedFired = false
 
   // Early-warning state (#34095): the silent-death regime is BELOW `high`, so
   // the level machine above never sees it. Track the previous sample and fire
@@ -122,8 +170,43 @@ export function startMemoryMonitor({
   const tick = async () => {
     const { heapUsed, rss } = process.memoryUsage()
 
-    // Sub-threshold abnormal-growth warning. Skip on the first (un-seeded)
-    // sample — we need a prior reading to measure a delta against.
+    // ── STAGE 0: proactive relief in the warn regime ──────────────────────
+    // The warn regime (warnBytes ≤ heap < high) is where a long render-bound
+    // session lives indefinitely. Instead of only logging, ACT: prune Ink
+    // caches + force GC, and if pressure persists after relief, escalate to a
+    // seamless recycle via onSustainedPressure. This runs every tick the
+    // session is in the warn band, not just once on the growth spike.
+    if (heapUsed >= warnBytes && heapUsed < high) {
+      warnPressureTicks++
+
+      // Active relief: best-effort, non-overlapping. Prune Ink content caches
+      // and force a GC pass (Node must be started with --expose-gc for
+      // global.gc; the bundle is, and we no-op gracefully if not).
+      if (onWarnRelief && !reliefInFlight) {
+        reliefInFlight = true
+        void Promise.resolve(onWarnRelief())
+          .catch(() => {})
+          .finally(() => {
+            reliefInFlight = false
+          })
+      }
+      forceGcIfAvailable()
+
+      // Sustained pressure: relief didn't bring heap back under the floor for
+      // `sustainedTicks` consecutive ticks → genuine render-tree blowup, ask
+      // the entry to recycle the renderer. Fire once per episode.
+      if (!sustainedFired && warnPressureTicks >= sustainedTicks) {
+        sustainedFired = true
+        onSustainedPressure?.({ heapUsed, level: 'normal', rss })
+      }
+    } else if (heapUsed < warnBytes) {
+      // Fell back below the floor: re-arm everything for the next episode.
+      warnPressureTicks = 0
+      sustainedFired = false
+    }
+
+    // Sub-threshold abnormal-growth warning (existing #34095 breadcrumb). Skip
+    // on the first (un-seeded) sample — we need a prior reading for the delta.
     if (heapUsed < high && lastHeap >= 0) {
       if (!warned && heapUsed >= warnBytes && heapUsed - lastHeap >= WARN_GROWTH_STEP) {
         warned = true

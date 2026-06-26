@@ -180,54 +180,7 @@ hermes gateway restart
 
 ---
 
-## 6. MCP Servers (optional)
-
-### Obsidian
-
-```bash
-cd ~/hermes/obsidian-mcp
-uv venv && uv pip install -e .
-```
-
-Add to `~/.hermes/config.yaml`:
-
-```yaml
-mcp_servers:
-  obsidian:
-    command: /Users/YOUR_USERNAME/hermes/obsidian-mcp/.venv/bin/obsidian-api-mcp
-    env:
-      OBSIDIAN_API_KEY: <your-key>
-      OBSIDIAN_HOST: https://localhost:27124
-      OBSIDIAN_VERIFY_SSL: "false"
-    enabled: true
-```
-
-### Vestaboard
-
-```bash
-cd ~/hermes/vestaboard-mcp
-uv venv && uv pip install -r requirements.txt
-```
-
-Add to `~/.hermes/config.yaml`:
-
-```yaml
-mcp_servers:
-  vestaboard:
-    command: /Users/YOUR_USERNAME/hermes/vestaboard-mcp/.venv/bin/python3
-    args:
-      - /Users/YOUR_USERNAME/hermes/vestaboard-mcp/vestaboard_mcp.py
-    env:
-      VESTABOARD_HOST: http://<board-ip>:7000
-      VESTABOARD_API_KEY: <your-key>
-    enabled: true
-```
-
-Use the board's IP address directly rather than a hostname — mDNS resolution can be unreliable. To get the API key, POST to `/local-api/enablement` with the enablement token printed on the board.
-
----
-
-## 7. Verify everything
+## 6. Verify everything
 
 ```bash
 # rapid-mlx is up and serving E4B
@@ -257,7 +210,6 @@ hermes gateway status
 | `SIGABRT` / Metal GPU crash | KV cache for large prompt exhausts GPU memory | Switch to E4B model (smaller working set) |
 | `Provider returned an empty stream with no finish_reason` | Proxy/connection dropped mid-response | Point `base_url` directly to port 8001, skip any proxy |
 | Hermes `context window below minimum 64K` | Model reports a small context | Add `context_length: 65536` under `model:` in config |
-| Vestaboard `401 Invalid API key` | Using enablement token instead of API key | POST to `/local-api/enablement` to exchange for a real key |
 
 ---
 

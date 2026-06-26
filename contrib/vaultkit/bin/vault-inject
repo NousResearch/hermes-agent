@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""vault-inject — run a command with the vault group exported as env vars.
+
+For users who DON'T run long-lived services and just want secrets present for
+a one-off command (the exec-wrapper model). Secrets live only in this process
+and the child it execs; nothing is written to disk.
+
+Usage:
+  vault-inject -- <command> [args...]
+  vault-inject --print-export        # prints `export K=...` for eval in a shell
+"""
+import os
+import shlex
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import vaultkit_lib as vk  # noqa: E402
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    print_export = "--print-export" in args
+    cmd = None
+    if "--" in args:
+        cmd = args[args.index("--") + 1:]
+
+    kv = vk.read_group_secrets()
+
+    if print_export:
+        for k, v in sorted(kv.items()):
+            print(f"export {k}={shlex.quote(v)}")
+        return
+
+    if not cmd:
+        vk.die("no command given (use -- <cmd> or --print-export)", 2)
+
+    child_env = dict(os.environ)
+    child_env.update(kv)
+    print(f"vault-inject: loaded {len(kv)} secret(s) -> exec: {' '.join(cmd)}",
+          file=sys.stderr)
+    os.execvpe(cmd[0], cmd, child_env)
+
+
+if __name__ == "__main__":
+    main()

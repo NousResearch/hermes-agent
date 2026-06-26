@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""vault-lock — stop consuming services and scrub the tmpfs secret files."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import vaultkit_lib as vk  # noqa: E402
+
+
+def main() -> None:
+    vk.stop_services()
+    vk.scrub_runtime()
+    print("locked: services stopped, tmpfs secret file + manifest wiped.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""vault-unlock — read the vault group into the tmpfs env file + manifest.
+
+Modes:
+  (default)      read vault -> write tmpfs (env + manifest) -> restart services
+  --write-only   read vault -> write tmpfs (NO restart; for a boot oneshot
+                 ordered BEFORE the consuming services start)
+
+Configuration is resolved by vaultkit_lib (env VAULTKIT_* / config file).
+Nothing here is machine-specific.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import vaultkit_lib as vk  # noqa: E402
+
+
+def main() -> None:
+    write_only = "--write-only" in sys.argv[1:]
+    kv = vk.read_group_secrets()
+    vk.write_runtime(kv)
+    print(f"unlocked: wrote {len(kv)} secret(s) to {vk.envfile()} "
+          f"(+ manifest {vk.manifest_file().name}, 0600)")
+    if write_only:
+        return
+    svcs = vk.services()
+    if not svcs:
+        print("no services configured to restart (set VAULTKIT_SERVICES if needed)")
+        return
+    ok, bad = vk.restart_services()
+    print(f"restarted: {', '.join(ok) if ok else '(none)'}")
+    if bad:
+        print(f"FAILED to restart: {', '.join(bad)}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

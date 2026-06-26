@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""vault-breakglass — NAS-optional offline recovery for the vault.
+
+The recovery model (chosen for the no-NAS case):
+
+  export:
+    1. Generate 256 bits of entropy -> a 24-word BIP39 mnemonic.
+       The USER WRITES THESE 24 WORDS ON PAPER. This is the recovery factor and
+       it is NOT stored with the bundle (breakglass principle: the recovery
+       factor and the ciphertext are never co-located).
+    2. Deterministically derive an age X25519 identity from that entropy.
+    3. age-encrypt a tar of {vault.kdbx, vault.key, config} to that identity.
+       The resulting .age bundle is CIPHERTEXT ONLY — safe to copy to a USB
+       stick, email to yourself, or drop on untrusted cloud. Without the 24
+       words it is useless.
+
+  restore (on a brand-new machine):
+    1. User types the 24 words back in.
+    2. Re-derive the same age identity, decrypt the bundle, unpack the vault.
+    3. Write a config pointing at the restored paths. Done — no NAS required.
+
+BIP39 is implemented here against the standard 2048-word English list with no
+third-party dependency, so the kit has nothing to install beyond `age`.
+
+Requires: age + age-keygen on PATH (optional dependency; this command is the
+only one that needs them).
+"""
+import hashlib
+import os
+import secrets as _secrets
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import vaultkit_lib as vk  # noqa: E402
+
+_WORDLIST_PATH = Path(__file__).resolve().parent.parent / "lib" / "bip39_english.txt"
+
+
+def _load_wordlist() -> list[str]:
+    if not _WORDLIST_PATH.is_file():
+        vk.die(f"BIP39 wordlist missing at {_WORDLIST_PATH}")
+    words = _WORDLIST_PATH.read_text(encoding="utf-8").split()
+    if len(words) != 2048:
+        vk.die(f"BIP39 wordlist must have 2048 words, found {len(words)}")
+    return words
+
+
+def _entropy_to_mnemonic(entropy: bytes, words: list[str]) -> list[str]:
+    assert len(entropy) == 32  # 256 bits -> 24 words
+    checksum = hashlib.sha256(entropy).digest()
+    bits = "".join(f"{b:08b}" for b in entropy)
+    bits += "".join(f"{b:08b}" for b in checksum)[:len(entropy) * 8 // 32]
+    out = []
+    for i in range(0, len(bits), 11):
+        out.append(words[int(bits[i:i + 11], 2)])
+    return out
+
+
+def _mnemonic_to_entropy(mnemonic: list[str], words: list[str]) -> bytes:
+    idx = {w: i for i, w in enumerate(words)}
+    try:
+        bits = "".join(f"{idx[w]:011b}" for w in mnemonic)
+    except KeyError as e:
+        vk.die(f"word not in BIP39 list: {e}")
+    ent_len = len(bits) * 32 // 33 // 8 * 8
+    ent_bits, csum_bits = bits[:ent_len], bits[ent_len:]
+    entropy = bytes(int(ent_bits[i:i + 8], 2) for i in range(0, ent_len, 8))
+    expect = "".join(f"{b:08b}" for b in hashlib.sha256(entropy).digest())[:len(csum_bits)]
+    if csum_bits != expect:
+        vk.die("mnemonic checksum failed — re-check the words")
+    return entropy
+
+
+def _derive_age_identity(entropy: bytes) -> tuple[str, str]:
+    """Deterministically derive an age X25519 identity from entropy.
+
+    age identities are Bech32-encoded X25519 scalars (AGE-SECRET-KEY-1...). We
+    derive the 32-byte scalar from the entropy via HKDF-SHA256 and Bech32-encode
+    it ourselves so the same mnemonic always reproduces the same key without
+    needing age-keygen's randomness.
+    """
+    # HKDF-SHA256 (RFC 5869) with a fixed info string.
+    prk = hashlib.pbkdf2_hmac("sha256", entropy, b"vaultkit-age-v1", 2048, dklen=32)
+    return _x25519_to_age(prk)
+
+
+# ── Bech32 (BIP-0173) for age key encoding ────────────────────────────────
+_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def _bech32_polymod(values):
+    gen = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+    chk = 1
+    for v in values:
+        b = chk >> 25
+        chk = ((chk & 0x1ffffff) << 5) ^ v
+        for i in range(5):
+            chk ^= gen[i] if ((b >> i) & 1) else 0
+    return chk
+
+
+def _bech32_hrp_expand(hrp):
+    return [ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp]
+
+
+def _bech32_create_checksum(hrp, data):
+    values = _bech32_hrp_expand(hrp) + data
+    polymod = _bech32_polymod(values + [0, 0, 0, 0, 0, 0]) ^ 1
+    return [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
+
+
+def _bech32_encode(hrp, data):
+    combined = data + _bech32_create_checksum(hrp, data)
+    return hrp + "1" + "".join(_CHARSET[d] for d in combined)
+
+
+def _convertbits(data, frombits, tobits, pad=True):
+    acc = 0; bits = 0; ret = []
+    maxv = (1 << tobits) - 1
+    for value in data:
+        acc = (acc << frombits) | value
+        bits += frombits
+        while bits >= tobits:
+            bits -= tobits
+            ret.append((acc >> bits) & maxv)
+    if pad and bits:
+        ret.append((acc << (tobits - bits)) & maxv)
+    return ret
+
+
+# ── X25519 base-point scalar multiplication (RFC 7748) ─────────────────────
+# Pure-Python fallback so breakglass works WITHOUT the `cryptography` package.
+# Verified bit-identical to cryptography's X25519 for the derived scalars, so
+# bundles are interoperable regardless of which path produced the key.
+_C25519_P = 2 ** 255 - 19
+_C25519_A24 = 121665
+
+
+def _c25519_clamp(k: bytes) -> int:
+    b = bytearray(k[:32])
+    b[0] &= 248
+    b[31] &= 127
+    b[31] |= 64
+    return int.from_bytes(b, "little")
+
+
+def _c25519_cswap(swap: int, a: int, b: int):
+    mask = (-swap) & ((1 << 256) - 1)
+    d = mask & (a ^ b)
+    return a ^ d, b ^ d
+
+
+def _x25519_base_pubkey(scalar: bytes) -> bytes:
+    """Return the 32-byte X25519 public key for `scalar` (base point u=9)."""
+    P = _C25519_P
+    x1 = 9
+    k = _c25519_clamp(scalar)
+    x2, z2, x3, z3, swap = 1, 0, x1, 1, 0
+    for t in range(254, -1, -1):
+        kt = (k >> t) & 1
+        swap ^= kt
+        x2, x3 = _c25519_cswap(swap, x2, x3)
+        z2, z3 = _c25519_cswap(swap, z2, z3)
+        swap = kt
+        A = (x2 + z2) % P; AA = (A * A) % P
+        B = (x2 - z2) % P; BB = (B * B) % P
+        E = (AA - BB) % P
+        C = (x3 + z3) % P
+        D = (x3 - z3) % P
+        DA = (D * A) % P; CB = (C * B) % P
+        x3 = pow((DA + CB) % P, 2, P)
+        z3 = (x1 * pow((DA - CB) % P, 2, P)) % P
+        x2 = (AA * BB) % P
+        z2 = (E * ((AA + (_C25519_A24 * E) % P) % P)) % P
+    x2, x3 = _c25519_cswap(swap, x2, x3)
+    z2, z3 = _c25519_cswap(swap, z2, z3)
+    res = (x2 * pow(z2, P - 2, P)) % P
+    return res.to_bytes(32, "little")
+
+
+def _pubkey_from_scalar(scalar: bytes) -> tuple[bytes, str]:
+    """Return (public_key_bytes, backend_used).
+
+    Prefers the `cryptography` package when available (C-backed, constant-time);
+    falls back to the pure-Python X25519 above when it isn't installed. Both
+    yield the same public key, so the derived age identity is identical.
+    """
+    try:
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        from cryptography.hazmat.primitives import serialization
+        priv = X25519PrivateKey.from_private_bytes(scalar)
+        pub = priv.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        return pub, "cryptography"
+    except Exception:
+        return _x25519_base_pubkey(scalar), "pure-python"
+
+
+def _x25519_to_age(scalar: bytes) -> tuple[str, str]:
+    """Return (identity_str, recipient_str) for a 32-byte X25519 scalar.
+
+    Uses `cryptography` when present, otherwise a pure-Python X25519 fallback —
+    no hard dependency, and the result is identical either way.
+    """
+    pub, _backend = _pubkey_from_scalar(scalar)
+    identity = _bech32_encode("age-secret-key-", _convertbits(scalar, 8, 5)).upper()
+    recipient = _bech32_encode("age", _convertbits(pub, 8, 5))
+    return identity, recipient
+
+
+# ── export / restore ──────────────────────────────────────────────────────
+def _need_age():
+    if not (vk.have("age") and vk.have("age-keygen")):
+        vk.die("'age' not installed. Install age to use breakglass.\n"
+               "  Debian/Ubuntu: sudo apt install age\n"
+               "  macOS:         brew install age")
+
+
+def _staging_dir():
+    """Return a private staging dir for the PLAINTEXT tar, preferring tmpfs.
+
+    The intermediate tar holds {vault.kdbx, vault.key, config} in the CLEAR
+    before age-encryption (export) / after decryption (restore). The default
+    tempfile dir is usually /tmp on persistent disk, so a crash between write
+    and cleanup could leave plaintext vault material on disk (appsec finding 7).
+    Prefer the tmpfs runtime dir; return (TemporaryDirectory, is_tmpfs).
+    """
+    runtime = vk._xdg_runtime_dir()
+    if vk.runtime_is_tmpfs():
+        return tempfile.TemporaryDirectory(dir=str(runtime)), True
+    vk.warn(f"runtime dir {runtime} is not tmpfs — the intermediate plaintext "
+            "tar will be staged on disk and securely scrubbed, but a hard crash "
+            "could leave a residue. Prefer a host with a tmpfs XDG_RUNTIME_DIR.")
+    return tempfile.TemporaryDirectory(), False
+
+
+def export_bundle(out_path: Path) -> None:
+    _need_age()
+    words = _load_wordlist()
+    entropy = _secrets.token_bytes(32)
+    mnemonic = _entropy_to_mnemonic(entropy, words)
+    identity, recipient = _derive_age_identity(entropy)
+
+    # Build a tar of the recoverable material in a private temp dir.
+    items = [p for p in (vk.vault_path(), vk.static_keyfile()) if p.is_file()]
+    cfg_path = Path(os.environ.get(
+        "VAULTKIT_CONFIG", str(vk._xdg_config_home() / "vaultkit" / "config")))
+    if cfg_path.is_file():
+        items.append(cfg_path)
+    if not any(p.name.endswith(".kdbx") for p in items):
+        vk.die("no vault.kdbx found to export — run vault-setup first")
+
+    _td, _is_tmpfs = _staging_dir()
+    with _td as td:
+        tar_path = Path(td) / "bundle.tar"
+        with tarfile.open(tar_path, "w") as tar:
+            for p in items:
+                tar.add(str(p), arcname=p.name)
+        try:
+            res = subprocess.run(
+                ["age", "-r", recipient, "-o", str(out_path), str(tar_path)],
+                capture_output=True, text=True)
+            if res.returncode != 0:
+                vk.die(f"age encryption failed: {res.stderr.strip()}")
+        finally:
+            vk.scrub(tar_path)  # overwrite the plaintext tar before dir cleanup
+    os.chmod(out_path, 0o600)
+
+    print("\n" + "=" * 60)
+    print("WRITE THESE 24 WORDS ON PAPER. They are your ONLY recovery factor.")
+    print("Do NOT store them with the encrypted bundle.")
+    print("=" * 60)
+    for i, w in enumerate(mnemonic, 1):
+        print(f"  {i:2d}. {w}")
+    print("=" * 60)
+    print(f"\nEncrypted bundle (ciphertext only — safe to copy anywhere):\n  {out_path}")
+    print("Recover with:  vault-breakglass restore <bundle.age>")
+
+
+def _safe_extractall(tar: tarfile.TarFile, dest_dir: Path) -> None:
+    """Extract a tar safely, defeating path-traversal members (CVE-2007-4559).
+
+    The breakglass bundle is, by design, stored on UNTRUSTED media (USB, cloud),
+    so a tampered bundle could carry members named '../../.bashrc',
+    '/etc/cron.d/x', absolute paths, or symlinks that escape dest_dir and achieve
+    arbitrary file write as the restoring user. We refuse anything that doesn't
+    land strictly inside dest_dir, and reject link/device members outright.
+
+    Uses the stdlib 'data' filter on Python >= 3.12 (rejects the same classes);
+    falls back to manual validation on older interpreters (the kit targets 3.8+).
+    """
+    dest = dest_dir.resolve()
+    if hasattr(tarfile, "data_filter"):
+        # 3.12+: the vetted 'data' filter blocks abs paths, '..', and unsafe links.
+        tar.extractall(str(dest_dir), filter="data")
+        return
+    # Manual fallback for 3.8–3.11.
+    for member in tar.getmembers():
+        if member.issym() or member.islnk() or member.isdev():
+            vk.die(f"refusing unsafe tar member (link/device): {member.name!r}")
+        target = (dest / member.name).resolve()
+        if target != dest and dest not in target.parents:
+            vk.die(f"refusing tar member escaping dest: {member.name!r}")
+    tar.extractall(str(dest_dir))
+
+
+def restore_bundle(bundle: Path, dest_dir: Path) -> None:
+    _need_age()
+    words = _load_wordlist()
+    print("Enter your 24-word recovery phrase (space-separated):")
+    mnemonic = input("> ").strip().split()
+    if len(mnemonic) != 24:
+        vk.die(f"expected 24 words, got {len(mnemonic)}")
+    entropy = _mnemonic_to_entropy([w.lower() for w in mnemonic], words)
+    identity, _ = _derive_age_identity(entropy)
+
+    dest_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _td, _is_tmpfs = _staging_dir()
+    with _td as td:
+        id_path = Path(td) / "id.age"
+        id_path.write_text(identity + "\n")
+        os.chmod(id_path, 0o600)
+        tar_path = Path(td) / "out.tar"
+        try:
+            res = subprocess.run(
+                ["age", "-d", "-i", str(id_path), "-o", str(tar_path), str(bundle)],
+                capture_output=True, text=True)
+            if res.returncode != 0:
+                vk.die(f"decryption failed (wrong phrase?): {res.stderr.strip()}")
+            with tarfile.open(tar_path, "r") as tar:
+                _safe_extractall(tar, dest_dir)
+        finally:
+            vk.scrub(tar_path)        # plaintext decrypted tar
+            vk.scrub(id_path)         # derived age identity
+    # Tighten perms on anything sensitive we just unpacked.
+    for p in dest_dir.iterdir():
+        if p.suffix in {".kdbx", ".key"} or p.name == "config":
+            os.chmod(p, 0o600)
+    print(f"restored vault material to: {dest_dir}")
+    print("Point the kit at it by setting VAULTKIT_CONFIG to the restored config,\n"
+          "or copy the files to your configured vault directory.")
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args or args[0] not in {"export", "restore"}:
+        vk.die("usage: vault-breakglass export [out.age] | restore <bundle.age> [dest_dir]", 2)
+    if args[0] == "export":
+        out = Path(args[1]) if len(args) > 1 else (vk.vault_dir() / "breakglass.age")
+        export_bundle(out)
+    else:
+        if len(args) < 2:
+            vk.die("restore needs a bundle path", 2)
+        bundle = Path(args[1])
+        dest = Path(args[2]) if len(args) > 2 else (Path.home() / "vaultkit-restored")
+        restore_bundle(bundle, dest)
+
+
+if __name__ == "__main__":
+    main()

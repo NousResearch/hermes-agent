@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""vault-add — add (or update) a secret in the vault group via hidden input.
+
+The value is read with getpass so it never appears on the command line or in
+shell history. Usage:  vault-add <KEY_NAME>
+"""
+import getpass
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import vaultkit_lib as vk  # noqa: E402
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        vk.die("usage: vault-add <KEY_NAME>", 2)
+    key = sys.argv[1].strip()
+    if not key:
+        vk.die("empty key name", 2)
+
+    cli = vk._resolve_cli()
+    vault = str(vk.vault_path())
+    group = vk.vault_group()
+    auth, pw = vk.build_auth()
+
+    value = getpass.getpass(f"Value for {key} (hidden): ")
+    if not value:
+        vk.die("empty value", 2)
+
+    # keepassxc-cli reads the entry password from stdin after the master auth.
+    # Order: master password line (if any) then the entry password via -p.
+    stdin = ""
+    if pw is not None:
+        stdin += pw + "\n"
+    stdin += value + "\n"
+    res = subprocess.run(
+        [cli, "add", vault, f"{group}/{key}", "-p", *auth],
+        input=stdin, capture_output=True, text=True,
+    )
+    if res.returncode != 0:
+        # If it already exists, try edit instead.
+        res2 = subprocess.run(
+            [cli, "edit", vault, f"{group}/{key}", "-p", *auth],
+            input=stdin, capture_output=True, text=True,
+        )
+        if res2.returncode != 0:
+            vk.die(f"failed to add/update {key}: "
+                   f"{(res2.stderr or res.stderr).strip()}")
+        print(f"updated: {group}/{key}")
+        return
+    print(f"added: {group}/{key}")
+
+
+if __name__ == "__main__":
+    main()

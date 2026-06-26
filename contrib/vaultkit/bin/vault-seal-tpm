@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""vault-seal-tpm — seal the vault key file to this machine's TPM (Linux).
+
+This is the Linux counterpart to the macOS "seal the keyfile into the login
+Keychain" step. It uses `systemd-creds encrypt --with-key=tpm2`, so the key
+file can only be recovered on THIS machine (bound to its TPM), and never sits
+on disk in plaintext after sealing.
+
+Subcommands:
+  seal      Encrypt the on-disk key file to the TPM, write a sealed blob, verify
+            a decrypt round-trip, then (optionally) shred the plaintext key file.
+  unseal    Decrypt the sealed blob to a tmpfs key file (for a boot oneshot).
+  teardown  Wipe the tmpfs key file and (best-effort) unmount its tmpfs.
+  status    Report TPM availability and whether a sealed blob exists.
+
+Why root: on most systemd builds `systemd-creds encrypt/decrypt --with-key=tpm2`
+must talk to the system manager and requires root. If you are not root, this
+tool re-execs itself under `sudo` (so you'll be prompted once). The unseal step
+at boot is meant to run from a tiny root oneshot via a NARROW NOPASSWD sudo rule
+(this tool can print that rule for you with `seal --print-sudoers`).
+
+Nothing is hardcoded to a username or home dir: paths come from vaultkit config
+(VAULTKIT_KEYFILE for the source key, VAULTKIT_TPM_KEYFILE for the tmpfs target)
+with portable defaults, and the target user is derived from $SUDO_USER when run
+via sudo, else the current user.
+"""
+import argparse
+import os
+import pwd
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import vaultkit_lib as vk  # noqa: E402
+
+CRED_NAME_DEFAULT = "vaultkit-vault-key"
+
+
+# ── identity helpers (work correctly under sudo) ──────────────────────────
+def _target_user() -> pwd.struct_passwd:
+    """The user who OWNS the secrets — $SUDO_USER when re-exec'd via sudo,
+    otherwise whoever is running us. Never root-as-owner by accident."""
+    name = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+    if name and name != "root":
+        try:
+            return pwd.getpwnam(name)
+        except KeyError:
+            pass
+    return pwd.getpwuid(os.getuid())
+
+
+def _reexec_as_root() -> None:
+    """Re-run this exact command under sudo.
+
+    CRITICAL: we resolve every path HERE, as the real (non-root) user, and
+    forward them as explicit VAULTKIT_* overrides. Once sudo flips us to root,
+    Path.home() becomes /root and any unresolved default would point at
+    /root/.local/share/vaultkit instead of the user's vault. Forwarding the
+    already-resolved absolute paths makes the root side deterministic and
+    home-independent.
+    """
+    if os.geteuid() == 0:
+        return
+    if not vk.have("sudo"):
+        vk.die("this step needs root (systemd-creds + TPM) and 'sudo' is not "
+               "installed. Re-run as root.")
+    # Resolve now, as the real user (these read any VAULTKIT_* the user set).
+    resolved = {
+        "VAULTKIT_DIR": str(vk.vault_dir()),
+        "VAULTKIT_VAULT": str(vk.vault_path()),
+        "VAULTKIT_KEYFILE": str(vk.static_keyfile()),
+        "VAULTKIT_GROUP": vk.vault_group(),
+        "VAULTKIT_TPM_BLOB": str(_blob_path()),
+        "VAULTKIT_TPM_KEYFILE": str(vk.tpm_keyfile()),
+        "VAULTKIT_TPM_CRED_NAME": _cred_name(),
+    }
+    if "KPXC_CLI" in os.environ:
+        resolved["KPXC_CLI"] = os.environ["KPXC_CLI"]
+    # Anchor the target user's HOME too, so anything not explicitly forwarded
+    # still resolves against the real user's home rather than /root.
+    try:
+        resolved["VAULTKIT_TARGET_HOME"] = _target_user().pw_dir
+    except Exception:
+        pass
+    env_args = [f"{k}={v}" for k, v in resolved.items()]
+    print("(elevating with sudo to reach systemd-creds + TPM...)", file=sys.stderr)
+    # Note: `sudo env KEY=val ...` rather than `sudo -E` — the latter warns
+    # "preserving the entire environment is not supported" under many sudoers
+    # policies and is ignored. Explicit env vars are forwarded reliably.
+    os.execvp("sudo", ["sudo", "env", *env_args,
+                       sys.executable, os.path.abspath(__file__), *sys.argv[1:]])
+
+
+# ── path resolution ───────────────────────────────────────────────────────
+def _anchor_to_target_user() -> None:
+    """When running as root, re-anchor path resolution to the OWNER's home.
+
+    The boot oneshot and a direct `sudo vault-seal-tpm unseal` both start
+    already-root with no forwarded user env. In that state Path.home() is
+    /root, so every default path would resolve under /root/.local/... instead
+    of the user's vault. We therefore set HOME (and, if present, the user's
+    vaultkit config) to the owning user — derived from $SUDO_USER — so the
+    library's defaults resolve correctly. Explicit VAULTKIT_* env overrides
+    still win (cfg() checks env first), so a re-exec'd `seal` that forwarded
+    absolute paths is unaffected.
+    """
+    if os.geteuid() != 0:
+        return
+    try:
+        u = _target_user()
+    except Exception:
+        return
+    if u.pw_name == "root":
+        return
+    # Only override HOME if it's unset or root's — respect an explicit HOME.
+    if os.environ.get("HOME") in (None, "", "/root"):
+        os.environ["HOME"] = u.pw_dir
+    # Point at the user's vaultkit config unless one was explicitly forwarded.
+    if "VAULTKIT_CONFIG" not in os.environ:
+        cfgp = Path(u.pw_dir) / ".config" / "vaultkit" / "config"
+        if cfgp.is_file():
+            os.environ["VAULTKIT_CONFIG"] = str(cfgp)
+    vk._CONFIG_CACHE = None  # force re-read against the anchored home/config
+
+
+def _blob_path() -> Path:
+    """Sealed-blob location. Default lives next to the vault (user-owned 0600).
+    The blob is TPM-bound ciphertext, useless off this machine."""
+    return Path(vk.cfg("TPM_BLOB", str(vk.vault_dir() / "vault.key.cred"))).expanduser()
+
+
+def _cred_name() -> str:
+    return vk.cfg("TPM_CRED_NAME", CRED_NAME_DEFAULT)
+
+
+def _run_dir() -> Path:
+    """Directory holding the tmpfs-unsealed key. Default is the parent of
+    VAULTKIT_TPM_KEYFILE (which lib defaults to $XDG_RUNTIME_DIR)."""
+    return vk.tpm_keyfile().parent
+
+
+def _is_mounted(path: Path) -> bool:
+    try:
+        with open("/proc/mounts") as f:
+            return any(line.split()[1] == str(path)
+                       for line in f if len(line.split()) > 1)
+    except OSError:
+        return False
+
+
+# ── subcommands ───────────────────────────────────────────────────────────
+def cmd_status() -> None:
+    _anchor_to_target_user()  # consistent paths whether run as user or root
+    rep = vk.check_prereqs()
+    tpm_ok = rep["tpm2"][0]
+    has_creds = vk.have("systemd-creds")
+    # systemd 256+ renamed has-tpm2 to `systemd-analyze has-tpm2`; try both.
+    fw = ""
+    for probe in (["systemd-analyze", "has-tpm2"], ["systemd-creds", "has-tpm2"]):
+        if vk.have(probe[0]):
+            r = subprocess.run(probe, capture_output=True, text=True)
+            if r.returncode == 0:
+                fw = r.stdout.strip().splitlines()[0] if r.stdout.strip() else "yes"
+                break
+    blob = _blob_path()
+    print("vault-seal-tpm status:")
+    print(f"  systemd-creds : {'present' if has_creds else 'MISSING'}")
+    print(f"  TPM2 device   : {'present' if tpm_ok else 'absent'}"
+          + (f' ({fw})' if fw else ''))
+    print(f"  sealed blob   : {blob} "
+          f"({'exists' if blob.is_file() else 'not created yet'})")
+    print(f"  cred name     : {_cred_name()}")
+    print(f"  tmpfs target  : {vk.tpm_keyfile()}")
+
+
+def cmd_seal(args) -> None:
+    _reexec_as_root()  # systemd-creds tpm2 encrypt needs root
+    _anchor_to_target_user()  # if entered already-root, resolve against owner
+    if not vk.have("systemd-creds"):
+        vk.die("systemd-creds not found (needs systemd 250+).")
+
+    user = _target_user()
+    src = vk.static_keyfile()
+    if not src.is_file():
+        vk.die(f"key file to seal not found: {src}\n"
+               "  Create the vault with a key file first (vault-setup, auth model "
+               "'key file'), or set VAULTKIT_KEYFILE to the key you want sealed.")
+
+    blob = _blob_path()
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    cred = _cred_name()
+
+    print(f"[1] sealing {src} to TPM (--with-key=tpm2, no PCR binding)...")
+    enc = subprocess.run(
+        ["systemd-creds", "encrypt", f"--name={cred}", "--with-key=tpm2",
+         str(src), str(blob)],
+        capture_output=True, text=True,
+    )
+    if enc.returncode != 0:
+        vk.die(f"seal failed: {enc.stderr.strip() or enc.stdout.strip()}")
+    os.chown(str(blob), user.pw_uid, user.pw_gid)
+    os.chmod(str(blob), 0o600)
+    print(f"    sealed -> {blob} ({blob.stat().st_size} bytes, "
+          f"owner {user.pw_name}, 0600)")
+
+    print("[2] verifying unseal round-trip...")
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix=".vk-verify-")
+    os.close(fd)
+    try:
+        dec = subprocess.run(
+            ["systemd-creds", "decrypt", f"--name={cred}", str(blob), tmp],
+            capture_output=True, text=True,
+        )
+        if dec.returncode != 0:
+            vk.die(f"verify decrypt failed: {dec.stderr.strip()}")
+        match = (Path(tmp).read_bytes() == src.read_bytes())
+    finally:
+        try:
+            sz = os.path.getsize(tmp)
+            with open(tmp, "r+b") as f:
+                f.write(b"\0" * sz); f.flush(); os.fsync(f.fileno())
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    if not match:
+        vk.die("FAIL: unsealed key does not match source. Sealed blob NOT trusted.")
+    print("    PASS: unsealed key matches the source key file.")
+
+    if args.print_sudoers:
+        helper = os.path.abspath(__file__)
+        py = sys.executable
+        print("\n# --- narrow NOPASSWD sudoers rule (write to "
+              "/etc/sudoers.d/vaultkit-tpm-unseal, chmod 440) ---")
+        print(f"{user.pw_name} ALL=(root) NOPASSWD: {py} {helper} unseal")
+        print(f"{user.pw_name} ALL=(root) NOPASSWD: {py} {helper} teardown")
+        print("# --- end ---")
+
+    if args.shred_source:
+        print("[3] shredding the plaintext key file (sealed copy is now the "
+              "credential)...")
+        try:
+            sz = src.stat().st_size
+            with open(src, "r+b") as f:
+                f.write(b"\0" * sz); f.flush(); os.fsync(f.fileno())
+            src.unlink()
+            print(f"    shredded {src}.")
+            print("    NOTE: from now on the key exists ONLY as the TPM blob and, "
+                  "at runtime, in tmpfs. Make sure you have saved your breakglass "
+                  "recovery phrase (vault-breakglass export) BEFORE relying on this.")
+        except OSError as e:
+            vk.warn(f"could not shred {src}: {e}")
+    else:
+        print("[3] left the plaintext key file in place (pass --shred-source to "
+              "remove it once you have a breakglass recovery phrase saved).")
+
+    print("\n=== seal complete ===")
+    print(f"Unseal at boot:  sudo {sys.executable} {os.path.abspath(__file__)} unseal")
+
+
+def cmd_unseal(args) -> None:
+    _reexec_as_root()  # decrypt --with-key=tpm2 needs root on most builds
+    _anchor_to_target_user()  # resolve paths against the owner, not /root
+    if not vk.have("systemd-creds"):
+        vk.die("systemd-creds not found.")
+    user = _target_user()
+    blob = _blob_path()
+    if not blob.is_file():
+        vk.die(f"sealed blob not found: {blob} (run `seal` first)")
+    cred = _cred_name()
+    target = vk.tpm_keyfile()
+    run_dir = _run_dir()
+
+    # Ensure the run dir exists and is owned by the target user. If the user
+    # asked for a private tmpfs mount (snap CLIs can't read /run/user), honor it.
+    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chown(str(run_dir), user.pw_uid, user.pw_gid)
+        os.chmod(str(run_dir), 0o700)
+    except OSError:
+        pass
+    if args.mount_tmpfs and not _is_mounted(run_dir):
+        m = subprocess.run(
+            ["mount", "-t", "tmpfs", "-o",
+             f"size=1m,mode=0700,uid={user.pw_uid},gid={user.pw_gid},"
+             "noexec,nosuid,nodev", "vaultkit", str(run_dir)],
+            capture_output=True, text=True,
+        )
+        if m.returncode != 0:
+            vk.die(f"tmpfs mount failed: {m.stderr.strip()}")
+
+    tmp = str(target) + ".tmp"
+    dec = subprocess.run(
+        ["systemd-creds", "decrypt", f"--name={cred}", str(blob), tmp],
+        capture_output=True, text=True,
+    )
+    if dec.returncode != 0:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        vk.die(f"unseal decrypt failed: {dec.stderr.strip()}")
+    os.chown(tmp, user.pw_uid, user.pw_gid)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, str(target))
+    print(f"unsealed -> {target} (owner {user.pw_name}, 0600, "
+          f"{'tmpfs mount' if args.mount_tmpfs else 'in ' + str(run_dir)})")
+
+
+def cmd_teardown(args) -> None:
+    _reexec_as_root()
+    _anchor_to_target_user()  # resolve paths against the owner, not /root
+    target = vk.tpm_keyfile()
+    run_dir = _run_dir()
+    if target.exists():
+        try:
+            sz = target.stat().st_size
+            with open(target, "r+b") as f:
+                f.write(b"\0" * sz); f.flush(); os.fsync(f.fileno())
+            target.unlink()
+        except OSError:
+            pass
+    if args.mount_tmpfs and _is_mounted(run_dir):
+        subprocess.run(["umount", str(run_dir)], capture_output=True, text=True)
+    print("torn down (tmpfs key wiped"
+          + (", tmpfs unmounted" if args.mount_tmpfs else "") + ")")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Seal/unseal the vault key to the TPM.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("seal", help="seal the on-disk key file to the TPM")
+    sp.add_argument("--shred-source", action="store_true",
+                    help="securely delete the plaintext key file after sealing "
+                         "(only do this once a breakglass phrase is saved)")
+    sp.add_argument("--print-sudoers", action="store_true",
+                    help="print a narrow NOPASSWD sudoers rule for the boot unseal")
+    sp.set_defaults(func=cmd_seal)
+
+    up = sub.add_parser("unseal", help="decrypt the sealed blob to a tmpfs key file")
+    up.add_argument("--mount-tmpfs", action="store_true",
+                    help="mount a private tmpfs at the run dir first (for snap "
+                         "CLIs that cannot read /run/user)")
+    up.set_defaults(func=cmd_unseal)
+
+    tp = sub.add_parser("teardown", help="wipe the tmpfs key file")
+    tp.add_argument("--mount-tmpfs", action="store_true",
+                    help="also unmount the private tmpfs mounted by unseal")
+    tp.set_defaults(func=cmd_teardown)
+
+    st = sub.add_parser("status", help="report TPM availability and seal state")
+    st.set_defaults(func=lambda a: cmd_status())
+
+    args = ap.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""vault-import — bulk-onboard secrets from an existing .env file into the vault.
+
+For people migrating off plaintext .env files: point this at the .env you
+already have and it loads every KEY=value into the vault group, so you can then
+delete the .env and switch to `vault-unlock` (tmpfs) injection.
+
+Usage:
+  vault-import <path/to/.env> [--update] [--group NAME] [--dry-run]
+
+Parsing rules (a pragmatic subset of the dotenv format):
+  * `KEY=value`            -> imported
+  * `export KEY=value`     -> the leading `export ` is stripped
+  * `KEY="value"` / 'value'-> one layer of surrounding quotes removed
+  * blank lines and `# comments` -> ignored
+  * lines without `=` or with an invalid KEY name -> reported, skipped
+  * a value may be empty (KEY=) -> reported as skipped (nothing to store)
+
+Safety:
+  * Values are NEVER printed and never passed on the command line — each value
+    is handed to keepassxc-cli on stdin (after the master-auth line, exactly as
+    vault-add does), so it stays out of `ps` and shell history.
+  * Idempotent by default: an entry that already exists is SKIPPED. Pass
+    --update to overwrite existing entries with the .env value instead.
+  * --dry-run shows what WOULD happen (add/update/skip) without touching the
+    vault. Useful to sanity-check a messy .env before committing.
+
+Exit status is non-zero if any line failed to import (so CI can gate on it).
+"""
+import argparse
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import vaultkit_lib as vk  # noqa: E402
+
+# A conservative, portable env-var name: letters/digits/underscore, not
+# starting with a digit. Matches what a POSIX shell will actually export.
+_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_LINE_RE = re.compile(r"^\s*(?:export\s+)?([^=#\s]+)\s*=\s*(.*?)\s*$")
+
+
+def _unquote(v: str) -> str:
+    """Strip one layer of matching surrounding quotes, if present."""
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        return v[1:-1]
+    return v
+
+
+def parse_env(path: Path) -> tuple[list[tuple[str, str]], list[str]]:
+    """Return (pairs, problems). pairs is [(KEY, value), ...] in file order;
+    problems is a list of human-readable skip reasons (no values included)."""
+    pairs: list[tuple[str, str]] = []
+    problems: list[str] = []
+    seen: set[str] = set()
+    for n, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _LINE_RE.match(raw)
+        if not m:
+            problems.append(f"line {n}: not a KEY=value assignment — skipped")
+            continue
+        key, val = m.group(1), _unquote(m.group(2))
+        if not _KEY_RE.match(key):
+            problems.append(f"line {n}: invalid env name {key!r} — skipped")
+            continue
+        if val == "":
+            problems.append(f"line {n}: {key} has an empty value — skipped")
+            continue
+        if key in seen:
+            problems.append(f"line {n}: duplicate {key} — using the last occurrence")
+            pairs = [(k, v) for (k, v) in pairs if k != key]
+        seen.add(key)
+        pairs.append((key, val))
+    return pairs, problems
+
+
+def _entry_exists(cli, vault, path, auth, pw) -> bool:
+    return vk.kpxc(auth, pw, "show", vault, path).returncode == 0
+
+
+def _store(cli, vault, path, value, auth, pw, *, update: bool) -> tuple[bool, str]:
+    """add (or edit, when update) one entry with the value on stdin.
+    Returns (ok, err). Mirrors vault-add's stdin ordering exactly."""
+    stdin = ""
+    if pw is not None:
+        stdin += pw + "\n"
+    stdin += value + "\n"
+    verb = "edit" if update else "add"
+    res = subprocess.run(
+        [cli, verb, vault, path, "-p", *auth],
+        input=stdin, capture_output=True, text=True,
+    )
+    if res.returncode != 0:
+        return False, (res.stderr or res.stdout).strip()
+    return True, ""
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description="Bulk-import secrets from a .env file into the vault group.")
+    ap.add_argument("envfile", help="path to the .env file to import")
+    ap.add_argument("--update", action="store_true",
+                    help="overwrite entries that already exist (default: skip them)")
+    ap.add_argument("--group", default=None,
+                    help="vault group to import into (default: configured GROUP)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="show what would happen without modifying the vault")
+    args = ap.parse_args()
+
+    src = Path(args.envfile).expanduser()
+    if not src.is_file():
+        vk.die(f"env file not found: {src}", 2)
+
+    pairs, problems = parse_env(src)
+    for p in problems:
+        vk.warn(p)
+    if not pairs:
+        vk.die("no importable KEY=value pairs found", 2)
+
+    group = args.group or vk.vault_group()
+    cli = vk._resolve_cli()
+    vault = str(vk.vault_path())
+
+    # Surface a confinement problem with an actionable message up front.
+    for prob in vk.preflight_paths():
+        vk.die(prob)
+
+    if args.dry_run:
+        # No auth needed to preview the file itself, but we DO need to know
+        # which entries already exist to label them correctly.
+        auth, pw = vk.build_auth()
+        if vk.kpxc(auth, pw, "ls", vault).returncode != 0:
+            vk.die("failed to unlock vault (bad password or key file)")
+        print(f"[dry-run] would import into {group}/ from {src}:")
+        for key, _ in pairs:
+            exists = _entry_exists(cli, vault, f"{group}/{key}", auth, pw)
+            action = ("update" if args.update else "skip (exists)") if exists else "add"
+            print(f"  {action:<14} {group}/{key}")
+        print(f"\n[dry-run] {len(pairs)} key(s) parsed; "
+              f"{len(problems)} line(s) skipped. No changes made.")
+        return
+
+    auth, pw = vk.build_auth()
+    if vk.kpxc(auth, pw, "ls", vault).returncode != 0:
+        vk.die("failed to unlock vault (bad password or key file)")
+
+    # Ensure the target group exists (mkdir is a no-op if present).
+    if vk.kpxc(auth, pw, "ls", vault, group).returncode != 0:
+        mk = vk.kpxc(auth, pw, "mkdir", vault, group)
+        if mk.returncode != 0 and "already exists" not in (mk.stderr + mk.stdout).lower():
+            vk.die(f"could not create group {group!r}: {mk.stderr.strip()}")
+
+    added = updated = skipped = failed = 0
+    for key, value in pairs:
+        path = f"{group}/{key}"
+        exists = _entry_exists(cli, vault, path, auth, pw)
+        if exists and not args.update:
+            print(f"  = skip (exists): {path}")
+            skipped += 1
+            continue
+        ok, err = _store(cli, vault, path, value, auth, pw, update=exists)
+        if not ok:
+            vk.warn(f"FAILED {path}: {err}")
+            failed += 1
+            continue
+        if exists:
+            print(f"  ~ updated: {path}")
+            updated += 1
+        else:
+            print(f"  + added: {path}")
+            added += 1
+
+    # Best-effort: drop the master password reference promptly.
+    if pw is not None:
+        del pw
+
+    print(f"\nDone. added={added} updated={updated} skipped={skipped} "
+          f"failed={failed} (parsed {len(pairs)}, {len(problems)} lines skipped)")
+    if failed:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

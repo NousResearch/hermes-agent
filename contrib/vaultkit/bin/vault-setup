@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""vault-setup — bootstrap a fresh KeePassXC vault from nothing.
+
+This is the onboarding wizard for a user who has nothing yet. It:
+  1. Checks prerequisites (keepassxc-cli required; age + TPM optional) and
+     tells the user exactly what's missing and how to get it.
+  2. Creates a vault directory and a fresh .kdbx with a generated key file
+     (Model B by default — no password to remember), or a password, or both.
+  3. Creates the named group that vault-unlock will read.
+  4. Optionally generates an age-encrypted BREAKGLASS recovery bundle so the
+     user can recover the vault on a new machine WITHOUT a NAS (see
+     vault-breakglass). This is the no-NAS recovery story.
+  5. Writes a user config file so all the thin commands resolve the same paths.
+
+It does NOT require a NAS, a TPM, root, or any Hermes-specific layout. Every
+path is written into the config so nothing downstream is hardcoded.
+
+Re-runnable: refuses to clobber an existing vault unless --force is given.
+"""
+import os
+import secrets as _secrets
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import vaultkit_lib as vk  # noqa: E402
+
+
+def _prompt(msg: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    val = input(f"{msg}{suffix}: ").strip()
+    return val or default
+
+
+def _yesno(msg: str, default: bool = True) -> bool:
+    d = "Y/n" if default else "y/N"
+    val = input(f"{msg} ({d}): ").strip().lower()
+    if not val:
+        return default
+    return val in {"y", "yes"}
+
+
+def _print_prereqs(report: dict) -> bool:
+    print("\nPrerequisite check:")
+    all_required_ok = True
+    for feat, (ok, detail) in report.items():
+        mark = "ok " if ok else "MISSING"
+        print(f"  [{mark}] {feat:<16} {detail}")
+        if feat == "keepassxc-cli" and not ok:
+            all_required_ok = False
+    print()
+    return all_required_ok
+
+
+def _write_config(values: dict) -> Path:
+    cfg_path = Path(
+        os.environ.get("VAULTKIT_CONFIG",
+                       str(vk._xdg_config_home() / "vaultkit" / "config"))
+    )
+    cfg_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lines = ["# vaultkit config — written by vault-setup. Edit freely.",
+             "# Keys here are overridden by matching VAULTKIT_<KEY> env vars.\n"]
+    for k, v in values.items():
+        if v != "":
+            lines.append(f"{k}={v}")
+    cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(cfg_path, 0o600)
+    return cfg_path
+
+
+def main() -> None:
+    force = "--force" in sys.argv[1:]
+    print("=== vaultkit setup ===")
+    report = vk.check_prereqs()
+    if not _print_prereqs(report):
+        vk.die("keepassxc-cli is required. Install KeePassXC and re-run.\n"
+               "  Debian/Ubuntu: sudo apt install keepassxc\n"
+               "  Fedora:        sudo dnf install keepassxc\n"
+               "  macOS:         brew install keepassxc")
+    age_ok = report["age"][0]
+    tpm_ok = report["tpm2"][0]
+
+    # ── paths ──
+    default_dir = str(Path.home() / ".local/share/vaultkit")
+    vdir = Path(_prompt("Vault directory", default_dir)).expanduser()
+    vdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    vault = vdir / "vault.kdbx"
+    keyfile = vdir / "vault.key"
+    group = _prompt("Secret group name", "hermes")
+
+    if vault.exists() and not force:
+        vk.die(f"vault already exists at {vault} (use --force to recreate)")
+
+    # Preflight: a snap/flatpak CLI can't reach a vault outside $HOME. Catch it
+    # now with an actionable message instead of a cryptic CLI error later.
+    # (We must set the resolved paths into the env first so preflight reads them.)
+    os.environ["VAULTKIT_VAULT"] = str(vault)
+    os.environ["VAULTKIT_KEYFILE"] = str(keyfile)
+    vk._CONFIG_CACHE = None  # force re-read with the new env overrides
+    conf = vk.cli_confinement()
+    if conf != "native":
+        print(f"\nNote: detected a {conf}-packaged keepassxc-cli "
+              f"(sandboxed to your home directory).")
+    for prob in vk.preflight_paths():
+        vk.die(prob)
+
+    # ── auth model ──
+    print("\nAuth model:")
+    print("  1. Key file only  (no password to remember; protect the key file)")
+    print("  2. Password only")
+    print("  3. Both           (key file + password — strongest)")
+    choice = _prompt("Choose 1/2/3", "1")
+    use_keyfile = choice in {"1", "3"}
+    use_password = choice in {"2", "3"}
+
+    cli = vk._resolve_cli()
+    # NOTE: `db-create` is special — it uses --set-key-file (NOT -k) and
+    # CREATES the key file itself (do not pre-generate it; keepassxc-cli
+    # writes its own versioned key-file format). It also does not accept
+    # --no-password; omitting -p / a password line yields a key-file-only
+    # database. -q silences the secondary prompt. Verified on keepassxc-cli
+    # 2.7.x. The other subcommands (ls/show/add/mkdir) DO use -k and accept
+    # --no-password, handled by vaultkit_lib.build_auth().
+    create_args = [cli, "db-create", str(vault), "-q"]
+    pw = None
+    if use_keyfile:
+        create_args += ["--set-key-file", str(keyfile)]
+        print(f"key file will be created at: {keyfile}")
+    if use_password:
+        import getpass
+        while True:
+            pw = getpass.getpass("New vault master password: ")
+            if pw and pw == getpass.getpass("Confirm: "):
+                break
+            print("  passwords empty or mismatched, try again")
+        create_args += ["-p"]
+
+    import subprocess
+    res = subprocess.run(create_args, input=(pw + "\n") if pw else "",
+                         capture_output=True, text=True)
+    if res.returncode != 0:
+        vk.die(f"db-create failed: {res.stderr.strip() or res.stdout.strip()}")
+    if use_keyfile:
+        try:
+            os.chmod(str(keyfile), 0o600)
+        except OSError:
+            pass
+        print(f"created key file: {keyfile} (0600)")
+    print(f"created vault: {vault}")
+
+    # ── create the group (ls/show/add/mkdir use -k and --no-password) ──
+    auth = (["-k", str(keyfile)] if use_keyfile else []) + \
+           ([] if use_password else ["--no-password"])
+    mk = subprocess.run([cli, "mkdir", str(vault), group, *auth],
+                        input=(pw + "\n") if pw else "", capture_output=True, text=True)
+    if mk.returncode != 0 and "already exists" not in (mk.stderr + mk.stdout).lower():
+        vk.warn(f"could not create group {group!r}: {mk.stderr.strip()}")
+    else:
+        print(f"created group: {group}")
+
+    # ── write config ──
+    cfg_path = _write_config({
+        "DIR": str(vdir),
+        "VAULT": str(vault),
+        "KEYFILE": str(keyfile) if use_keyfile else "",
+        "GROUP": group,
+        # SERVICES left blank by default; user adds their own if any.
+        "SERVICES": "",
+    })
+    print(f"wrote config: {cfg_path}")
+
+    # ── optional breakglass ──
+    if age_ok and use_keyfile and _yesno(
+        "\nGenerate an age breakglass recovery bundle now? "
+        "(lets you recover on a new machine with NO NAS)"
+    ):
+        bg = Path(__file__).resolve().parent / "vault-breakglass"
+        print(f"\nRun:  {bg} export\n"
+              "  -> prints a 24-word recovery phrase to write on paper, and\n"
+              "     writes an encrypted bundle you can copy anywhere.")
+    elif not age_ok:
+        print("\n(age not installed — breakglass export unavailable. "
+              "Install 'age' to enable offline recovery bundles.)")
+
+    if tpm_ok:
+        print("\nTPM detected. To seal the key file to this machine's boot state,\n"
+              "see README section 'TPM sealing (optional)'. The kit works fine\n"
+              "without it — the key file on disk (0600) is the credential.")
+
+    print("\n=== setup complete ===")
+    print(f"Add secrets:   {Path(__file__).resolve().parent / 'vault-add'} <KEY_NAME>")
+    print(f"Load to tmpfs: {Path(__file__).resolve().parent / 'vault-unlock'}")
+
+
+if __name__ == "__main__":
+    main()

@@ -62,6 +62,7 @@ def _make_adapter(extra=None):
     bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
     bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
     bot.send_chat_action = AsyncMock()  # keeps the post-send typing re-trigger quiet
+    bot.send_document = AsyncMock(return_value=MagicMock(message_id=2))
     bot.send_message_draft = AsyncMock(return_value=True)  # legacy draft fallback
     bot.edit_message_text = AsyncMock(return_value=MagicMock(message_id=1))  # legacy edit path
     bot.delete_message = AsyncMock(return_value=True)
@@ -310,18 +311,21 @@ async def test_expect_edits_metadata_keeps_preview_on_legacy_path():
 
 
 @pytest.mark.asyncio
-async def test_oversized_content_skips_rich_and_chunks():
+async def test_oversized_content_skips_rich_and_sends_document():
     adapter = _make_adapter()
-    # > 32,768 characters -> rich pre-check fails, legacy chunking takes over.
+    # > 32,768 characters -> rich pre-check fails, long-text document delivery
+    # takes over to avoid Bot API flood waits from many continuation messages.
     oversized = "a" * 40000
     assert len(oversized) > TelegramAdapter.RICH_MESSAGE_MAX_CHARS
 
     result = await adapter.send("12345", oversized)
 
     assert result.success is True
-    adapter._bot.do_api_request.assert_not_called()
-    # Oversized content is split into multiple legacy chunks.
-    assert adapter._bot.send_message.await_count > 1
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_not_awaited()
+    bot.send_document.assert_awaited_once()
 
 
 @pytest.mark.asyncio

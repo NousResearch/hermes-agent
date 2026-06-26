@@ -138,3 +138,95 @@ async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
     adapter.delete_message.assert_not_awaited()
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_send_long_text_delivers_txt_document_instead_of_chunks(telegram_adapter):
+    """Long final sends use one document upload, avoiding Telegram flood waits."""
+    telegram_adapter.config.extra["long_text_document_threshold"] = 200
+    content = "word " * 80
+    captured = {}
+
+    async def fake_send_document(chat_id, file_path, caption=None, file_name=None, reply_to=None, metadata=None, **_kwargs):
+        with open(file_path, "r", encoding="utf-8") as handle:
+            captured["body"] = handle.read()
+        captured.update(
+            chat_id=chat_id,
+            caption=caption,
+            file_name=file_name,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        return SendResult(success=True, message_id="doc-1")
+
+    telegram_adapter.send_document = AsyncMock(side_effect=fake_send_document)
+    telegram_adapter._bot.send_message = AsyncMock(return_value=_message(202))
+
+    result = await telegram_adapter.send(
+        "12345",
+        content,
+        reply_to="99",
+        metadata={"thread_id": "77", "notify": True},
+    )
+
+    assert result.success is True
+    assert result.message_id == "doc-1"
+    telegram_adapter._bot.send_message.assert_not_awaited()
+    telegram_adapter.send_document.assert_awaited_once()
+    assert captured["body"] == content
+    assert captured["file_name"].startswith("hermes-response-")
+    assert captured["file_name"].endswith(".txt")
+    assert captured["reply_to"] == "99"
+    assert captured["metadata"] == {"thread_id": "77", "notify": True}
+
+
+@pytest.mark.asyncio
+async def test_edit_finalize_long_text_replaces_preview_and_sends_txt_document(telegram_adapter):
+    """Finalizing a long streamed reply avoids continuation chunk storms."""
+    telegram_adapter.config.extra["long_text_document_threshold"] = 200
+    content = "word " * 80
+    captured = {}
+
+    async def fake_send_document(chat_id, file_path, caption=None, file_name=None, reply_to=None, metadata=None, **_kwargs):
+        with open(file_path, "r", encoding="utf-8") as handle:
+            captured["body"] = handle.read()
+        captured.update(caption=caption, reply_to=reply_to, metadata=metadata)
+        return SendResult(success=True, message_id="doc-2")
+
+    telegram_adapter._bot.edit_message_text = AsyncMock(return_value=True)
+    telegram_adapter._bot.send_message = AsyncMock(return_value=_message(202))
+    telegram_adapter.send_document = AsyncMock(side_effect=fake_send_document)
+
+    result = await telegram_adapter.edit_message(
+        "12345",
+        "201",
+        content,
+        finalize=True,
+        metadata={"thread_id": "77", "notify": True},
+    )
+
+    assert result.success is True
+    assert result.message_id == "doc-2"
+    telegram_adapter._bot.edit_message_text.assert_awaited_once()
+    telegram_adapter._bot.send_message.assert_not_awaited()
+    assert captured["body"] == content
+    assert captured["reply_to"] == "201"
+    assert captured["metadata"] == {"thread_id": "77", "notify": True}
+
+
+@pytest.mark.asyncio
+async def test_long_text_document_can_be_disabled(telegram_adapter):
+    """Operators can opt out and keep the legacy chunked text behavior."""
+    telegram_adapter.config.extra["long_text_as_document"] = False
+    telegram_adapter.config.extra["long_text_document_threshold"] = 200
+    content = "word " * 80
+    telegram_adapter._bot.send_message = AsyncMock(
+        side_effect=[_message(202), _message(203), _message(204)]
+    )
+    telegram_adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+
+    result = await telegram_adapter.send("12345", content, metadata={"notify": True})
+
+    assert result.success is True
+    telegram_adapter.send_document.assert_not_awaited()
+    assert telegram_adapter._bot.send_message.await_count > 1

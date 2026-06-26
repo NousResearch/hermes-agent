@@ -418,6 +418,9 @@ class TelegramAdapter(BasePlatformAdapter):
     # Bot API 10.1 Rich Messages cap the raw markdown/html text at 32,768
     # UTF-8 characters. Content above this is sent via the legacy chunking path.
     RICH_MESSAGE_MAX_CHARS = 32768
+    # Avoid Telegram flood-wait stalls for long final replies by sending the
+    # full answer as one .txt document instead of several 4096-char messages.
+    LONG_TEXT_DOCUMENT_THRESHOLD = 6000
     # Backwards-compatible alias for tests/external callers that referenced the
     # initial implementation name. The API limit is character-based, not bytes.
     RICH_MESSAGE_MAX_BYTES = RICH_MESSAGE_MAX_CHARS
@@ -1042,6 +1045,75 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
             return default
         return bool(value)
+
+    def _long_text_document_threshold(self) -> int:
+        raw = None
+        if getattr(self.config, "extra", None):
+            raw = self.config.extra.get("long_text_document_threshold")
+        try:
+            value = int(raw) if raw is not None else self.LONG_TEXT_DOCUMENT_THRESHOLD
+        except (TypeError, ValueError):
+            value = self.LONG_TEXT_DOCUMENT_THRESHOLD
+        # Keep this above Telegram's single-message limit; smaller values would
+        # surprise users by converting ordinary short answers into files.
+        return max(self.MAX_MESSAGE_LENGTH + 1, value)
+
+    def _should_send_long_text_as_document(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Return True when a final long answer should be delivered as .txt.
+
+        Large chunked Telegram sends often trigger Bot API flood waits of several
+        minutes.  Default to document delivery for final long answers, while
+        allowing operators to opt out with
+        ``platforms.telegram.extra.long_text_as_document: false``.
+        """
+        if not content or not content.strip():
+            return False
+        if not self._coerce_bool_extra("long_text_as_document", True):
+            return False
+        # Draft/progress/status traffic should stay text. Final gateway replies
+        # carry notify=True; direct tool sends may omit metadata, so still apply
+        # the threshold there.
+        if metadata and metadata.get("status_key"):
+            return False
+        return utf16_len(content) >= self._long_text_document_threshold()
+
+    async def _send_long_text_document(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        caption: Optional[str] = None,
+    ) -> SendResult:
+        """Send long text as a temporary UTF-8 .txt document."""
+        fd, tmp_path = tempfile.mkstemp(
+            prefix="hermes-response-",
+            suffix=".txt",
+            text=True,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            file_name = f"hermes-response-{timestamp}.txt"
+            return await self.send_document(
+                chat_id=chat_id,
+                file_path=tmp_path,
+                caption=caption or "Ответ слишком длинный для Telegram — отправляю полным текстом в файле.",
+                file_name=file_name,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
@@ -2602,7 +2674,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
@@ -2625,6 +2697,14 @@ class TelegramAdapter(BasePlatformAdapter):
                             except Exception:
                                 pass  # Typing failures are non-fatal
                     return rich_result
+
+            if self._should_send_long_text_as_document(content, metadata):
+                return await self._send_long_text_document(
+                    chat_id,
+                    content,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
 
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -2958,6 +3038,29 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        if finalize and self._should_send_long_text_as_document(content, metadata):
+            notice = "Ответ слишком длинный для Telegram — отправляю полным текстом в файле."
+            try:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    text=notice,
+                )
+            except Exception as e:
+                if "not modified" not in str(e).lower():
+                    logger.debug(
+                        "[%s] Long-text document notice edit failed: %s",
+                        self.name,
+                        e,
+                    )
+            return await self._send_long_text_document(
+                chat_id,
+                content,
+                reply_to=message_id,
+                metadata=metadata,
+                caption=notice,
+            )
 
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet

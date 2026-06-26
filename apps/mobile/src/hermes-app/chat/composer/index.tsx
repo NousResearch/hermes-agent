@@ -219,6 +219,7 @@ export function ChatBar({
     [aui]
   )
 
+  const mobileStandalone = typeof window !== 'undefined' && Boolean((window as any).__HERMES_MOBILE_STANDALONE__)
   const attachments = useStore($composerAttachments)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const statusItemsBySession = useStore($statusItemsBySession)
@@ -1988,7 +1989,9 @@ export function ChatBar({
               ? // Floating: the composer (with its own border) floats with an even
                 // 5px transparent grab margin around it — drag that to move it.
                 'fixed w-[var(--composer-popout-width)] max-w-[calc(100vw-1.5rem)] bg-transparent p-[5px]'
-              : 'absolute bottom-0 left-1/2 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 pt-2 pb-[var(--composer-shell-pad-block-end)]',
+              : mobileStandalone
+                ? 'fixed inset-x-3 bottom-[max(1rem,env(safe-area-inset-bottom))] w-auto max-w-none translate-x-0 p-0'
+                : 'absolute bottom-0 left-1/2 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 pt-2 pb-[var(--composer-shell-pad-block-end)]',
             dragging && 'cursor-grabbing select-none touch-none'
           )}
           data-drag-active={dragActive ? '' : undefined}
@@ -2163,7 +2166,10 @@ export function ChatBarFallback() {
   return (
     <div
       className={cn(
-        'group/composer absolute bottom-0 left-1/2 z-30 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 rounded-2xl pt-2 pb-[var(--composer-shell-pad-block-end)]',
+        'group/composer z-30 rounded-2xl',
+        typeof window !== 'undefined' && Boolean((window as any).__HERMES_MOBILE_STANDALONE__)
+          ? 'fixed inset-x-3 bottom-4 w-auto max-w-none translate-x-0 p-0'
+          : 'absolute bottom-0 left-1/2 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 pt-2 pb-[var(--composer-shell-pad-block-end)]',
         'bg-linear-to-b from-transparent to-background/55'
       )}
       data-slot="composer-root"

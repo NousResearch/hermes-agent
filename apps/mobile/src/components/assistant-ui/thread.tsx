@@ -27,6 +27,7 @@ import {
   useRef,
   useState
 } from 'react'
+import { createPortal } from 'react-dom'
 
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
@@ -198,7 +199,7 @@ export const Thread: FC<{
   )
 
   const emptyPlaceholder = intro ? (
-    <div className="flex min-h-0 w-full flex-col items-center justify-center pt-[var(--composer-measured-height)]">
+    <div className="flex min-h-0 w-full flex-col items-center justify-center pb-[var(--composer-measured-height)]">
       <Intro {...intro} />
     </div>
   ) : undefined

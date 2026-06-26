@@ -9,6 +9,7 @@ const defaultGatewayToken = process.env.EXPO_PUBLIC_HERMES_GATEWAY_TOKEN || '';
 
 const mobileBridgeScript = `
 (function () {
+  try { document.documentElement.classList.add('hermes-mobile-standalone'); } catch (_) {}
   function stringify(value) {
     if (value instanceof Error) return value.stack || value.message;
     if (typeof value === 'string') return value;
@@ -146,7 +147,7 @@ const mobileBridgeScript = `
     getConnection: resolved(readConnection),
     getConnectionConfig: resolved(connectionConfig),
     getBootProgress: resolved({ error: null, fakeMode: false, phase: 'done', message: 'Connected', progress: 100, running: false, timestamp: Date.now() }),
-    getBootstrapState: resolved({ active: false, completed: true, error: null, phase: 'done', message: 'Ready' }),
+    getBootstrapState: resolved({ active: false, manifest: null, stages: {}, error: null, log: [], startedAt: null, completedAt: null, unsupportedPlatform: null }),
     getGatewayWsUrl: function () { return Promise.resolve(readConnection().wsUrl); },
     getRecentLogs: resolved({ path: '', lines: [] }),
     clearLogs: resolved(undefined),
@@ -238,7 +239,9 @@ export default function App() {
       }
 
       if (message.type === 'diagnostic') {
-        setDiagnostic(String(message.payload || '').slice(0, 1800));
+        // Console diagnostics from the WebView land here. Logging only — no UI:
+        // the on-screen overlay is reserved for real WebView load failures.
+        if (__DEV__) console.log('[hermes:webview]', String(message.payload || '').slice(0, 1800));
         return;
       }
       if (message.type !== 'hermes:api' || !message.payload?.id || !message.payload?.request?.path) return;

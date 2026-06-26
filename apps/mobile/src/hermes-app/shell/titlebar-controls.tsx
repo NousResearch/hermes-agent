@@ -16,6 +16,7 @@ import {
   $sidebarOpen,
   CHAT_SIDEBAR_PANE_ID,
   FILE_BROWSER_PANE_ID,
+  setSidebarOpen,
   toggleFileBrowserOpen,
   togglePanesFlipped,
   toggleSidebarOpen
@@ -37,6 +38,7 @@ export interface TitlebarTool {
   hidden?: boolean
   href?: string
   icon: ReactNode
+  onPointerDownSelect?: boolean
   onSelect?: () => void
   title?: string
   to?: string
@@ -67,6 +69,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
+  const mobileStandalone = typeof window !== 'undefined' && Boolean((window as any).__HERMES_MOBILE_STANDALONE__)
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
@@ -95,25 +98,36 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const leftToolbarTools: TitlebarTool[] = [
     {
-      icon: <Codicon name="layout-sidebar-left" />,
+      icon: <Codicon name={mobileStandalone ? 'menu' : 'layout-sidebar-left'} />,
       id: 'sidebar',
       label: leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar,
+      onPointerDownSelect: mobileStandalone,
       onSelect: () => {
         triggerHaptic('tap')
+
+        if (mobileStandalone) {
+          setSidebarOpen(!sidebarOpen)
+          return
+        }
+
         toggleResponsivePaneReveal(leftEdge.paneId, leftEdge.toggle)
       }
     },
-    {
-      icon: <Codicon name="arrow-swap" />,
-      id: 'flip-panes',
-      label: t.titlebar.swapSidebarSides,
-      onSelect: () => {
-        triggerHaptic('tap')
-        togglePanesFlipped()
-      },
-      title: t.titlebar.swapSidebarSidesTitle
-    },
-    ...leftTools
+    ...(!mobileStandalone
+      ? [
+          {
+            icon: <Codicon name="arrow-swap" />,
+            id: 'flip-panes',
+            label: t.titlebar.swapSidebarSides,
+            onSelect: () => {
+              triggerHaptic('tap')
+              togglePanesFlipped()
+            },
+            title: t.titlebar.swapSidebarSidesTitle
+          } satisfies TitlebarTool,
+          ...leftTools
+        ]
+      : [])
   ]
 
   const rightSidebarTool: TitlebarTool = {
@@ -163,10 +177,13 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     return null
   }
 
-  const visibleSystemTools = systemTools.filter(tool => !tool.hidden)
+  const visibleSystemTools = mobileStandalone ? [] : systemTools.filter(tool => !tool.hidden)
   const settingsTool = visibleSystemTools.find(tool => tool.id === 'settings')
   const visibleSystemToolsBeforeSettings = visibleSystemTools.filter(tool => tool.id !== 'settings')
-  const visiblePaneTools = tools.filter(tool => !tool.hidden)
+  const visiblePaneTools = mobileStandalone ? [] : tools.filter(tool => !tool.hidden)
+  const visibleLeftToolbarTools = mobileStandalone
+    ? leftToolbarTools.filter(tool => tool.id === 'sidebar' && !tool.hidden)
+    : leftToolbarTools.filter(tool => !tool.hidden)
 
   return (
     <>
@@ -174,11 +191,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         aria-label={t.shell.windowControls}
         className="fixed left-(--titlebar-controls-left) top-(--titlebar-controls-top) z-70 flex translate-y-0.5 flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
       >
-        {leftToolbarTools
-          .filter(tool => !tool.hidden)
-          .map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-          ))}
+        {visibleLeftToolbarTools.map(tool => (
+          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+        ))}
       </div>
 
       {/*
@@ -200,16 +215,18 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         </div>
       )}
 
-      <div
-        aria-label={t.shell.appControls}
-        className="fixed right-(--titlebar-tools-right) top-(--titlebar-controls-top) z-70 flex flex-row items-center justify-end gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
-      >
-        {visibleSystemToolsBeforeSettings.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
-        {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
-        <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
-      </div>
+      {!mobileStandalone && (
+        <div
+          aria-label={t.shell.appControls}
+          className="fixed right-(--titlebar-tools-right) top-(--titlebar-controls-top) z-70 flex flex-row items-center justify-end gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
+        >
+          {visibleSystemToolsBeforeSettings.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+          {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
+          <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
+        </div>
+      )}
     </>
   )
 }
@@ -265,7 +282,17 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
 
           runTool()
         }}
-        onPointerDown={event => event.stopPropagation()}
+        onPointerDown={event => {
+          event.stopPropagation()
+
+          if (!tool.onPointerDownSelect) {
+            return
+          }
+
+          event.preventDefault()
+          lastPointerSelectAt.current = performance.now()
+          runTool()
+        }}
         onPointerUp={event => {
           if (event.pointerType === 'mouse') {
             return
@@ -273,6 +300,14 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
 
           event.preventDefault()
           event.stopPropagation()
+
+          // If onPointerDownSelect already fired runTool on this tap, don't
+          // run again on release — that's a double-toggle that immediately
+          // reverses the action (mobile sidebar bug).
+          if (tool.onPointerDownSelect) {
+            return
+          }
+
           lastPointerSelectAt.current = performance.now()
           runTool()
         }}

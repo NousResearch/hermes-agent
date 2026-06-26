@@ -1462,3 +1462,235 @@ canvas {
     animation: none;
   }
 }
+
+/* ── Native iPhone shell polish ─────────────────────────────────────────────
+   The mobile app intentionally reuses the Desktop UI, but the phone wrapper
+   should feel full-bleed and touch-native instead of like a clipped desktop
+   viewport. The RN bridge adds .hermes-mobile-standalone before app boot. */
+html.hermes-mobile-standalone,
+html.hermes-mobile-standalone body,
+html.hermes-mobile-standalone #root {
+  width: 100%;
+  max-width: 100dvw;
+  height: 100dvh;
+  min-height: 100dvh;
+  background: var(--ui-chat-surface-background);
+  overflow-x: hidden;
+  overscroll-behavior: none;
+}
+
+html.hermes-mobile-standalone {
+  --titlebar-height: calc(env(safe-area-inset-top) + 2.75rem) !important;
+  --titlebar-controls-left: 1rem !important;
+  --titlebar-controls-top: calc(env(safe-area-inset-top) + 1.85rem) !important;
+  --titlebar-tools-right: 1rem !important;
+  --composer-width: 100vw !important;
+  --composer-shell-pad-block-end: max(0.72rem, env(safe-area-inset-bottom)) !important;
+  --composer-control-size: 2.75rem;
+  --composer-control-primary-size: 2.75rem;
+  --composer-surface-pad-x: 0.875rem;
+  --composer-surface-pad-y: 0.7rem;
+  --composer-input-min-height: 2.75rem;
+  --conversation-text-font-size: 0.95rem;
+  --conversation-line-height: 1.45rem;
+  --thread-last-message-clearance: calc(var(--composer-measured-height) + env(safe-area-inset-bottom) + var(--keyboard-inset, 0px) + 1.75rem);
+}
+
+html.hermes-mobile-standalone [data-slot='composer-root'] {
+  /* Lift the docked composer above the iOS soft keyboard. */
+  transform: translateY(calc(-1 * var(--keyboard-inset, 0px)));
+  transition: transform 120ms ease-out;
+}
+
+/* Let the chat canvas run under the Dynamic Island / home indicator; content
+   owns its own safe-area padding instead of RN shrinking the WebView. */
+html.hermes-mobile-standalone [data-slot='composer-bounds'] {
+  min-height: 0;
+}
+
+html.hermes-mobile-standalone [data-slot='aui_thread-viewport'] {
+  padding-top: env(safe-area-inset-top);
+}
+
+html.hermes-mobile-standalone [data-slot='aui_thread-content'] {
+  max-width: none;
+  padding-inline: 1rem;
+}
+
+html.hermes-mobile-standalone [data-slot='aui_intro'] {
+  padding-inline: 1.1rem;
+  padding-block: 0;
+}
+
+html.hermes-mobile-standalone [data-slot='aui_intro'] > div {
+  max-width: min(100%, 28rem);
+}
+
+/* Claude-like phone composer: one rounded bottom dock, no desktop drag affordance,
+   no status strip below it, and enough hit-target for thumb use. */
+html.hermes-mobile-standalone [data-slot='composer-root']:not([data-popped-out]) {
+  position: fixed !important;
+  left: 50dvw !important;
+  right: auto !important;
+  bottom: max(0.7rem, env(safe-area-inset-bottom)) !important;
+  width: min(28rem, calc(100dvw - 1.25rem)) !important;
+  max-width: calc(100dvw - 1.25rem) !important;
+  margin-inline: 0 !important;
+  padding: 0 !important;
+  border-radius: 2rem !important;
+  transform: translateX(-50%) !important;
+}
+
+html.hermes-mobile-standalone [data-slot='composer-drag-region'],
+html.hermes-mobile-standalone [data-slot='composer-root'] > .pointer-events-none {
+  display: none !important;
+}
+
+html.hermes-mobile-standalone [data-slot='composer-surface'] {
+  min-height: 4.95rem;
+  border-color: color-mix(in srgb, var(--dt-foreground) 12%, transparent) !important;
+  border-radius: 2rem !important;
+  box-shadow: 0 1.25rem 3.5rem color-mix(in srgb, #000 18%, transparent);
+}
+
+html.hermes-mobile-standalone [data-slot='composer-fade'] {
+  min-height: 4.35rem;
+  opacity: 1 !important;
+}
+
+html.hermes-mobile-standalone [data-slot='composer-rich-input'] {
+  font-size: 1rem;
+  line-height: 1.35rem;
+}
+
+html.hermes-mobile-standalone [data-slot='composer-rich-input']:empty::before {
+  font-size: 1rem;
+}
+
+/* Touch chrome: the top-right desktop tool cluster is hidden in React; make the
+   remaining single sidebar button larger and easier to hit. */
+html.hermes-mobile-standalone [aria-label='Window controls'] button,
+html.hermes-mobile-standalone [aria-label='Window controls'] a {
+  width: 2.75rem !important;
+  height: 2.75rem !important;
+  border-radius: 999rem !important;
+  color: color-mix(in srgb, var(--dt-foreground) 64%, transparent) !important;
+}
+
+/* Mobile sidebar reads like a real drawer: full-bleed dark panel, larger rows,
+   and safe-area-aware top padding. */
+html.hermes-mobile-standalone [data-sidebar='sidebar'] {
+  background: #151516 !important;
+  color: #f5f5f3 !important;
+  border-color: color-mix(in srgb, #fff 10%, transparent) !important;
+}
+
+html.hermes-mobile-standalone [data-sidebar='content'] {
+  padding-inline: 1.25rem !important;
+}
+
+/* Mobile tap targets inside settings / file browser / any OverlayView: bump
+   form controls and nav rows to ≥44pt per iOS HIG. */
+html.hermes-mobile-standalone [data-slot='overlay-view'] button,
+html.hermes-mobile-standalone [data-slot='overlay-view'] [role='combobox'],
+html.hermes-mobile-standalone [data-slot='overlay-view'] [role='button'],
+html.hermes-mobile-standalone [data-slot='overlay-view'] select {
+  min-height: 2.75rem;
+}
+
+html.hermes-mobile-standalone [data-slot='overlay-view'] input,
+html.hermes-mobile-standalone [data-slot='overlay-view'] textarea {
+  font-size: 1rem;
+  min-height: 2.75rem;
+}
+
+html.hermes-mobile-standalone [data-sidebar='group']:first-child {
+  padding-top: calc(env(safe-area-inset-top) + 3.25rem) !important;
+}
+
+html.hermes-mobile-standalone [data-sidebar='menu-button'] {
+  min-height: 3rem !important;
+  border-radius: 0.95rem !important;
+  font-size: 1.05rem !important;
+  color: color-mix(in srgb, #fff 88%, transparent) !important;
+}
+
+html.hermes-mobile-standalone [data-mobile-drawer] {
+  --ui-sidebar-surface-background: #f6f7fb;
+  --sidebar-foreground: #343843;
+  --ui-text-secondary: #4f5663;
+  --ui-text-tertiary: #8b929e;
+  --ui-control-hover-background: rgba(15, 23, 42, 0.06);
+  --ui-control-active-background: rgba(0, 94, 255, 0.1);
+}
+
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='menu-button'] {
+  color: #4f5663 !important;
+}
+
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='menu-button'] svg,
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='menu-button'] [class*='codicon'] {
+  color: #9aa1ad !important;
+}
+
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='menu-button']:hover {
+  color: #20242d !important;
+}
+
+/* HARD MOBILE OVERRIDES: keep after every desktop composer/titlebar rule. */
+html.hermes-mobile-standalone,
+html.hermes-mobile-standalone body,
+html.hermes-mobile-standalone #root {
+  width: 100dvw !important;
+  max-width: 100dvw !important;
+  overflow-x: hidden !important;
+}
+
+/* Do not trust env(safe-area-inset-top) inside WKWebView/simulator here — it
+   has reported 0 and placed the sidebar button behind/above the Dynamic Island.
+   4.6rem clears the iPhone 17 Pro camera island/status bar in the simulator. */
+html.hermes-mobile-standalone {
+  --titlebar-controls-top: 4.6rem !important;
+  --titlebar-controls-left: 1rem !important;
+  --titlebar-height: 7.2rem !important;
+}
+
+html.hermes-mobile-standalone [aria-label='Window controls'] {
+  position: fixed !important;
+  top: 4.6rem !important;
+  left: 1rem !important;
+  right: auto !important;
+  transform: none !important;
+  z-index: 2147483000 !important;
+}
+
+html.hermes-mobile-standalone [aria-label='Window controls'] button,
+html.hermes-mobile-standalone [aria-label='Window controls'] a {
+  width: 2.75rem !important;
+  height: 2.75rem !important;
+  min-width: 2.75rem !important;
+  min-height: 2.75rem !important;
+  border-radius: 999rem !important;
+}
+
+/* Center against the physical viewport, not the desktop app's measured shell. */
+html.hermes-mobile-standalone [data-slot='composer-root']:not([data-popped-out]) {
+  position: fixed !important;
+  inset-inline-start: 0.75rem !important;
+  inset-inline-end: 0.75rem !important;
+  left: 0.75rem !important;
+  right: 0.75rem !important;
+  bottom: 1rem !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  margin: 0 !important;
+  transform: none !important;
+  translate: none !important;
+  box-sizing: border-box !important;
+}
+
+html.hermes-mobile-standalone [data-slot='composer-surface'] {
+  width: 100% !important;
+  box-sizing: border-box !important;
+}

@@ -64,7 +64,7 @@ function DialogContent({
           <DialogPrimitive.Close asChild data-slot="dialog-close-button">
             <Button
               aria-label={t.common.close}
-              className="absolute right-2.5 top-2.5 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+              className="absolute right-2.5 top-[calc(env(safe-area-inset-top)+0.625rem)] text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
               size="icon-xs"
               variant="ghost"
             >

@@ -52,7 +52,9 @@ interface TipProps extends Omit<React.ComponentProps<typeof TooltipPrimitive.Con
 // anywhere without a provider ancestor. Renders the child untouched when label
 // is falsy.
 function Tip({ label, children, delayDuration = 0, ...props }: TipProps) {
-  if (!label) {
+  // Touch devices have no hover — tooltips fire on tap, fight with primary
+  // actions, and add latency. Drop them entirely on the mobile shell.
+  if (!label || (typeof window !== 'undefined' && Boolean((window as any).__HERMES_MOBILE_STANDALONE__))) {
     return <>{children}</>
   }
 

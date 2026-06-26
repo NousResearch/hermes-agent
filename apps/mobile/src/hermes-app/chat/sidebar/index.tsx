@@ -17,6 +17,7 @@ import {
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
@@ -65,6 +66,7 @@ import {
   setSidebarCronOpen,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
+  setSidebarOpen,
   setSidebarSessionOrderIds,
   setSidebarSessionOrderManual,
   setSidebarWorkspaceOrderIds,
@@ -308,6 +310,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onArchiveSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
   onManageCronJob: (jobId: string) => void
+  onOpenSettings?: () => void
   onTriggerCronJob: (jobId: string) => void
 }
 
@@ -317,16 +320,26 @@ export function ChatSidebar({
   onLoadMoreSessions,
   onLoadMoreProfileSessions,
   onLoadMoreMessaging,
-  onResumeSession,
+  onResumeSession: onResumeSessionRaw,
   onDeleteSession,
   onArchiveSession,
   onNewSessionInWorkspace,
   onManageCronJob,
+  onOpenSettings,
   onTriggerCronJob
 }: ChatSidebarProps) {
   const { t } = useI18n()
   const s = t.sidebar
+  const mobileStandalone = typeof window !== 'undefined' && Boolean((window as any).__HERMES_MOBILE_STANDALONE__)
   const sidebarOpen = useStore($sidebarOpen)
+  // On mobile the drawer overlays the chat — pick a session, close the drawer
+  // so the user lands directly in the conversation.
+  const onResumeSession = mobileStandalone
+    ? (sessionId: string) => {
+        setSidebarOpen(false)
+        onResumeSessionRaw(sessionId)
+      }
+    : onResumeSessionRaw
   // Collapsed-but-overlay-mounted → render the full sidebar, not just the nav rail.
   const overlayMounted = useStore($sidebarOverlayMounted)
   const contentVisible = sidebarOpen || overlayMounted
@@ -791,20 +804,51 @@ export function ChatSidebar({
       })
     )
 
-  return (
+  useEffect(() => {
+    if (!mobileStandalone || !sidebarOpen) {
+      return
+    }
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null
+
+      if (target?.closest('[data-mobile-drawer]') || target?.closest('[aria-label="Window controls"]')) {
+        return
+      }
+
+      const drawerWidth = Math.min(window.innerWidth * 0.64, 260)
+
+      if (event.clientX > drawerWidth) {
+        setSidebarOpen(false)
+      }
+    }
+
+    window.addEventListener('pointerdown', closeOnOutsidePointer, true)
+
+    return () => window.removeEventListener('pointerdown', closeOnOutsidePointer, true)
+  }, [mobileStandalone, sidebarOpen])
+
+  const sidebarNode = (
     <Sidebar
       className={cn(
         'relative h-full min-w-0 overflow-hidden border-t-0 border-b-0 text-foreground transition-none',
         panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',
-        sidebarOpen
-          ? 'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
-          : 'pointer-events-none border-transparent bg-transparent opacity-0',
+        mobileStandalone &&
+          'fixed inset-y-0 left-0 z-[2147482500] w-[min(84vw,22rem)] max-w-[22rem] border-0 bg-[#f6f7fb] text-[#23262f] opacity-100 shadow-[1.5rem_0_4rem_rgba(15,23,42,0.16)] transition-transform duration-180 ease-out',
+        mobileStandalone && !sidebarOpen && '-translate-x-full pointer-events-none',
+        !mobileStandalone &&
+          (sidebarOpen
+            ? 'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
+            : 'pointer-events-none border-transparent bg-transparent opacity-0'),
         // While floated by PaneShell's hover-reveal, force visible + interactive
         // — on hover (group-hover/reveal) or when keyboard-pinned (data-forced).
-        'in-data-[pane-hover-reveal=open]:pointer-events-auto in-data-[pane-hover-reveal=open]:border-(--sidebar-edge-border) in-data-[pane-hover-reveal=open]:bg-(--ui-sidebar-surface-background) in-data-[pane-hover-reveal=open]:opacity-100',
-        'group-hover/reveal:pointer-events-auto group-hover/reveal:border-(--sidebar-edge-border) group-hover/reveal:bg-(--ui-sidebar-surface-background) group-hover/reveal:opacity-100'
+        !mobileStandalone &&
+          'in-data-[pane-hover-reveal=open]:pointer-events-auto in-data-[pane-hover-reveal=open]:border-(--sidebar-edge-border) in-data-[pane-hover-reveal=open]:bg-(--ui-sidebar-surface-background) in-data-[pane-hover-reveal=open]:opacity-100',
+        !mobileStandalone &&
+          'group-hover/reveal:pointer-events-auto group-hover/reveal:border-(--sidebar-edge-border) group-hover/reveal:bg-(--ui-sidebar-surface-background) group-hover/reveal:opacity-100'
       )}
       collapsible="none"
+      data-mobile-drawer={mobileStandalone ? '' : undefined}
     >
       <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
@@ -847,6 +891,9 @@ export function ChatSidebar({
                           $newChatProfile.set(null)
                         }
 
+                        if (mobileStandalone) {
+                          setSidebarOpen(false)
+                        }
                         onNavigate(item)
                       }}
                       tooltip={s.nav[item.id] ?? item.label}
@@ -869,6 +916,22 @@ export function ChatSidebar({
                   </SidebarMenuItem>
                 )
               })}
+              {mobileStandalone && onOpenSettings ? (
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    className="flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none"
+                    onClick={() => {
+                      setSidebarOpen(false)
+                      onOpenSettings()
+                    }}
+                    tooltip={t.titlebar.openSettings}
+                    type="button"
+                  >
+                    <Codicon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" name="settings-gear" />
+                    {contentVisible && <span className="min-w-0 flex-1 truncate">Settings</span>}
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ) : null}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -1085,6 +1148,31 @@ export function ChatSidebar({
         )}
       </SidebarContent>
     </Sidebar>
+  )
+
+  if (!mobileStandalone) {
+    return sidebarNode
+  }
+
+  // Portal to body so the fixed drawer escapes the collapsed <Pane>'s
+  // overflow:hidden + pointer-events:none wrapper on mobile.
+  if (typeof document === 'undefined') {
+    return null
+  }
+
+  return createPortal(
+    <>
+      {sidebarOpen && (
+        <button
+          aria-label="Close sidebar"
+          className="fixed inset-0 z-[2147482400] cursor-default bg-black/18 backdrop-blur-[1px]"
+          onClick={() => setSidebarOpen(false)}
+          type="button"
+        />
+      )}
+      {sidebarNode}
+    </>,
+    document.body
   )
 }
 

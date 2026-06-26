@@ -2,7 +2,24 @@
 <html>
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+    <script>
+      // Expose the iOS soft-keyboard height as --keyboard-inset so the composer
+      // and thread bottom-clearance can react. visualViewport shrinks when the
+      // keyboard opens; layoutViewport (innerHeight) does not.
+      (function () {
+        var vv = window.visualViewport;
+        if (!vv) return;
+        function update() {
+          var inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+          document.documentElement.style.setProperty('--keyboard-inset', inset + 'px');
+        }
+        vv.addEventListener('resize', update);
+        vv.addEventListener('scroll', update);
+        window.addEventListener('load', update);
+        update();
+      })();
+    </script>
     <title>Hermes</title>
     <style>
       html,
@@ -302,7 +319,8 @@
           }
         }
 
-        const desktop = window.hermesDesktop || callableObject({
+        const nativeDesktop = window.hermesDesktop || {};
+        const fallback = callableObject({
           api: async function(req) {
             const path = req && req.path ? req.path : '/api/status';
             return dashboardFetch(path, {
@@ -389,6 +407,16 @@
           })
         });
 
+        // Native bridge methods (e.g. `api`) take priority; anything missing
+        // (readDesktopDir, getBootstrapState, etc.) falls through to the inline
+        // callable so the renderer never trips an unhandled rejection.
+        const desktop = new Proxy(nativeDesktop, {
+          get(target, prop) {
+            if (prop in target) return target[prop];
+            return fallback[prop];
+          }
+        });
+
         window.hermesDesktop = desktop;
         window.desktop = desktop;
         window.__HERMES_MOBILE_SHELL__ = true;
@@ -411,7 +439,7 @@
                 '<h1>Connect to gateway</h1>' +
                 '<p>Enter your Hermes gateway URL and dashboard session token to continue.</p>' +
                 '<form class="mobile-setup-form" id="mobile-setup-form">' +
-                  '<label class="mobile-setup-field"><span>Gateway URL</span><input id="mobile-setup-url" inputmode="url" autocomplete="url" placeholder="http://127.0.0.1:8642" /></label>' +
+                  '<label class="mobile-setup-field"><span>Gateway URL</span><input id="mobile-setup-url" inputmode="url" autocomplete="url" placeholder="https://your-hermes-gateway.example.com" /></label>' +
                   '<label class="mobile-setup-field"><span>Dashboard session token</span><input id="mobile-setup-token" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Paste token from Hermes dashboard process" /></label>' +
                   '<label class="mobile-setup-field"><span>Profile</span><input id="mobile-setup-profile" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="default" /></label>' +
                   '<div class="mobile-setup-row"><button class="mobile-setup-button primary" type="submit">Connect</button><button class="mobile-setup-button secondary" type="button" id="mobile-setup-public">Test public status</button></div>' +

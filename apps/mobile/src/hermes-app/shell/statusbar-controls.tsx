@@ -55,6 +55,11 @@ interface StatusbarControlsProps extends ComponentProps<'footer'> {
 
 export function StatusbarControls({ className, leftItems = [], items = [], ...props }: StatusbarControlsProps) {
   const navigate = useNavigate()
+  const mobileStandalone = typeof window !== 'undefined' && Boolean((window as any).__HERMES_MOBILE_STANDALONE__)
+
+  if (mobileStandalone) {
+    return null
+  }
 
   return (
     <footer

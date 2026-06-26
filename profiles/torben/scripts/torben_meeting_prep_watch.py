@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from json import JSONDecodeError
 from datetime import datetime, timezone
 from typing import Any
 
@@ -71,15 +73,27 @@ def main() -> int:
     bucket_minutes = int(os.getenv("TORBEN_MEETING_PREP_BUCKET_MINUTES", "5"))
     now = _utc_now()
 
-    payload = collect_google_ea_evidence(
-        config_path=home / "config" / "google_accounts.yaml",
-        days=1,
-        max_calendar_events=int(os.getenv("TORBEN_MEETING_PREP_MAX_EVENTS", "120")),
-        max_email_messages=0,
-        max_calendar_block_candidates=0,
-        include_secondary_calendars=False,
-        now=now,
-    )
+    last_token_parse_error: JSONDecodeError | None = None
+    for attempt in range(3):
+        try:
+            payload = collect_google_ea_evidence(
+                config_path=home / "config" / "google_accounts.yaml",
+                days=1,
+                max_calendar_events=int(os.getenv("TORBEN_MEETING_PREP_MAX_EVENTS", "120")),
+                max_email_messages=0,
+                max_calendar_block_candidates=0,
+                include_secondary_calendars=False,
+                now=now,
+            )
+            break
+        except JSONDecodeError as exc:
+            # Google auth refresh can briefly rewrite a token file while the watcher reads it.
+            # Treat that as a transient race and retry instead of waking Eric on a one-off parse miss.
+            last_token_parse_error = exc
+            if attempt < 2:
+                time.sleep(0.4 * (attempt + 1))
+                continue
+            raise RuntimeError("Google token JSON stayed unreadable after retry; check auth token file") from last_token_parse_error
     write_json_artifact(payload, state_dir / "torben-meeting-prep-watch-latest.json")
     state_path = state_dir / "torben-meeting-prep-watch-state.json"
     state = {"version": 1, "alerted": {}} if force else load_meeting_prep_state(state_path, now=now)

@@ -1984,6 +1984,60 @@ class GatewaySlashCommandsMixin:
             return f"{base}\n(Couldn't draft a contract — running as a free-form goal.)"
         return base
 
+    async def _handle_looper_command(self, event: "MessageEvent") -> str:
+        """Design a review-gated goal and wait for approval before execution."""
+        args = (event.get_command_args() or "").strip()
+        if not args:
+            return "Usage: /looper <rough task>"
+
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_key = self._session_key_for_source(source)
+        platform_name = source.platform.value if getattr(source, "platform", None) else "telegram"
+        chat_id = source.chat_id or "unknown"
+        thread_id = getattr(source, "thread_id", None)
+
+        from hermes_cli.looper import build_looper_run, finalize_looper_run
+
+        try:
+            spec, artifacts, preview = build_looper_run(
+                args,
+                session_id=session_entry.session_id,
+                session_key=session_key,
+                source_platform=platform_name,
+                source_chat_id=chat_id,
+                source_thread_id=thread_id,
+            )
+        except ValueError as exc:
+            return (
+                "❌ blocked\n"
+                f"what changed: {exc}\n"
+                "tests run: none\n"
+                "risk level: unknown\n"
+                "next action: provide a rough task that can be tightened into a goal."
+            )
+
+        async def _on_confirm(choice: str):
+            report, _goal = finalize_looper_run(spec, artifacts, approval_choice=choice)
+            return report
+
+        _p = self._typed_command_prefix_for(event.source.platform)
+        prompt_message = (
+            f"🧭 **Looper preview**\n\n{preview}\n\n"
+            "Choose:\n"
+            "• **Approve Once** — write artifacts and generate the final /goal prompt\n"
+            "• **Always Approve** — approve this run and continue\n"
+            "• **Cancel** — stop here\n\n"
+            f"_Text fallback: reply `{_p}approve`, `{_p}always`, or `{_p}cancel`._"
+        )
+        return await self._request_slash_confirm(
+            event=event,
+            command="looper",
+            title=f"Looper preview: {spec.goal}",
+            message=prompt_message,
+            handler=_on_confirm,
+        )
+
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).
 

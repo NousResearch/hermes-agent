@@ -8126,6 +8126,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _is_control:
                     return await self._handle_goal_command(event)
+                if _cmd_def_inner and _cmd_def_inner.name == "looper":
+                    return await self._handle_looper_command(event)
                 return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
 
             if _cmd_def_inner and _cmd_def_inner.name == "moa":
@@ -8631,6 +8633,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Do NOT return — fall through to _handle_message_with_agent
             # at the end of this function so the rewritten text is sent
             # to the agent as a regular user turn.
+
+        if canonical == "looper":
+            return await self._handle_looper_command(event)
 
         if canonical == "goal":
             return await self._handle_goal_command(event)

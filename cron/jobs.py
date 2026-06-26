@@ -789,6 +789,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    allow_silent: bool = True,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -833,6 +834,11 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        allow_silent: When True (default), the job may suppress delivery by
+                responding with ``[SILENT]``.  When False, the SILENT instruction
+                is omitted from the prompt and any SILENT response is delivered
+                anyway — use for briefing/report jobs that must always produce
+                output.
 
     Returns:
         The created job dict
@@ -967,6 +973,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "allow_silent": bool(allow_silent),
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the

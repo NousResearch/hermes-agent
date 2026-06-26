@@ -1,4 +1,5 @@
 import base64
+import os
 
 import pytest
 from acp.schema import (
@@ -17,6 +18,12 @@ from acp_adapter.server import (
 )
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="pathlib uses the real OS path separator, so backslash rendering "
+    "can only be verified on Windows; sys.platform monkeypatching alone "
+    "does not change Path.__str__ on POSIX.",
+)
 def test_file_uri_windows_drive_path_stays_native_on_windows(monkeypatch):
     monkeypatch.setattr("acp_adapter.server.sys.platform", "win32")
 

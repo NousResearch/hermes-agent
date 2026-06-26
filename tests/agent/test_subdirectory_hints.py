@@ -1,5 +1,7 @@
 """Tests for progressive subdirectory hint discovery."""
 
+import sys
+
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -103,6 +105,10 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Windows backslash path parsing is only valid on Windows",
+    )
     def test_terminal_command_windows_backslash_path_extraction(self, project):
         """Windows backslash paths in terminal commands must survive parsing."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

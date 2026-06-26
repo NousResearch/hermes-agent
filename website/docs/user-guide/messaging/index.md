@@ -18,6 +18,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 
 | Platform | Voice | Images | Files | Threads | Reactions | Typing | Streaming |
 |----------|:-----:|:------:|:-----:|:-------:|:---------:|:------:|:---------:|
+| Bale | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Telegram | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Discord | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Slack | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -618,6 +619,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 
 ## Next Steps
 
+- [Bale Setup](bale.md)
 - [Telegram Setup](telegram.md)
 - [Discord Setup](discord.md)
 - [Slack Setup](slack.md)

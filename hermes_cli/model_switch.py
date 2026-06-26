@@ -1468,7 +1468,6 @@ def list_authenticated_providers(
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
-    seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
@@ -1603,10 +1602,30 @@ def list_authenticated_providers(
             and _alias_target in _AGG_PROVIDERS
         ):
             continue
-        # Skip aliases that map to the same models.dev provider (e.g.
-        # kimi-coding and kimi-coding-cn both → kimi-for-coding).
-        # The first one with valid credentials wins (#10526).
-        if mdev_id in seen_mdev_ids:
+        # Resolve the canonical provider profile name.  Skip hermes_ids
+        # that are mere aliases resolving to a different canonical profile
+        # (e.g. "kimi" and "moonshot" both → "kimi-coding").  Only process
+        # entries whose hermes_id matches the canonical profile name so
+        # distinct profiles (e.g. kimi-coding, kimi-coding-cn) each get
+        # their own picker row.
+        _canonical = hermes_id
+        try:
+            from providers import get_provider_profile as _gpp
+            _prof = _gpp(hermes_id)
+            if _prof is not None:
+                _canonical = _prof.name
+        except Exception:
+            pass
+        if _canonical != hermes_id:
+            continue
+
+        # Skip duplicates: another entry with the same slug was already
+        # emitted (e.g. two PROVIDER_TO_MODELS_DEV entries routing to the
+        # same hermes_id).  Distinct canonical profiles that share a
+        # models.dev ID (e.g. kimi-coding and kimi-coding-cn → kimi-for-coding)
+        # are both allowed through since they have different slugs.
+        slug = hermes_id
+        if slug.lower() in seen_slugs:
             continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
@@ -1652,9 +1671,8 @@ def list_authenticated_providers(
         total = len(model_ids)
         top = model_ids[:max_models] if max_models is not None else model_ids
 
-        slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
-        display_name = pinfo.name if pinfo else mdev_id
+        display_name = pconfig.name if pconfig and pconfig.name else (pinfo.name if pinfo else mdev_id)
 
         results.append({
             "slug": slug,
@@ -1666,7 +1684,6 @@ def list_authenticated_providers(
             "source": "built-in",
         })
         seen_slugs.add(slug.lower())
-        seen_mdev_ids.add(mdev_id)
         _record_builtin_endpoint(slug)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---

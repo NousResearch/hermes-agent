@@ -832,6 +832,28 @@ def _build_gateway_agent_history(
     return agent_history, observed_context
 
 
+def _select_cached_agent_history(
+    persisted_history: List[Dict[str, Any]],
+    live_history: Any,
+) -> List[Dict[str, Any]]:
+    """Prefer a cached agent's live in-memory transcript over a shorter
+    persisted one.
+
+    Guards the FTS write-corruption case (#50502): when message writes fail
+    silently through corrupt FTS triggers, the next turn reloads a stale/empty
+    ``conversation_history`` from disk even though the same cached ``AIAgent``
+    still holds the full live ``_session_messages``. Replacing the live
+    transcript with that shorter persisted copy causes immediate same-session
+    amnesia. When the live transcript is strictly longer, keep it.
+
+    Returns ``persisted_history`` unchanged unless the live copy is a longer
+    list, in which case a copy of the live transcript is returned.
+    """
+    if isinstance(live_history, list) and len(live_history) > len(persisted_history):
+        return list(live_history)
+    return persisted_history
+
+
 def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
     """Prepend observed Telegram context to the API-only current user turn."""
 
@@ -15875,6 +15897,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_id_alt=getattr(source, "user_id_alt", None),
             )
             agent = None
+            reused_cached_agent = False
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
 
@@ -15933,6 +15956,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _xproc_evicted_agent = _ev_agent
                         else:
                             agent = cached[0]
+                            reused_cached_agent = True
                             # Refresh LRU order so the cap enforcement evicts
                             # truly-oldest entries, not the one we just used.
                             if hasattr(_cache, "move_to_end"):
@@ -16217,6 +16241,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt,
                 inject_timestamps=_message_timestamps_enabled(_load_gateway_config()),
             )
+
+            # FTS write-corruption guard (#50502): when message persistence
+            # fails silently through corrupt FTS triggers, the reloaded
+            # transcript above is stale/empty even though the SAME cached agent
+            # still holds the full live conversation in `_session_messages`.
+            # Replacing the live transcript with that shorter copy causes
+            # immediate same-session amnesia. Only applies when we reused a
+            # cached agent bound to this exact session_id.
+            if reused_cached_agent and getattr(agent, "session_id", None) == session_id:
+                _selected = _select_cached_agent_history(
+                    agent_history, getattr(agent, "_session_messages", None)
+                )
+                if _selected is not agent_history:
+                    logger.warning(
+                        "Persisted transcript lagged live cached history for "
+                        "session %s (disk=%d, memory=%d); preserving live "
+                        "conversation context (possible FTS write corruption)",
+                        session_key, len(agent_history), len(_selected),
+                    )
+                    agent_history = _selected
             
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:

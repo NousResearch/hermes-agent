@@ -140,6 +140,50 @@ describe('external link helpers', () => {
     expect(link.textContent).toBe('Puerto Rico El Yunque')
   })
 
+  it('renders bare localhost URL text visibly via fallbackLabel', () => {
+    installDesktopBridge()
+    const url = 'http://localhost:8080/'
+
+    render(<PrettyLink fallbackLabel={url} href={url} />)
+
+    const link = screen.getByTitle(url)
+
+    expect(link.textContent).toContain('http://localhost:8080/')
+  })
+
+  it('renders bare example.com URL text visibly via fallbackLabel', () => {
+    installDesktopBridge()
+    const url = 'http://example.com/'
+
+    render(<PrettyLink fallbackLabel={url} href={url} />)
+
+    const link = screen.getByTitle(url)
+
+    expect(link.textContent).toContain('http://example.com/')
+  })
+
+  it('renders bare path URL text visibly via fallbackLabel', () => {
+    installDesktopBridge()
+    const url = 'https://example.com/path'
+
+    render(<PrettyLink fallbackLabel={url} href={url} />)
+
+    const link = screen.getByTitle(url)
+
+    expect(link.textContent).toContain('https://example.com/path')
+  })
+
+  it('preserves markdown link label via fallbackLabel', () => {
+    installDesktopBridge()
+    const url = 'http://example.com/'
+
+    render(<PrettyLink fallbackLabel="Example" href={url} />)
+
+    const link = screen.getByTitle(url)
+
+    expect(link.textContent).toContain('Example')
+  })
+
   it('ignores error-like fetched titles and falls back to slug label', async () => {
     const bridge = vi.fn().mockResolvedValue('GetYourGuide – Error')
     installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })

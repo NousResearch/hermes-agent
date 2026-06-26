@@ -270,7 +270,13 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   }
 
   const text = childrenToText(children)
-  const fallbackLabel = text && normalizeExternalUrl(text) !== target ? text : undefined
+  // Always preserve the link text as fallback label so bare URLs remain
+  // visibly rendered even when PrettyLink cannot fetch a title or derive
+  // a slug label. Previously this was set to `undefined` when the child
+  // text matched the target URL (the bare-URL case), which caused PrettyLink
+  // to fall through to urlSlugTitleLabel — potentially rendering a partial
+  // hostname or slug instead of the original URL text. (Fixes #38209)
+  const fallbackLabel = text || undefined
 
   return (
     <PrettyLink className={cn('wrap-anywhere', className)} fallbackLabel={fallbackLabel} href={target} {...props} />

@@ -1,0 +1,10 @@
+name: melipayamak
+label: Melipayamak (ملی پیامک)
+kind: platform
+version: 1.0.0
+description: Melipayamak (ملی پیامک) adapter.
+author: Hermes Core Team
+requires_env:
+  - name: MELIPAYAMAK_USERNAME\n    description: "MELIPAYAMAK_USERNAME"\n    prompt: "MELIPAYAMAK_USERNAME"\n    password: true\n  - name: MELIPAYAMAK_PASSWORD\n    description: "MELIPAYAMAK_PASSWORD"\n    prompt: "MELIPAYAMAK_PASSWORD"\n    password: true\n
+optional_env:
+  - name: MELIPAYAMAK_SENDER\n    description: "MELIPAYAMAK_SENDER"\n    prompt: "MELIPAYAMAK_SENDER"\n    password: false\n

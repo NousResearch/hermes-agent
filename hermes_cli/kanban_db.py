@@ -438,6 +438,25 @@ def set_current_board(slug: str) -> Path:
     return path
 
 
+def activate_board(slug: str) -> None:
+    """Persist *and* immediately activate ``slug`` in the running session.
+
+    Writes ``<root>/kanban/current`` (future sessions), updates the
+    in-process ContextVar override (so ``get_current_board()`` returns the
+    new board right away), and syncs ``HERMES_KANBAN_BOARD`` (so shelled-out
+    ``hermes kanban …`` calls agree).  Without the in-session updates an
+    interactive chat that pinned the board at boot (see
+    ``_pin_kanban_board_for_chat``) keeps seeing the stale board because the
+    env var shadows the file write (#53180).
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    set_current_board(normed)
+    _CURRENT_BOARD_OVERRIDE.set(normed)
+    os.environ["HERMES_KANBAN_BOARD"] = normed
+
+
 def clear_current_board() -> None:
     """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
     try:

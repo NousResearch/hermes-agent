@@ -1108,7 +1108,7 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
     print(f"  Display name: {meta.get('name', '')}")
     print(f"  DB path:      {meta['db_path']}")
     if getattr(args, "switch", False):
-        kb.set_current_board(meta["slug"])
+        kb.activate_board(meta["slug"])
         print(f"  Switched to {meta['slug']!r}.")
     else:
         print(f"  Use `hermes kanban boards switch {meta['slug']}` to make it current.")
@@ -1151,7 +1151,7 @@ def _cmd_boards_switch(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    kb.set_current_board(normed)
+    kb.activate_board(normed)
     print(f"Active board is now {normed!r}.")
     return 0
 

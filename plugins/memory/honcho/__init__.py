@@ -1,11 +1,12 @@
 """Honcho memory plugin — MemoryProvider for Honcho AI-native memory.
 
 Provides cross-session user modeling with dialectic Q&A, semantic search,
-peer cards, and persistent conclusions via the Honcho SDK. Honcho provides AI-native cross-session user
-modeling with dialectic Q&A, semantic search, peer cards, and conclusions.
+peer cards, persistent conclusions, and graph-based spreading-activation
+recall via the Honcho SDK (plus direct HTTP for the graph-memory extensions).
 
-The 4 tools (profile, search, context, conclude) are exposed through
-the MemoryProvider interface.
+The core tools (profile, search, context, conclude) and the graph-memory
+tools (recall, recall_context, thread_bind) are exposed through the
+MemoryProvider interface.
 
 Config: Uses the existing Honcho config chain:
   1. $HERMES_HOME/honcho.json (profile-scoped)
@@ -22,12 +23,31 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+import httpx
+
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Graph-memory helpers (direct HTTP, not in the Honcho SDK yet)
+# ---------------------------------------------------------------------------
+
+# Observation IDs in this backend are nanoids (21 chars). Graph-memory
+# endpoints use them as opaque path segments; we validate the shape so
+# path injection can't slip through.
+_OBS_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+# Thread IDs must match the backend's ThreadBindingCreate pattern.
+_THREAD_ID_RE = re.compile(r"^[0-9]{10,}\.[0-9]+$")
+# Context names must match the backend's ContextCreate pattern.
+_CONTEXT_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+# Default HTTP timeout for graph-memory direct calls. Mirrors the SDK
+# timeout default in client.py so unconfigured installs can't hang forever.
+_DEFAULT_GRAPH_MEMORY_TIMEOUT = 30.0
 
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
@@ -180,8 +200,114 @@ CONCLUDE_SCHEMA = {
     },
 }
 
+RECALL_SCHEMA = {
+    "name": "honcho_recall",
+    "description": (
+        "Graph-based spreading-activation recall over Honcho's memory. "
+        "Returns observations ranked by activation × confidence, following "
+        "edges from vector-search anchors. Use this when you want structured "
+        "recall across related facts rather than raw semantic search."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural language recall query.",
+            },
+            "collection_name": {
+                "type": "string",
+                "description": "Collection to search. Defaults to the workspace name if omitted.",
+            },
+            "context": {
+                "type": "string",
+                "description": "Optional active context name to filter results.",
+            },
+            "max_depth": {
+                "type": "integer",
+                "description": "Max BFS depth for spreading activation (1-10).",
+                "default": 3,
+                "minimum": 1,
+                "maximum": 10,
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of results to return (100-10000).",
+                "default": 2000,
+                "minimum": 100,
+                "maximum": 10000,
+            },
+            "include_pinned": {
+                "type": "boolean",
+                "description": "Include pinned observations in results.",
+                "default": True,
+            },
+        },
+        "required": ["query"],
+    },
+}
 
-ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
+RECALL_CONTEXT_SCHEMA = {
+    "name": "honcho_recall_context",
+    "description": (
+        "Manage the active recall context for a peer. Actions: "
+        "switch (replace active context), activate (page-in/additive context), "
+        "evict (clear active context), create (persist a new named context), "
+        "or list_members (show observations in a context)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["switch", "activate", "evict", "create", "list_members"],
+                "description": "Context operation to perform.",
+                "default": "switch",
+            },
+            "context_name": {
+                "type": "string",
+                "description": "Name of the context to switch to, activate, create, or list.",
+            },
+            "peer": {
+                "type": "string",
+                "description": "Peer to manage context for. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+            },
+        },
+        "required": ["action"],
+    },
+}
+
+THREAD_BIND_SCHEMA = {
+    "name": "honcho_thread_bind",
+    "description": (
+        "Bind a Slack/thread identifier to a named recall context, or resolve "
+        "which context a thread is bound to. Bindings are workspace-scoped and "
+        "persist across restarts."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "thread_id": {
+                "type": "string",
+                "description": "Thread identifier (must match ^[0-9]{10,}\\.[0-9]+$).",
+            },
+            "context_name": {
+                "type": "string",
+                "description": "Context name to bind the thread to. Required when action=bind.",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["bind", "resolve"],
+                "description": "Whether to create a binding or look one up.",
+                "default": "bind",
+            },
+        },
+        "required": ["thread_id"],
+    },
+}
+
+
+ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA, RECALL_SCHEMA, RECALL_CONTEXT_SCHEMA, THREAD_BIND_SCHEMA]
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +329,121 @@ class HonchoMemoryProvider(MemoryProvider):
         except Exception:
             pass
         return paths
+
+    def _resolve_peer_id(self, peer_arg: str | None) -> str:
+        """Resolve a tool 'peer' argument to a concrete Honcho peer ID."""
+        peer = (peer_arg or "user").strip()
+        if peer in {"user", "ai"}:
+            # 'user' resolves to the configured peer name (or the runtime user),
+            # 'ai' resolves to the configured ai_peer. We can ask the session
+            # manager for canonical peer IDs if a session is ready.
+            if self._manager and self._session_ready():
+                try:
+                    if peer == "user":
+                        # Runtime user peer may differ from config peer_name
+                        return (
+                            getattr(self._manager, "_user_peer_id", None)
+                            or (self._config.peer_name if self._config else None)
+                            or "user"
+                        )
+                    return (
+                        getattr(self._manager, "_assistant_peer_id", None)
+                        or (self._config.ai_peer if self._config else None)
+                        or "ai"
+                    )
+                except Exception:
+                    pass
+            if peer == "user":
+                return (self._config.peer_name if self._config else None) or "user"
+            return (self._config.ai_peer if self._config else None) or "ai"
+        return peer
+
+    def _graph_memory_url(self, path: str) -> str:
+        """Build an absolute graph-memory URL for the configured workspace."""
+        cfg = self._config
+        if not cfg:
+            raise RuntimeError("Honcho is not configured")
+        base = (cfg.base_url or "https://app.honcho.dev").rstrip("/")
+        # Strip a trailing /vN segment so we can append the API path consistently.
+        base = re.sub(r"/v\d+/*$", "", base)
+        workspace = cfg.workspace_id or "hermes"
+        path = path.lstrip("/")
+        return f"{base}/v3/workspaces/{workspace}/graph-memory/{path}"
+
+    def _graph_memory_headers(self) -> dict[str, str]:
+        """Build request headers for graph-memory calls."""
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        cfg = self._config
+        if cfg and cfg.api_key:
+            # For self-hosted / loopback instances we intentionally skip sending
+            # a cloud API key unless the host block explicitly sets apiKey. The
+            # client module already decided effective_api_key; cfg.api_key here
+            # is the raw stored key. Avoid leaking it to local no-auth servers.
+            base = (cfg.base_url or "").lower()
+            is_local = "localhost" in base or "127.0.0.1" in base or "::1" in base
+            host_has_key = False
+            try:
+                raw = cfg.raw or {}
+                host_block = (raw.get("hosts") or {}).get(cfg.host, {})
+                host_has_key = bool(host_block.get("apiKey"))
+            except Exception:
+                pass
+            if not is_local or host_has_key:
+                headers["Authorization"] = f"Bearer {cfg.api_key}"
+        return headers
+
+    def _graph_memory_call(
+        self,
+        method: str,
+        path: str,
+        json_body: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Make a direct HTTP call to a graph-memory endpoint.
+
+        Returns the parsed JSON response. Raises RuntimeError with a sanitized
+        message on HTTP or network failure.
+        """
+        cfg = self._config
+        default_timeout = cfg.timeout if cfg and cfg.timeout else _DEFAULT_GRAPH_MEMORY_TIMEOUT
+        timeout = timeout if timeout is not None else default_timeout
+        url = self._graph_memory_url(path)
+        headers = self._graph_memory_headers()
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                if method.upper() == "GET":
+                    resp = client.get(url, headers=headers)
+                elif method.upper() == "POST":
+                    resp = client.post(url, headers=headers, json=json_body or {})
+                elif method.upper() == "DELETE":
+                    resp = client.delete(url, headers=headers)
+                else:
+                    raise RuntimeError(f"Unsupported HTTP method: {method}")
+            resp.raise_for_status()
+            # Some endpoints (e.g. DELETE) return 204 with no body.
+            if resp.status_code == 204 or not resp.text:
+                return {}
+            return resp.json()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response else None
+            # Don't leak response bodies or URL details in tool output.
+            logger.debug("Honcho graph-memory HTTP %s on %s: %s", status, url, exc.response.text if exc.response else "")
+            raise RuntimeError(f"Honcho graph-memory returned HTTP {status}") from None
+        except httpx.RequestError as exc:
+            logger.debug("Honcho graph-memory request error: %s", exc)
+            raise RuntimeError("Honcho graph-memory is unreachable") from None
+
+    def _graph_memory_available(self) -> bool:
+        """Return True if graph-memory endpoints are reachable.
+
+        Lightweight HEAD-style check: fetch the cold-storage list (read-only,
+        no body required). Avoids firing a heavy recall query.
+        """
+        try:
+            self._graph_memory_call("GET", "cold", timeout=5.0)
+            return True
+        except Exception:
+            return False
 
     def __init__(self):
         self._manager = None   # HonchoSessionManager
@@ -601,7 +842,7 @@ class HonchoMemoryProvider(MemoryProvider):
             if not self._config:
                 return ""
 
-        # ----- B1: adapt text based on recall_mode -----
+        # B1: adapt text based on recall_mode -----
         if self._recall_mode == "context":
             header = (
                 "# Honcho Memory\n"
@@ -616,7 +857,10 @@ class HonchoMemoryProvider(MemoryProvider):
                 "honcho_search for raw excerpts, honcho_context for raw peer context, "
                 "honcho_reasoning for synthesized answers (pass reasoning_level "
                 "minimal/low/medium/high/max — you pick the depth per call), "
-                "honcho_conclude to save facts about the user. "
+                "honcho_conclude to save facts about the user, "
+                "honcho_recall for graph-based spreading-activation recall, "
+                "honcho_recall_context to switch/activate/evict/create recall contexts, "
+                "and honcho_thread_bind to bind or resolve thread-to-context mappings. "
                 "No automatic context injection — you must use tools to access memory."
             )
         else:  # hybrid
@@ -627,7 +871,10 @@ class HonchoMemoryProvider(MemoryProvider):
                 "honcho_search for raw excerpts, honcho_context for raw peer context, "
                 "honcho_reasoning for synthesized answers (pass reasoning_level "
                 "minimal/low/medium/high/max — you pick the depth per call), "
-                "honcho_conclude to save facts about the user."
+                "honcho_conclude to save facts about the user, "
+                "honcho_recall for graph-based spreading-activation recall, "
+                "honcho_recall_context to switch/activate/evict/create recall contexts, "
+                "and honcho_thread_bind to bind or resolve thread-to-context mappings."
             )
 
         return header
@@ -1404,6 +1651,114 @@ class HonchoMemoryProvider(MemoryProvider):
                 if ok:
                     return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
                 return tool_error("Failed to save conclusion.")
+
+            elif tool_name == "honcho_recall":
+                query = (args.get("query") or "").strip()
+                if not query:
+                    return tool_error("Missing required parameter: query")
+
+                collection_name = (args.get("collection_name") or "").strip()
+                if not collection_name:
+                    collection_name = self._config.workspace_id if self._config else "hermes"
+
+                max_depth = max(1, min(int(args.get("max_depth", 3)), 10))
+                max_results = max(100, min(int(args.get("max_results", 2000)), 10000))
+                context = args.get("context")
+                if context is not None and not _CONTEXT_NAME_RE.match(str(context)):
+                    return tool_error("Invalid context_name format.")
+                include_pinned = bool(args.get("include_pinned", True))
+
+                if not self._graph_memory_available():
+                    return tool_error("Honcho graph memory is not available on this backend.")
+
+                body = {
+                    "query": query,
+                    "collection_name": collection_name,
+                    "max_depth": max_depth,
+                    "frontier_cap": 10,
+                    "token_budget": max_results,
+                    "include_pinned": include_pinned,
+                }
+                if context:
+                    body["context"] = context
+
+                result = self._graph_memory_call("POST", "recall", json_body=body, timeout=30.0)
+                return json.dumps({"result": result})
+
+            elif tool_name == "honcho_recall_context":
+                action = (args.get("action") or "switch").strip().lower()
+                if action not in {"switch", "activate", "evict", "create", "list_members"}:
+                    return tool_error("action must be one of: switch, activate, evict, create, list_members")
+
+                context_name = (args.get("context_name") or "").strip() or None
+                peer = self._resolve_peer_id(args.get("peer", "user"))
+
+                if action in {"switch", "activate", "create", "list_members"} and not context_name:
+                    return tool_error("Missing required parameter: context_name")
+                if context_name and not _CONTEXT_NAME_RE.match(context_name):
+                    return tool_error("Invalid context_name format.")
+
+                if not self._graph_memory_available():
+                    return tool_error("Honcho graph memory is not available on this backend.")
+
+                if action == "create":
+                    result = self._graph_memory_call(
+                        "POST", "contexts", json_body={"context_name": context_name}, timeout=10.0
+                    )
+                    return json.dumps({"result": result})
+
+                if action == "list_members":
+                    result = self._graph_memory_call(
+                        "GET", f"contexts/{context_name}/members", timeout=10.0
+                    )
+                    return json.dumps({"result": result})
+
+                if action == "evict":
+                    result = self._graph_memory_call(
+                        "POST", f"peers/{peer}/context-evict", timeout=10.0
+                    )
+                    return json.dumps({"result": result})
+
+                # switch / activate
+                endpoint = f"peers/{peer}/context-{action}"
+                result = self._graph_memory_call(
+                    "POST", endpoint, json_body={"context_name": context_name}, timeout=10.0
+                )
+                return json.dumps({"result": result})
+
+            elif tool_name == "honcho_thread_bind":
+                thread_id = (args.get("thread_id") or "").strip()
+                if not thread_id:
+                    return tool_error("Missing required parameter: thread_id")
+                if not _THREAD_ID_RE.match(thread_id):
+                    return tool_error("Invalid thread_id format (expected ^[0-9]{10,}\\.[0-9]+$).")
+
+                action = (args.get("action") or "bind").strip().lower()
+                if action not in {"bind", "resolve"}:
+                    return tool_error("action must be one of: bind, resolve")
+
+                if not self._graph_memory_available():
+                    return tool_error("Honcho graph memory is not available on this backend.")
+
+                if action == "resolve":
+                    result = self._graph_memory_call(
+                        "GET", f"thread-bindings/{thread_id}", timeout=10.0
+                    )
+                    return json.dumps({"result": result})
+
+                context_name = (args.get("context_name") or "").strip()
+                if not context_name:
+                    return tool_error("Missing required parameter: context_name for bind")
+                if not _CONTEXT_NAME_RE.match(context_name):
+                    return tool_error("Invalid context_name format.")
+
+                result = self._graph_memory_call(
+                    "POST",
+                    "thread-bindings",
+                    json_body={"thread_id": thread_id, "context_name": context_name},
+                    timeout=10.0,
+                )
+                return json.dumps({"result": result})
 
             return tool_error(f"Unknown tool: {tool_name}")
 

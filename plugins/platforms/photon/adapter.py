@@ -34,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,6 +98,22 @@ _PHOTON_RETRYABLE_PATTERNS = (
     "upstream_overflow",
     "upstream_unavailable",
 )
+
+
+class PhotonSidecarError(RuntimeError):
+    """Sanitized sidecar failure with retry semantics from the sidecar."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Optional[str] = None,
+        retryable: bool = False,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
 
 # Minimum seconds between typing-indicator calls for the same chat.
 # iMessage is a personal channel — suppressing rapid repeats reduces
@@ -1303,8 +1320,8 @@ class PhotonAdapter(BasePlatformAdapter):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Any = None,
-        max_retries: int = 1,
-        base_delay: float = 2.0,
+        max_retries: int = 3,
+        base_delay: float = 5.0,
     ) -> SendResult:
         """Retry sends without the generic Markdown banner.
 
@@ -1381,6 +1398,19 @@ class PhotonAdapter(BasePlatformAdapter):
             body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send", body)
+        except PhotonSidecarError as e:
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=e.retryable,
+                error_kind=(
+                    "transient"
+                    if e.retryable
+                    else "forbidden"
+                    if e.code == "target_not_allowed"
+                    else "unknown"
+                ),
+            )
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
@@ -1430,6 +1460,19 @@ class PhotonAdapter(BasePlatformAdapter):
             body["caption"] = caption
         try:
             data = await self._sidecar_call("/send-attachment", body)
+        except PhotonSidecarError as e:
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=e.retryable,
+                error_kind=(
+                    "transient"
+                    if e.retryable
+                    else "forbidden"
+                    if e.code == "target_not_allowed"
+                    else "unknown"
+                ),
+            )
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
@@ -1449,13 +1492,27 @@ class PhotonAdapter(BasePlatformAdapter):
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
-            raise RuntimeError(
-                f"Photon sidecar {path} returned {resp.status_code}: {resp.text[:200]}"
+            error_text = resp.text[:200]
+            code = None
+            retryable = False
+            try:
+                payload = resp.json() or {}
+                error_text = payload.get("error") or error_text
+                code = payload.get("code")
+                retryable = bool(payload.get("retryable"))
+            except Exception:
+                pass
+            raise PhotonSidecarError(
+                f"Photon sidecar {path} returned {resp.status_code}: {error_text}",
+                code=code,
+                retryable=retryable,
             )
         data = resp.json() or {}
         if not data.get("ok"):
-            raise RuntimeError(
-                f"Photon sidecar {path} reported error: {data.get('error')}"
+            raise PhotonSidecarError(
+                f"Photon sidecar {path} reported error: {data.get('error')}",
+                code=data.get("code"),
+                retryable=bool(data.get("retryable")),
             )
         return data
 
@@ -1496,6 +1553,53 @@ _AUDIO_EXT_BY_MIME = {
     "audio/mp4": ".m4a",
     "audio/aac": ".m4a",
 }
+_APPLE_IMAGE_MIME_TYPES = {"image/heic", "image/heif"}
+_APPLE_IMAGE_SUFFIXES = {".heic", ".heif"}
+
+
+def _convert_apple_image_to_jpeg(raw: bytes, name: str, mime: str) -> Optional[bytes]:
+    """Convert iPhone HEIC/HEIF attachment bytes to JPEG when possible.
+
+    OpenAI/Anthropic-style vision endpoints generally reject HEIC, even though
+    iMessage sends iPhone screenshots/photos that way.  On macOS, `sips` is
+    available by default and can transcode these bytes before the gateway hands
+    the media path to the model.  If conversion is unavailable or fails, return
+    None so callers can fall back to document caching instead of losing data.
+    """
+
+    suffix = Path(name).suffix.lower() if name else ""
+    if (
+        (mime or "").lower() not in _APPLE_IMAGE_MIME_TYPES
+        and suffix not in _APPLE_IMAGE_SUFFIXES
+    ):
+        return None
+    sips = shutil.which("sips")
+    if not sips:
+        return None
+    in_suffix = suffix if suffix in _APPLE_IMAGE_SUFFIXES else ".heic"
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-photon-img-") as tmp:
+            src = Path(tmp) / f"source{in_suffix}"
+            dst = Path(tmp) / "converted.jpg"
+            src.write_bytes(raw)
+            proc = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+                [sips, "-s", "format", "jpeg", str(src), "--out", str(dst)],
+                capture_output=True,
+                text=True,
+                timeout=15.0,
+                check=False,
+            )
+            if proc.returncode != 0 or not dst.exists():
+                logger.warning(
+                    "[photon] failed to convert inbound Apple image %s with sips: %s",
+                    name,
+                    (proc.stderr or proc.stdout or "unknown error").strip(),
+                )
+                return None
+            return dst.read_bytes()
+    except Exception as exc:
+        logger.warning("[photon] failed to convert inbound Apple image %s: %s", name, exc)
+        return None
 
 
 def _cache_inbound_attachment(
@@ -1534,12 +1638,16 @@ def _cache_inbound_attachment(
     suffix = Path(name).suffix if name else ""
     try:
         if mime.startswith("image/"):
-            ext = suffix or _IMAGE_EXT_BY_MIME.get(mime, ".jpg")
+            converted = _convert_apple_image_to_jpeg(raw, name, mime)
+            if converted:
+                return cache_image_from_bytes(converted, ".jpg")
+            ext = _IMAGE_EXT_BY_MIME.get(mime) or suffix or ".jpg"
             try:
                 return cache_image_from_bytes(raw, ext)
             except ValueError:
-                # Bytes don't look like a supported image (e.g. HEIC magic) —
-                # still deliver them as a document rather than dropping them.
+                # Bytes don't look like a supported model image (e.g. HEIC
+                # magic without a local converter) — still deliver them as a
+                # document rather than dropping them.
                 return cache_document_from_bytes(raw, name)
         if force_audio or mime.startswith("audio/"):
             ext = suffix or _AUDIO_EXT_BY_MIME.get(
@@ -1584,6 +1692,44 @@ async def _standalone_send(
         }
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
     headers = {"X-Hermes-Sidecar-Token": token}
+    def _standalone_retryable_error(text: str) -> bool:
+        lowered = (text or "").lower()
+        return any(pat in lowered for pat in _PHOTON_RETRYABLE_PATTERNS)
+
+    async def _post_with_retry(client: httpx.AsyncClient, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        last_error = ""
+        for attempt in range(1, 4):
+            retryable = False
+            try:
+                resp = await client.post(f"{base}{path}", json=body, headers=headers)
+                if resp.status_code != 200:
+                    try:
+                        data = resp.json() or {}
+                        last_error = data.get("error") or f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+                        retryable = bool(data.get("retryable")) or _standalone_retryable_error(last_error)
+                    except Exception:
+                        last_error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+                        retryable = _standalone_retryable_error(last_error)
+                else:
+                    data = resp.json() or {}
+                    if data.get("ok"):
+                        return data
+                    last_error = data.get("error") or "sidecar reported failure"
+                    retryable = bool(data.get("retryable")) or _standalone_retryable_error(last_error)
+            except Exception as exc:
+                last_error = f"Photon standalone send failed: {exc}"
+                retryable = _standalone_retryable_error(last_error)
+            if attempt >= 3 or not retryable:
+                break
+            logger.warning(
+                "[photon] standalone send failed (attempt %d/3, retrying in %ds): %s",
+                attempt,
+                5 * attempt,
+                last_error,
+            )
+            await asyncio.sleep(5 * attempt)
+        return {"error": last_error or "sidecar reported failure"}
+
     last_message_id: Optional[str] = None
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1595,14 +1741,9 @@ async def _standalone_send(
                 }
                 if _markdown_enabled():
                     send_body["format"] = "markdown"
-                resp = await client.post(
-                    f"{base}/send", json=send_body, headers=headers,
-                )
-                if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json() or {}
-                if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                data = await _post_with_retry(client, "/send", send_body)
+                if data.get("error"):
+                    return data
                 last_message_id = data.get("messageId")
 
             # 2. Each attachment as a separate /send-attachment call.
@@ -1623,14 +1764,9 @@ async def _standalone_send(
                 }
                 if guessed:
                     att_body["mimeType"] = guessed
-                resp = await client.post(
-                    f"{base}/send-attachment", json=att_body, headers=headers,
-                )
-                if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json() or {}
-                if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                data = await _post_with_retry(client, "/send-attachment", att_body)
+                if data.get("error"):
+                    return data
                 last_message_id = data.get("messageId") or last_message_id
 
         return {"success": True, "message_id": last_message_id}

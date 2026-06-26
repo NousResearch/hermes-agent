@@ -564,13 +564,63 @@ function badRequest(res, msg) {
   res.end(JSON.stringify({ ok: false, error: msg }));
 }
 
-function serverError(res) {
+function classifySidecarError(error) {
+  const raw = error && error.stack ? error.stack : String(error || "");
+  const lower = raw.toLowerCase();
+  if (lower.includes("target not allowed for this project")) {
+    return {
+      code: "target_not_allowed",
+      retryable: false,
+      error: "target not allowed for this Photon project",
+    };
+  }
+  if (
+    lower.includes("invalid credentials") ||
+    lower.includes("status code 401") ||
+    lower.includes(" 401") ||
+    lower.includes("unauthenticated") ||
+    lower.includes("tokenexpired") ||
+    lower.includes("token expired")
+  ) {
+    return {
+      code: "invalid_credentials",
+      retryable: false,
+      error: "Photon credentials are invalid; run `hermes photon setup` and restart the gateway",
+    };
+  }
+  if (
+    lower.includes("connection dropped") ||
+    lower.includes("catchupevents") ||
+    lower.includes("service unavailable") ||
+    lower.includes("unavailable") ||
+    lower.includes("deadline exceeded") ||
+    lower.includes("upstream connect error") ||
+    lower.includes("reset reason") ||
+    lower.includes("overflow")
+  ) {
+    return {
+      code: "upstream_transient",
+      retryable: true,
+      error: "Photon upstream connection dropped; retrying may succeed",
+    };
+  }
+  if (lower.includes("authentication failed")) {
+    return {
+      code: "authentication_failed",
+      retryable: false,
+      error: "Photon upstream authentication failed; refresh credentials with `hermes photon setup`",
+    };
+  }
+  return { code: "internal", retryable: false, error: "internal sidecar error" };
+}
+
+function serverError(res, error) {
   res.statusCode = 500;
   res.setHeader("Content-Type", "application/json");
-  // Don't leak stack traces or raw exception text to the caller — even
-  // though we listen on loopback, the supervisor logs the real error
-  // and the client only needs a generic failure signal.
-  res.end(JSON.stringify({ ok: false, error: "internal sidecar error" }));
+  // Do not leak stack traces or raw exception text over the loopback API. Return
+  // a bounded, machine-readable classification so Python can distinguish
+  // transient reconnect windows from permanent auth/config failures.
+  res.end(JSON.stringify({ ok: false, ...classifySidecarError(error) }));
 }
 
 function ok(res, data) {
@@ -620,12 +670,24 @@ async function resolveSpace(spaceId) {
   const phoneTarget = phoneTargetFromSpaceId(spaceId);
   let space = null;
 
-  // A bare E.164 phone number addresses a DM, so callers can pass just
-  // "+1..." (e.g. PHOTON_HOME_CHANNEL for cron delivery) instead of an opaque
-  // inbound space id. Photon also represents DM chat ids as `any;-;+1...`;
-  // normalize those through the same path. `space.create` accepts the raw
-  // phone string directly.
-  if (phoneTarget) {
+  // Photon represents DM chat ids as `any;-;+1...`.  Those ids are already
+  // opaque Spectrum space ids, so after a sidecar restart prefer `space.get(id)`
+  // before falling back to `space.create(phone)`.  Creating from the phone first
+  // can be rejected by Spectrum as "Target not allowed for this project" even
+  // though replying to the existing inbound DM space is allowed.  Bare E.164
+  // phone numbers (PHOTON_HOME_CHANNEL / cron delivery) still use create().
+  if (DM_CHAT_GUID_RE.test(spaceId)) {
+    try {
+      space = await im.space.get(spaceId);
+    } catch (e) {
+      console.error(
+        "photon-sidecar: DM space.get failed: " +
+          (e && e.stack ? e.stack : String(e))
+      );
+    }
+  }
+
+  if (!space && phoneTarget) {
     try {
       space = await im.space.create(phoneTarget);
     } catch (e) {
@@ -635,9 +697,10 @@ async function resolveSpace(spaceId) {
       );
     }
   }
-  // Anything else — typically an opaque group GUID — is rehydrated from the
-  // persisted id via `space.get`, so group spaces stay reachable after a
-  // sidecar restart even before any fresh inbound message in that group.
+
+  // Non-DM-ish ids (group spaces, provider-native ids) resolve via `space.get`,
+  // so they stay reachable after a sidecar restart even before any fresh inbound
+  // message in that group.
   if (!space) {
     try {
       space = await im.space.get(spaceId);
@@ -648,6 +711,7 @@ async function resolveSpace(spaceId) {
       );
     }
   }
+
   if (!space) throw new Error(`unable to resolve space id ${spaceId}`);
 
   rememberKnownSpace(spaceId, space);
@@ -815,7 +879,7 @@ const server = http.createServer(async (req, res) => {
     );
     // serverError() intentionally returns a generic message — see its
     // body for the rationale.
-    return serverError(res);
+    return serverError(res, e);
   }
 });
 

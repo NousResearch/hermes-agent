@@ -375,8 +375,20 @@ class TestParseReasoningEffort:
         )
         assert resolve_reasoning_effort_for_request("minimal", "anthropic", "claude-opus-4.8") == "low"
 
-    def test_openrouter_anthropic_models_expose_anthropic_surfaces(self):
+    def test_relay_anthropic_models_expose_anthropic_surfaces(self):
         assert reasoning_efforts_for_model("openrouter", "anthropic/claude-sonnet-4.6") == (
+            "low",
+            "medium",
+            "high",
+            "max",
+        )
+        assert reasoning_efforts_for_model("copilot", "claude-sonnet-4.6") == (
+            "low",
+            "medium",
+            "high",
+            "max",
+        )
+        assert reasoning_efforts_for_model("bedrock", "global.anthropic.claude-sonnet-4-6") == (
             "low",
             "medium",
             "high",
@@ -389,6 +401,23 @@ class TestParseReasoningEffort:
             "xhigh",
             "max",
         )
+        assert reasoning_efforts_for_model("bedrock", "us.anthropic.claude-opus-4-8") == (
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        )
+
+    def test_gpt55_effort_surface_follows_model_family_for_picker_rows(self):
+        expected = ("low", "medium", "high", "xhigh")
+        assert reasoning_efforts_for_model("openai-codex", "gpt-5.5") == expected
+        assert reasoning_efforts_for_model("openrouter", "openai/gpt-5.5") == expected
+        assert reasoning_efforts_for_model("openai-api", "gpt-5.5-pro") == expected
+        assert normalize_reasoning_effort_for_model("minimal", "openrouter", "openai/gpt-5.5") is None
+        assert normalize_reasoning_effort_for_model("max", "openai-api", "gpt-5.5") is None
+        assert resolve_reasoning_effort_for_request("minimal", "openrouter", "openai/gpt-5.5") == "low"
+        assert resolve_reasoning_effort_for_request("max", "openai-api", "gpt-5.5") == "xhigh"
 
     def test_gemini_effort_surfaces_follow_model_family(self):
         assert reasoning_efforts_for_model("gemini", "gemini-3-flash-preview") == (

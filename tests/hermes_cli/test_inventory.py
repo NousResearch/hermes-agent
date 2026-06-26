@@ -326,7 +326,13 @@ def test_build_models_payload_capabilities_include_model_specific_efforts():
         {"slug": "openai-codex", "name": "Codex", "models": ["gpt-5.5"],
          "total_models": 1, "is_current": True, "is_user_defined": False,
          "source": "built-in"},
-        {"slug": "openrouter", "name": "OpenRouter", "models": ["anthropic/claude-sonnet-4.8"],
+        {"slug": "openrouter", "name": "OpenRouter", "models": ["anthropic/claude-sonnet-4.8", "openai/gpt-5.5"],
+         "total_models": 2, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+        {"slug": "bedrock", "name": "AWS Bedrock", "models": ["global.anthropic.claude-opus-4-8"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+        {"slug": "copilot", "name": "GitHub Copilot", "models": ["claude-sonnet-4.6"],
          "total_models": 1, "is_current": False, "is_user_defined": False,
          "source": "built-in"},
     ]
@@ -339,10 +345,21 @@ def test_build_models_payload_capabilities_include_model_specific_efforts():
     assert codex_caps["reasoning"] is True
     assert codex_caps["reasoning_efforts"] == ["low", "medium", "high", "xhigh"]
     assert "minimal" not in codex_caps["reasoning_efforts"]
+    assert "max" not in codex_caps["reasoning_efforts"]
 
-    legacy = next(row for row in payload["providers"] if row["slug"] == "openrouter")
-    legacy_caps = legacy["capabilities"]["anthropic/claude-sonnet-4.8"]
-    assert legacy_caps["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    openrouter = next(row for row in payload["providers"] if row["slug"] == "openrouter")
+    anthropic_caps = openrouter["capabilities"]["anthropic/claude-sonnet-4.8"]
+    assert anthropic_caps["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    gpt_caps = openrouter["capabilities"]["openai/gpt-5.5"]
+    assert gpt_caps["reasoning_efforts"] == ["low", "medium", "high", "xhigh"]
+
+    bedrock = next(row for row in payload["providers"] if row["slug"] == "bedrock")
+    bedrock_caps = bedrock["capabilities"]["global.anthropic.claude-opus-4-8"]
+    assert bedrock_caps["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+
+    copilot = next(row for row in payload["providers"] if row["slug"] == "copilot")
+    copilot_caps = copilot["capabilities"]["claude-sonnet-4.6"]
+    assert copilot_caps["reasoning_efforts"] == ["low", "medium", "high", "max"]
 
 
 # ─── picker_hints ──────────────────────────────────────────────────────

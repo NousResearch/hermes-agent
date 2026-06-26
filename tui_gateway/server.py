@@ -9747,9 +9747,10 @@ def _(rid, params: dict) -> dict:
     if key == "reasoning":
         try:
             from hermes_constants import (
-                is_codex_gpt55_model,
+                VALID_REASONING_EFFORTS,
                 normalize_reasoning_effort_for_model,
                 parse_reasoning_effort,
+                reasoning_efforts_for_model,
             )
 
             arg = str(value or "").strip().lower()
@@ -9840,7 +9841,7 @@ def _(rid, params: dict) -> dict:
             if normalized is not None:
                 arg = normalized
                 parsed = {"enabled": True, "effort": arg}
-            elif is_codex_gpt55_model(target_provider, target_model):
+            elif tuple(reasoning_efforts_for_model(target_provider, target_model)) != VALID_REASONING_EFFORTS:
                 return _err(rid, 4002, f"unknown reasoning value for current model: {value}")
             else:
                 parsed = parse_reasoning_effort(arg)

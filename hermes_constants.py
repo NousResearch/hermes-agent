@@ -575,17 +575,33 @@ _REASONING_ALIASES = {
 
 
 def _normalize_model_id_for_reasoning(model: str) -> str:
-    """Return a provider-prefix/variant-stripped model id for effort lookup."""
-    value = str(model or "").strip().lower()
+    """Return a provider-prefix/variant-stripped model id for effort lookup.
+
+    Picker rows and runtime configs do not use one canonical spelling:
+    OpenRouter uses ``vendor/model``, Bedrock uses dotted inference-profile IDs
+    like ``global.anthropic.claude-opus-4-8``, and user/custom providers often
+    copy those forms verbatim.  Reasoning effort support belongs to the model
+    family, so normalize those transport prefixes before selecting the effort
+    surface.  This keeps Desktop, gateway slash commands, and request clamping
+    in lock-step for the same model no matter which provider row serves it.
+    """
+    value = str(model or "").strip().lower().replace("_", "-")
     if "/" in value:
         value = value.rsplit("/", 1)[-1]
+    # Bedrock / routed-provider IDs can be dotted prefix + canonical family,
+    # e.g. global.anthropic.claude-sonnet-4-6.  Strip everything before the
+    # family marker instead of requiring a particular provider slug.
+    for marker in ("claude-", "gpt-5.5", "gemini-"):
+        idx = value.find(marker)
+        if idx > 0:
+            value = value[idx:]
+            break
     # Fast/latest/preview are delivery/snapshot variants, not separate effort
     # surfaces.  Keep this narrow so real base ids are not over-normalized.
     for suffix in ("-fast", "-latest", "-preview"):
         if value.endswith(suffix):
             value = value[: -len(suffix)]
             break
-    value = value.replace("_", "-")
     return value
 
 
@@ -597,10 +613,37 @@ def _is_anthropic_reasoning_model(provider: str | None, model: str | None) -> bo
     provider_value = _provider_for_reasoning(provider)
     raw_model = str(model or "").strip().lower()
     model_value = _normalize_model_id_for_reasoning(raw_model)
-    if provider_value in {"anthropic", "claude", "anthropic-messages"}:
-        return model_value.startswith("claude-")
+    if not model_value.startswith("claude-"):
+        return False
+    if provider_value in {
+        "anthropic",
+        "claude",
+        "anthropic-messages",
+        "bedrock",
+        "aws-bedrock",
+        "opencode-zen",
+    }:
+        return True
     if provider_value == "openrouter" and raw_model.startswith("anthropic/"):
-        return model_value.startswith("claude-")
+        return True
+    # Provider catalogs and custom endpoints frequently return already-normalized
+    # Claude IDs (e.g. ``claude-sonnet-4.6``) even when the provider slug is a
+    # relay.  The effort surface is still the Claude-family surface; if the
+    # model ID itself is unambiguously Claude, keep UI + clamping model-specific
+    # rather than falling back to Hermes' stale global enum.
+    return raw_model.startswith("claude-")
+
+
+def _is_gpt55_reasoning_model(provider: str | None, model: str | None) -> bool:
+    provider_value = _provider_for_reasoning(provider)
+    raw_model = str(model or "").strip().lower()
+    model_value = _normalize_model_id_for_reasoning(raw_model)
+    if not (model_value == "gpt-5.5" or model_value.startswith("gpt-5.5-")):
+        return False
+    if provider_value in {"openai-codex", "codex", "openai", "openai-api", "openrouter"}:
+        return True
+    if raw_model.startswith(("openai/gpt-5.5", "gpt-5.5")):
+        return True
     return False
 
 
@@ -655,14 +698,15 @@ def _gemini_reasoning_efforts(model: str | None) -> tuple[str, ...]:
 def is_codex_gpt55_model(provider: str | None, model: str | None) -> bool:
     """True for GPT-5.5 on the ChatGPT Codex/OAuth provider.
 
-    GPT-5.5's public effort surface is Low / Medium / High / Extra High.
-    Hermes stores Extra High as the canonical ``xhigh`` wire enum.
+    Kept as the narrow Codex-route predicate for callers whose behavior really
+    is transport-specific (e.g. context/autoraise rules).  General reasoning
+    effort lookup uses ``_is_gpt55_reasoning_model`` so OpenRouter/OpenAI API
+    rows for the same GPT-5.5 family do not fall back to Hermes' legacy enum.
     """
     provider_value = _provider_for_reasoning(provider)
     if provider_value not in {"openai-codex", "codex"}:
         return False
-    model_value = _normalize_model_id_for_reasoning(str(model or ""))
-    return model_value == "gpt-5.5" or model_value.startswith("gpt-5.5-")
+    return _is_gpt55_reasoning_model(provider, model)
 
 
 def reasoning_efforts_for_model(provider: str | None = None, model: str | None = None) -> tuple[str, ...]:
@@ -672,7 +716,7 @@ def reasoning_efforts_for_model(provider: str | None = None, model: str | None =
     UI and gateway pickers should call this helper to avoid advertising levels
     a specific backend does not actually expose.
     """
-    if is_codex_gpt55_model(provider, model):
+    if _is_gpt55_reasoning_model(provider, model):
         return CODEX_GPT55_REASONING_EFFORTS
     if _is_anthropic_46_reasoning_model(provider, model):
         return ANTHROPIC_46_REASONING_EFFORTS
@@ -726,13 +770,13 @@ def resolve_reasoning_effort_for_request(
         # other request builders on the same safe path instead of omitting the
         # field or forwarding an unsupported value.
         return "low"
-    if is_codex_gpt55_model(provider, model):
-        # GPT-5.5 on the Codex/OAuth backend exposes Low / Medium / High /
-        # Extra High, with Extra High carried as Hermes' canonical ``xhigh``.
-        # Persisted configs are global, so a session can legitimately switch
-        # from an Opus preset with ``max`` to GPT-5.5.  Clamp that stale-but-
-        # semantically-strongest request to GPT-5.5's strongest accepted level
-        # instead of falling through to a low-effort default.
+    if _is_gpt55_reasoning_model(provider, model):
+        # GPT-5.5 exposes Low / Medium / High / Extra High, with Extra High
+        # carried as Hermes' canonical ``xhigh``.  Persisted configs are global,
+        # so a session can legitimately switch from an Opus preset with ``max``
+        # to GPT-5.5.  Clamp that stale-but-semantically-strongest request to
+        # GPT-5.5's strongest accepted level instead of falling through to a
+        # low-effort default.
         if value == "max":
             return "xhigh"
         if value == "minimal":

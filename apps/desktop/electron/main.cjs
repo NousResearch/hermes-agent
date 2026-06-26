@@ -6031,19 +6031,32 @@ ipcMain.handle('hermes:pet-overlay:close', async () => {
 
   return { ok: true }
 })
-// Drag: the overlay reports a new absolute screen position (it already knows the
-// pointer's screen coords), we just move the window.
+// Drag/resize: the overlay reports new absolute screen bounds (it already knows
+// the pointer's screen coords). Drag keeps the size constant; the wheel-to-scale
+// gesture grows/shrinks it so the sprite is never cropped by the window edge.
+// The window is created non-resizable (no stray edge-drag on the transparent
+// frameless panel), which on Windows/Linux also blocks programmatic setBounds
+// sizing — so briefly flip resizable on whenever the size actually changes.
 ipcMain.on('hermes:pet-overlay:set-bounds', (_event, bounds) => {
   if (!petOverlayWindow || petOverlayWindow.isDestroyed() || !bounds) {
     return
   }
 
-  petOverlayWindow.setBounds({
-    x: Math.round(bounds.x),
-    y: Math.round(bounds.y),
-    width: Math.max(80, Math.round(bounds.width)),
-    height: Math.max(80, Math.round(bounds.height))
-  })
+  const win = petOverlayWindow
+  const width = Math.max(80, Math.round(bounds.width))
+  const height = Math.max(80, Math.round(bounds.height))
+  const [curW, curH] = win.getSize()
+  const resizing = width !== curW || height !== curH
+
+  if (resizing && !win.isResizable()) {
+    win.setResizable(true)
+  }
+
+  win.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width, height })
+
+  if (resizing) {
+    win.setResizable(false)
+  }
 })
 // Click-through: the overlay window is a full rectangle but only the pet pixels
 // should be interactive. The renderer toggles this as the cursor enters/leaves

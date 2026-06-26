@@ -19,4 +19,36 @@ describe('ModelPicker provider filtering', () => {
     // in the filtered list, but index 1 in the full list after setFilter('').
     expect(providerIndexAfterClearingFilter(rows, ollama)).toBe(1)
   })
+
+  it('returns -1 when provider is undefined', () => {
+    const rows = [
+      { name: 'A', provider: provider('a') }
+    ]
+
+    expect(providerIndexAfterClearingFilter(rows, undefined)).toBe(-1)
+  })
+
+  it('returns -1 when provider slug is not in rows', () => {
+    const rows = [
+      { name: 'A', provider: provider('a') },
+      { name: 'B', provider: provider('b') }
+    ]
+
+    expect(providerIndexAfterClearingFilter(rows, provider('missing'))).toBe(-1)
+  })
+
+  it('returns -1 for empty rows', () => {
+    expect(providerIndexAfterClearingFilter([], provider('a'))).toBe(-1)
+  })
+
+  it('finds the first match when multiple rows share a slug', () => {
+    const p = provider('dup')
+
+    const rows = [
+      { name: 'First', provider: p },
+      { name: 'Second', provider: p }
+    ]
+
+    expect(providerIndexAfterClearingFilter(rows, p)).toBe(0)
+  })
 })

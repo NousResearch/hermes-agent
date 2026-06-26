@@ -3855,11 +3855,35 @@ def refresh_launchd_plist_if_needed() -> bool:
         # Delegate to a new session: `start_new_session=True` detaches the
         # helper from the gateway's process group, so the bootout that kills
         # the gateway (and us) does not kill the helper before it bootstraps.
+        #
+        # The bootstrap is retried up to 5 times with verification: under
+        # high load (loadavg observed >= 9) or a launchd race, the bootout
+        # can succeed (removing the service from launchd) while the
+        # follow-up bootstrap fails silently. Without retry+verify the
+        # service stays unregistered — KeepAlive can't revive a service
+        # launchd no longer knows about, so the gateway stays dark until a
+        # manual `launchctl bootstrap`. Failures append a timestamped line
+        # to ~/.hermes/logs/launchd-reload.log, which the health watchdog
+        # can tail to detect a persistent orphan. See hermes-restart
+        # rootcause handoff (2026-06-26 incident).
+        reload_log_path = get_hermes_home() / "logs" / "launchd-reload.log"
+        try:
+            reload_log_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         reload_script = (
             f"sleep 2; "
             f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
             f"sleep 1; "
-            f"launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null"
+            f"for _i in 1 2 3 4 5; do "
+            f"  launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null && break; "
+            f"  rc=$?; "
+            f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] bootstrap attempt $_i failed (rc=$rc) for {shlex.quote(target)}\" >> {shlex.quote(str(reload_log_path))}; "
+            f"  sleep 2; "
+            f"done; "
+            f"if ! launchctl list {shlex.quote(label)} >/dev/null 2>&1; then "
+            f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED launchd reload for {shlex.quote(target)} — service NOT registered after retries\" >> {shlex.quote(str(reload_log_path))}; "
+            f"fi"
         )
         try:
             subprocess.Popen(
@@ -3877,17 +3901,54 @@ def refresh_launchd_plist_if_needed() -> bool:
         )
         return True
 
-    # Bootout/bootstrap so launchd picks up the new definition
+    # Bootout/bootstrap so launchd picks up the new definition. Retry the
+    # bootstrap on transient failure — under load (high loadavg, launchd
+    # busy), bootstrap can return non-zero even though bootout already tore
+    # down the prior registration, leaving the service orphan from KeepAlive
+    # supervision. Mirrors the retry+verify+log contract of the detached
+    # helper above. See hermes-restart rootcause handoff (2026-06-26).
     subprocess.run(
         ["launchctl", "bootout", target],
         check=False,
         timeout=90,
     )
-    subprocess.run(
-        ["launchctl", "bootstrap", domain, str(plist_path)],
-        check=False,
-        timeout=30,
-    )
+    _bootstrap_ok = False
+    for _attempt in range(1, 6):
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", domain, str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            _bootstrap_ok = True
+            break
+        except subprocess.CalledProcessError as _e:
+            logger.warning(
+                "launchctl bootstrap attempt %d/5 failed (rc=%s) for %s%s",
+                _attempt,
+                _e.returncode,
+                target,
+                "; retrying in 2s" if _attempt < 5 else "; no retries left",
+            )
+            if _attempt < 5:
+                import time as _bootstrap_sleep
+
+                _bootstrap_sleep.sleep(2)
+    if not _bootstrap_ok:
+        _reload_log_path = get_hermes_home() / "logs" / "launchd-reload.log"
+        try:
+            _reload_log_path.parent.mkdir(parents=True, exist_ok=True)
+            from datetime import datetime as _dt
+
+            with _reload_log_path.open("a", encoding="utf-8") as _f:
+                _f.write(
+                    f"[{_dt.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')}] "
+                    f"FAILED launchd reload of {target} — bootstrap did not "
+                    f"succeed after 5 attempts (refresh ran outside gateway "
+                    f"process tree)\n"
+                )
+        except OSError:
+            pass
     print(
         "↻ Updated gateway launchd service definition to match the current Hermes install"
     )

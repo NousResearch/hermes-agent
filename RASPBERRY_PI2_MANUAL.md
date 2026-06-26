@@ -17,11 +17,13 @@
 
 | Item | Specification |
 |------|---------------|
-| Device | Raspberry Pi 2 Model B |
-| CPU | ARMv7 900MHz (4 cores) |
-| RAM | 1GB LPDDR2 |
+| Device | Raspberry Pi 2 Model B or newer / equivalent Linux SBC |
+| CPU | ARMv7 900MHz (4 cores) minimum |
+| RAM | 1GB LPDDR2 minimum |
 | Storage | microSD card (at least 8GB) |
-| OS | Raspberry Pi OS Lite (32-bit) |
+| OS | Raspberry Pi OS Lite (32-bit) or compatible Linux |
+
+**Note:** Raspberry Pi 2 is the minimum target used to keep the default profile conservative. Newer Raspberry Pi boards, Pi Zero 2 W, ARM64 SBCs, x86 mini PCs, and VMs can use the same install path; higher-spec systems may enable heavier Hermes features after setup.
 
 **Note:** Raspberry Pi 2 uses a 32-bit ARM architecture and does not support 64-bit software.
 

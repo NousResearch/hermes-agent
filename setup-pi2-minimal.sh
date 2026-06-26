@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================
 # setup-pi2-minimal.sh
-# Native-compatible Raspberry Pi 2 / ARMv7 install profile.
+# Native-compatible Raspberry Pi 2 / ARMv7 baseline install profile.
+# Also safe for newer Raspberry Pi boards, ARM64 SBCs, x86 mini PCs, and VMs.
 #
 # This script preserves Hermes Agent's upstream Python package path
 # (pip install -e .) and only changes the default install profile/config.

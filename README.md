@@ -6,6 +6,8 @@
 
 This branch is the Raspberry Pi 2 / IoT usage profile for Hermes Agent. It keeps the native Hermes Agent code layout while making the default install path practical for ARMv7 / 1GB RAM devices.
 
+Raspberry Pi 2 is the baseline target, not the upper limit. The same Pi2 Lite profile is intended for Pi2-class or better Linux systems, including Raspberry Pi 3/4/5, Pi Zero 2 W, ARM64 SBCs, x86 mini PCs, and VMs. Higher-spec devices can keep the conservative Pi2 defaults or enable heavier Hermes features later.
+
 This is not a separate mini-agent. The Python package path, CLI entrypoint, tools, plugins, gateway, memory, cron, MCP, ACP, and provider architecture stay intact. The Pi2 Lite profile changes default installation choices and default enabled tool surface.
 
 ## Repository

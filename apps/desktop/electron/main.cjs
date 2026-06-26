@@ -24,6 +24,7 @@ const https = require('node:https')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
+const { installEmbedReferer } = require('./embed-referer.cjs')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
@@ -7447,6 +7448,7 @@ app.whenReady().then(() => {
   }
   installMediaPermissions()
   registerMediaProtocol()
+  installEmbedReferer()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()
   configureSpellChecker()

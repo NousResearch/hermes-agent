@@ -4827,7 +4827,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
     if current_ver < 4:
-        config = load_config()
+        config = read_raw_config()
         display = config.get("display", {})
         if not isinstance(display, dict):
             display = {}
@@ -4850,7 +4850,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # ── Version 4 → 5: add timezone field ──
     if current_ver < 5:
-        config = load_config()
+        config = read_raw_config()
         if "timezone" not in config:
             old_tz = os.getenv("HERMES_TIMEZONE", "")
             if old_tz and old_tz.strip():
@@ -4878,7 +4878,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # ── Version 11 → 12: migrate custom_providers list → providers dict ──
     if current_ver < 12:
-        config = load_config()
+        config = read_raw_config()
         custom_list = config.get("custom_providers")
         if isinstance(custom_list, list) and custom_list:
             providers_dict = config.get("providers", {})
@@ -4969,7 +4969,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_stt, dict) and "model" in raw_stt:
             legacy_model = raw_stt["model"]
             provider = raw_stt.get("provider", "local")
-            config = load_config()
+            config = read_raw_config()
             stt = config.get("stt", {})
             # Remove the legacy flat key
             stt.pop("model", None)
@@ -5434,7 +5434,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     missing_config = get_missing_config_fields()
     
     if missing_config:
-        config = load_config()
+        config = read_raw_config()
         
         for field in missing_config:
             key = field["key"]
@@ -5450,7 +5450,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         save_config(config)
     elif current_ver < latest_ver:
         # Just update version
-        config = load_config()
+        config = read_raw_config()
         config["_config_version"] = latest_ver
         save_config(config)
 
@@ -5472,7 +5472,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
         if answer in {"y", "yes"}:
             print()
-            config = load_config()
+            config = read_raw_config()
             try:
                 from agent.skill_utils import SKILL_CONFIG_PREFIX
             except Exception:

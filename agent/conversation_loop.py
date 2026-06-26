@@ -4694,7 +4694,11 @@ def run_conversation(
                         "_verification_stop_synthetic": True,
                     })
                     agent._session_messages = messages
-                    agent._emit_status("↻ Verification required before finishing")
+                    # Run the verification-stop loop silently — the nudge is an
+                    # internal turn that should not add noise to the user's
+                    # terminal. Keep a debug breadcrumb in agent.log for tracing.
+                    logger.debug("verification stop-loop nudge issued (attempt %d)",
+                                 agent._verification_stop_nudges)
                     continue
 
                 messages.append(final_msg)

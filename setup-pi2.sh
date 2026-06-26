@@ -25,7 +25,7 @@ source "$VENV_DIR/bin/activate"
 echo "==> [Pi2] Upgrading pip"
 pip install --upgrade pip
 
-echo "==> [Pi2] Installing core dependencies (optional packages excluded)"
+echo "==> [Pi2] Installing core dependencies (heavy local ML/RAG packages excluded)"
 pip install \
   openai==2.24.0 \
   certifi \
@@ -49,8 +49,6 @@ pip install \
   websockets \
   pathspec \
   ptyprocess \
-  chromadb \
-  sentence-transformers \
   pypdf \
   beautifulsoup4
 
@@ -76,8 +74,12 @@ echo ""
 echo "  # Slack Bot"
 echo "  pip install slack-bolt slack-sdk aiohttp"
 echo ""
-echo "  # Web API (FastAPI)"
-echo "  pip install fastapi 'uvicorn[standard]'"
+echo "  # Web API (FastAPI) - use native asyncio uvicorn; skip uvicorn[standard]/uvloop on Pi2"
+echo "  pip install fastapi uvicorn"
+echo ""
+echo "  # Semantic RAG / embeddings (recommended: run remotely, not on Pi2)"
+echo "  # Avoid local torch, sentence-transformers, and chromadb on ARMv7/1GB RAM."
+echo "  # Use remote embeddings/cloud memory, or host Chroma/Qdrant/sentence-transformers on another machine."
 echo ""
 echo "  # Google API integrations"
 echo "  pip install google-api-python-client google-auth-oauthlib"

@@ -219,7 +219,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # Dashboard (`hermes dashboard`)
     "tool.dashboard": (
         "fastapi==0.133.1",
-        "uvicorn[standard]==0.41.0",
+        # Pi2/ARMv7 cannot reliably install or run uvloop. Use uvicorn's
+        # native asyncio dependency set; avoid uvicorn[standard], which pulls
+        # uvloop/httptools/watchfiles.
+        "uvicorn==0.41.0",
         "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
         "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
     ),

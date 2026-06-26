@@ -102,7 +102,47 @@ Optional RAG:
 bash setup-pi2-minimal.sh --profile rag
 ```
 
-The RAG profile intentionally avoids installing `torch`, `sentence-transformers`, and `chromadb` by default. For Pi2, prefer remote embeddings or cloud memory providers. `sqlite-vec` is optional; Raspberry Pi 2 / ARMv7 wheels are not currently available from PyPI/piwheels, so the installer skips it and falls back to SQLite FTS5/remote embeddings. If you explicitly want local embeddings/vector indexing, install them manually and expect high RAM/compile cost.
+The RAG profile intentionally avoids installing `torch`, `sentence-transformers`, and `chromadb` by default. For Pi2, prefer remote embeddings or cloud memory providers. `sqlite-vec` is optional; Raspberry Pi 2 / ARMv7 wheels are not currently available from PyPI/piwheels, so the installer skips it and falls back to SQLite FTS5/remote embeddings. The IoT branch also uses plain `uvicorn` instead of `uvicorn[standard]` to avoid `uvloop` source builds on ARMv7. If you explicitly want local embeddings/vector indexing, install them manually and expect high RAM/compile cost.
+
+## Multi-Pi2 shared memory / RAG architecture
+
+For multiple Raspberry Pi 2 nodes, use the Pi2 devices as lightweight Hermes clients and put shared memory/RAG on a stronger central node. Do not run a full local embedding/vector stack on every Pi2.
+
+Recommended layout:
+
+```text
+Pi2 kitchen ┐
+Pi2 lab     ├── HTTP/LAN API ──> shared memory/RAG server
+Pi2 garage  ┘                    ├── SQLite/Postgres memory store
+                                  ├── embedding provider or LAN embedding model
+                                  └── Qdrant/Chroma/pgvector vector index
+```
+
+Pi2 nodes should:
+
+- run Hermes Agent with the core/native/rag Pi2 profile
+- keep local short-term/session state lightweight
+- send memory writes, document ingests, and RAG queries to the central API
+- avoid local `torch`, `sentence-transformers`, and `chromadb`
+
+The central node can be an x86 mini PC, NAS, Pi 4/5, VM, or cloud host. It should own embedding, vector indexing, deduplication, backups, and cross-device memory policy.
+
+Use metadata on every shared memory/RAG item so nodes do not pollute one another's context:
+
+```json
+{
+  "device_id": "pi2-kitchen",
+  "scope": "global|device|room|user",
+  "source": "conversation|note|sensor|manual",
+  "created_at": "2026-06-25T00:00:00Z"
+}
+```
+
+First implementation recommendation:
+
+- start with a tiny central HTTP service backed by SQLite FTS5 for keyword search
+- add remote embeddings and Qdrant/pgvector later only if semantic search is needed
+- never mount one writable SQLite database over NFS/Samba for many Pi2 nodes; use an API or per-device local DBs that sync into the central server
 
 ## Config templates
 

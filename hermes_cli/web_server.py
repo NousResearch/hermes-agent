@@ -111,7 +111,7 @@ except ImportError:
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
-            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn'"
         )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
@@ -14154,6 +14154,10 @@ def start_server(
         # reaped via the WebSocketDisconnect → disconnect/reap path.
         ws_ping_interval=None if _is_loopback else 20.0,
         ws_ping_timeout=None if _is_loopback else 20.0,
+        # Pi2/ARMv7 cannot reliably install or run uvloop. Force uvicorn's
+        # native Python asyncio loop instead of auto-selecting uvloop when a
+        # user happens to have installed uvicorn[standard] in the environment.
+        loop="asyncio",
     )
     server = uvicorn.Server(config)
 
@@ -14223,10 +14227,9 @@ def start_server(
                 await server.shutdown()
 
     # On POSIX, keep the long-standing ``asyncio.run(_serve())`` behavior
-    # unchanged — Python's default loop there is already a SelectorEventLoop
-    # (or uvloop when uvicorn[standard] installs it), which is exactly what
-    # uvicorn serves on. Touching that path would only widen the blast radius
-    # for no benefit.
+    # unchanged — Python's default loop there is already the native asyncio
+    # selector loop. We also pass ``loop="asyncio"`` above so Pi2/ARMv7 never
+    # auto-selects uvloop even if uvicorn[standard] was installed manually.
     #
     # On Windows it is broken: ``asyncio.run`` defaults to a ProactorEventLoop,
     # but uvicorn's socket-serving stack assumes a SelectorEventLoop on win32

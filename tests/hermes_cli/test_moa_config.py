@@ -55,6 +55,45 @@ def test_legacy_flat_config_becomes_default_preset():
     ]
 
 
+def test_normalize_moa_config_tolerates_non_numeric_values():
+    """Non-numeric strings in hand-edited config.yaml must degrade to defaults
+    instead of crashing normalize_moa_config with ValueError."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "broken": {
+                    "max_tokens": "notanumber",
+                    "reference_temperature": "hot",
+                    "aggregator_temperature": "",
+                }
+            }
+        }
+    )
+
+    preset = cfg["presets"]["broken"]
+    assert preset["max_tokens"] == 4096
+    assert preset["reference_temperature"] == 0.6
+    assert preset["aggregator_temperature"] == 0.4
+
+
+def test_normalize_moa_config_coerces_numeric_strings():
+    """Valid numeric strings (e.g. from YAML round-trip) must coerce correctly."""
+    cfg = normalize_moa_config({"max_tokens": "8192", "reference_temperature": "0.9"})
+
+    preset = cfg["presets"][DEFAULT_MOA_PRESET_NAME]
+    assert preset["max_tokens"] == 8192
+    assert preset["reference_temperature"] == 0.9
+
+
+def test_normalize_moa_config_coerces_float_max_tokens():
+    """max_tokens: 4096.0 (float from YAML) must coerce to int."""
+    cfg = normalize_moa_config({"max_tokens": 4096.0})
+    assert cfg["presets"][DEFAULT_MOA_PRESET_NAME]["max_tokens"] == 4096
+
+    cfg2 = normalize_moa_config({"max_tokens": "4096.5"})
+    assert cfg2["presets"][DEFAULT_MOA_PRESET_NAME]["max_tokens"] == 4096
+
+
 def test_exact_preset_matching_is_not_fuzzy():
     config = {"presets": {"coding": {}, "review": {}}}
 

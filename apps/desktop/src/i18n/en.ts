@@ -1902,6 +1902,14 @@ export const en: Translations = {
     truncated: 'Showing first 512 KB.',
     noInlineTitle: 'No inline preview',
     noInlineBody: mimeType => `${mimeType || 'This file type'} can still be attached as context.`,
+    edit: 'Edit',
+    editing: 'Editing',
+    unsavedChanges: 'Unsaved changes',
+    saveFailed: message => `Couldn't save: ${message}`,
+    diskChangedTitle: 'File changed on disk',
+    diskChangedBody: 'This file changed since you opened it. Overwrite it with your version, or discard your edits and reload?',
+    overwrite: 'Overwrite',
+    discardReload: 'Discard & reload',
     console: {
       deselect: 'Deselect entry',
       select: 'Select entry',
@@ -1965,6 +1973,10 @@ export const en: Translations = {
       loadingSession: 'Loading session',
       showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
+      resumeWhenBackgroundDone: count =>
+        count === 1
+          ? 'Will resume when the background task finishes'
+          : `Will resume when ${count} background tasks finish`,
       thinking: 'Thinking',
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,

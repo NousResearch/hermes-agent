@@ -9600,8 +9600,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled
-        # job (issue #34600). If the live file is now empty while the
-        # pre-update snapshot held jobs, restore it and warn loudly.
+        # job (issue #34600). The desktop scheduler can also overwrite with
+        # its own small set, causing partial loss (issue #52144). If the
+        # live file now has fewer jobs than the pre-update snapshot, restore
+        # it and warn loudly.
         try:
             from hermes_cli.backup import restore_cron_jobs_if_emptied
 
@@ -9609,7 +9611,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if cron_restore:
                 print()
                 print(
-                    "  ⚠️  cron/jobs.json was emptied during this update — "
+                    "  ⚠️  cron/jobs.json lost jobs during this update — "
                     f"restored {cron_restore['job_count']} job(s) from "
                     f"pre-update snapshot {cron_restore['snapshot_id']}."
                 )

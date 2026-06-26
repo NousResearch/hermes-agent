@@ -1965,6 +1965,14 @@ export const zhHant = defineLocale({
     truncated: '顯示前 512 KB。',
     noInlineTitle: '沒有行內預覽',
     noInlineBody: mimeType => `${mimeType || '此檔案類型'} 仍可作為脈絡附件。`,
+    edit: '編輯',
+    editing: '編輯中',
+    unsavedChanges: '未儲存的變更',
+    saveFailed: message => `無法儲存：${message}`,
+    diskChangedTitle: '檔案已在磁碟上變更',
+    diskChangedBody: '此檔案自開啟以來已變更。用你的版本覆寫，還是放棄你的編輯並重新載入？',
+    overwrite: '覆寫',
+    discardReload: '放棄並重新載入',
     console: {
       deselect: '取消選取項目',
       select: '選取項目',
@@ -2027,6 +2035,8 @@ export const zhHant = defineLocale({
       loadingSession: '正在載入工作階段',
       showEarlier: '顯示較早的訊息',
       loadingResponse: 'Hermes 正在載入回覆',
+      resumeWhenBackgroundDone: count =>
+        count === 1 ? '背景工作完成後將自動繼續' : `${count} 個背景工作完成後將自動繼續`,
       thinking: '思考中',
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,

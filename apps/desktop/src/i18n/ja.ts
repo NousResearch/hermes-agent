@@ -2026,6 +2026,14 @@ export const ja = defineLocale({
     truncated: '最初の 512 KB を表示しています。',
     noInlineTitle: 'インラインプレビューなし',
     noInlineBody: mimeType => `${mimeType || 'このファイルタイプ'} はコンテキストとして添付できます。`,
+    edit: '編集',
+    editing: '編集中',
+    unsavedChanges: '未保存の変更',
+    saveFailed: message => `保存できませんでした：${message}`,
+    diskChangedTitle: 'ファイルがディスク上で変更されました',
+    diskChangedBody: 'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',
+    overwrite: '上書き',
+    discardReload: '破棄して再読み込み',
     console: {
       deselect: 'エントリーの選択を解除',
       select: 'エントリーを選択',
@@ -2090,6 +2098,10 @@ export const ja = defineLocale({
       loadingSession: 'セッションを読み込み中',
       showEarlier: '以前のメッセージを表示',
       loadingResponse: 'Hermes が応答を読み込み中',
+      resumeWhenBackgroundDone: count =>
+        count === 1
+          ? 'バックグラウンドタスクの完了後に再開します'
+          : `${count} 件のバックグラウンドタスクの完了後に再開します`,
       thinking: '考え中',
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,

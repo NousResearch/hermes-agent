@@ -334,7 +334,7 @@
     /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
        markdown block and between consecutive prose parts. Single knob; tweak
        freely. */
-    --paragraph-gap: 0.45rem;
+    --paragraph-gap: 0.7rem;
     --sticky-human-top: 0.23rem;
     --file-tree-row-height: 1.375rem;
 
@@ -888,6 +888,14 @@ code {
    top-margin (bottom zeroed to avoid doubling), first child reset to flush. */
 [data-slot='aui_assistant-message-content'] .aui-md :where(p) {
   margin-block: var(--paragraph-gap) 0;
+}
+
+/* Headings are section breaks, so they own a larger top gap than prose — a
+   leading `# title` (common in re-entered/delegated turns) no longer butts
+   against the block above. Top-owned + bottom snug; the first-child reset
+   below still flushes a leading heading. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(h1, h2, h3, h4) {
+  margin-block: 1rem 0.25rem;
 }
 
 /* First rendered element of a prose block is flush — the block-level gap above

@@ -512,6 +512,15 @@ export function StatusRule({
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
   const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
+  // Parked-background reassurance: a top-level delegate_task runs in the
+  // background, so the turn ends (idle) while the subagent keeps working and its
+  // result re-enters as a fresh turn later. When idle with work still in flight,
+  // spell out that the agent resumes on its own — no spinner, nothing to poll.
+  // Width-budgeted like every tail segment, so it drops first on a tight
+  // terminal where ⛓ already carries the signal.
+  const resumeHintText =
+    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
+  const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
@@ -622,6 +631,12 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             ⛓ {subagentCount}
+          </Text>
+        ) : null}
+        {showResumeHint ? (
+          <Text color={t.color.muted} dim wrap="truncate-end">
+            {' │ '}
+            {resumeHintText}
           </Text>
         ) : null}
         {showDevCredits ? (

@@ -2077,6 +2077,14 @@ export const zh: Translations = {
     truncated: '显示前 512 KB。',
     noInlineTitle: '没有内联预览',
     noInlineBody: mimeType => `${mimeType || '此文件类型'} 仍可作为上下文附件。`,
+    edit: '编辑',
+    editing: '编辑中',
+    unsavedChanges: '未保存的更改',
+    saveFailed: message => `无法保存：${message}`,
+    diskChangedTitle: '文件已在磁盘上更改',
+    diskChangedBody: '此文件自打开以来已更改。用你的版本覆盖，还是放弃你的编辑并重新加载？',
+    overwrite: '覆盖',
+    discardReload: '放弃并重新加载',
     console: {
       deselect: '取消选择条目',
       select: '选择条目',
@@ -2139,6 +2147,8 @@ export const zh: Translations = {
       loadingSession: '正在加载会话',
       showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',
+      resumeWhenBackgroundDone: count =>
+        count === 1 ? '后台任务完成后将自动继续' : `${count} 个后台任务完成后将自动继续`,
       thinking: '思考中',
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,

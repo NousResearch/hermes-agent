@@ -188,9 +188,13 @@ def _fake_response(status, url, body):
     return resp
 
 
-def _provider_with_token_endpoint(tmp_path, oauth_config, token_endpoint):
+def _provider_with_token_endpoint(tmp_path, oauth_config, token_endpoint, monkeypatch):
     from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
     reset_manager_for_tests()
+    # Provider construction fails fast in a non-interactive environment with no
+    # cached tokens (mcp_oauth_manager.py guard). The hermetic test env has no
+    # TTY, so present an interactive stdin to reach the code under test.
+    _set_interactive_stdin(monkeypatch)
     mgr = MCPOAuthManager()
     provider = mgr.get_or_build_provider("srv", "https://mcp.example.com", oauth_config)
     provider.context.oauth_metadata = SimpleNamespace(token_endpoint=token_endpoint)
@@ -206,7 +210,7 @@ def test_invalid_client_at_token_endpoint_poisons(tmp_path, monkeypatch):
     (d / "srv.client.json").write_text('{"client_id": "dead"}')
     (d / "srv.meta.json").write_text("{}")
     provider = _provider_with_token_endpoint(
-        tmp_path, {}, "https://idp.example.com/oauth/token"
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
     )
     resp = _fake_response(
         400, "https://idp.example.com/oauth/token", b'{"error":"invalid_client"}'
@@ -227,7 +231,7 @@ def test_invalid_client_at_other_endpoint_is_ignored(tmp_path, monkeypatch):
     d.mkdir(parents=True)
     (d / "srv.client.json").write_text('{"client_id": "live"}')
     provider = _provider_with_token_endpoint(
-        tmp_path, {}, "https://idp.example.com/oauth/token"
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
     )
     resp = _fake_response(
         400, "https://mcp.example.com/messages", b'{"error":"invalid_client"}'
@@ -245,7 +249,7 @@ def test_success_response_is_ignored(tmp_path, monkeypatch):
     d.mkdir(parents=True)
     (d / "srv.client.json").write_text('{"client_id": "live"}')
     provider = _provider_with_token_endpoint(
-        tmp_path, {}, "https://idp.example.com/oauth/token"
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
     )
     resp = _fake_response(
         200, "https://idp.example.com/oauth/token", b'{"access_token":"x"}'
@@ -261,7 +265,7 @@ def test_preregistered_client_is_never_poisoned(tmp_path, monkeypatch):
     """A config-supplied client_id is never auto-deleted (re-reg can't help)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     provider = _provider_with_token_endpoint(
-        tmp_path, {"client_id": "from-config"}, "https://idp.example.com/oauth/token"
+        tmp_path, {"client_id": "from-config"}, "https://idp.example.com/oauth/token", monkeypatch
     )
     d = tmp_path / "mcp-tokens"
     # _maybe_preregister_client wrote client.json from config during build.
@@ -283,7 +287,7 @@ def test_invalid_client_metadata_does_not_trip(tmp_path, monkeypatch):
     d.mkdir(parents=True)
     (d / "srv.client.json").write_text('{"client_id": "live"}')
     provider = _provider_with_token_endpoint(
-        tmp_path, {}, "https://idp.example.com/oauth/token"
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
     )
     resp = _fake_response(
         400, "https://idp.example.com/oauth/token", b'{"error":"invalid_client_metadata"}'
@@ -330,7 +334,7 @@ def test_bridge_forwards_requests_and_poisons_on_token_endpoint_400(
     from mcp.client.auth.oauth2 import OAuthClientProvider
     monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_base_flow)
 
-    provider = _provider_with_token_endpoint(tmp_path, {}, token_ep)
+    provider = _provider_with_token_endpoint(tmp_path, {}, token_ep, monkeypatch)
     provider.context.oauth_metadata = _FakeMeta(token_ep)
 
     sentinel_request = object()

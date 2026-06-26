@@ -92,17 +92,13 @@ body {
 }
 
 /*
- * Mobile bottom status bar — slim it down. The desktop bar carries more than a
- * phone needs; hide the redundant items by their data-statusbar-id (injected by
- * the sync codemod). Kept: command-center, gateway health (icon only),
- * context-usage (context window), backend version.
+ * Mobile bottom status bar. Rather than HIDING controls the phone can't fit
+ * (YOLO, background agents, cron, terminal, session timer) — which makes the app
+ * feel like a stripped-down port — keep them all and let the bar scroll
+ * horizontally (see the [data-statusbar] rule below). Only the client-version is
+ * dropped: it's redundant with the backend version already shown.
  */
-[data-statusbar-id='agents'],
-[data-statusbar-id='version-client'],
-[data-statusbar-id='session-timer'],
-[data-statusbar-id='cron'],
-[data-statusbar-id='yolo'],
-[data-statusbar-id='terminal'] {
+[data-statusbar-id='version-client'] {
   display: none !important;
 }
 
@@ -117,6 +113,17 @@ body {
    little, not a lot. */
 [data-statusbar] {
   height: 1.75rem !important;
+  /* Show every control; scroll the bar horizontally rather than cram or clip. */
+  justify-content: flex-start !important;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+[data-statusbar]::-webkit-scrollbar {
+  display: none;
+}
+[data-statusbar] > * {
+  overflow: visible !important;
+  flex: 0 0 auto;
 }
 [data-statusbar] [data-statusbar-id] {
   font-size: 0.8125rem !important;

@@ -11799,6 +11799,7 @@ class CronJobCreate(BaseModel):
     enabled_toolsets: Optional[List[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
+    allow_silent: Optional[Any] = None
 
 
 class CronJobUpdate(BaseModel):
@@ -12112,6 +12113,8 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
 
 
 def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
+    if body.allow_silent is not None and not isinstance(body.allow_silent, bool):
+        raise HTTPException(status_code=400, detail="allow_silent must be a boolean")
     try:
         profile_name, profile_home = _cron_profile_home(profile)
         script = _normalize_dashboard_cron_script(body.script, profile_home)
@@ -12141,6 +12144,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             enabled_toolsets=_cron_string_list(body.enabled_toolsets),
             workdir=_cron_optional_text(body.workdir),
             no_agent=no_agent,
+            allow_silent=body.allow_silent,
         )
     except HTTPException:
         raise
@@ -12186,6 +12190,8 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
+    if "allow_silent" in body.updates and not isinstance(body.updates["allow_silent"], bool):
+        raise HTTPException(status_code=400, detail="allow_silent must be a boolean")
     try:
         profile_name, profile_home = _cron_profile_home(selected)
         existing = _call_cron_for_profile(profile_name, "get_job", job_id)

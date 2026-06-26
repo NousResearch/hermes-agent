@@ -653,6 +653,24 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
         return False
 
 
+def _cron_silence_allowed(job: dict) -> bool:
+    """Whether this cron job may suppress delivery with the silence marker.
+
+    Default ON preserves the historical monitor/watchdog behavior. Jobs that
+    must always produce a user-visible report, like daily briefings, opt out
+    with ``allow_silent=False``.
+    """
+    return job.get("allow_silent") is not False
+
+
+def _is_scheduler_internal_silence(output: str, final_response: str) -> bool:
+    """True for scheduler-generated silence, not an agent-authored marker."""
+    return (
+        str(final_response or "").strip().upper() == SILENT_MARKER
+        and "**Status:** silent" in str(output or "")
+    )
+
+
 def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
                            thread_id: Optional[str]) -> bool:
     """True when a delivery target is the job's own origin conversation.
@@ -2491,18 +2509,29 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
 
-    # Always prepend cron execution guidance so the agent knows how
-    # delivery works and can suppress delivery when appropriate.
+    # Always prepend cron execution guidance so the agent knows how delivery
+    # works. Silence suppression is per-job: monitors keep the historical
+    # marker contract, while always-deliver jobs get an all-clear instruction
+    # instead of a conflicting suppression rule.
+    if _cron_silence_allowed(job):
+        silence_guidance = (
+            "SILENT: If there is genuinely nothing new to report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more."
+        )
+    else:
+        silence_guidance = (
+            "DELIVERY REQUIRED: Always produce a concise final response for "
+            "this job. If everything is normal or there is nothing new, send "
+            "a short all-clear rather than suppressing delivery."
+        )
     cron_hint = (
         "[IMPORTANT: You are running as a scheduled cron job. "
         "DELIVERY: Your final response will be automatically delivered "
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        f"final response and the system handles the rest. {silence_guidance}]\n\n"
     )
     prompt = cron_hint + prompt
     if skills is None:
@@ -3916,7 +3945,10 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
             # #46917).  Keeps the intentional bracketed-prefix / trailing-line
             # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
+            if should_deliver and success and _is_cron_silence_response(deliver_content) and (
+                _cron_silence_allowed(job)
+                or _is_scheduler_internal_silence(output, final_response)
+            ):
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False
 

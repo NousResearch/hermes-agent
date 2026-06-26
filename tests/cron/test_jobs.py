@@ -341,6 +341,15 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_allow_silent_false_is_persisted(self, tmp_cron_dir):
+        job = create_job(prompt="Daily briefing", schedule="every 1h", allow_silent=False)
+        assert job["allow_silent"] is False
+        assert get_job(job["id"])["allow_silent"] is False
+
+    def test_allow_silent_rejects_non_bool_on_create(self, tmp_cron_dir):
+        with pytest.raises(ValueError, match="allow_silent"):
+            create_job(prompt="Daily briefing", schedule="every 1h", allow_silent="false")
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -409,6 +418,18 @@ class TestUpdateJob:
         assert updated["enabled"] is False
         fetched = get_job(job["id"])
         assert fetched["enabled"] is False
+
+    def test_update_allow_silent(self, tmp_cron_dir):
+        job = create_job(prompt="Report", schedule="every 1h")
+        updated = update_job(job["id"], {"allow_silent": False})
+        assert updated["allow_silent"] is False
+        assert get_job(job["id"])["allow_silent"] is False
+
+    def test_update_allow_silent_rejects_non_bool(self, tmp_cron_dir):
+        job = create_job(prompt="Report", schedule="every 1h")
+        with pytest.raises(ValueError, match="allow_silent"):
+            update_job(job["id"], {"allow_silent": "false"})
+        assert "allow_silent" not in get_job(job["id"])
 
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})

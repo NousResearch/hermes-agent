@@ -966,6 +966,15 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _normalize_allow_silent(value: Optional[bool]) -> Optional[bool]:
+    """Normalize and validate a cron job's silence-suppression contract."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    raise ValueError("allow_silent must be a boolean")
+
+
 def _resolve_default_model_snapshot() -> Optional[str]:
     """Resolve the global default model the same way the cron ticker does.
 
@@ -1087,6 +1096,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    allow_silent: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1131,6 +1141,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        allow_silent: When False, this job is always-deliver: the scheduler does
+                not tell the agent to use the cron silence marker, and a final
+                marker response is delivered instead of suppressed. Defaults to
+                True for backwards compatibility.
 
     Returns:
         The created job dict
@@ -1163,6 +1177,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_allow_silent = _normalize_allow_silent(allow_silent)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1258,6 +1273,10 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    # Only persist allow_silent when explicitly set. Missing means the legacy
+    # behavior: cron jobs may suppress delivery with the silence marker.
+    if normalized_allow_silent is not None:
+        job["allow_silent"] = normalized_allow_silent
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -1357,6 +1376,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = _normalize_workdir(_wd)
 
             previous_inference_axes = _normalized_inference_axes(job)
+            if "allow_silent" in updates:
+                updates["allow_silent"] = _normalize_allow_silent(updates["allow_silent"])
+
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(

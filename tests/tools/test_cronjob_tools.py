@@ -264,6 +264,51 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_and_update_allow_silent(self):
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily briefing",
+                schedule="every 1h",
+                allow_silent=False,
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["allow_silent"] is False
+        assert get_job(created["job_id"])["allow_silent"] is False
+
+        updated = json.loads(
+            cronjob(action="update", job_id=created["job_id"], allow_silent=True)
+        )
+        assert updated["success"] is True
+        assert updated["job"]["allow_silent"] is True
+        assert get_job(created["job_id"])["allow_silent"] is True
+
+    def test_allow_silent_string_is_rejected(self):
+        created = json.loads(cronjob(action="create", prompt="Report", schedule="every 1h"))
+        result = json.loads(
+            cronjob(action="update", job_id=created["job_id"], allow_silent="false")
+        )
+        assert result["success"] is False
+        assert "allow_silent" in result["error"]
+
+    def test_attach_to_session_round_trips(self):
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily briefing",
+                schedule="every 1h",
+                attach_to_session=True,
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["attach_to_session"] is True
+        assert get_job(created["job_id"])["attach_to_session"] is True
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

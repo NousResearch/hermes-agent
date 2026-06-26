@@ -11,6 +11,7 @@ frontmatter:
           deliver: origin            # optional (default "origin")
           prompt: "..."              # optional task instruction for the run
           no_agent: false            # optional
+          allow_silent: true          # optional, default cron silence behavior
 
 Because a blueprint is just a skill, it flows through the ENTIRE existing
 skills-hub pipeline for free — search, inspect, quarantine, security scan,
@@ -63,6 +64,7 @@ class BlueprintSpec:
     deliver: str = "origin"
     prompt: Optional[str] = None
     no_agent: bool = False
+    allow_silent: Optional[bool] = None
     model: Optional[str] = None
     provider: Optional[str] = None
     enabled_toolsets: Optional[List[str]] = None
@@ -122,6 +124,9 @@ def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
     if prompt is not None:
         prompt = str(prompt)
     no_agent = bool(blueprint.get("no_agent", False))
+    allow_silent = blueprint.get("allow_silent")
+    if allow_silent is not None and not isinstance(allow_silent, bool):
+        raise BlueprintError("blueprint.allow_silent must be a boolean when present")
     model = blueprint.get("model")
     provider = blueprint.get("provider")
     toolsets = blueprint.get("enabled_toolsets")
@@ -134,6 +139,7 @@ def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
         deliver=deliver,
         prompt=prompt,
         no_agent=no_agent,
+        allow_silent=allow_silent,
         model=str(model).strip() if model else None,
         provider=str(provider).strip() if provider else None,
         enabled_toolsets=[str(t) for t in toolsets] if toolsets else None,
@@ -191,6 +197,7 @@ def blueprint_to_job_spec(
         "provider": spec.provider,
         "enabled_toolsets": spec.enabled_toolsets,
         "no_agent": spec.no_agent,
+        "allow_silent": spec.allow_silent,
     }
 
 
@@ -269,6 +276,8 @@ def export_blueprint(job: Dict[str, Any], body: str, *, blueprint_name: Optional
         blueprint_block["prompt"] = job["prompt"]
     if job.get("no_agent"):
         blueprint_block["no_agent"] = True
+    if isinstance(job.get("allow_silent"), bool):
+        blueprint_block["allow_silent"] = job["allow_silent"]
     if job.get("model"):
         blueprint_block["model"] = job["model"]
     if job.get("provider"):

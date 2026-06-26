@@ -3,6 +3,7 @@
 import argparse
 import signal
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -372,6 +373,70 @@ def test_run_gateway_windows_detached_absorbs_console_controls(monkeypatch):
 
     assert calls == [(False, 0)]
     assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) in signal_calls
+
+
+class TestGatewayRestartWatcher:
+    """Regression tests for the post-update detached respawn watcher.
+
+    The watcher must hand the respawned gateway the same detach context that
+    gateway_windows._spawn_detached gives the autostart path — otherwise the
+    respawn inherits the spawning console, decides it is interactive, skips the
+    SetConsoleCtrlHandler guard, and dies on the next CTRL_CLOSE/LOGOFF event
+    (the silent post-update death this fix addresses).
+    """
+
+    def _watcher_source(self):
+        import ast
+        import re
+        import textwrap
+
+        content = (
+            Path(gateway.__file__).read_text(encoding="utf-8")
+        )
+        start = content.index("watcher = textwrap.dedent(")
+        seg = content[start : start + 3500]
+        m = re.search(
+            r'textwrap\.dedent\(\s*"""(.*?)"""\s*\)\.strip\(\)', seg, re.DOTALL
+        )
+        assert m, "could not locate watcher template literal"
+        inner = textwrap.dedent(m.group(1)).strip()
+        # Must be valid Python — it is executed via `python -c`.
+        ast.parse(inner)
+        return inner
+
+    def test_watcher_marks_respawn_detached_and_severs_stdin(self):
+        src = self._watcher_source()
+        # The respawned gateway must be tagged as a detached service launch so
+        # _windows_gateway_should_absorb_console_controls() returns True.
+        assert 'HERMES_GATEWAY_DETACHED' in src
+        assert '"HERMES_GATEWAY_DETACHED"] = "1"' in src
+        # And its stdin must be severed so the isatty() fallback can't class it
+        # interactive even if the env marker were somehow dropped.
+        assert '"stdin": subprocess.DEVNULL' in src
+        # The env overlay must be passed to Popen, not just constructed.
+        assert '"env": _env' in src
+
+    def test_by_cmdline_spawns_watcher(self, monkeypatch):
+        captured = {}
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(pid=4321)
+
+        monkeypatch.setattr(gateway.subprocess, "Popen", fake_popen)
+        ok = gateway.launch_detached_gateway_restart_by_cmdline(
+            999999, ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"]
+        )
+        assert ok is True
+        # argv = [python, "-c", watcher, old_pid, *run_argv]
+        assert captured["argv"][1] == "-c"
+        assert captured["argv"][3] == "999999"
+        assert captured["argv"][-3:] == ["hermes_cli.main", "gateway", "run"]
+
+    def test_rejects_empty_inputs(self):
+        assert gateway.launch_detached_gateway_restart_by_cmdline(0, ["x"]) is False
+        assert gateway.launch_detached_gateway_restart_by_cmdline(123, []) is False
 
 
 class TestSystemdLingerStatus:

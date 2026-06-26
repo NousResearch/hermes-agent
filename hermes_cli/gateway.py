@@ -752,9 +752,25 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         # been spawned inside a job object (Electron/Tauri parent), and
         # without breakaway the respawned gateway would die when that job
         # tears down. See _subprocess_compat.windows_detach_flags().
+        #
+        # Mark the respawn as a detached service launch and sever its stdin.
+        # _windows_gateway_should_absorb_console_controls() keys off
+        # HERMES_GATEWAY_DETACHED (and, failing that, an interactive stdin):
+        # without this marker the respawned gateway inherits the spawning
+        # process's console handle, decides it is "interactive", and SKIPS the
+        # SetConsoleCtrlHandler(NULL, TRUE) guard. It then dies the instant
+        # Windows broadcasts CTRL_CLOSE_EVENT / CTRL_LOGOFF_EVENT when the
+        # parent console (e.g. the post-update desktop shell) goes away —
+        # silently, with no shutdown log. Mirror gateway_windows._spawn_detached:
+        # set HERMES_GATEWAY_DETACHED=1 and redirect stdin to DEVNULL so the
+        # respawn installs the console-control guard and survives. (#21301-followup)
+        _env = dict(os.environ)
+        _env["HERMES_GATEWAY_DETACHED"] = "1"
         _popen_kwargs = {
+            "stdin": subprocess.DEVNULL,
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
+            "env": _env,
         }
         if sys.platform == "win32":
             try:

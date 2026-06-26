@@ -753,3 +753,60 @@ class TestTerminalOutputRedaction:
         out = "CUSTOM_TOKEN=zzzopaque1234567890abcdef"
         red = redact_terminal_output(out, "printenv")
         assert "zzzopaque1234567890abcdef" in red
+
+
+class TestFileReadNonReusableRedaction:
+    """#35519: prefix-matched credentials in FILE CONTENT (read_file /
+    search_files / cat) must be redacted to a NON-REUSABLE sentinel — not a
+    head/tail mask that looks like a real-but-truncated key and gets written
+    back to config (corrupting the credential -> 401)."""
+
+    GHP = "ghp_S1abcdefghijklmnopqrstuvwxyz0Pn2T"  # realistic GitHub PAT shape
+    SK = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+
+    def test_file_read_uses_nonreusable_sentinel(self):
+        out = redact_sensitive_text(f"token: {self.GHP}", force=True, file_read=True)
+        # The sentinel marker is present and obviously a redaction...
+        assert "«redacted:ghp_…»" in out, out
+        # ...and the head/tail-preserving mask shape is NOT produced.
+        assert "..." not in out
+        # The agent can still tell which vendor credential is present.
+        assert "ghp_" in out
+
+    def test_file_read_does_not_leak_secret_body(self):
+        """Crucial: file_read must NOT expose the real key (no un-redact)."""
+        out = redact_sensitive_text(f"token: {self.GHP}", force=True, file_read=True)
+        # No run of the secret body survives.
+        assert "S1abcdefghij" not in out
+        assert self.GHP not in out
+        assert "Pn2T" not in out  # not even the tail (the old mask kept it)
+
+    def test_file_read_sentinel_is_not_a_plausible_key(self):
+        """The sentinel can't be mistaken for / written back as a usable key:
+        the old mask was a 13-char `ghp_S1...Pn2T` that broke GitHub auth when
+        an agent re-saved it. The sentinel is syntactically invalid as a token
+        (contains « » … and ':'), so it can't round-trip into a dead key."""
+        out = redact_sensitive_text(f"GITHUB_PERSONAL_ACCESS_TOKEN: {self.GHP}",
+                                    force=True, file_read=True)
+        masked = out.split(": ", 1)[1].strip()
+        # Not a bare token: contains the sentinel delimiters.
+        assert masked.startswith("«") and masked.endswith("»")
+        assert "…" in masked
+
+    def test_default_mode_unchanged_keeps_headtail_mask(self):
+        """Regression guard: NON-file_read (logs/display) keeps the existing
+        head/tail mask shape — only file content gets the sentinel."""
+        out = redact_sensitive_text(f"token: {self.GHP}", force=True)
+        assert "«redacted" not in out          # no sentinel in log mode
+        assert "ghp_" in out and "..." in out   # head/tail mask preserved
+
+    def test_file_read_implies_code_file_no_env_falsepos(self):
+        """file_read should skip the source-code ENV/JSON false-positive paths
+        (it's config/data). A bare ``MAX_TOKENS=8000`` must pass through."""
+        out = redact_sensitive_text("MAX_TOKENS=8000", force=True, file_read=True)
+        assert out == "MAX_TOKENS=8000"
+
+    def test_sk_prefix_also_sentinelized(self):
+        out = redact_sensitive_text(f"key: {self.SK}", force=True, file_read=True)
+        assert "«redacted:sk-…»" in out
+        assert self.SK not in out

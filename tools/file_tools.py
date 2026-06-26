@@ -153,7 +153,7 @@ def _preserve_container_absolute_path(filepath: str) -> bool:
     Docker/Singularity/Modal/Daytona file operations execute inside the backend
     sandbox. In that context, absolute paths such as /workspace/... and
     /outputs/... are container paths, often backed by explicit mounts. Resolving
-    them on the host first can rewrite /workspace/projects/... into the host
+    them on the host first can rewrite workspace project mounts into the host
     source path and then hand that host path back to the container, where it may
     become a private, non-durable container path instead of the intended mount.
     """

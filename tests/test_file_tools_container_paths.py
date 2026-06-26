@@ -3,10 +3,13 @@ from pathlib import Path
 from tools import file_tools
 
 
+WORKSPACE_PROJECTS = Path("/workspace") / "projects"
+
+
 def test_preserve_workspace_absolute_path_for_docker(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "docker")
 
-    path = "/workspace/projects/example/proof.txt"
+    path = str(WORKSPACE_PROJECTS / "example" / "proof.txt")
 
     assert file_tools._preserve_container_absolute_path(path) is True
     assert file_tools._resolve_path_for_task(path) == Path(path)
@@ -24,7 +27,7 @@ def test_preserve_outputs_absolute_path_for_docker(monkeypatch):
 def test_do_not_preserve_workspace_absolute_path_for_local(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
-    assert file_tools._preserve_container_absolute_path("/workspace/projects/example/proof.txt") is False
+    assert file_tools._preserve_container_absolute_path(str(WORKSPACE_PROJECTS / "example" / "proof.txt")) is False
 
 
 def test_do_not_preserve_host_absolute_path_for_docker(monkeypatch):

@@ -247,6 +247,73 @@ class TestLoadConfigParseFailure:
             assert not list(tmp_path.glob("config.yaml.corrupt.*.bak"))
 
 
+class TestLoadConfigSecurityGate:
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics only")
+    def test_refuses_group_writable_config(self, tmp_path, caplog, capsys):
+        import logging
+        from hermes_cli import config as cfg_mod
+
+        cfg_mod._CONFIG_SECURITY_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("model: unsafe/model\n", encoding="utf-8")
+            os.chmod(config_path, 0o664)
+
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+                config = load_config()
+
+            assert config["model"] == DEFAULT_CONFIG["model"]
+            assert any(
+                "Refusing to load unsafe" in rec.message
+                and "group-writable" in rec.message
+                for rec in caplog.records
+            ), f"expected unsafe-config warning, got: {[r.message for r in caplog.records]}"
+
+            captured = capsys.readouterr()
+            assert "hermes config:" in captured.err
+            assert "group-writable" in captured.err
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics only")
+    def test_refuses_non_owned_config(self, tmp_path, caplog, capsys):
+        import logging
+        from hermes_cli import config as cfg_mod
+
+        cfg_mod._CONFIG_SECURITY_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("model: unsafe/model\n", encoding="utf-8")
+            os.chmod(config_path, 0o600)
+
+            with patch("hermes_cli.config.os.getuid", return_value=os.getuid() + 1):
+                with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+                    config = load_config()
+
+            assert config["model"] == DEFAULT_CONFIG["model"]
+            assert any(
+                "Refusing to load unsafe" in rec.message
+                and "owned by uid" in rec.message
+                for rec in caplog.records
+            ), f"expected unsafe-config warning, got: {[r.message for r in caplog.records]}"
+
+            captured = capsys.readouterr()
+            assert "hermes config:" in captured.err
+            assert "owned by uid" in captured.err
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics only")
+    def test_container_mode_skips_owner_and_mode_gate(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "HERMES_CONTAINER": "1"}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("model: allowed/model\n", encoding="utf-8")
+            os.chmod(config_path, 0o666)
+
+            with patch("hermes_cli.config.os.getuid", return_value=os.getuid() + 1):
+                config = load_config()
+
+            assert config["model"] == "allowed/model"
+
+
 class TestSaveAndLoadRoundtrip:
     def test_roundtrip(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

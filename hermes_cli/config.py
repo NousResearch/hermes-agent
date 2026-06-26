@@ -33,10 +33,27 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
 
-# Track which (config_path, mtime_ns, size) tuples we've already warned about
-# so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
-# every time. Cleared automatically when the file changes (different mtime).
+# Track which config-file states we've already warned about so concurrent
+# CLI/gateway loads don't spam stderr every time. The key includes the file's
+# uid/mode so chmod/chown changes retrigger the warning even if the contents
+# stay byte-for-byte identical.
 _CONFIG_PARSE_WARNED: set = set()
+_CONFIG_SECURITY_WARNED: set = set()
+
+
+def _config_warn_key(config_path: Path) -> tuple:
+    """Return a warning-dedup key for the current config file state."""
+    try:
+        st = config_path.stat()
+        return (
+            str(config_path),
+            st.st_mtime_ns,
+            st.st_size,
+            stat.S_IMODE(st.st_mode),
+            getattr(st, "st_uid", None),
+        )
+    except OSError:
+        return (str(config_path), 0, 0, 0, None)
 
 
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
@@ -111,11 +128,7 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
     survives any later rewrite of ``config.yaml`` by the setup wizard or
     ``hermes config set``.
     """
-    try:
-        st = config_path.stat()
-        key = (str(config_path), st.st_mtime_ns, st.st_size)
-    except OSError:
-        key = (str(config_path), 0, 0)
+    key = _config_warn_key(config_path)
     if key in _CONFIG_PARSE_WARNED:
         return
     _CONFIG_PARSE_WARNED.add(key)
@@ -137,8 +150,57 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
     except Exception:
         pass
 
+
+def _warn_config_security_failure(config_path: Path, reason: str) -> None:
+    """Surface an unsafe config.yaml ownership/permission state."""
+    key = _config_warn_key(config_path)
+    if key in _CONFIG_SECURITY_WARNED:
+        return
+    _CONFIG_SECURITY_WARNED.add(key)
+
+    msg = (
+        f"Refusing to load unsafe {config_path}: {reason}. "
+        "Falling back to default config so quick_commands and other user overrides "
+        "from this file are ignored until the file is secured."
+    )
+    logger.warning(msg)
+    try:
+        sys.stderr.write(f"⚠️  hermes config: {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _assert_config_file_safe(config_path: Path) -> None:
+    """Reject unsafe local config.yaml ownership/permissions before parsing.
+
+    Only enforced for normal local installs. Managed deployments and
+    containers intentionally allow broader ownership/permission models.
+    """
+    if _IS_WINDOWS or is_managed() or _is_container():
+        return
+
+    st = os.stat(config_path)
+    current_uid = os.getuid()
+    mode = stat.S_IMODE(st.st_mode)
+
+    if st.st_uid != current_uid:
+        raise PermissionError(
+            f"file is owned by uid {st.st_uid}, expected current uid {current_uid}"
+        )
+
+    writable_labels = []
+    if mode & stat.S_IWGRP:
+        writable_labels.append("group-writable")
+    if mode & stat.S_IWOTH:
+        writable_labels.append("world-writable")
+    if writable_labels:
+        raise PermissionError(
+            f"file is {' and '.join(writable_labels)} (mode {oct(mode)})"
+        )
 
 # Env var names that influence how the next subprocess executes —
 # never writable through ``save_env_value``. Anything that controls
@@ -5782,8 +5844,12 @@ def read_raw_config() -> Dict[str, Any]:
             return copy.deepcopy(cached[2])
 
         try:
+            _assert_config_file_safe(config_path)
             with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
+        except PermissionError as e:
+            _warn_config_security_failure(config_path, str(e))
+            return {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return {}
@@ -5997,6 +6063,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         if user_sig is not None:
             try:
+                _assert_config_file_safe(config_path)
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
 
@@ -6008,6 +6075,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config.pop("max_turns", None)
 
                 config = _deep_merge(config, user_config)
+            except PermissionError as e:
+                _warn_config_security_failure(config_path, str(e))
             except Exception as e:
                 _warn_config_parse_failure(config_path, e)
 

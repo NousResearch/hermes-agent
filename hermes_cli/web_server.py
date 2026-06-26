@@ -8261,6 +8261,8 @@ async def list_mcp_servers(profile: Optional[str] = None):
 @app.post("/api/mcp/servers")
 async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers, _save_mcp_server
+    from hermes_cli.mcp_security import validate_mcp_server_secrets
+    from hermes_constants import get_hermes_home as _get_hermes_home
 
     name = (body.name or "").strip()
     if not name:
@@ -8286,6 +8288,32 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         server_config["env"] = dict(body.env)
     if body.auth:
         server_config["auth"] = body.auth
+
+    # Env-var placeholder gate: refuse if any ${VAR} won't resolve at runtime.
+    # The dashboard has no interactive bypass; the caller must supply the secret
+    # first.  This mirrors the CLI gate in _save_mcp_server but fires here so
+    # the HTTP response carries a structured error that dashboard UI can surface.
+    with _profile_scope(body.profile or profile) as scoped_profile_dir:
+        _profile_dir = scoped_profile_dir or _get_hermes_home()
+        _shared_env = _profile_dir.parent / ".env"
+        secret_issues = validate_mcp_server_secrets(
+            name,
+            server_config,
+            profile_dir=_profile_dir,
+            shared_env_path=_shared_env,
+        )
+    if secret_issues:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "unresolved_env_vars",
+                "message": (
+                    f"Server '{name}' references env vars that are not set. "
+                    "Add the secret(s) to the profile .env before saving."
+                ),
+                "issues": secret_issues,
+            },
+        )
 
     try:
         with _profile_scope(body.profile or profile):

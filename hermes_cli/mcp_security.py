@@ -179,3 +179,133 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
 
 def is_mcp_server_entry_suspicious(name: str, entry: dict[str, Any]) -> bool:
     return bool(validate_mcp_server_entry(name, entry))
+
+
+# ---------------------------------------------------------------------------
+# Env-var placeholder resolution gate
+# ---------------------------------------------------------------------------
+
+# Matches the same pattern as tools/mcp_tool._ENV_VAR_PATTERN so save-time
+# checks stay in lock-step with the gateway resolver.
+_PLACEHOLDER_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+def _parse_dotenv_file(path: "str | os.PathLike[str] | None") -> dict[str, str]:
+    """Minimal .env parser: KEY=VALUE per line, comments + blanks ignored.
+
+    Mirrors the algorithm in the kanban audit script
+    ``hyg/mcp_secret_audit.py`` — same parse, same order — without
+    importing from the workspace.  Values with balanced surrounding
+    single/double quotes have those quotes stripped.
+    """
+    out: dict[str, str] = {}
+    if path is None:
+        return out
+    p = os.fspath(path)
+    if not os.path.isfile(p):
+        return out
+    try:
+        with open(p, encoding="utf-8") as fh:
+            text = fh.read()
+    except (OSError, UnicodeDecodeError):
+        try:
+            with open(p, encoding="latin-1") as fh:
+                text = fh.read()
+        except OSError:
+            return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key:
+            out[key] = value
+    return out
+
+
+def _collect_placeholders(value: Any) -> set[str]:
+    """Recursively collect every ``${VAR}`` name from a config sub-tree."""
+    refs: set[str] = set()
+    if isinstance(value, str):
+        for m in _PLACEHOLDER_PATTERN.finditer(value):
+            refs.add(m.group(1))
+    elif isinstance(value, dict):
+        for v in value.values():
+            refs |= _collect_placeholders(v)
+    elif isinstance(value, list):
+        for v in value:
+            refs |= _collect_placeholders(v)
+    return refs
+
+
+def validate_mcp_server_secrets(
+    name: str,
+    cfg: dict[str, Any],
+    profile_dir: "os.PathLike[str] | str | None" = None,
+    shared_env_path: "os.PathLike[str] | str | None" = None,
+) -> list[str]:
+    """Check that every ``${VAR}`` placeholder in *cfg* resolves at save time.
+
+    Resolution order matches the gateway's ``_interpolate_env_vars`` contract:
+    1. target profile ``.env``  (``<profile_dir>/.env``)
+    2. shared ``~/.hermes/.env``
+    3. current process environment (``os.environ``)
+
+    Returns a list of human-readable issue strings — one per unresolved
+    variable — or an empty list when every placeholder resolves.  Secret
+    *values* are never read or included in the returned strings; we only
+    check presence.
+
+    ``profile_dir`` and ``shared_env_path`` are optional so callers can omit
+    them when the relevant paths are not yet known; in that case only
+    ``os.environ`` is consulted.
+    """
+    if not isinstance(cfg, dict):
+        return []
+
+    placeholders = _collect_placeholders(cfg)
+    if not placeholders:
+        return []
+
+    # Build the effective env in resolution order: process env first (lowest
+    # priority), then shared .env, then profile .env (highest priority).
+    # We merge into a plain dict so later entries override earlier ones — i.e.
+    # the last writer wins — which matches the gateway's behaviour.
+    effective: dict[str, str] = dict(os.environ)
+
+    # Shared ~/.hermes/.env
+    if shared_env_path:
+        shared = os.path.join(str(shared_env_path), ".env") if os.path.isdir(str(shared_env_path)) else str(shared_env_path)
+    else:
+        shared = os.path.join(_DEFAULT_HERMES_HOME(), ".env")
+    effective.update(_parse_dotenv_file(shared))
+
+    # Profile-specific .env (highest priority)
+    if profile_dir:
+        effective.update(_parse_dotenv_file(os.path.join(str(profile_dir), ".env")))
+
+    issues: list[str] = []
+    for var in sorted(placeholders):
+        if not effective.get(var):
+            # Suggest the per-profile .env as the least-privilege target.
+            if profile_dir:
+                target = os.path.join(str(profile_dir), ".env")
+            else:
+                target = os.path.join(_DEFAULT_HERMES_HOME(), ".env")
+            issues.append(
+                f"MCP server '{name}': ${{{var}}} is not set — "
+                f"add  {var}=<value>  to  {target}"
+            )
+    return issues
+
+
+def _DEFAULT_HERMES_HOME() -> str:
+    """Return the Hermes home path without importing hermes_constants."""
+    val = os.environ.get("HERMES_HOME", "").strip()
+    if val:
+        return val
+    return os.path.join(os.path.expanduser("~"), ".hermes")

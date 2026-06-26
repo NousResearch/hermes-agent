@@ -1,17 +1,20 @@
 /**
  * after-pack.cjs — electron-builder afterPack hook.
  *
- * Stamps the Hermes icon + identity onto the packed Windows Hermes.exe via
- * rcedit (delegated to set-exe-identity.cjs). This runs for EVERY packed build
- * — first install, `hermes desktop`, the installer's --update rebuild, and a
- * dev's manual `npm run pack` — so the branded exe can never silently revert
- * to the stock "Electron" icon/name (the bug when the stamp lived only in
- * install.ps1, which the update path doesn't use).
+ * 1. Cleans up the `.bak` backup directory left by before-pack.cjs — the
+ *    build succeeded so the backup is no longer needed.
+ * 2. Stamps the Hermes icon + identity onto the packed Windows Hermes.exe via
+ *    rcedit (delegated to set-exe-identity.cjs).
  *
- * Windows-only: rcedit edits PE resources, irrelevant on macOS/Linux where the
- * app identity comes from the bundle Info.plist / desktop entry. Best-effort:
- * a stamp failure must never fail an otherwise-good build (worst case is the
- * stock icon, not a broken app), so we log and resolve rather than throw.
+ * WHY THE BACKUP CLEANUP IS HERE
+ * ------------------------------
+ * before-pack.cjs renames the old `appOutDir` to `<appOutDir>.bak` to
+ * preserve a fallback exe when the build fails. This hook runs only after
+ * electron-builder has staged a fresh, complete tree — so it is now safe to
+ * discard the backup.
+ *
+ * Best-effort: a cleanup failure must never fail an otherwise-good build
+ * (worst case is disk waste, not a broken app), so we log and resolve.
  *
  * electron-builder passes a context with:
  *   - electronPlatformName: 'win32' | 'darwin' | 'linux'
@@ -19,11 +22,49 @@
  *   - packager.appInfo.productFilename: the exe basename (e.g. 'Hermes')
  */
 
+const fs = require('node:fs')
 const path = require('node:path')
 
+const { staleBackupPath } = require('./before-pack.cjs')
 const { stampExeIdentity } = require('./set-exe-identity.cjs')
 
+/**
+ * Remove the `.bak` backup directory left by before-pack.cjs.
+ * Best-effort: never throws.
+ *
+ * @param {string} appOutDir
+ */
+function cleanStaleBackupDir(appOutDir) {
+  if (!appOutDir || typeof appOutDir !== 'string') {
+    return
+  }
+  const backupDir = staleBackupPath(appOutDir)
+  if (!fs.existsSync(backupDir)) {
+    return
+  }
+  try {
+    fs.rmSync(backupDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    console.log(`[after-pack] removed backup: ${backupDir}`)
+  } catch (err) {
+    console.warn(
+      `[after-pack] could not remove backup ${backupDir} (${err.message}); ` +
+        `safe to delete manually`
+    )
+  }
+}
+
+exports.cleanStaleBackupDir = cleanStaleBackupDir
+
 exports.default = async function afterPack(context) {
+  // Clean up the backup from before-pack now that the build succeeded.
+  // This runs for ALL platforms — the backup rename is cross-platform.
+  try {
+    cleanStaleBackupDir(context.appOutDir)
+  } catch (_) {
+    // Never fail the build over cleanup.
+  }
+
+  // Windows-only: stamp the exe icon + identity.
   if (context.electronPlatformName !== 'win32') {
     return
   }

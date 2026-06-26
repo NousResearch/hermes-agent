@@ -3,43 +3,35 @@
 /**
  * before-pack.cjs — electron-builder beforePack hook.
  *
- * Removes any stale unpacked app directory (`appOutDir`) before
- * electron-builder stages the Electron binaries into it.
+ * Moves any stale unpacked app directory (`appOutDir`) aside into a `.bak`
+ * backup before electron-builder stages the Electron binaries into it. The
+ * backup is cleaned up by after-pack.cjs on success.
  *
- * WHY THIS EXISTS
- * ---------------
- * electron-builder's final packaging step copies the stock `electron`
- * binary into `release/<platform>-unpacked/` and then renames it to the
- * product name (`Hermes`). If a PREVIOUS `npm run pack` was interrupted
- * (Ctrl-C, OOM kill, crash, full disk) the unpacked directory is left in a
- * corrupted partial state: it keeps the already-renamed `LICENSE.electron.txt`
- * and the Chromium payload (.pak/.so/icudtl.dat/chrome-sandbox) but is MISSING
- * the `electron` binary itself.
+ * WHY RENAME INSTEAD OF DELETE
+ * ----------------------------
+ * Previously this hook `fs.rmSync`'d the directory (see git history). That
+ * left zero recovery path when the build after the cleanup failed — git merge
+ * conflict, npm error, OOM, Ctrl-C, etc. The user's running Hermes.exe was
+ * already shut down (electron-builder needs the file unlocked), the unpacked
+ * tree was gone, and the new one never materialised. Result: Hermes.exe
+ * vanished until a successful rebuild.
  *
- * On the next run, electron-builder sees the destination directory already
- * populated, skips re-copying the binary it thinks is present, then tries to
- * rename a `electron` file that no longer exists. The build dies with:
+ * Renaming to `<appOutDir>.bak` preserves the last-known-good build so:
+ *  - A build failure leaves the `.bak` intact — the user can keep working
+ *    with `Hermes.exe.bak` or rename it back manually.
+ *  - The `hermes desktop` / `--update` path can detect the `.bak` as a
+ *    fallback exe and recover automatically (future follow-up).
+ *  - The `after-pack.cjs` hook removes the `.bak` only after the new build
+ *    completes, which is safe because `appOutDir` now holds a fresh, complete
+ *    Electron tree (stamped + identity-applied).
  *
- *   ENOENT: no such file or directory, rename
- *   '.../release/linux-unpacked/electron' -> '.../release/linux-unpacked/Hermes'
+ * Cross-platform: rename(2) on the same filesystem is atomic on Linux/macOS
+ * and near-atomic on NTFS. All platforms benefit; this path runs for every
+ * `beforePack` regardless of `electronPlatformName`.
  *
- * This is a hard failure with no obvious cause for the user — `hermes desktop`
- * just prints "Desktop GUI build failed" and the only fix is to manually
- * `rm -rf` the release directory, which a normal user has no way to know.
- *
- * The packaging step is not idempotent across an interrupted run, so we make
- * it idempotent ourselves: wipe the target unpacked directory up front so
- * electron-builder always stages into a clean tree. This is safe — the
- * directory is a pure build artifact that electron-builder fully recreates
- * on every pack; nothing else depends on its prior contents.
- *
- * Cross-platform: the same partial-state trap exists on macOS
- * (the mac-unpacked Hermes.app bundle) and Windows (win-unpacked), so we
- * clean whatever `appOutDir` electron-builder hands us regardless of platform.
- *
- * Best-effort: a cleanup failure must never mask the real build. We log and
- * resolve rather than throw — worst case electron-builder hits the original
- * ENOENT, which is no worse than not having this hook at all.
+ * Best-effort: if rename fails (cross-device mount, permissions, EBUSY) we
+ * fall back to the old `rmSync` so the build can still proceed — but we log
+ * a warning so the user knows they have no backup.
  *
  * electron-builder passes a context with:
  *   - appOutDir:            the unpacked app directory about to be staged
@@ -47,32 +39,78 @@
  */
 
 const fs = require('node:fs')
+const path = require('node:path')
 
-function cleanStaleAppOutDir(appOutDir) {
-  if (!appOutDir || typeof appOutDir !== 'string') {
-    return false
-  }
-  if (!fs.existsSync(appOutDir)) {
-    return false
-  }
-  // Recursive + force so a half-written tree (read-only bits, partial files)
-  // can't block the wipe. retry/maxRetries rides out transient EBUSY on
-  // Windows where an AV/indexer may briefly hold a handle.
-  fs.rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-  return true
+/**
+ * Derive the backup directory path from the app output directory.
+ * @param {string} appOutDir
+ * @returns {string}
+ */
+function staleBackupPath(appOutDir) {
+  return `${appOutDir}.bak`
 }
 
+/**
+ * Move the stale unpacked directory aside into a `.bak` backup.
+ * Falls back to rmSync if rename is impossible (cross-device, permissions).
+ *
+ * @param {string} appOutDir
+ * @returns {{ removed: boolean, backedUp: boolean }}
+ */
+function cleanStaleAppOutDir(appOutDir) {
+  if (!appOutDir || typeof appOutDir !== 'string') {
+    return { removed: false, backedUp: false }
+  }
+  if (!fs.existsSync(appOutDir)) {
+    return { removed: false, backedUp: false }
+  }
+
+  const backupDir = staleBackupPath(appOutDir)
+
+  // Remove a leftover .bak from a *previous* failed build so we can rename
+  // the current directory cleanly.
+  if (fs.existsSync(backupDir)) {
+    try {
+      fs.rmSync(backupDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+    } catch (_) {
+      // If we can't even clean the old backup, fall through to rmSync below.
+    }
+  }
+
+  // Try rename first (non-destructive, preserves the last good build).
+  try {
+    fs.renameSync(appOutDir, backupDir)
+    return { removed: true, backedUp: true }
+  } catch (renameErr) {
+    console.warn(
+      `[before-pack] rename to backup failed (${renameErr.message}); ` +
+        `falling back to rmSync — no backup will be available`
+    )
+  }
+
+  // Fallback: delete outright so electron-builder can proceed.
+  try {
+    fs.rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    return { removed: true, backedUp: false }
+  } catch (rmErr) {
+    console.warn(`[before-pack] could not clean ${appOutDir} (${rmErr.message}); continuing`)
+    return { removed: false, backedUp: false }
+  }
+}
+
+exports.staleBackupPath = staleBackupPath
 exports.cleanStaleAppOutDir = cleanStaleAppOutDir
 
 exports.default = async function beforePack(context) {
   const appOutDir = context && context.appOutDir
   try {
-    if (cleanStaleAppOutDir(appOutDir)) {
-      console.log(`[before-pack] removed stale unpacked dir before staging: ${appOutDir}`)
+    const { removed } = cleanStaleAppOutDir(appOutDir)
+    if (removed) {
+      console.log(`[before-pack] moved stale unpacked dir aside before staging: ${appOutDir}`)
     }
   } catch (err) {
     // Never fail the build over cleanup; surface why so a genuinely stuck
     // directory (permissions, mount) is still diagnosable.
-    console.warn(`[before-pack] could not clean ${appOutDir} (${err.message}); continuing`)
+    console.warn(`[before-pack] error cleaning ${appOutDir} (${err.message}); continuing`)
   }
 }

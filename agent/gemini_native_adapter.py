@@ -860,7 +860,11 @@ class GeminiNativeClient:
         self.chat = _GeminiChatNamespace(self)
         self.is_closed = False
         self._http = http_client or httpx.Client(
-            timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0)
+            timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0),
+            # Disable keep-alive to avoid stale connections in long-lived cached clients.
+            # Without this, Google API closes idle connections but httpx keeps them in the
+            # pool → new requests reuse dead sockets and hang on read timeout (600s).
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=0),
         )
 
     def close(self) -> None:

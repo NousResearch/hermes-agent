@@ -5,6 +5,7 @@ import pytest
 from agent.codex_responses_adapter import (
     _format_responses_error,
     _normalize_codex_response,
+    _preflight_codex_api_kwargs,
 )
 
 
@@ -66,6 +67,115 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     assert assistant_message.content == ""
     assert assistant_message.reasoning == "still thinking"
     assert assistant_message.codex_reasoning_items is None
+
+
+# ---------------------------------------------------------------------------
+# Server-side built-in tool calls (xAI native web_search, code interpreter,
+# etc.) come back as discrete ``*_call`` output items that xAI's
+# /v1/responses surface routinely leaves at ``status="in_progress"`` even
+# when the overall ``response.status == "completed"``.  These must NOT mark
+# the turn incomplete — otherwise grok-composer-2.5-fast research queries
+# (which invoke server-side web_search) get misclassified as
+# ``finish_reason="incomplete"`` and burn 3 fruitless continuation retries
+# before failing with "Codex response remained incomplete after 3
+# continuation attempts".  Observed live against grok-composer-2.5-fast on
+# SuperGrok OAuth (2026-06).
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_codex_response_ignores_in_progress_server_side_tool_calls():
+    """A completed response with a final message + lingering in_progress
+    server-side web_search_call items resolves to 'stop', not 'incomplete'."""
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                encrypted_content="opaque",
+                summary=[SimpleNamespace(text="researching blades")],
+            ),
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="Milwaukee M18 blade 49-16-2734, ~$30 OEM.",
+                )],
+            ),
+            SimpleNamespace(type="web_search_call", status="in_progress"),
+            SimpleNamespace(type="web_search_call", status="in_progress"),
+            SimpleNamespace(type="web_search_call", status="in_progress"),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Milwaukee M18 blade 49-16-2734, ~$30 OEM."
+
+
+def test_normalize_codex_response_in_progress_message_still_incomplete():
+    """Guard scope: an in_progress *message* item (genuine model output that
+    is still streaming) must still mark the turn incomplete — only
+    server-side ``*_call`` items are exempted."""
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="in_progress",
+                content=[SimpleNamespace(type="output_text", text="partial...")],
+            ),
+        ],
+    )
+
+    _assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+
+
+# ---------------------------------------------------------------------------
+# _preflight_codex_api_kwargs — built-in (provider-executed) tools must pass
+# through validation.  Regression guard for the xAI native web_search
+# injection: the preflight validator previously rejected any tool whose
+# ``type != "function"`` with "unsupported type", which would 400 every xAI
+# turn once the native web_search tool is declared.
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_passes_native_web_search_tool_through():
+    kwargs = {
+        "model": "grok-composer-2.5-fast",
+        "instructions": "You are helpful.",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "store": False,
+        "tools": [
+            {"type": "function", "name": "read_file", "description": "Read.",
+             "parameters": {"type": "object", "properties": {}}},
+            {"type": "web_search"},
+        ],
+    }
+    out = _preflight_codex_api_kwargs(kwargs, allow_stream=True)
+    tools = out["tools"]
+    assert {"type": "web_search"} in tools
+    assert any(t.get("type") == "function" and t.get("name") == "read_file" for t in tools)
+
+
+def test_preflight_still_rejects_unknown_tool_type():
+    kwargs = {
+        "model": "grok-composer-2.5-fast",
+        "instructions": "You are helpful.",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "store": False,
+        "tools": [{"type": "totally_made_up_tool"}],
+    }
+    with pytest.raises(ValueError, match="unsupported type"):
+        _preflight_codex_api_kwargs(kwargs, allow_stream=True)
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ def _make_adapter(
     observe_unmentioned_group_messages=None,
     bot_username="hermes_bot",
 ):
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     extra = {}
     if require_mention is not None:
@@ -1008,6 +1008,53 @@ def test_triggered_voice_message_uses_shared_session_in_observe_mode():
 
 
 # ---------------------------------------------------------------------------
+# Replied-to media caching
+# ---------------------------------------------------------------------------
+
+def test_text_reply_to_photo_caches_referenced_media(monkeypatch, tmp_path):
+    async def _run():
+        adapter = _make_adapter(require_mention=False)
+        adapter.handle_message = AsyncMock()
+        cached_path = tmp_path / "reply_photo.png"
+        monkeypatch.setattr(
+            "gateway.platforms.base.cache_image_from_bytes",
+            lambda _data, ext=".jpg": str(cached_path),
+        )
+        file_obj = SimpleNamespace(
+            file_path="photos/replied.png",
+            download_as_bytearray=AsyncMock(return_value=bytearray(b"\x89PNG\r\n\x1a\n reply")),
+        )
+        photo = SimpleNamespace(file_size=1234, get_file=AsyncMock(return_value=file_obj))
+        replied = SimpleNamespace(
+            message_id=51,
+            text=None,
+            caption=None,
+            photo=[photo],
+            video=None,
+            audio=None,
+            voice=None,
+            document=None,
+        )
+        msg = _group_message("what's in this image?", reply_to_bot=False)
+        msg.reply_to_message = replied
+        update = SimpleNamespace(update_id=3010, message=msg, effective_message=msg)
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+        await asyncio.sleep(0.05)
+
+        adapter.handle_message.assert_awaited_once()
+        await_args = adapter.handle_message.await_args
+        assert await_args is not None
+        event = await_args.args[0]
+        assert event.reply_to_message_id == "51"
+        assert event.media_urls == [str(cached_path)]
+        assert event.media_types == ["image/png"]
+        assert event.message_type == MessageType.PHOTO
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
 # Observed-media caching (unmentioned group attachments)
 # ---------------------------------------------------------------------------
 
@@ -1133,7 +1180,7 @@ def test_unmentioned_large_document_observed_without_download(monkeypatch):
     asyncio.run(_run())
 
 
-def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
+def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
     async def _run():
         adapter = _make_adapter(
             require_mention=True, allowed_chats=["-100"],
@@ -1141,14 +1188,14 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
         )
         store = _FakeSessionStore()
         adapter._session_store = store
-        cache_doc = Mock(return_value="/tmp/malware.exe")
+        cache_doc = Mock(return_value="/tmp/program.exe")
         monkeypatch.setattr("gateway.platforms.base.cache_document_from_bytes", cache_doc)
         file_obj = SimpleNamespace(
-            file_path="documents/malware.exe",
+            file_path="documents/program.exe",
             download_as_bytearray=AsyncMock(return_value=bytearray(b"MZ")),
         )
         document = SimpleNamespace(
-            file_name="malware.exe", mime_type="application/x-msdownload",
+            file_name="program.exe", mime_type="application/x-msdownload",
             file_size=2, get_file=AsyncMock(return_value=file_obj),
         )
         update = SimpleNamespace(
@@ -1157,8 +1204,10 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
 
         await adapter._handle_media_message(update, SimpleNamespace())
 
-        cache_doc.assert_not_called()
+        # Any file type is now cached — authorization is the gate, not the
+        # extension. The observed message records a path-pointing note.
+        cache_doc.assert_called_once()
         _, message, _ = store.messages[0]
-        assert "unsupported" in message["content"].lower()
+        assert "program.exe" in message["content"]
 
     asyncio.run(_run())

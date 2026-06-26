@@ -57,6 +57,7 @@ class TestUnifiedDashboardRouting:
         assert opened == ["http://127.0.0.1:9119/?profile=worker_x"]
 
     def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
@@ -79,8 +80,69 @@ class TestUnifiedDashboardRouting:
         assert "-p" in argv and argv[argv.index("-p") + 1] == "default"
         assert "--open-profile" in argv
         assert argv[argv.index("--open-profile") + 1] == "worker_x"
-        # Profile HERMES_HOME dropped so the child binds the machine root.
-        assert "HERMES_HOME" not in env
+        # The child is pinned to the machine ROOT, not the launching profile's
+        # HERMES_HOME.  For a standard install (HERMES_HOME unset) that root is
+        # the platform-native default (~/.hermes), NOT dropped — see the Docker
+        # test below for why we resolve explicitly instead of popping.
+        from hermes_constants import get_default_hermes_root
+        assert env.get("HERMES_HOME") == str(get_default_hermes_root())
+
+    def test_reexec_pins_docker_machine_root(self, main_mod, monkeypatch):
+        """In the Docker layout (HERMES_HOME=/opt/data, profiles under
+        /opt/data/profiles/<name>) the reroute must pin the child to the
+        machine root /opt/data — NOT drop HERMES_HOME.
+
+        Dropping it makes the child fall back to $HOME/.hermes
+        (= /opt/data/.hermes), an empty auto-seeded home, so the dashboard
+        shows only the default profile and the .install_method stamp is
+        missing (which also misfires the Docker update-button guard).
+        Regression test for the support report.
+        """
+        monkeypatch.setenv("HERMES_HOME", "/opt/data/profiles/oracle")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "oracle"
+        )
+        monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
+        execs = []
+
+        def fake_exec(exe, argv, env):
+            execs.append((exe, argv, env))
+            raise SystemExit(0)
+
+        monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
+
+        with pytest.raises(SystemExit):
+            main_mod.cmd_dashboard(_args())
+
+        assert len(execs) == 1
+        _exe, _argv, env = execs[0]
+        # get_default_hermes_root() strips the trailing profiles/<name>, so the
+        # child binds /opt/data — where the real default/oracle/saga profiles
+        # and the .install_method stamp actually live.
+        assert env.get("HERMES_HOME") == "/opt/data"
+
+    def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
+        """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT
+        reroute into the machine dashboard. The reroute re-execs as the default
+        profile and exits, so the desktop never sees a ready backend → boot
+        loop. The guard keeps desktop pool backends per-profile."""
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        listening_calls = []
+        monkeypatch.setattr(
+            main_mod, "_dashboard_listening",
+            lambda host, port: listening_calls.append(1) or False,
+        )
+        execs = []
+        monkeypatch.setattr(main_mod.os, "execvpe", lambda *a, **k: execs.append(a))
+        monkeypatch.setitem(sys.modules, "fastapi", None)
+
+        with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
+            main_mod.cmd_dashboard(_args())
+        assert listening_calls == []
+        assert execs == []
 
     def test_isolated_flag_skips_routing(self, main_mod, monkeypatch):
         monkeypatch.setattr(
@@ -128,3 +190,45 @@ class TestUnifiedDashboardRouting:
         with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
             main_mod.cmd_dashboard(_args(open_profile="worker_x"))
         assert execs == []
+
+    def test_dashboard_starts_mcp_discovery_for_ws_backend(self, main_mod, monkeypatch):
+        """The dashboard process serves the /api/ws gateway but never runs
+        tui_gateway/entry.py, so it must kick off MCP discovery itself or
+        desktop sessions never see a profile's MCP tools."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+        monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
+        monkeypatch.setattr(main_mod, "_build_web_ui", lambda *_a, **_k: True)
+        monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())
+        monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace())
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_logging",
+            types.SimpleNamespace(setup_logging=lambda **_k: None),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.plugins",
+            types.SimpleNamespace(discover_plugins=lambda: None),
+        )
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.start_background_mcp_discovery",
+            lambda **kwargs: calls.append(kwargs),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.web_server",
+            types.SimpleNamespace(start_server=lambda **_kwargs: None),
+        )
+
+        main_mod.cmd_dashboard(_args())
+
+        assert calls == [
+            {
+                "logger": main_mod.logger,
+                "thread_name": "dashboard-mcp-discovery",
+            }
+        ]

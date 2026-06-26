@@ -11,7 +11,8 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import { SanitizedInput } from '@/components/ui/sanitized-input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
   createProfile,
@@ -25,6 +26,7 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
+import { slug } from '@/lib/sanitize'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -82,14 +84,14 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   }, [profiles, selectedName])
 
   const handleCreate = useCallback(
-    async (name: string, cloneFromDefault: boolean) => {
+    async (name: string, cloneFrom: null | string) => {
       const trimmed = name.trim()
 
       if (!isValidProfileName(trimmed)) {
         throw new Error(p.nameHint)
       }
 
-      await createProfile({ name: trimmed, clone_from_default: cloneFromDefault })
+      await createProfile({ name: trimmed, clone_from: cloneFrom })
       notify({ kind: 'success', title: p.created, message: trimmed })
       setSelectedName(trimmed)
       await refresh()
@@ -179,37 +181,38 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       )}
 
       <CreateProfileDialog
-          onClose={() => setCreateOpen(false)}
-          onCreate={async (name, cloneFromDefault) => handleCreate(name, cloneFromDefault)}
-          open={createOpen}
-        />
+        onClose={() => setCreateOpen(false)}
+        onCreate={async (name, cloneFrom) => handleCreate(name, cloneFrom)}
+        open={createOpen}
+        profiles={profiles ?? []}
+      />
 
-        <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>{p.deleteTitle}</DialogTitle>
-              <DialogDescription>
-                {pendingDelete ? (
-                  <>
-                    {p.deleteDescPrefix}
-                    <span className="font-medium text-foreground">{pendingDelete.name}</span>
-                    {p.deleteDescMid}
-                    <span className="font-mono text-xs">{pendingDelete.path}</span>
-                    {p.deleteDescSuffix}
-                  </>
-                ) : null}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-                {t.common.cancel}
-              </Button>
-              <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-                {deleting ? p.deleting : t.common.delete}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{p.deleteTitle}</DialogTitle>
+            <DialogDescription>
+              {pendingDelete ? (
+                <>
+                  {p.deleteDescPrefix}
+                  <span className="font-medium text-foreground">{pendingDelete.name}</span>
+                  {p.deleteDescMid}
+                  <span className="font-mono text-xs">{pendingDelete.path}</span>
+                  {p.deleteDescSuffix}
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
+              {t.common.cancel}
+            </Button>
+            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
+              {deleting ? p.deleting : t.common.delete}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </OverlayView>
   )
 }
@@ -453,16 +456,18 @@ function SoulEditor({ profileName }: { profileName: string }) {
 function CreateProfileDialog({
   onClose,
   onCreate,
-  open
+  open,
+  profiles
 }: {
   onClose: () => void
-  onCreate: (name: string, cloneFromDefault: boolean) => Promise<void>
+  onCreate: (name: string, cloneFrom: null | string) => Promise<void>
   open: boolean
+  profiles: ProfileInfo[]
 }) {
   const { t } = useI18n()
   const p = t.profiles
   const [name, setName] = useState('')
-  const [cloneFromDefault, setCloneFromDefault] = useState(true)
+  const [cloneFrom, setCloneFrom] = useState<null | string>('default')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -472,7 +477,7 @@ function CreateProfileDialog({
     }
 
     setName('')
-    setCloneFromDefault(true)
+    setCloneFrom('default')
     setError(null)
     setSaving(false)
   }, [open])
@@ -493,7 +498,7 @@ function CreateProfileDialog({
     setError(null)
 
     try {
-      await onCreate(trimmed, cloneFromDefault)
+      await onCreate(trimmed, cloneFrom)
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : p.failedCreate)
@@ -515,12 +520,13 @@ function CreateProfileDialog({
             <label className="text-xs font-medium" htmlFor="new-profile-name">
               {p.nameLabel}
             </label>
-            <Input
+            <SanitizedInput
               aria-invalid={invalid}
               autoFocus
               id="new-profile-name"
-              onChange={event => setName(event.target.value)}
+              onValueChange={setName}
               placeholder="my-profile"
+              sanitize={slug}
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
@@ -528,18 +534,28 @@ function CreateProfileDialog({
             </p>
           </div>
 
-          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border/40 bg-background/50 px-3 py-2 text-sm">
-            <input
-              checked={cloneFromDefault}
-              className="size-4 accent-primary"
-              onChange={event => setCloneFromDefault(event.target.checked)}
-              type="checkbox"
-            />
-            <span>
-              <span className="font-medium">{p.cloneFromDefault}</span>
-              <span className="ml-2 text-xs text-muted-foreground">{p.cloneFromDefaultDesc}</span>
-            </span>
-          </label>
+          <div className="grid gap-1.5">
+            <label className="text-xs font-medium" htmlFor="new-profile-clone-from">
+              {p.cloneFrom}
+            </label>
+            <Select
+              onValueChange={value => setCloneFrom(value === '__none__' ? null : value)}
+              value={cloneFrom ?? '__none__'}
+            >
+              <SelectTrigger className="h-9 rounded-md" id="new-profile-clone-from">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">{p.cloneFromNone}</SelectItem>
+                {profiles.map(profile => (
+                  <SelectItem key={profile.name} value={profile.name}>
+                    {profile.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">{p.cloneFromDesc}</p>
+          </div>
 
           {error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -637,11 +653,12 @@ function RenameProfileDialog({
             <label className="text-xs font-medium" htmlFor="rename-profile-name">
               {p.newNameLabel}
             </label>
-            <Input
+            <SanitizedInput
               aria-invalid={invalid}
               autoFocus
               id="rename-profile-name"
-              onChange={event => setName(event.target.value)}
+              onValueChange={setName}
+              sanitize={slug}
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>

@@ -22,15 +22,16 @@
     "ink-text-input": "^6.0.0",
     "nanostores": "^1.2.0",
     "react": "^19.2.4",
+    "undici": "^6.25.0",
     "unicode-animations": "^1.0.3"
   },
   "devDependencies": {
     "@eslint/js": "^9",
-    "@types/node": "^24.12.0",
+    "@types/node": "^24.13.2",
     "@types/react": "^19.2.14",
     "@typescript-eslint/eslint-plugin": "^8",
     "@typescript-eslint/parser": "^8",
-    "esbuild": "~0.27.0",
+    "esbuild": "^0.28.1",
     "eslint": "^9",
     "eslint-plugin-perfectionist": "^5",
     "eslint-plugin-react": "^7",
@@ -38,7 +39,7 @@
     "eslint-plugin-unused-imports": "^4",
     "globals": "^16",
     "prettier": "^3",
-    "tsx": "^4.19.0",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.3"
   }

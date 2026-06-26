@@ -492,11 +492,13 @@ class MemoryManager:
         """
         return extract_user_instruction_from_skill_message(text)
 
-    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
+    def prefetch_all(self, query: str, *, session_id: str = "", compaction_count: int = 0) -> str:
         """Collect prefetch context from all providers.
 
         Returns merged context text labeled by provider. Empty providers
-        are skipped. Failures in one provider don't block others.
+        are skipped. Failures in one provider don't block others. When Context
+        Fabric is enabled, the merged external memory context is converted into
+        AGENT_CONTEXT with the current compaction count before injection.
         """
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
@@ -512,7 +514,15 @@ class MemoryManager:
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
                 )
-        return "\n\n".join(parts)
+        combined = "\n\n".join(parts)
+        if combined:
+            try:
+                from agent.context_fabric_memory import maybe_filter_memory_context
+
+                return maybe_filter_memory_context(combined, clean_query, compaction_count=compaction_count)
+            except Exception as e:
+                logger.debug("Context Fabric memory filter skipped: %s", e)
+        return combined
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn.

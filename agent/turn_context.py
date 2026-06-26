@@ -456,7 +456,12 @@ def build_turn_context(
     if agent._memory_manager:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            _compaction_count = int(getattr(getattr(agent, "context_compressor", None), "compression_count", 0) or 0)
+            ext_prefetch_cache = agent._memory_manager.prefetch_all(
+                _query,
+                session_id=getattr(agent, "session_id", "") or "",
+                compaction_count=_compaction_count,
+            ) or ""
         except Exception:
             pass
 

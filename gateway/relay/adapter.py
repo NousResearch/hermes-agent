@@ -106,7 +106,24 @@ class RelayAdapter(BasePlatformAdapter):
         return self.descriptor.supports_draft_streaming
 
     # ── abstract methods (delegated to the transport) ────────────────────
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # ``is_reconnect`` is part of the BasePlatformAdapter.connect contract:
+        # the gateway's reconnect watcher (gateway/run.py) re-establishes a
+        # platform after a fatal adapter error by building a fresh adapter and
+        # calling ``connect(is_reconnect=True)``. Relay MUST accept the kwarg or
+        # that recovery path raises TypeError and the relay platform can never
+        # come back through the watcher.
+        #
+        # Relay deliberately IGNORES the flag. The flag exists so adapters with a
+        # server-side update queue (e.g. Telegram's Bot API) preserve that queue
+        # across an outage instead of dropping it (#46621). Relay has no such
+        # gateway-side queue: messages buffered during a gap live in the
+        # CONNECTOR's durable buffer and are replayed when the transport
+        # re-handshakes. Routine WS drops are handled entirely by the transport's
+        # own reconnect supervisor (WebSocketRelayTransport, reconnect=True);
+        # a watcher-driven reconnect builds a fresh transport from scratch (the
+        # fatal-error handler disconnect()s the old adapter first, cancelling its
+        # supervisor), so there is nothing at the adapter layer to preserve.
         if self._transport is None:
             raise RuntimeError("RelayAdapter has no transport configured")
         self._transport.set_inbound_handler(self._on_inbound)

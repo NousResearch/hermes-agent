@@ -70,6 +70,40 @@ async def test_connect_without_transport_raises():
 
 
 @pytest.mark.asyncio
+async def test_connect_accepts_is_reconnect_kwarg():
+    """Regression: RelayAdapter.connect must accept the BasePlatformAdapter
+    contract's ``is_reconnect`` kwarg. The gateway reconnect watcher recovers a
+    platform after a fatal adapter error by calling ``connect(is_reconnect=True)``
+    (gateway/run.py); before the fix, RelayAdapter.connect was bare ``connect()``
+    and that recovery path raised ``TypeError: connect() got an unexpected
+    keyword argument 'is_reconnect'`` (observed live: relay never reconnected,
+    no DMs). It must reach the SAME transport-less RuntimeError as connect() —
+    i.e. accept the kwarg, never TypeError on it."""
+    a = _adapter()
+    with pytest.raises(RuntimeError, match="no transport"):
+        await a.connect(is_reconnect=True)
+
+
+def test_connect_signature_matches_base_contract():
+    """The is_reconnect parameter must be keyword-accepting and default False,
+    matching BasePlatformAdapter.connect, so the reconnect watcher's
+    ``connect(is_reconnect=...)`` call is valid for relay as for every other
+    adapter."""
+    import inspect
+
+    from gateway.platforms.base import BasePlatformAdapter
+
+    sig = inspect.signature(RelayAdapter.connect)
+    base_sig = inspect.signature(BasePlatformAdapter.connect)
+    assert "is_reconnect" in sig.parameters
+    param = sig.parameters["is_reconnect"]
+    base_param = base_sig.parameters["is_reconnect"]
+    # Keyword-acceptable (KEYWORD_ONLY here, matching the base) with a False default.
+    assert param.kind is base_param.kind
+    assert param.default is False
+
+
+@pytest.mark.asyncio
 async def test_send_without_transport_returns_failure():
     a = _adapter()
     result = await a.send("chat1", "hello")

@@ -478,6 +478,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+        # Bot usernames (e.g. @OtherBot) — pass through as-is, Telegram
+        # Bot API accepts @username as chat_id for bot-to-bot DMs.
+        if target_ref.startswith("@"):
+            stripped = target_ref.strip()
+            if len(stripped) > 1:
+                return stripped, None, True
     if platform_name == "feishu":
         match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -1034,7 +1040,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 bot = Bot(token=token)
         else:
             bot = Bot(token=token)
-        int_chat_id = int(chat_id)
+        int_chat_id = chat_id if chat_id.startswith("@") else int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}
         if thread_id is not None:

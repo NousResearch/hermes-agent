@@ -545,6 +545,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             browser = pw.chromium.launch(
                 headless=not headed,
                 args=chrome_args,
+                channel="chrome" if sys.platform == "darwin" else None,
             )
             context_args = {
                 "viewport": {"width": 1280, "height": 800},
@@ -760,7 +761,11 @@ def _detect_admission(page) -> bool:
     """
     probe = r"""
     (() => {
-      const leave = document.querySelector('button[aria-label*="eave call" i]');
+      const leave = document.querySelector(
+        'button[aria-label*="eave call" i], ' +
+        'button[aria-label*="eave meeting" i], ' +
+        'div[role="button"][aria-label*="eave" i]'
+      );
       if (leave) return true;
       if (window.__hermesMeetInstalled) {
         const caps = document.querySelector(

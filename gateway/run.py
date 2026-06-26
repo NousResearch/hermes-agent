@@ -5081,7 +5081,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     e,
                 )
 
-    def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
+    async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
             # Persist any in-flight transcript to the SQLite session store
             # before teardown (#13121).  An agent forcibly interrupted by the
@@ -5127,7 +5127,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 pass
-            self._cleanup_agent_resources(agent)
+            # Offload cleanup to a worker thread so it never blocks the
+            # event loop — agent.close() and shutdown_memory_provider()
+            # can block on subprocess teardown and network IO for seconds
+            # (#53175).  Use a bounded timeout so a wedged teardown does
+            # not stall the shutdown sequence.
+            try:
+                await asyncio.wait_for(
+                    self._run_in_executor_with_context(
+                        self._cleanup_agent_resources, agent
+                    ),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Agent resource cleanup timed out during shutdown for "
+                    "session %s; proceeding with shutdown (#53175)",
+                    getattr(agent, "session_id", None),
+                )
+            except Exception as _exc:
+                logger.warning(
+                    "Agent resource cleanup failed during shutdown for "
+                    "session %s: %s (#53175)",
+                    getattr(agent, "session_id", None), _exc,
+                )
 
     def _should_emit_long_running_notification(
         self,
@@ -5171,16 +5194,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent.shutdown_memory_provider(session_messages)
                 else:
                     agent.shutdown_memory_provider()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.warning("Agent resource cleanup: shutdown_memory_provider failed: %s (#53175)", _exc)
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) to prevent zombie
         # process accumulation.
         try:
             if hasattr(agent, "close"):
                 agent.close()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.warning("Agent resource cleanup: agent.close() failed: %s (#53175)", _exc)
         # Auxiliary async clients (session_search/web/vision/etc.) live in a
         # process-global cache and are created inside worker threads. Clean up
         # any entries whose event loop is now dead so their httpx transports do
@@ -5188,8 +5211,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from agent.auxiliary_client import cleanup_stale_async_clients
             cleanup_stale_async_clients()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.warning("Agent resource cleanup: cleanup_stale_async_clients failed: %s (#53175)", _exc)
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
@@ -6641,7 +6664,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _cached_agent is None:
                             _cached_agent = self._running_agents.get(key)
                         if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
-                            self._cleanup_agent_resources(_cached_agent)
+                            # Offload cleanup to a worker thread so it never
+                            # blocks the event loop — agent.close() and
+                            # shutdown_memory_provider() can block on subprocess
+                            # teardown and network IO for seconds (#53175).
+                            try:
+                                await asyncio.wait_for(
+                                    self._run_in_executor_with_context(
+                                        self._cleanup_agent_resources, _cached_agent
+                                    ),
+                                    timeout=30.0,
+                                )
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "Agent resource cleanup timed out during session "
+                                    "expiry for %s; proceeding with eviction (#53175)",
+                                    key,
+                                )
+                            except Exception as _exc:
+                                logger.warning(
+                                    "Agent resource cleanup failed during session "
+                                    "expiry for %s: %s (#53175)",
+                                    key, _exc,
+                                )
                         # Drop the cache entry so the AIAgent (and its LLM
                         # clients, tool schemas, memory provider refs) can
                         # be garbage-collected.  Otherwise the cache grows
@@ -7148,7 +7193,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as e:
                     logger.error("Failed to launch detached gateway restart: %s", e)
 
-            self._finalize_shutdown_agents(active_agents)
+            await self._finalize_shutdown_agents(active_agents)
 
             # Also shut down memory providers on idle cached agents.
             # _finalize_shutdown_agents only handles agents that were
@@ -7165,7 +7210,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _agent = (
                         _entry[0] if isinstance(_entry, tuple) else _entry
                     )
-                    self._cleanup_agent_resources(_agent)
+                    if _agent is not None:
+                        try:
+                            await asyncio.wait_for(
+                                self._run_in_executor_with_context(
+                                    self._cleanup_agent_resources, _agent
+                                ),
+                                timeout=30.0,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Agent resource cleanup timed out during shutdown "
+                                "for idle cached agent; proceeding (#53175)",
+                            )
+                        except Exception as _exc:
+                            logger.warning(
+                                "Agent resource cleanup failed during shutdown "
+                                "for idle cached agent: %s (#53175)", _exc,
+                            )
 
             for platform, adapter in list(self.adapters.items()):
                 _adapter_started_at = time.monotonic()
@@ -9975,7 +10037,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # rebuilds its system prompt from current
                                     # SOUL.md, memory, and skills.
                                     self._evict_cached_agent(session_key)
-                                    self._cleanup_agent_resources(_hyg_agent)
+                                    # Offload cleanup to a worker thread so it
+                                    # never blocks the event loop — agent.close()
+                                    # and shutdown_memory_provider() can block
+                                    # on subprocess teardown and network IO for
+                                    # seconds (#53175).
+                                    try:
+                                        await asyncio.wait_for(
+                                            self._run_in_executor_with_context(
+                                                self._cleanup_agent_resources, _hyg_agent
+                                            ),
+                                            timeout=30.0,
+                                        )
+                                    except asyncio.TimeoutError:
+                                        logger.warning(
+                                            "Agent resource cleanup timed out during "
+                                            "session hygiene for %s; proceeding (#53175)",
+                                            session_key,
+                                        )
+                                    except Exception as _exc:
+                                        logger.warning(
+                                            "Agent resource cleanup failed during "
+                                            "session hygiene for %s: %s (#53175)",
+                                            session_key, _exc,
+                                        )
 
                     except Exception as e:
                         logger.warning(

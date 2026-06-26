@@ -2085,10 +2085,8 @@ export const zhHant = defineLocale({
       loadingQuestion: '正在載入問題…',
       other: '其他（輸入您的答案）',
       placeholder: '輸入您的答案…',
-      shortcutSuffix: ' 傳送',
-      back: '返回',
       skip: '略過',
-      send: '傳送'
+      continueLabel: '繼續'
     },
     tool: {
       code: '程式碼',

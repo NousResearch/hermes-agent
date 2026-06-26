@@ -83,7 +83,7 @@ def test_allow_aggregate_pin_blocks_opt_in(home):
     """A managed allow_aggregate:false pin overrides a consent_state opt-in.
 
     Consent is set in config (as a user or managed-scope pin would); the hard gate
-    still wins, so the aggregate plane resolves off and may_upload stays false.
+    still wins, so may_upload stays false.
     """
     from hermes_cli.config import load_config, save_config
     from agent.telemetry import policy
@@ -92,7 +92,4 @@ def test_allow_aggregate_pin_blocks_opt_in(home):
     tel["consent_state"] = "aggregate"
     tel["allow_aggregate"] = False
     save_config(c)
-    d = policy.resolve(load_config())
-    assert d.allow_aggregate is False
-    assert d.aggregate_enabled is False
-    assert d.may_upload_aggregate() is False
+    assert policy.may_upload_aggregate(load_config()) is False

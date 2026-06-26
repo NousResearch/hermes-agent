@@ -8,8 +8,8 @@ raises into a model/tool call (the hot-path invariant).
 Events record the observed model ids, provider names, and tool names. ``metrics``
 derives rollups for /usage and /insights; ``rollup`` builds the per-run summaries shown
 by ``hermes telemetry preview``. ``redaction`` + ``exporter_bulk`` + ``otlp_exporter``
-handle export to an operator-chosen destination. ``policy`` holds the consent state
-machine for the opt-in aggregate plane (no uploader ships).
+handle export to an operator-chosen destination. ``policy`` holds the consent
+constants and the aggregate upload gate (no uploader ships).
 """
 
 from __future__ import annotations

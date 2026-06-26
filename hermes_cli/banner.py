@@ -156,6 +156,7 @@ def _is_official_ssh_remote(url: str | None) -> bool:
 
 
 def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
+    from hermes_cli._subprocess_compat import windows_subprocess_kwargs
     try:
         result = subprocess.run(
             ["git", *args],
@@ -163,6 +164,7 @@ def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str
             text=True,
             timeout=timeout,
             cwd=str(cwd),
+            **windows_subprocess_kwargs(),
         )
     except Exception:
         return None

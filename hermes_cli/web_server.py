@@ -11904,7 +11904,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
     try:
-        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+        bridge = await asyncio.to_thread(PtyBridge.spawn, argv, cwd=cwd, env=env)
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
@@ -11965,7 +11965,7 @@ async def pty_ws(ws: WebSocket) -> None:
             await reader_task
         except (asyncio.CancelledError, Exception):
             pass
-        bridge.close()
+        await asyncio.to_thread(bridge.close)
 
 
 # ---------------------------------------------------------------------------

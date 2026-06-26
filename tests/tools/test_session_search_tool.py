@@ -17,6 +17,7 @@ class TestSessionSearchSemanticParam:
             mock_db_cls.return_value = mock_db
             mock_db.search_messages.return_value = []
             mock_db.list_sessions_rich.return_value = []
+            mock_db.resolve_session_by_title.return_value = None
 
             result = json.loads(session_search(query="test", semantic=False))
             assert result["success"] is True
@@ -41,6 +42,7 @@ class TestSessionSearchSemanticParam:
                 "messages_before": 0, "messages_after": 0,
             }
             mock_db.get_session.return_value = {}
+            mock_db.resolve_session_by_title.return_value = None
             mock_resolve.return_value = MagicMock()
 
             result = json.loads(session_search(query="test", semantic=True))
@@ -58,6 +60,7 @@ class TestSessionSearchSemanticParam:
             mock_db_cls.return_value = mock_db
             mock_db.search_hybrid.return_value = []
             mock_db.list_sessions_rich.return_value = []
+            mock_db.resolve_session_by_title.return_value = None
             mock_resolve.return_value = MagicMock()
 
             session_search(query="test", semantic=True, hybrid_weight=0.7)
@@ -83,6 +86,7 @@ class TestSessionSearchSemanticParam:
                 "messages_before": 0, "messages_after": 0,
             }
             mock_db.get_session.return_value = {}
+            mock_db.resolve_session_by_title.return_value = None
 
             result = json.loads(session_search(query="test", semantic=False))
             assert result["success"] is True
@@ -99,6 +103,7 @@ class TestSessionSearchSemanticParam:
             mock_db_cls.return_value = mock_db
             mock_db.search_hybrid.return_value = []
             mock_db.list_sessions_rich.return_value = []
+            mock_db.resolve_session_by_title.return_value = None
             mock_resolve.return_value = MagicMock()
 
             session_search(query="test", semantic=True, role_filter="user,assistant")
@@ -116,6 +121,7 @@ class TestSessionSearchSemanticParam:
             mock_db_cls.return_value = mock_db
             mock_db.search_hybrid.return_value = []
             mock_db.list_sessions_rich.return_value = []
+            mock_db.resolve_session_by_title.return_value = None
             mock_resolve.return_value = MagicMock()
 
             session_search(query="test", semantic=True)

@@ -76,7 +76,7 @@ from utils import env_var_enabled
 
 try:
     from fastapi import (
-        FastAPI, File, Form, HTTPException, Request, UploadFile,
+        BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile,
         WebSocket, WebSocketDisconnect,
     )
     from fastapi.middleware.cors import CORSMiddleware
@@ -3245,7 +3245,39 @@ def _memory_provider_payload(provider: MemoryProvider) -> Dict[str, Any]:
 
         fields.append(entry)
 
-    return {"name": provider.name, "label": provider.label, "fields": fields}
+    payload: Dict[str, Any] = {"name": provider.name, "label": provider.label, "fields": fields}
+    if provider.oauth_login:
+        payload["oauth"] = _memory_provider_oauth_status(provider, data)
+    return payload
+
+
+def _memory_provider_oauth_status(provider: MemoryProvider, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Describe the browser-OAuth state for an oauth-capable memory provider.
+
+    Hindsight is the only provider with OAuth today; its token lives in
+    ``~/.hermes/.hindsight_oauth.json`` (managed by ``hindsight_oauth``). We
+    surface only whether a token is present plus the org it is scoped to —
+    never the token itself.
+    """
+    status: Dict[str, Any] = {
+        "supported": True,
+        "authenticated": False,
+        "org_id": "",
+        "org_name": "",
+        "method": str(data.get("auth_method", "") or ""),
+    }
+    if provider.name == "hindsight":
+        try:
+            from hermes_cli import hindsight_oauth
+
+            creds = hindsight_oauth.read_credentials()
+        except Exception:
+            creds = None
+        if creds:
+            status["authenticated"] = True
+            status["org_id"] = str(creds.get("org_id", "") or "")
+            status["org_name"] = str(creds.get("org_name", "") or "")
+    return status
 
 
 def _coerce_field_value(field: ProviderField, raw: str) -> str:
@@ -3324,6 +3356,119 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
     except Exception:
         _log.exception("PUT /api/memory/providers/%s/config failed", name)
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# In-flight browser-OAuth flows, keyed by provider name. A sign-in is
+# interactive (the user logs in + approves in a browser), so it can take far
+# longer than a normal request. We therefore run it in the background and let
+# the panel poll ``oauth/status`` — a single blocking request would exceed the
+# desktop's backend-request timeout and abort before the user finishes.
+_oauth_flows: Dict[str, Dict[str, Any]] = {}
+
+
+def _run_oauth_login_blocking(name: str, provider: MemoryProvider, api_url: str) -> None:
+    """Background worker: run the browser OAuth flow and record the outcome.
+
+    Runs in Starlette's threadpool (sync background task), so the event loop
+    stays free to answer ``oauth/status`` polls while the user signs in.
+    """
+    from hermes_cli import hindsight_oauth
+
+    try:
+        creds = hindsight_oauth.run_hindsight_oauth_login(api_url)
+        # OAuth replaces the pasted key; record the method + activate the
+        # provider so the runtime and the config panel both know it's OAuth.
+        config = load_config()
+        memory_config = config.get("memory")
+        if not isinstance(memory_config, dict):
+            memory_config = {}
+            config["memory"] = memory_config
+        memory_config["provider"] = provider.name
+        save_config(config)
+
+        existing = _read_memory_provider_file(provider)
+        existing["auth_method"] = "oauth"
+        path = _memory_provider_config_path(provider)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from utils import atomic_json_write
+
+        atomic_json_write(path, existing, mode=0o600)
+
+        # OAuth supersedes any previously-pasted API key. Drop the stale env
+        # value so the runtime's bearer resolution (explicit key > OAuth token)
+        # uses the new OAuth token instead of an old/invalid key.
+        for field in provider.fields:
+            if field.is_secret and field.env_key:
+                try:
+                    from hermes_cli.config import remove_env_value
+
+                    remove_env_value(field.env_key)
+                except Exception:
+                    _log.debug("Could not clear %s after OAuth sign-in", field.env_key, exc_info=True)
+
+        _oauth_flows[name] = {
+            "status": "done",
+            "org_id": str(creds.get("org_id", "") or ""),
+            "org_name": str(creds.get("org_name", "") or ""),
+            "error": None,
+        }
+    except hindsight_oauth.HindsightOAuthError as exc:
+        _oauth_flows[name] = {"status": "error", "org_id": "", "error": str(exc)}
+    except Exception:
+        _log.exception("Background OAuth login for %s failed", name)
+        _oauth_flows[name] = {"status": "error", "org_id": "", "error": "Internal error during sign-in"}
+
+
+def _require_oauth_provider(name: str) -> MemoryProvider:
+    provider = get_memory_provider(name)
+    if provider is None or not provider.oauth_login:
+        raise HTTPException(status_code=404, detail=f"No OAuth login for memory provider: {name}")
+    if provider.name != "hindsight":
+        raise HTTPException(status_code=400, detail=f"OAuth login unavailable for: {name}")
+    return provider
+
+
+@app.post("/api/memory/providers/{name}/oauth/start")
+async def start_memory_provider_oauth(name: str, background_tasks: BackgroundTasks):
+    """Kick off the browser OAuth login in the background and return immediately.
+
+    Opens the user's browser, registers a loopback client, and (in the
+    background) exchanges the code for a token stored in
+    ``~/.hermes/.hindsight_oauth.json`` (0600). The caller polls ``oauth/status``
+    until ``flow`` is ``done`` (or ``error``). On success the provider is marked
+    active with ``auth_method="oauth"``.
+    """
+    provider = _require_oauth_provider(name)
+
+    if _oauth_flows.get(name, {}).get("status") == "pending":
+        return {"ok": True, "status": "pending"}  # already in flight; don't double-open
+
+    existing = _read_memory_provider_file(provider)
+    api_url = str(existing.get("api_url") or "").strip() or "https://api.hindsight.vectorize.io"
+
+    _oauth_flows[name] = {"status": "pending", "org_id": "", "error": None}
+    background_tasks.add_task(_run_oauth_login_blocking, name, provider, api_url)
+    return {"ok": True, "status": "pending"}
+
+
+@app.get("/api/memory/providers/{name}/oauth/status")
+async def memory_provider_oauth_status(name: str):
+    """Report the browser-OAuth state for an oauth-capable provider.
+
+    ``flow``: ``idle`` | ``pending`` | ``done`` | ``error`` (the in-flight
+    background login). ``authenticated``/``org_id`` reflect the stored token.
+    """
+    provider = _require_oauth_provider(name)
+    flow = _oauth_flows.get(name, {})
+    status = _memory_provider_oauth_status(provider, _read_memory_provider_file(provider))
+    status["flow"] = flow.get("status", "idle")
+    status["error"] = flow.get("error")
+    if flow.get("status") == "done":
+        if not status.get("org_id"):
+            status["org_id"] = flow.get("org_id", "")
+        if not status.get("org_name"):
+            status["org_name"] = flow.get("org_name", "")
+    return status
 
 
 @app.get("/api/config")

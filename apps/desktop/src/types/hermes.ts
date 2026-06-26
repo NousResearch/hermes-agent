@@ -132,10 +132,37 @@ export interface MemoryProviderField {
   value: string
 }
 
+export interface MemoryProviderOAuth {
+  authenticated: boolean
+  method?: string
+  org_id?: string
+  org_name?: string
+  supported: boolean
+}
+
 export interface MemoryProviderConfig {
   fields: MemoryProviderField[]
   label: string
   name: string
+  /** Present only for providers that support a browser OAuth ("sign in") flow. */
+  oauth?: MemoryProviderOAuth
+}
+
+export interface MemoryProviderOAuthStartResponse {
+  ok: boolean
+  status: 'pending'
+}
+
+export type MemoryProviderOAuthFlow = 'idle' | 'pending' | 'done' | 'error'
+
+export interface MemoryProviderOAuthStatusResponse {
+  authenticated: boolean
+  error?: null | string
+  flow: MemoryProviderOAuthFlow
+  method?: string
+  org_id?: string
+  org_name?: string
+  supported: boolean
 }
 
 export interface MessagingEnvVarInfo {

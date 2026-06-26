@@ -4,8 +4,13 @@ import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/hermes'
-import { Check, Loader2, Save } from '@/lib/icons'
+import {
+  getMemoryProviderConfig,
+  getMemoryProviderOAuthStatus,
+  saveMemoryProviderConfig,
+  startMemoryProviderOAuth
+} from '@/hermes'
+import { Check, Loader2, LogIn, Save } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
@@ -88,6 +93,7 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
   const [values, setValues] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [signingIn, setSigningIn] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -123,6 +129,53 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
     }
   }, [config, provider, refresh, values])
 
+  const signIn = useCallback(async () => {
+    if (!config) {
+      return
+    }
+
+    setSigningIn(true)
+
+    try {
+      // Kick off the browser flow; the backend runs it in the background.
+      await startMemoryProviderOAuth(provider)
+      notify({
+        kind: 'info',
+        title: `Signing in to ${config.label}`,
+        message: 'Approve the request in your browser to finish connecting.'
+      })
+
+      // Poll until the background sign-in completes (it's interactive, so this
+      // can take a while) or fails.
+      const deadline = Date.now() + 180_000
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        const status = await getMemoryProviderOAuthStatus(provider)
+        if (status.flow === 'error') {
+          throw new Error(status.error || 'Sign-in failed')
+        }
+        // Gate on THIS sign-in completing (flow === 'done'), not on
+        // `authenticated` — a pre-existing token would otherwise report success
+        // before the user has approved the new request.
+        if (status.flow === 'done') {
+          const orgLabel = status.org_name || (status.org_id ? `org ${status.org_id}` : '')
+          const orgNote = orgLabel ? ` (${orgLabel})` : ''
+          notify({ kind: 'success', title: `Connected to ${config.label}`, message: `Signed in via browser${orgNote}.` })
+          await refresh()
+          return
+        }
+        if (Date.now() > deadline) {
+          throw new Error('Timed out waiting for the browser sign-in to complete.')
+        }
+      }
+    } catch (err) {
+      notifyError(err, `Failed to sign in to ${config.label}`)
+    } finally {
+      setSigningIn(false)
+    }
+  }, [config, provider, refresh])
+
   // Providers without a declared config surface (e.g. builtin) render nothing.
   if (config && config.fields.length === 0) {
     return null
@@ -155,6 +208,31 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
 
       {expanded && (
         <div className="mt-3 grid gap-4 rounded-xl bg-background/60 p-4">
+          {config.oauth?.supported && values.mode === 'cloud' && (
+            <div className="grid gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">Sign in</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button disabled={signingIn} onClick={() => void signIn()} size="sm">
+                  {signingIn ? <Loader2 className="size-3.5 animate-spin" /> : <LogIn className="size-3.5" />}
+                  {config.oauth.authenticated ? 'Re-authenticate' : 'Sign in with browser'}
+                </Button>
+                {config.oauth.authenticated && (
+                  <Pill tone="primary">
+                    <Check className="size-3" />
+                    {config.oauth.org_name
+                      ? `Connected — ${config.oauth.org_name}`
+                      : config.oauth.org_id
+                        ? `Connected — org ${config.oauth.org_id}`
+                        : 'Connected'}
+                  </Pill>
+                )}
+              </div>
+              <span className="text-xs text-muted-foreground">
+                Opens your browser to authorize Hermes — no API key needed. Or paste a key below.
+              </span>
+            </div>
+          )}
+
           {config.fields.map(field => (
             <label className="grid gap-1.5" key={field.key}>
               <span className="text-xs font-medium text-muted-foreground">{field.label}</span>

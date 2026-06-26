@@ -577,6 +577,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_id = "hermes"
         self._budget = "mid"
         self._mode = "cloud"
+        # "oauth" when the cloud connection is authorized via the browser OAuth
+        # flow (token in ~/.hermes/.hindsight_oauth.json); "api_key"/"" otherwise.
+        self._auth_method = ""
         self._llm_base_url = ""
         self._memory_mode = "hybrid"  # "context", "tools", or "hybrid"
         self._prefetch_method = "recall"  # "recall" or "reflect"
@@ -671,7 +674,14 @@ class HindsightMemoryProvider(MemoryProvider):
                 or os.environ.get("HINDSIGHT_API_KEY", "")
             )
             has_url = bool(cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", ""))
-            return has_key or has_url
+            has_oauth = False
+            if not has_key and (cfg.get("auth_method") == "oauth" or not has_url):
+                try:
+                    from hermes_cli import hindsight_oauth
+                    has_oauth = hindsight_oauth.read_credentials() is not None
+                except Exception:
+                    has_oauth = False
+            return has_key or has_url or has_oauth
         except Exception:
             return False
 
@@ -780,23 +790,58 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # Step 3: Mode-specific config
         if mode == "cloud":
-            print("\n  Get your API key at https://ui.hindsight.vectorize.io\n")
-            existing_key = os.environ.get("HINDSIGHT_API_KEY", "")
-            if existing_key:
-                masked = f"...{existing_key[-4:]}" if len(existing_key) > 4 else "set"
-                sys.stdout.write(f"  API key (current: {masked}, blank to keep): ")
-                sys.stdout.flush()
-                api_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
-            else:
-                sys.stdout.write("  API key: ")
-                sys.stdout.flush()
-                api_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
-            if api_key:
-                env_writes["HINDSIGHT_API_KEY"] = api_key
-
+            # The API URL applies to whichever sign-in method is chosen, so
+            # ask for it first (a custom dev URL must drive the OAuth flow too).
             val = input(f"  API URL [{_DEFAULT_API_URL}]: ").strip()
             if val:
                 provider_config["api_url"] = val
+            api_url = provider_config.get("api_url") or _DEFAULT_API_URL
+
+            # Choose how to authenticate: browser OAuth (recommended, mirrors
+            # the MCP OAuth flow) or a manually pasted API key.
+            auth_items = [
+                ("Sign in with browser", "1-click OAuth — opens Hindsight Cloud to authorize (recommended)"),
+                ("Paste API key", "Use an existing Hindsight Cloud API key"),
+            ]
+            existing_auth = existing_config.get("auth_method")
+            auth_default_idx = 1 if existing_auth == "api_key" else 0
+            auth_idx = _curses_select(
+                "  Select sign-in method", auth_items, default=auth_default_idx, cancel_returns=_CANCELLED
+            )
+            if auth_idx == _CANCELLED:
+                _print_cancelled_setup()
+                return
+
+            if auth_idx == 0:
+                from hermes_cli import hindsight_oauth
+
+                try:
+                    creds = hindsight_oauth.run_hindsight_oauth_login(api_url)
+                except hindsight_oauth.HindsightOAuthError as exc:
+                    print(f"\n  ⚠ Browser sign-in failed: {exc}")
+                    print("  Re-run setup and choose 'Paste API key' to connect with a key instead.\n")
+                    return
+                provider_config["auth_method"] = "oauth"
+                # The OAuth token lives in its own 0600 file managed by
+                # hindsight_oauth — never write HINDSIGHT_API_KEY for this path.
+                env_writes.pop("HINDSIGHT_API_KEY", None)
+                org_note = f" (org {creds['org_id']})" if creds.get("org_id") else ""
+                print(f"\n  ✓ Signed in to Hindsight Cloud{org_note}")
+            else:
+                provider_config["auth_method"] = "api_key"
+                print("\n  Get your API key at https://ui.hindsight.vectorize.io\n")
+                existing_key = os.environ.get("HINDSIGHT_API_KEY", "")
+                if existing_key:
+                    masked = f"...{existing_key[-4:]}" if len(existing_key) > 4 else "set"
+                    sys.stdout.write(f"  API key (current: {masked}, blank to keep): ")
+                    sys.stdout.flush()
+                    api_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
+                else:
+                    sys.stdout.write("  API key: ")
+                    sys.stdout.flush()
+                    api_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
+                if api_key:
+                    env_writes["HINDSIGHT_API_KEY"] = api_key
 
         elif mode == "local_external":
             val = input(f"  Hindsight API URL [{_DEFAULT_LOCAL_URL}]: ").strip()
@@ -868,8 +913,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 existing_lines = env_path.read_text().splitlines()
             updated_keys = set()
             new_lines = []
+            # OAuth supersedes any previously-pasted key; drop a stale
+            # HINDSIGHT_API_KEY so it can't shadow the new OAuth token.
+            drop_api_key = provider_config.get("auth_method") == "oauth"
             for line in existing_lines:
                 key_match = line.split("=", 1)[0].strip() if "=" in line and not line.startswith("#") else None
+                if key_match == "HINDSIGHT_API_KEY" and drop_api_key:
+                    continue
                 if key_match and key_match in env_writes:
                     new_lines.append(f"{key_match}={env_writes[key_match]}")
                     updated_keys.add(key_match)
@@ -947,6 +997,65 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
         ]
+
+    def _explicit_api_key(self) -> str:
+        """Return an explicitly configured API key (config or env), if any."""
+        cfg = self._config if isinstance(self._config, dict) else {}
+        return (
+            cfg.get("apiKey")
+            or cfg.get("api_key")
+            or os.environ.get("HINDSIGHT_API_KEY", "")
+        )
+
+    def _has_oauth_credentials(self) -> bool:
+        try:
+            from hermes_cli import hindsight_oauth
+            return hindsight_oauth.read_credentials() is not None
+        except Exception:
+            return False
+
+    def _resolve_bearer(self) -> str:
+        """Resolve the Bearer token used for cloud requests.
+
+        An explicit API key always wins (back-compat, and the only option for
+        ``local_external``). Otherwise, when the cloud connection was authorized
+        via OAuth, return a valid OAuth access token (refreshed if near expiry).
+        Mirrors the MCP OAuth flow: the token is a Bearer JWT the REST API
+        accepts the same way it accepts an ``hsk_`` key.
+        """
+        explicit = self._explicit_api_key()
+        if explicit:
+            return explicit
+        if self._mode == "local_embedded":
+            return ""
+        if self._auth_method == "oauth" or self._has_oauth_credentials():
+            try:
+                from hermes_cli import hindsight_oauth
+                return hindsight_oauth.get_valid_access_token(self._api_url) or ""
+            except Exception as exc:
+                logger.warning("Hindsight OAuth token unavailable: %s", exc)
+                return ""
+        return ""
+
+    def _refresh_bearer_if_needed(self) -> None:
+        """For OAuth mode, refresh the short-lived access token before a call.
+
+        The OAuth access token expires after ~1h, so a long-running session
+        would otherwise keep presenting a stale token. ``get_valid_access_token``
+        refreshes transparently; if the token changed, drop the cached client so
+        the next ``_get_client`` rebuilds it with the fresh bearer.
+        """
+        if self._auth_method != "oauth" or self._explicit_api_key():
+            return
+        try:
+            from hermes_cli import hindsight_oauth
+            token = hindsight_oauth.get_valid_access_token(self._api_url)
+        except Exception as exc:
+            logger.warning("Hindsight OAuth refresh failed: %s", exc)
+            return
+        if token and token != self._api_key:
+            self._api_key = token
+            self._client = None  # force rebuild with the refreshed bearer
 
     def _get_client(self):
         """Return the cached Hindsight client (created once, reused)."""
@@ -1088,6 +1197,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _run_hindsight_operation(self, operation):
         """Run an async Hindsight client operation, retrying once after idle shutdown."""
+        self._refresh_bearer_if_needed()
         client = self._get_client()
         try:
             return self._run_sync(operation(client))
@@ -1213,9 +1323,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 )
                 self._mode = "disabled"
                 return
-        self._api_key = self._config.get("apiKey") or self._config.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
+        self._auth_method = str(self._config.get("auth_method", "") or "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in {"local_embedded", "local_external"} else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
+        # Resolve the bearer last — _resolve_bearer needs _mode/_api_url set, and
+        # may fetch (and refresh) an OAuth access token when no API key is present.
+        self._api_key = self._resolve_bearer()
         self._llm_base_url = self._config.get("llm_base_url", "")
 
         banks = cfg_get(self._config, "banks", "hermes", default={})

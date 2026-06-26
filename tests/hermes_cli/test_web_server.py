@@ -368,6 +368,97 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["value"] == ""
         assert "secret-value" not in json.dumps(data)
 
+    # ── Memory provider browser OAuth ───────────────────────────────────
+
+    def test_memory_provider_config_includes_oauth_block(self):
+        resp = self.client.get("/api/memory/providers/hindsight/config")
+
+        assert resp.status_code == 200
+        oauth = resp.json()["oauth"]
+        assert oauth["supported"] is True
+        assert oauth["authenticated"] is False
+        assert oauth["org_id"] == ""
+
+    def test_oauth_block_reflects_stored_credentials(self):
+        from hermes_cli import hindsight_oauth
+
+        hindsight_oauth.write_credentials(
+            {
+                "client_id": "hmc_x",
+                "access_token": "jwt",
+                "refresh_token": "hrt_x",
+                "expires_at_ms": hindsight_oauth._now_ms() + 3_600_000,
+                "org_id": "org_99",
+                "api_url": "https://api.hindsight.vectorize.io",
+            }
+        )
+
+        resp = self.client.get("/api/memory/providers/hindsight/config")
+        oauth = resp.json()["oauth"]
+        assert oauth["authenticated"] is True
+        assert oauth["org_id"] == "org_99"
+
+    def test_start_oauth_runs_in_background_and_status_reports_done(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        from hermes_cli import hindsight_oauth
+        from hermes_cli.config import load_config, load_env, save_env_value
+
+        # A previously-pasted key that OAuth should supersede.
+        save_env_value("HINDSIGHT_API_KEY", "stale-key")
+        assert load_env().get("HINDSIGHT_API_KEY") == "stale-key"
+
+        def fake_login(api_url, **kwargs):
+            return {
+                "org_id": "org_77",
+                "org_name": "Acme Corp",
+                "access_token": "jwt",
+                "refresh_token": "hrt",
+            }
+
+        monkeypatch.setattr(hindsight_oauth, "run_hindsight_oauth_login", fake_login)
+
+        # Start returns immediately (non-blocking); the TestClient runs the
+        # background task before returning, so persistence has happened.
+        resp = self.client.post("/api/memory/providers/hindsight/oauth/start")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "status": "pending"}
+        assert load_config()["memory"]["provider"] == "hindsight"
+
+        provider_config = json.loads(
+            (get_hermes_home() / "hindsight" / "config.json").read_text(encoding="utf-8")
+        )
+        assert provider_config["auth_method"] == "oauth"
+        # OAuth sign-in clears the stale pasted key so it can't shadow the token.
+        assert "HINDSIGHT_API_KEY" not in load_env()
+
+        status = self.client.get("/api/memory/providers/hindsight/oauth/status").json()
+        assert status["flow"] == "done"
+        assert status["org_id"] == "org_77"
+        assert status["org_name"] == "Acme Corp"
+        assert status["error"] is None
+
+    def test_start_oauth_failure_is_reported_via_status(self, monkeypatch):
+        from hermes_cli import hindsight_oauth
+
+        def boom(api_url, **kwargs):
+            raise hindsight_oauth.HindsightOAuthError("user declined")
+
+        monkeypatch.setattr(hindsight_oauth, "run_hindsight_oauth_login", boom)
+
+        resp = self.client.post("/api/memory/providers/hindsight/oauth/start")
+        assert resp.status_code == 200  # start always accepts; failure surfaces on status
+
+        status = self.client.get("/api/memory/providers/hindsight/oauth/status").json()
+        assert status["flow"] == "error"
+        assert "declined" in (status["error"] or "")
+
+    def test_oauth_status_unknown_provider_returns_404(self):
+        assert self.client.get("/api/memory/providers/builtin/oauth/status").status_code == 404
+
+    def test_start_oauth_unknown_provider_returns_404(self):
+        resp = self.client.post("/api/memory/providers/builtin/oauth/start")
+        assert resp.status_code == 404
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

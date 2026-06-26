@@ -18,6 +18,8 @@ import type {
   HermesConfigRecord,
   LogsResponse,
   MemoryProviderConfig,
+  MemoryProviderOAuthStartResponse,
+  MemoryProviderOAuthStatusResponse,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -355,6 +357,19 @@ export function saveMemoryProviderConfig(
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
     method: 'PUT',
     body: { values }
+  })
+}
+
+export function startMemoryProviderOAuth(provider: string): Promise<MemoryProviderOAuthStartResponse> {
+  return window.hermesDesktop.api<MemoryProviderOAuthStartResponse>({
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
+    method: 'POST'
+  })
+}
+
+export function getMemoryProviderOAuthStatus(provider: string): Promise<MemoryProviderOAuthStatusResponse> {
+  return window.hermesDesktop.api<MemoryProviderOAuthStatusResponse>({
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
   })
 }
 

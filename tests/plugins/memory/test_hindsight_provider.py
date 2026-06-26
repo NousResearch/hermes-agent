@@ -1751,3 +1751,68 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestOAuthBearerResolution:
+    """_resolve_bearer / refresh wiring for the browser OAuth auth method."""
+
+    def _provider(self, *, config, mode="cloud", auth_method="", api_url="https://api.example.com"):
+        p = HindsightMemoryProvider()
+        p._config = config
+        p._mode = mode
+        p._auth_method = auth_method
+        p._api_url = api_url
+        return p
+
+    def test_explicit_api_key_wins_over_oauth(self, monkeypatch):
+        """An explicit API key always takes precedence over an OAuth token."""
+        import hermes_cli.hindsight_oauth as ho
+
+        monkeypatch.setattr(ho, "get_valid_access_token", lambda *a, **k: pytest.fail("should not use OAuth"))
+        p = self._provider(config={"api_key": "hsk_explicit"}, auth_method="oauth")
+        assert p._resolve_bearer() == "hsk_explicit"
+
+    def test_oauth_token_used_when_no_api_key(self, monkeypatch):
+        import hermes_cli.hindsight_oauth as ho
+
+        monkeypatch.setattr(ho, "get_valid_access_token", lambda api_url=None, **k: "jwt-access-token")
+        p = self._provider(config={}, auth_method="oauth")
+        assert p._resolve_bearer() == "jwt-access-token"
+
+    def test_no_key_no_oauth_yields_empty(self, monkeypatch):
+        import hermes_cli.hindsight_oauth as ho
+
+        monkeypatch.setattr(ho, "read_credentials", lambda: None)
+        monkeypatch.setattr(ho, "get_valid_access_token", lambda *a, **k: None)
+        p = self._provider(config={}, auth_method="")
+        assert p._resolve_bearer() == ""
+
+    def test_local_embedded_never_uses_oauth(self, monkeypatch):
+        import hermes_cli.hindsight_oauth as ho
+
+        monkeypatch.setattr(ho, "get_valid_access_token", lambda *a, **k: pytest.fail("no OAuth in embedded"))
+        p = self._provider(config={}, mode="local_embedded", auth_method="oauth")
+        assert p._resolve_bearer() == ""
+
+    def test_refresh_swaps_token_and_resets_client(self, monkeypatch):
+        """When the refreshed token differs, the cached client is dropped."""
+        import hermes_cli.hindsight_oauth as ho
+
+        monkeypatch.setattr(ho, "get_valid_access_token", lambda api_url=None, **k: "fresh-token")
+        p = self._provider(config={}, auth_method="oauth")
+        p._api_key = "stale-token"
+        p._client = object()
+        p._refresh_bearer_if_needed()
+        assert p._api_key == "fresh-token"
+        assert p._client is None
+
+    def test_refresh_noop_for_api_key_mode(self, monkeypatch):
+        import hermes_cli.hindsight_oauth as ho
+
+        monkeypatch.setattr(ho, "get_valid_access_token", lambda *a, **k: pytest.fail("should not refresh"))
+        p = self._provider(config={"api_key": "hsk_x"}, auth_method="api_key")
+        p._api_key = "hsk_x"
+        sentinel = object()
+        p._client = sentinel
+        p._refresh_bearer_if_needed()
+        assert p._client is sentinel  # untouched

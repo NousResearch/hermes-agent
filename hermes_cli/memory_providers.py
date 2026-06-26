@@ -72,11 +72,17 @@ class MemoryProvider:
     name: str
     label: str
     fields: tuple[ProviderField, ...] = dataclass_field(default_factory=tuple)
+    # When True, the provider supports a browser OAuth ("sign in") flow in
+    # addition to (or instead of) pasting a secret. The desktop renders a
+    # "Sign in with browser" button and the backend exposes an oauth/start
+    # endpoint. Only meaningful for cloud-mode providers.
+    oauth_login: bool = False
 
 
 HINDSIGHT = MemoryProvider(
     name="hindsight",
     label="Hindsight",
+    oauth_login=True,
     fields=(
         ProviderField(
             key="mode",

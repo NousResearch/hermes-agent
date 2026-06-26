@@ -184,6 +184,7 @@ pub async fn launch_hermes_desktop(
     // directly; this matches user double-click/open behavior and avoids cwd /
     // quarantine oddities after a self-update rebuild.
     let mut cmd = desktop_launch_command(&exe_path, &install_root);
+    cmd.env_remove("HERMES_DESKTOP_PID");
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

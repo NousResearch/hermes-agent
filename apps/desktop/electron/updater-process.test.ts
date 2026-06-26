@@ -19,8 +19,9 @@ test('spawnUpdaterProcess hides the updater console and detaches the child on Wi
   const result = spawnUpdaterProcess(
     'hermes-setup.exe',
     ['--update', '--branch', 'main'],
-    { cwd: 'C:\\Hermes', detached: true, stdio: 'ignore' },
+    { cwd: 'C:\\Hermes', detached: true, env: { HERMES_HOME: 'C:\\Hermes' }, stdio: 'ignore' },
     {
+      desktopPid: 1337,
       isWindows: true,
       spawnProcess: (command, args, options) => {
         calls.push({ args, command, options })
@@ -36,7 +37,13 @@ test('spawnUpdaterProcess hides the updater console and detaches the child on Wi
     {
       args: ['--update', '--branch', 'main'],
       command: 'hermes-setup.exe',
-      options: { cwd: 'C:\\Hermes', detached: true, stdio: 'ignore', windowsHide: true }
+      options: {
+        cwd: 'C:\\Hermes',
+        detached: true,
+        env: { HERMES_DESKTOP_PID: '1337', HERMES_HOME: 'C:\\Hermes' },
+        stdio: 'ignore',
+        windowsHide: true
+      }
     }
   ])
 })
@@ -47,7 +54,7 @@ test('spawnUpdaterProcess preserves updater options off Windows', () => {
   spawnUpdaterProcess(
     'hermes-setup',
     ['--update'],
-    { detached: true, stdio: 'ignore' },
+    { detached: true, env: { HERMES_DESKTOP_PID: 'stale', HERMES_HOME: '/opt/hermes' }, stdio: 'ignore' },
     {
       isWindows: false,
       spawnProcess: (_command, _args, options) => {
@@ -58,5 +65,9 @@ test('spawnUpdaterProcess preserves updater options off Windows', () => {
     }
   )
 
-  assert.deepEqual(capturedOptions, { detached: true, stdio: 'ignore' })
+  assert.deepEqual(capturedOptions, {
+    detached: true,
+    env: { HERMES_DESKTOP_PID: 'stale', HERMES_HOME: '/opt/hermes' },
+    stdio: 'ignore'
+  })
 })

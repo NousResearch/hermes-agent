@@ -49,6 +49,7 @@ hermes-agent/
 │   │                     #   (mirrors Telegram onboarding pattern in web_server.py).
 │   │                     #   Weixin connection issues? See .github/instructions/weixin-channel-diagnostics.instructions.md
 │   │                     #   or run the /weixin-reconnect skill (.github/skills/weixin-reconnect/SKILL.md).
+│   │                     #   After git pull/sync? See .github/instructions/fork-sync-update.instructions.md
 │   └── builtin_hooks/    # Extension point for always-registered gateway hooks (none shipped)
 ├── plugins/              # Plugin system (see "Plugins" section below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)

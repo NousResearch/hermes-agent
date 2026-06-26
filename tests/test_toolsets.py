@@ -133,9 +133,9 @@ class TestValidateToolset:
     def test_mcp_alias_uses_live_registry(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(
-            name="mcp_dynserver_ping",
+            name="mcp__dynserver__ping",
             toolset="mcp-dynserver",
-            schema=_make_schema("mcp_dynserver_ping", "Ping"),
+            schema=_make_schema("mcp__dynserver__ping", "Ping"),
             handler=_dummy_handler,
         )
         reg.register_toolset_alias("dynserver", "mcp-dynserver")
@@ -144,7 +144,7 @@ class TestValidateToolset:
 
         assert validate_toolset("dynserver") is True
         assert validate_toolset("mcp-dynserver") is True
-        assert "mcp_dynserver_ping" in resolve_toolset("dynserver")
+        assert "mcp__dynserver__ping" in resolve_toolset("dynserver")
 
 
 class TestGetToolsetInfo:

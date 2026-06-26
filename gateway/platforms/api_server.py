@@ -93,6 +93,51 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+# OpenAI spec describes `body["user"]` as a stable end-user identifier — anything
+# beyond ~64 chars is anomalous, and the field has no documented upper bound.
+# We cap at 128 chars BEFORE handing to AIAgent so that a pathologically long
+# value can't become a pathologically long sanitized peer_id at Honcho. The
+# cap is documented here because the bound is not enforced by Honcho or by
+# _sanitize_id (which preserves length); removing or relaxing it is a
+# load-bearing decision that requires a gateway-layer review.
+#
+# Threat model: DoS-class, not exploitable for confidentiality/integrity.
+# Bounded further by API_SERVER_KEY trust (single-tenant) — only callers with
+# the API key can reach this code path.
+MAX_USER_ID_LENGTH = 128
+
+
+def _resolve_caller_user_id(body: Any) -> Optional[str]:
+    """Extract and length-cap the OpenAI ``user`` field for Honcho peer naming.
+
+    Returns:
+        - ``None`` if the field is missing or empty (so the downstream
+          ``if agent._user_id:`` truthiness check at agent_init.py:1172
+          continues to drop the value, matching the pre-patch contract).
+        - the string verbatim if it is within :data:`MAX_USER_ID_LENGTH`.
+        - the string truncated to :data:`MAX_USER_ID_LENGTH` if it exceeds
+          the cap. Truncation (rather than rejection) preserves the caller's
+          stable-prefix preference and avoids a 4xx round-trip for a value
+          that is, by spec, opaque to the server.
+
+    The cap is applied BEFORE :func:`_sanitize_id` runs in
+    :mod:`plugins.memory.honcho.session`, so the resulting peer_id can never
+    exceed ``MAX_USER_ID_LENGTH`` characters — independent of how many unsafe
+    characters survive sanitization.
+
+    Accepts ``Any`` rather than ``Dict[str, Any]`` so callers that pass a
+    malformed body (e.g. raw JSON string from an upstream parser bug) get
+    ``None`` back instead of an unhandled ``AttributeError``.
+    """
+    raw = body.get("user") if isinstance(body, dict) else None
+    if not raw:  # None, "", 0 — anything falsy. Matches `if agent._user_id:`.
+        return None
+    if not isinstance(raw, str):
+        # OpenAI spec says `user` is a string. Non-strings (int, list, dict)
+        # are an API contract violation; bail to None rather than coerce and
+        # potentially allocate gigabytes via str().
+        return None
+    return raw[:MAX_USER_ID_LENGTH]
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1077,6 +1122,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        user_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
     ) -> Any:
         """
@@ -1146,6 +1192,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
+            user_id=user_id,
             gateway_session_key=gateway_session_key,
         )
         return agent
@@ -2044,6 +2091,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                user_id=_resolve_caller_user_id(body),
                 gateway_session_key=gateway_session_key,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
@@ -2063,6 +2111,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                user_id=_resolve_caller_user_id(body),
                 gateway_session_key=gateway_session_key,
             )
 
@@ -3126,6 +3175,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                user_id=_resolve_caller_user_id(body),
                 gateway_session_key=gateway_session_key,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
@@ -3159,6 +3209,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                user_id=_resolve_caller_user_id(body),
                 gateway_session_key=gateway_session_key,
             )
 
@@ -3789,6 +3840,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        user_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
     ) -> tuple:
         """
@@ -3820,6 +3872,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=tool_progress_callback,
                     tool_start_callback=tool_start_callback,
                     tool_complete_callback=tool_complete_callback,
+                    user_id=user_id,
                     gateway_session_key=gateway_session_key,
                 )
                 if agent_ref is not None:

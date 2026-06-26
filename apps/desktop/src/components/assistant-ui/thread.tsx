@@ -100,7 +100,7 @@ import { $backgroundResume } from '@/store/background-delegation'
 import { $compactionActive } from '@/store/compaction'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
-import { $connection } from '@/store/session'
+import { $connection, $showReasoning } from '@/store/session'
 import { notifyThreadEditClose, notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
 
@@ -642,6 +642,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const showReasoning = useStore($showReasoning)
 
   const pending = useAuiState(
     s =>
@@ -664,7 +665,9 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
       .some(p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0)
   )
 
-  if (!hasContent) {
+  // Honor the display.show_reasoning setting: when off, hide the whole
+  // "Thinking" disclosure (and therefore its reasoning children).
+  if (!hasContent || !showReasoning) {
     return null
   }
 
@@ -679,6 +682,13 @@ const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ te
   const displayText = text.trimStart()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
   const isRunning = status?.type === 'running' || messageRunning
+  const showReasoning = useStore($showReasoning)
+
+  // Also gate any reasoning part rendered outside a ReasoningGroup so the
+  // setting is honored regardless of how the runtime groups reasoning parts.
+  if (!showReasoning) {
+    return null
+  }
 
   return (
     <MarkdownTextContent

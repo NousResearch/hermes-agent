@@ -214,6 +214,7 @@ export interface HermesConfig {
   }
   display?: {
     personality?: string
+    show_reasoning?: boolean
     skin?: string
   }
   terminal?: {

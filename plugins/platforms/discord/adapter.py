@@ -2028,7 +2028,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             embed = discord.Embed(
                 description="Tap a choice below, or ✏️ Other to type your own.",
-                color=discord.Color.blurple(),
+                color=discord.Color.blue(),
             )
             msg = await channel.send(embed=embed, view=view)
             view._message = msg

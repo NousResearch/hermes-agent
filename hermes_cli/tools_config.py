@@ -1830,8 +1830,8 @@ def _get_platform_tools(
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
     if plugin_ts_keys:
-        known_map = config.get("known_plugin_toolsets", {})
-        known_for_platform = set(known_map.get(platform, []))
+        known_map = config.get("known_plugin_toolsets", {}) or {}
+        known_for_platform = set(known_map.get(platform, []) or [])
         for pts in plugin_ts_keys:
             if pts in toolset_names:
                 # Explicitly listed in config — enabled

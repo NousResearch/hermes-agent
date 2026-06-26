@@ -115,10 +115,14 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
-_CRON_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
+# Single source of truth, shared with the install-time scanner
+# (threat_patterns.INVISIBLE_CHARS / skills_guard). Keeping a separate, narrower
+# copy here let an obfuscated injection directive slip past this runtime cron
+# tripwire while being caught at install time (or vice versa): U+2062-U+2064
+# (invisible math operators) and U+2066-U+2069 (directional isolates) are real
+# attack tools and were missing from the cron-local set. Importing the canonical
+# set keeps the cron tripwire and the install scanner from drifting apart.
+from tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
 
 # U+200D Zero-Width Joiner is also a legitimate, required part of many
 # Unicode emoji sequences (for example 👨‍👩‍👧, 🏳️‍🌈, ❤️‍🩹, 🧑‍💻).

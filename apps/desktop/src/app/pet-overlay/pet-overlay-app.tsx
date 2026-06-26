@@ -1,11 +1,27 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { PetBubble } from '@/components/pet/pet-bubble'
 import { PetSprite } from '@/components/pet/pet-sprite'
+import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { Mail } from '@/lib/icons'
 import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
+import { overlayWindowSize } from '@/store/pet-overlay'
 import { setAwaitingResponse, setBusy } from '@/store/session'
+
+// Fallbacks mirror pet-sprite's defaults; the gateway normally sends real values.
+const DEFAULT_FRAME_W = 192
+const DEFAULT_FRAME_H = 208
+const DEFAULT_SCALE = 0.33
+
+// Must match the root's paddingBottom — the sprite renders bottom-centered, this
+// many px above the window's bottom edge. Used to anchor the resize.
+const PET_PADDING_BOTTOM = 24
+
+// A sprite pixel counts as "solid" (interactive) at/above this alpha (0-255).
+// Low enough to catch anti-aliased edges, high enough that the faint halo around
+// the art still clicks through.
+const ALPHA_HIT_THRESHOLD = 16
 
 /**
  * The pop-out overlay's only view: a transparent, draggable mascot with a mini
@@ -51,6 +67,9 @@ export function PetOverlayApp() {
   const [unread, setUnread] = useState(false)
 
   const dragRef = useRef<DragState | null>(null)
+  // Last Alt+wheel anchor, consumed by the resize effect to zoom toward the
+  // cursor; null means a non-wheel scale change (slider) → anchor bottom-center.
+  const zoomAnchorRef = useRef<PetZoomAnchor | null>(null)
   const petRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const ignoreRef = useRef(true)
@@ -81,11 +100,52 @@ export function PetOverlayApp() {
     return off
   }, [])
 
-  // Click-through: make only the sprite (or an open composer) interactive. With
-  // ignore+forward, the renderer still receives mousemove so we can re-enable
-  // hit-testing the moment the cursor returns to the pet.
+  // Click-through: make only the *solid* sprite pixels (plus the bubble / mail
+  // button / open composer) interactive — clicks on the transparent rectangle
+  // around the art pass through to whatever's behind. With ignore+forward, the
+  // renderer still receives mousemove so we can re-arm the moment the cursor
+  // returns to a solid pixel.
   useEffect(() => {
     setIgnore(true)
+
+    // True when the point sits on a solid sprite pixel or on the pet's other
+    // interactive chrome (bubble, mail button). Over the canvas we sample the
+    // rendered alpha; elsewhere inside the pet (bubble/button) we trust DOM
+    // hit-testing. Anything else is transparent backdrop.
+    const isInteractiveAt = (x: number, y: number): boolean => {
+      const pet = petRef.current
+      const target = document.elementFromPoint(x, y)
+
+      if (!pet || !target || !pet.contains(target)) {
+        return false
+      }
+
+      if (!(target instanceof HTMLCanvasElement)) {
+        return true
+      }
+
+      const rect = target.getBoundingClientRect()
+
+      if (rect.width === 0 || rect.height === 0) {
+        return true
+      }
+
+      const ctx = target.getContext('2d')
+
+      if (!ctx) {
+        return true
+      }
+
+      const px = Math.floor((x - rect.left) * (target.width / rect.width))
+      const py = Math.floor((y - rect.top) * (target.height / rect.height))
+
+      try {
+        return ctx.getImageData(px, py, 1, 1).data[3] >= ALPHA_HIT_THRESHOLD
+      } catch {
+        // Tainted/zero-size read — fail open so the pet stays grabbable.
+        return true
+      }
+    }
 
     const onMove = (ev: MouseEvent) => {
       if (dragRef.current || composerOpenRef.current) {
@@ -94,15 +154,7 @@ export function PetOverlayApp() {
         return
       }
 
-      const el = petRef.current
-
-      if (!el) {
-        return
-      }
-
-      const r = el.getBoundingClientRect()
-      const over = ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom
-      setIgnore(!over)
+      setIgnore(!isInteractiveAt(ev.clientX, ev.clientY))
     }
 
     window.addEventListener('mousemove', onMove)
@@ -231,6 +283,65 @@ export function PetOverlayApp() {
     window.hermesDesktop?.petOverlay?.control({ type: 'open-app' })
   }
 
+  // Alt+wheel over the popped-out pet resizes it. The overlay has no gateway,
+  // so paint the new scale locally for instant feedback, then ask the main
+  // renderer to persist it (it pushes the reconciled scale back). Stash the
+  // cursor anchor for the resize effect; the window itself is grown to fit there.
+  const onScale = useCallback((next: number, anchor: PetZoomAnchor) => {
+    zoomAnchorRef.current = anchor
+    setPetInfo({ ...$petInfo.get(), scale: next })
+    window.hermesDesktop?.petOverlay?.control({ scale: next, type: 'scale' })
+  }, [])
+
+  usePetZoomGesture(petRef, onScale, Boolean(info.enabled && info.spritesheetBase64))
+
+  // Grow/shrink the OS overlay window to fit the pet at its current scale so the
+  // sprite is never cropped — covers both the wheel gesture here and a scale
+  // changed from the app's settings slider (pushed in as a state update). With a
+  // wheel anchor we zoom toward the cursor (keep the pixel under it fixed);
+  // otherwise we anchor the bottom-center (the pet's feet stay planted). New
+  // bounds are persisted so the pet reopens at the right size.
+  useEffect(() => {
+    if (!info.enabled || !info.spritesheetBase64) {
+      return
+    }
+
+    const { width, height } = overlayWindowSize(
+      info.frameW ?? DEFAULT_FRAME_W,
+      info.frameH ?? DEFAULT_FRAME_H,
+      info.scale ?? DEFAULT_SCALE
+    )
+
+    const curW = window.outerWidth
+    const curH = window.outerHeight
+
+    if (width === curW && height === curH) {
+      zoomAnchorRef.current = null
+
+      return
+    }
+
+    const anchor = zoomAnchorRef.current
+    zoomAnchorRef.current = null
+
+    // The sprite scales about its bottom-center, at window-local (curW/2,
+    // curH - paddingBottom). Hold the anchor pixel fixed on screen as it scales;
+    // with no wheel anchor we pin the bottom-center itself (ratio 1 ⇒ no shift).
+    const ratio = anchor?.ratio ?? 1
+    const ax = anchor?.clientX ?? curW / 2
+    const ay = anchor?.clientY ?? curH - PET_PADDING_BOTTOM
+
+    const bounds = {
+      height,
+      width,
+      x: Math.round(window.screenX + ax - (ax - curW / 2) * ratio - width / 2),
+      y: Math.round(window.screenY + ay - (ay - (curH - PET_PADDING_BOTTOM)) * ratio - (height - PET_PADDING_BOTTOM))
+    }
+
+    window.hermesDesktop?.petOverlay?.setBounds(bounds)
+    window.hermesDesktop?.petOverlay?.control({ bounds, type: 'bounds' })
+  }, [info.enabled, info.spritesheetBase64, info.scale, info.frameW, info.frameH])
+
   if (!info.enabled || !info.spritesheetBase64) {
     return null
   }
@@ -251,7 +362,7 @@ export function PetOverlayApp() {
         flexDirection: 'column',
         height: '100vh',
         justifyContent: 'flex-end',
-        paddingBottom: 24,
+        paddingBottom: PET_PADDING_BOTTOM,
         userSelect: 'none',
         width: '100vw'
       }}

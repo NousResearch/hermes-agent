@@ -3130,6 +3130,20 @@ class BasePlatformAdapter(ABC):
         """
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
+    async def play_tts_text(
+        self,
+        chat_id: str,
+        text: str,
+        **kwargs,
+    ) -> SendResult:
+        """
+        Play auto-TTS directly from text when a platform can stream audio.
+
+        The default returns failure so callers fall back to file-based
+        ``text_to_speech_tool`` generation and ``play_tts`` delivery.
+        """
+        return SendResult(success=False, error="Direct TTS playback is not supported")
+
     async def send_video(
         self,
         chat_id: str,
@@ -4638,17 +4652,29 @@ class BasePlatformAdapter(ABC):
                         and text_content
                         and not media_files):
                     try:
-                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements
-                        if check_tts_requirements():
-                            import json as _json
-                            speech_text = self.prepare_tts_text(text_content)
-                            if not speech_text:
-                                raise ValueError("Empty text after markdown cleanup")
-                            tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                        speech_text = self.prepare_tts_text(text_content)
+                        if not speech_text:
+                            raise ValueError("Empty text after markdown cleanup")
+
+                        direct_tts = await self.play_tts_text(
+                            chat_id=event.source.chat_id,
+                            text=speech_text,
+                            metadata=_thread_metadata,
+                        )
+                        if not bool(getattr(direct_tts, "success", False)):
+                            from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+                            if check_tts_requirements():
+                                import json as _json
+                                tts_result_str = await asyncio.to_thread(
+                                    text_to_speech_tool, text=speech_text
+                                )
+                                tts_data = _json.loads(tts_result_str)
+                                _tts_path = tts_data.get("file_path")
+                        else:
+                            logger.debug(
+                                "[%s] Auto-TTS delivered directly from text",
+                                self.name,
                             )
-                            tts_data = _json.loads(tts_result_str)
-                            _tts_path = tts_data.get("file_path")
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 

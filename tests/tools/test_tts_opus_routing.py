@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -44,7 +45,8 @@ def test_edge_cli_preserves_native_mp3(tmp_path, monkeypatch):
     convert.assert_not_called()
 
 
-def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["telegram", "whatsapp", "whatsapp_cloud"])
+def test_edge_voice_note_platforms_convert_to_opus_voice(tmp_path, monkeypatch, platform):
     out = tmp_path / "speech.mp3"
     opus = tmp_path / "speech.ogg"
 
@@ -55,7 +57,7 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
 
     convert = Mock(side_effect=fake_convert)
 
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", platform)
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "edge"})
     monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
     monkeypatch.setattr(tts_tool, "_generate_edge_tts", _write_edge_output)
@@ -68,3 +70,31 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
     assert result["voice_compatible"] is True
     assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{opus}"
     convert.assert_called_once_with(str(out))
+
+
+def test_tts_opus_conversion_forces_whatsapp_ready_shape(tmp_path, monkeypatch):
+    source = tmp_path / "speech.mp3"
+    source.write_bytes(b"mp3")
+    output = tmp_path / "speech.ogg"
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        output.write_bytes(b"OggS")
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(tts_tool, "_has_ffmpeg", lambda: True)
+    monkeypatch.setattr(tts_tool.subprocess, "run", fake_run)
+
+    result = tts_tool._convert_to_opus(str(source))
+
+    assert result == str(output)
+    assert commands
+    command, kwargs = commands[0]
+    assert command[:4] == ["ffmpeg", "-i", str(source), "-acodec"]
+    assert "libopus" in command
+    assert command[command.index("-ac") + 1] == "1"
+    assert command[command.index("-ar") + 1] == "48000"
+    assert command[command.index("-application") + 1] == "voip"
+    assert command[-2:] == [str(output), "-y"]
+    assert kwargs["stdin"] is subprocess.DEVNULL

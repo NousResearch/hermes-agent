@@ -1356,6 +1356,39 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         wa_cloud_api_version = os.getenv("WHATSAPP_CLOUD_API_VERSION")
         if wa_cloud_api_version:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["api_version"] = wa_cloud_api_version
+        # Optional: local WhatsApp Calling/WebRTC SDP sidecar
+        wa_cloud_calling_sidecar_url = os.getenv("WHATSAPP_CLOUD_CALLING_SIDECAR_URL")
+        if wa_cloud_calling_sidecar_url:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra[
+                "calling_sidecar_url"
+            ] = wa_cloud_calling_sidecar_url
+        wa_cloud_calling_sidecar_timeout = os.getenv(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TIMEOUT"
+        )
+        if wa_cloud_calling_sidecar_timeout:
+            try:
+                config.platforms[Platform.WHATSAPP_CLOUD].extra[
+                    "calling_sidecar_timeout"
+                ] = float(wa_cloud_calling_sidecar_timeout)
+            except ValueError:
+                pass
+        wa_cloud_calling_sidecar_tts_stream_command = os.getenv(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND"
+        )
+        if wa_cloud_calling_sidecar_tts_stream_command:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra[
+                "calling_sidecar_tts_stream_command"
+            ] = wa_cloud_calling_sidecar_tts_stream_command
+        wa_cloud_calling_sidecar_tts_stream_timeout = os.getenv(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT"
+        )
+        if wa_cloud_calling_sidecar_tts_stream_timeout:
+            try:
+                config.platforms[Platform.WHATSAPP_CLOUD].extra[
+                    "calling_sidecar_tts_stream_timeout"
+                ] = float(wa_cloud_calling_sidecar_tts_stream_timeout)
+            except ValueError:
+                pass
     whatsapp_cloud_home = os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL")
     if whatsapp_cloud_home and Platform.WHATSAPP_CLOUD in config.platforms:
         config.platforms[Platform.WHATSAPP_CLOUD].home_channel = HomeChannel(

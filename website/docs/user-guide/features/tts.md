@@ -35,7 +35,7 @@ Convert text to speech with ten providers:
 |----------|----------|--------|
 | Telegram | Voice bubble (plays inline) | Opus `.ogg` |
 | Discord | Voice bubble (Opus/OGG), falls back to file attachment | Opus/MP3 |
-| WhatsApp | Audio file attachment | MP3 |
+| WhatsApp | Native voice note with `voice_compatible`; regular attachment otherwise | Ogg/Opus preferred; MP3/WAV fallback |
 | CLI | Saved to `~/.hermes/audio_cache/` | MP3 |
 
 ### Configuration
@@ -165,18 +165,18 @@ tts:
 
 Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally disable truncation.
 
-### Telegram Voice Bubbles & ffmpeg
+### Voice Bubbles / Notes & ffmpeg
 
-Telegram voice bubbles require Opus/OGG audio format:
+Telegram voice bubbles and WhatsApp voice notes require Opus/OGG audio format:
 
 - **OpenAI, ElevenLabs, and Mistral** produce Opus natively — no extra setup
-- **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
-- **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
-- **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
-- **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
-- **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
-- **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
-- **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert.
+- **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for native voice delivery
+- **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for native voice delivery
+- **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for native voice delivery
+- **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for native voice delivery
+- **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for native voice delivery
+- **Piper** outputs WAV and also needs **ffmpeg** to convert for native voice delivery
 
 ```bash
 # Ubuntu/Debian
@@ -189,10 +189,10 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a native voice bubble/note).
 
 :::tip
-If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
+If you want native voice delivery without installing ffmpeg, switch to the OpenAI, ElevenLabs, Mistral, or an Ogg/Opus command provider such as `voice`.
 :::
 
 ### xAI Custom Voices (voice cloning)
@@ -252,7 +252,7 @@ tts:
       command: "voxcpm --ref ~/voice.wav --text-file {input_path} --out {output_path}"
       output_format: mp3
       timeout: 180
-      voice_compatible: true       # try to deliver as a Telegram voice bubble
+      voice_compatible: true       # try to deliver as a native voice note/bubble
 
     mlx-kokoro:
       type: command
@@ -312,7 +312,7 @@ Use `{{` and `}}` for literal braces.
 |--------------------|---------|------------------------------------------------------------------------------------------------------------|
 | `timeout`          | `120`   | Seconds; the process tree is killed on expiry (Unix `killpg`, Windows `taskkill /T`).                       |
 | `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
-| `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
+| `voice_compatible` | `false` | When `true`, Hermes routes the output through native voice-message delivery. Existing Ogg/Opus output is sent directly; MP3/WAV output is converted to Ogg/Opus via ffmpeg when the platform requires it. |
 | `max_text_length`  | `5000`  | Input is truncated to this length before rendering the command.                                             |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
 
@@ -320,9 +320,34 @@ Use `{{` and `}}` for literal braces.
 
 - **Built-in names always win.** A `tts.providers.openai` entry never shadows the native OpenAI provider, so no user config can silently replace a built-in.
 - **Default delivery is a document.** Command providers deliver as regular audio attachments on every platform. Opt in to voice-bubble delivery per-provider with `voice_compatible: true`.
+- **Prefer native Ogg/Opus when your engine can write it.** For WhatsApp voice notes and Telegram voice bubbles, set `output_format: ogg` and have the command produce real Opus in an Ogg container. Hermes can then skip conversion and hand the file directly to the platform adapter.
 - **Command failures surface to the agent.** Non-zero exit, empty output, or timeout all return an error with the command's stderr/stdout included so you can debug the provider from the conversation.
 - **`type: command` is the default when `command:` is set.** Writing `type: command` explicitly is good practice but not required; an entry with a non-empty `command` string is treated as a command provider.
 - **`{input_path}` / `{text_path}` are interchangeable.** Use whichever reads better in your command.
+
+#### Local Ogg/Opus validation
+
+When using [`voice`](https://github.com/rgbkrk/voice) as a command provider,
+validate the integration before restarting a live gateway:
+
+```bash
+VOICE_BIN=/path/to/voice scripts/verify_voice_command_tts.py
+```
+
+The script creates a temporary `HERMES_HOME`, writes a Kokoro command-provider
+config that calls `voice say --format ogg-opus`, runs Hermes'
+`text_to_speech_tool`, and checks the generated file with `ffprobe`. A passing
+run proves Hermes receives a `voice_compatible` media tag and that the audio is
+real Opus in an Ogg container, mono, at 48 kHz.
+
+To validate an already deployed Hermes home without rewriting its config:
+
+```bash
+scripts/verify_voice_command_tts.py --use-existing-config --hermes-home ~/.hermes
+```
+
+In this mode the script uses the configured `tts.provider` path and only writes
+the generated audio cache entry.
 
 #### Security
 
@@ -403,7 +428,7 @@ Override these on your provider class for richer integration:
 - `list_models()` → list of `{id, display, languages, max_text_length}` dicts.
 - `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power the picker row in `hermes tools` / `hermes setup`. Without this, the plugin still works but its row in the picker is minimal.
 - `stream(text, *, voice, model, format, **extra)` → iterator yielding audio bytes for streaming delivery (default raises `NotImplementedError`).
-- `voice_compatible` property → set `True` if your output is Opus-compatible and the gateway should deliver it as a voice bubble (default `False` = regular audio attachment).
+- `voice_compatible` property → set `True` when your output should use native voice-message delivery. Ogg/Opus output is sent directly; MP3/WAV output may be converted by gateways that support conversion (default `False` = regular audio attachment).
 
 See `agent/tts_provider.py` for the full ABC including docstrings.
 

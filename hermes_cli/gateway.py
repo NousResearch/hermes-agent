@@ -15,6 +15,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -5728,6 +5729,95 @@ def _setup_qqbot():
     print_info(f"  App ID: {credentials['app_id']}")
 
 
+def _is_signal_service_id(value: str) -> bool:
+    """Return True when *value* looks like a Signal service ID."""
+    if not value:
+        return False
+    if value.startswith("PNI:") or value.startswith("u:"):
+        return True
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def _extract_signal_service_id(contact: object, phone_number: str) -> str | None:
+    """Best-effort extraction of a Signal service ID from ``listContacts``."""
+    if not isinstance(contact, dict):
+        return None
+
+    number = str(contact.get("number") or "")
+    recipient = str(contact.get("recipient") or "")
+    service_id = contact.get("uuid") or contact.get("serviceId")
+    if not service_id:
+        profile = contact.get("profile")
+        if isinstance(profile, dict):
+            service_id = profile.get("serviceId") or profile.get("uuid")
+    if not service_id:
+        return None
+    service_id = str(service_id).strip()
+    if not _is_signal_service_id(service_id):
+        return None
+    if number == phone_number or recipient == phone_number:
+        return service_id
+    return None
+
+
+def _lookup_signal_service_id(http_url: str, account: str, phone_number: str) -> str | None:
+    """Resolve ``phone_number`` to a Signal service ID via ``listContacts``."""
+    if not http_url or not account or not phone_number:
+        return None
+
+    try:
+        import httpx
+
+        resp = httpx.post(
+            f"{http_url.rstrip('/')}/api/v1/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "method": "listContacts",
+                "params": {
+                    "account": account,
+                    "allRecipients": True,
+                },
+                "id": "signal_setup_listContacts",
+            },
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.debug(
+            "Signal setup: failed to resolve service ID for %s: %s",
+            phone_number,
+            exc,
+        )
+        return None
+
+    contacts = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(contacts, list):
+        return None
+    for contact in contacts:
+        service_id = _extract_signal_service_id(contact, phone_number)
+        if service_id:
+            return service_id
+    return None
+
+
+def _join_unique_csv_values(*values: str) -> str:
+    """Join comma-separated values while preserving order and removing dupes."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        for raw in str(value or "").split(","):
+            item = raw.strip()
+            if item and item not in seen:
+                seen.add(item)
+                ordered.append(item)
+    return ",".join(ordered)
+
+
 def _setup_signal():
     """Interactive setup for Signal messenger."""
     import shutil
@@ -5813,13 +5903,26 @@ def _setup_signal():
         return
 
     save_env_value("SIGNAL_ACCOUNT", account)
+    resolved_service_id = _lookup_signal_service_id(url, account, account)
 
     # Allowed users
     print()
     print_info("  The gateway DENIES all users by default for security.")
+    print_info("  Signal may identify senders by UUID/service ID instead of phone number.")
     print_info("  Enter phone numbers or UUIDs of allowed users (comma-separated).")
     existing_allowed = get_env_value("SIGNAL_ALLOWED_USERS") or ""
-    default_allowed = existing_allowed or account
+    default_allowed = existing_allowed or _join_unique_csv_values(
+        account,
+        resolved_service_id or "",
+    )
+    if resolved_service_id and not existing_allowed:
+        print_info(
+            f"  Resolved service ID for {account}; default allowlist includes both identifiers."
+        )
+    elif not existing_allowed:
+        print_info(
+            "  If the default phone number fails, add the sender's UUID/service ID here."
+        )
     try:
         allowed = (
             input(f"  Allowed users [{default_allowed}]: ").strip() or default_allowed

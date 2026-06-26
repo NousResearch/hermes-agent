@@ -1169,3 +1169,139 @@ def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")
     assert gateway.logger.name == "hermes_cli.gateway"
+
+
+def test_lookup_signal_service_id_uses_list_contacts(monkeypatch):
+    calls = []
+    expected_uuid = "68680952-6d86-45bc-85e0-1a4d186d53ee"
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "result": [
+                    {
+                        "recipient": "351935789098",
+                        "number": "+15551230000",
+                        "uuid": expected_uuid,
+                    }
+                ]
+            }
+
+    def fake_post(url, json=None, timeout=None):
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return _Response()
+
+    monkeypatch.setattr("httpx.post", fake_post)
+
+    resolved = gateway._lookup_signal_service_id(
+        "http://127.0.0.1:8080",
+        "+15551230000",
+        "+15551230000",
+    )
+
+    assert resolved == expected_uuid
+    assert calls == [
+        {
+            "url": "http://127.0.0.1:8080/api/v1/rpc",
+            "json": {
+                "jsonrpc": "2.0",
+                "method": "listContacts",
+                "params": {
+                    "account": "+15551230000",
+                    "allRecipients": True,
+                },
+                "id": "signal_setup_listContacts",
+            },
+            "timeout": 10.0,
+        }
+    ]
+
+
+def test_setup_signal_defaults_allowlist_to_phone_and_resolved_uuid(monkeypatch):
+    env = {}
+    expected_uuid = "68680952-6d86-45bc-85e0-1a4d186d53ee"
+    inputs = iter(["", "+15551230000", ""])
+
+    class _GetResponse:
+        status_code = 200
+
+    class _PostResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "result": [
+                    {
+                        "number": "+15551230000",
+                        "uuid": expected_uuid,
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/signal-cli")
+    monkeypatch.setattr(
+        gateway,
+        "get_env_value",
+        lambda key: env.get(key, ""),
+    )
+    monkeypatch.setattr(
+        gateway,
+        "save_env_value",
+        lambda key, value: env.__setitem__(key, value),
+    )
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: _GetResponse())
+    monkeypatch.setattr("httpx.post", lambda *args, **kwargs: _PostResponse())
+
+    gateway._setup_signal()
+
+    assert env["SIGNAL_HTTP_URL"] == "http://127.0.0.1:8080"
+    assert env["SIGNAL_ACCOUNT"] == "+15551230000"
+    assert env["SIGNAL_ALLOWED_USERS"] == (
+        "+15551230000,68680952-6d86-45bc-85e0-1a4d186d53ee"
+    )
+
+
+def test_setup_signal_keeps_existing_allowlist(monkeypatch):
+    env = {
+        "SIGNAL_ALLOWED_USERS": "u:preferred-service-id",
+    }
+    inputs = iter(["", "+15551230000", ""])
+
+    class _GetResponse:
+        status_code = 200
+
+    class _PostResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "result": [
+                    {
+                        "number": "+15551230000",
+                        "uuid": "68680952-6d86-45bc-85e0-1a4d186d53ee",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/signal-cli")
+    monkeypatch.setattr(gateway, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(
+        gateway,
+        "save_env_value",
+        lambda key, value: env.__setitem__(key, value),
+    )
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: _GetResponse())
+    monkeypatch.setattr("httpx.post", lambda *args, **kwargs: _PostResponse())
+
+    gateway._setup_signal()
+
+    assert env["SIGNAL_ALLOWED_USERS"] == "u:preferred-service-id"

@@ -87,6 +87,21 @@ class TestSalvageFromText:
         assert "antml:invoke" not in cleaned
         assert cleaned.strip() == "call"
 
+    def test_underscore_namespace_invoke_salvaged(self):
+        # Regression: some gateways render the Anthropic-ML namespace separator
+        # as an underscore (``antml_invoke`` / ``antml_parameter``) rather than
+        # a colon. The salvage path must recover these too.
+        inv = (
+            f"{_LT}antml_invoke name=\"read_file\"{_GT}"
+            f"{_LT}antml_parameter name=\"path\"{_GT}/a{_LT}{_SL}antml_parameter{_GT}"
+            f"{_LT}{_SL}antml_invoke{_GT}"
+        )
+        calls, cleaned = salvage_tool_calls_from_text("call\n" + inv)
+        assert len(calls) == 1
+        assert calls[0]["name"] == "read_file"
+        assert calls[0]["arguments"] == {"path": "/a"}
+        assert "invoke" not in cleaned.lower().replace("call", "")
+
     def test_plain_invoke_without_angle_or_namespace_not_salvaged(self):
         text = (
             "The phrase invoke name=\"terminal\"> is just prose, even if "

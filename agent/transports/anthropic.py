@@ -23,16 +23,17 @@ from agent.transports.types import NormalizedResponse
 #
 # These regexes recover a *complete* invoke block (closing tag required) from
 # assistant text so the transport can re-promote it to a real tool call.
-# Both the namespaced (``antml:invoke``) and bare (``invoke``) spellings are
-# matched, and the opening-tag angle bracket is optional only when the
-# namespace is still present. Plain prose like ``invoke name="..."`` is not
-# salvaged.
+# Both the namespaced (``antml:invoke`` / ``antml_invoke``) and bare
+# (``invoke``) spellings are matched — some gateways render the Anthropic-ML
+# namespace separator as an underscore — and the opening-tag angle bracket is
+# optional only when the namespace is present. Plain prose like
+# ``invoke name="..."`` is not salvaged.
 _SALVAGE_INVOKE_RE = re.compile(
-    r"(?:<(?:antml:)?|antml:)invoke\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</(?:antml:)?invoke\s*>",
+    r"(?:<(?:antml[:_])?|antml[:_])invoke\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</(?:antml[:_])?invoke\s*>",
     re.DOTALL | re.IGNORECASE,
 )
 _SALVAGE_PARAM_RE = re.compile(
-    r"<(?:antml:)?parameter\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</(?:antml:)?parameter\s*>",
+    r"<(?:antml[:_])?parameter\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</(?:antml[:_])?parameter\s*>",
     re.DOTALL | re.IGNORECASE,
 )
 

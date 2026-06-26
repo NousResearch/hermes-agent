@@ -548,6 +548,21 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _build_markdown_card_payload(content: str) -> str:
+    """Build an interactive-card payload that renders markdown, including
+    GFM tables, which the Feishu post (rich_text) renderer cannot display.
+
+    Card JSON 2.0's ``markdown`` element renders bold, lists, links, code
+    blocks, and pipe tables. The whole reply goes into a single markdown
+    element so prose and tables keep their original order.
+    """
+    card = {
+        "schema": "2.0",
+        "body": {"elements": [{"tag": "markdown", "content": content}]},
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
 def _build_markdown_post_payload(content: str) -> str:
     rows = _build_markdown_post_rows(content)
     return json.dumps(
@@ -1843,7 +1858,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         content = self.format_message(content)
         try:
-            msg_type, payload = self._build_outbound_payload(content)
+            msg_type, payload = self._build_outbound_payload(content, for_edit=True)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
@@ -4374,11 +4389,15 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
-    def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+    def _build_outbound_payload(self, content: str, *, for_edit: bool = False) -> tuple[str, str]:
+        # The Feishu post (rich_text) renderer cannot display markdown tables,
+        # but the interactive-card ``markdown`` element renders GFM pipe tables
+        # fine, so newly sent table content is wrapped in a card. The message
+        # *update* API cannot convert an existing text/post message into a card,
+        # so in-place editors pass for_edit=True to keep the plain-text form.
         if _MARKDOWN_TABLE_RE.search(content):
+            if not for_edit:
+                return "interactive", _build_markdown_card_payload(content)
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):

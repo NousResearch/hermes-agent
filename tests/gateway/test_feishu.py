@@ -4944,3 +4944,53 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuOutboundTableRouting(unittest.TestCase):
+    """_build_outbound_payload routes markdown tables to an interactive card.
+
+    The Feishu post (rich_text) renderer cannot display markdown tables, but the
+    interactive-card markdown element can, so newly sent table content must be
+    delivered as a card while in-place edits keep the plain-text form.
+    """
+
+    _TABLE = (
+        "## Indices\n\n"
+        "| Index | Code | Close |\n"
+        "|---|---|---|\n"
+        "| Nasdaq | ^IXIC | 25,358.60 |\n"
+    )
+
+    @staticmethod
+    @patch.dict(os.environ, {"FEISHU_APP_ID": "cli_app", "FEISHU_APP_SECRET": "secret_app"}, clear=True)
+    def _adapter():
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        return FeishuAdapter(PlatformConfig())
+
+    def test_new_table_message_becomes_interactive_card(self):
+        msg_type, payload = self._adapter()._build_outbound_payload(self._TABLE)
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        self.assertEqual(card["schema"], "2.0")
+        elements = card["body"]["elements"]
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0]["tag"], "markdown")
+        # The whole reply (prose + table) is preserved verbatim in one element.
+        self.assertEqual(elements[0]["content"], self._TABLE)
+
+    def test_table_edit_in_place_stays_plain_text(self):
+        # message.update cannot turn an existing text/post message into a card.
+        msg_type, payload = self._adapter()._build_outbound_payload(self._TABLE, for_edit=True)
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload)["text"], self._TABLE)
+
+    def test_non_table_markdown_still_uses_post(self):
+        msg_type, _ = self._adapter()._build_outbound_payload("**bold** and [link](https://x.io)")
+        self.assertEqual(msg_type, "post")
+
+    def test_plain_text_unchanged(self):
+        msg_type, payload = self._adapter()._build_outbound_payload("just text")
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload)["text"], "just text")

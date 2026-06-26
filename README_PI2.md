@@ -6,6 +6,8 @@ This repository is a Pi2/IoT-oriented flavor of the original Hermes Agent source
 
 Goal: preserve native Hermes Agent architecture and feature compatibility while making the default Raspberry Pi 2 install small enough to be practical on ARMv7 / 1GB RAM.
 
+This profile is primarily designed for embedded-system development: always-on controllers, sensor/automation nodes, lab devices, robotics gateways, home/industrial IoT boxes, and other constrained Linux deployments where low memory use, predictable dependencies, and remote-first AI services matter more than desktop-heavy local stacks.
+
 Raspberry Pi 2 is the minimum/baseline target for this profile, not the maximum supported device. The same lightweight install path is suitable for Pi2-class or better Linux systems such as Raspberry Pi 3/4/5, Pi Zero 2 W, ARM64 SBCs, x86 mini PCs, and VMs. On stronger hardware, you can keep the safe Pi2 defaults or opt into heavier Hermes extras after install.
 
 This is not a separate mini-agent. The Python package path, CLI entrypoint, tools, plugins, gateway, memory, cron, MCP, ACP, and provider architecture stay intact. The Pi2 profile only changes default installation choices and default enabled tool surface.

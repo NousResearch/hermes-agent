@@ -98,10 +98,10 @@ case "$PROFILE" in
     EXTRAS="cli,pty"
     ;;
   native)
-    EXTRAS="cli,pty,mcp,acp,homeassistant,sms"
+    EXTRAS="cli,pty,mcp,acp,homeassistant,mqtt,sms"
     ;;
   rag)
-    EXTRAS="cli,pty,mcp,acp,homeassistant,sms,honcho"
+    EXTRAS="cli,pty,mcp,acp,homeassistant,mqtt,sms,honcho"
     ;;
 esac
 

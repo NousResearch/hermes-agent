@@ -56,7 +56,7 @@ bash setup-pi2-minimal.sh --profile rag
 Profiles:
 
 - `core`: smallest practical Hermes CLI profile. Installs package through `pip install -e .[cli,pty]`, writes a config that disables heavy toolsets by default.
-- `native`: core plus MCP/ACP/Home Assistant/SMS extras. Still disables browser/media/messaging tool surfaces by default.
+- `native`: core plus MCP/ACP/Home Assistant/MQTT/SMS extras. Still disables browser/media/messaging tool surfaces by default.
 - `rag`: native plus lightweight document helpers and Honcho optional dependency. Remote embeddings are recommended; local torch stacks are not installed by default.
 
 ## Recommended Pi2 install
@@ -75,6 +75,28 @@ hermes
 ```
 
 Hermes requires Python `>=3.11,<3.14`. If your Raspberry Pi OS image ships older Python, install Python 3.11+ first.
+
+## MQTT IoT tools
+
+The native and rag profiles include lightweight MQTT support for embedded sensors and actuators through the `mqtt` toolset. Configure a broker with:
+
+```bash
+export MQTT_HOST=192.168.1.10
+export MQTT_PORT=1883
+# Optional:
+export MQTT_USERNAME=iot-user
+export MQTT_PASSWORD=secret
+export MQTT_TLS=false
+hermes tools enable mqtt
+```
+
+Available MQTT tools:
+
+- `mqtt_publish`: publish sensor values or device commands
+- `mqtt_subscribe_recent`: listen briefly for retained/new messages on a topic filter
+- `mqtt_device_command`: publish a command and optionally wait for a state/ack topic
+
+MQTT brokers do not provide history by default. `mqtt_subscribe_recent` returns retained messages and messages published while the tool is listening.
 
 ## Local llama.cpp / OpenAI-compatible model
 

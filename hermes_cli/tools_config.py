@@ -78,6 +78,7 @@ CONFIGURABLE_TOOLSETS = [
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("mqtt",             "📡 MQTT IoT",                 "publish/subscribe sensor and device topics"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
@@ -115,7 +116,7 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+_DEFAULT_OFF_TOOLSETS = {"homeassistant", "mqtt", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
 
 
 def _xai_credentials_present() -> bool:
@@ -503,6 +504,24 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "HASS_TOKEN", "prompt": "Home Assistant Long-Lived Access Token"},
                     {"key": "HASS_URL", "prompt": "Home Assistant URL", "default": "http://homeassistant.local:8123"},
+                ],
+            },
+        ],
+    },
+    "mqtt": {
+        "name": "MQTT IoT",
+        "icon": "📡",
+        "providers": [
+            {
+                "name": "MQTT Broker",
+                "tag": "Lightweight IoT sensor/device topics via paho-mqtt",
+                "env_vars": [
+                    {"key": "MQTT_HOST", "prompt": "MQTT broker host/IP", "default": "localhost"},
+                    {"key": "MQTT_PORT", "prompt": "MQTT broker port", "default": "1883"},
+                    {"key": "MQTT_USERNAME", "prompt": "MQTT username (optional)", "optional": True},
+                    {"key": "MQTT_PASSWORD", "prompt": "MQTT password (optional)", "optional": True},
+                    {"key": "MQTT_CLIENT_ID", "prompt": "MQTT client ID prefix (optional)", "optional": True},
+                    {"key": "MQTT_TLS", "prompt": "Use TLS? true/false", "default": "false", "optional": True},
                 ],
             },
         ],
@@ -1484,6 +1503,8 @@ def _get_platform_tools(
                 default_off.remove(platform)
             if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
                 default_off.remove("homeassistant")
+            if "mqtt" in default_off and os.getenv("MQTT_HOST"):
+                default_off.remove("mqtt")
             expanded -= default_off
 
             enabled_toolsets |= expanded
@@ -1541,6 +1562,8 @@ def _get_platform_tools(
         # regressed after #14798 made cron honor per-platform tool config.
         if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
             default_off.remove("homeassistant")
+        if "mqtt" in default_off and os.getenv("MQTT_HOST"):
+            default_off.remove("mqtt")
         # Symmetric carve-out for x_search auto-enable (see the inject
         # block above). Without this, the default_off subtraction would
         # strip the entry we just added.

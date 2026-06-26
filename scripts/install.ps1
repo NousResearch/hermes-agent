@@ -1635,6 +1635,38 @@ function Install-Venv {
             } catch {
                 Write-Warn "Could not enumerate venv processes: $($_.Exception.Message)"
             }
+            # The path-prefix sweep above misses the gateway on a uv-managed venv.
+            # `uv venv` installs TRAMPOLINE launchers in venv\Scripts\: running
+            # venv\Scripts\pythonw.exe re-execs into the uv base interpreter under
+            # %APPDATA%\uv\python\..., so the LIVE gateway process's ExecutablePath
+            # is that base interpreter, NOT under this venv -- and its image name is
+            # python/pythonw, so the hermes.exe taskkill misses it too. Result: the
+            # venv-holding gateway survives and Remove-Item still hits a locked .pyd
+            # ("Access to the path '...pywintypes311.dll' is denied"). Catch it two
+            # more ways: (1) the pid the gateway recorded in gateway_state.json, and
+            # (2) any python/pythonw whose command line runs our gateway module.
+            # Both require the gateway to be in the installer's session, so an
+            # autostart task should register with LogonType=Interactive, not S4U.
+            $stateFile = Join-Path $HermesHome "gateway_state.json"
+            if (Test-Path $stateFile) {
+                try {
+                    $gwPid = (Get-Content $stateFile -Raw | ConvertFrom-Json).pid
+                    if ($gwPid -and $gwPid -ne $myPid) {
+                        Write-Info "  stopping gateway PID $gwPid (recorded in gateway_state.json)"
+                        & taskkill /PID $gwPid /T /F 2>$null | Out-Null
+                    }
+                } catch {}
+            }
+            try {
+                Get-CimInstance Win32_Process -Filter "name='python.exe' OR name='pythonw.exe'" -ErrorAction Stop |
+                    Where-Object { $_.ProcessId -ne $myPid -and $_.CommandLine -and $_.CommandLine -match 'hermes_cli(\.main)?\b' -and $_.CommandLine -match '\bgateway\b' } |
+                    ForEach-Object {
+                        Write-Info "  stopping PID $($_.ProcessId) ($($_.Name)) running the hermes gateway"
+                        & taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null
+                    }
+            } catch {
+                Write-Warn "Could not enumerate gateway processes by command line: $($_.Exception.Message)"
+            }
             Start-Sleep -Milliseconds 800
         }
         Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue

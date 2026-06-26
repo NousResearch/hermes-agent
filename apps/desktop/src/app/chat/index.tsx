@@ -75,7 +75,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
-  onPasteClipboardImage: () => void
+  onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles: () => void
   onPickFolders: () => void
   onPickImages: () => void

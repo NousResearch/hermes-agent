@@ -43,6 +43,8 @@ const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-reques
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
+const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
+const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
 const {
@@ -184,6 +186,16 @@ if (REMOTE_DISPLAY_REASON) {
   console.log(
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
+}
+
+// WSLg: Chromium blocklists the Mesa vGPU → software compositing → typing lag.
+// /dev/dxg means a real GPU is available; un-blocklist it. Skipped when a remote
+// display already forced software (SSH'd-into-WSL).
+if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
+  app.commandLine.appendSwitch('ignore-gpu-blocklist')
+  app.commandLine.appendSwitch('enable-gpu-rasterization')
+  app.commandLine.appendSwitch('enable-zero-copy')
+  console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
 }
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
@@ -398,14 +410,10 @@ const WINDOW_BUTTON_POSITION = {
   x: 24,
   y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
 }
-// Width Electron reserves for the Windows/Linux native min/max/close cluster
-// when `titleBarOverlay` is enabled. The OS paints these buttons in the
-// top-right corner of the renderer; we have to leave that much room on the
-// right edge so our system tools (file browser, haptics, settings) don't sit
-// underneath them. macOS uses left-side traffic lights instead and reports a
-// position via getWindowButtonPosition(), so this width is non-zero only on
-// non-macOS platforms.
-const NATIVE_OVERLAY_BUTTON_WIDTH = 144
+// Right-edge window-control reservation lives in titlebar-overlay-width.cjs
+// (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
+// It's only the pre-layout fallback — the renderer measures the exact overlay
+// width live via the Window Controls Overlay API.
 const APP_ICON_PATHS = [
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
@@ -519,25 +527,48 @@ function getWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#111111' : '#f7f7f7'
 }
 
+// Transparent WCO — renderer chrome shows through. rgba(0,0,0,0) can fall back
+// to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
+const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
+
 function getTitleBarOverlayOptions() {
   if (IS_MAC) {
     return { height: TITLEBAR_HEIGHT }
   }
 
-  if (rendererTitleBarTheme) {
-    return {
-      color: rendererTitleBarTheme.background,
-      height: TITLEBAR_HEIGHT,
-      symbolColor: rendererTitleBarTheme.foreground
-    }
+  // Windows + WSLg paint WCO natively; plain Linux disables it (frameless hidden
+  // titlebar still applies).
+  if (!IS_WINDOWS && !IS_WSL) {
+    return false
   }
 
-  const useDarkColors = nativeTheme.shouldUseDarkColors
-
   return {
-    color: useDarkColors ? '#111111' : '#f7f7f7',
+    color: TITLEBAR_OVERLAY_COLOR,
     height: TITLEBAR_HEIGHT,
-    symbolColor: useDarkColors ? '#f7f7f7' : '#242424'
+    symbolColor:
+      rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground)
+        ? rendererTitleBarTheme.foreground
+        : nativeTheme.shouldUseDarkColors
+          ? '#f7f7f7'
+          : '#242424'
+  }
+}
+
+// Push refreshed overlay options to a live window after a theme/appearance
+// change. No-op only on plain (non-WSL) Linux, where getTitleBarOverlayOptions()
+// returns false; the try/catch additionally guards builds where
+// setTitleBarOverlay isn't supported.
+function applyTitleBarOverlay(win) {
+  const options = getTitleBarOverlayOptions()
+  if (!options || typeof options !== 'object') {
+    return
+  }
+
+  try {
+    win?.setTitleBarOverlay?.(options)
+  } catch {
+    // Overlay not supported on this platform/build — leave the frameless
+    // titlebar as-is.
   }
 }
 
@@ -3760,11 +3791,7 @@ function getWindowButtonPosition() {
 }
 
 function getNativeOverlayWidth() {
-  // macOS reports traffic-light coords via windowButtonPosition; the
-  // titlebarOverlay there doesn't reserve right-edge space. Windows/Linux
-  // render the native window-controls overlay on the right, so the renderer
-  // needs to inset its right cluster by this much to clear them.
-  return IS_MAC ? 0 : NATIVE_OVERLAY_BUTTON_WIDTH
+  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL })
 }
 
 function getWindowState() {
@@ -5820,7 +5847,7 @@ function createWindow() {
     if (!nativeThemeListenerInstalled) {
       nativeThemeListenerInstalled = true
       nativeTheme.on('updated', () => {
-        mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+        applyTitleBarOverlay(mainWindow)
       })
     }
   }
@@ -6482,11 +6509,21 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
   const image = clipboard.readImage()
-  if (!image || image.isEmpty()) {
-    return ''
+  if (image && !image.isEmpty()) {
+    return writeComposerImage(image.toPNG(), '.png')
   }
 
-  return writeComposerImage(image.toPNG(), '.png')
+  // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the
+  // Linux clipboard Electron reads, so a host screenshot looks empty above.
+  // Pull it straight off the Windows clipboard via PowerShell as a fallback.
+  if (IS_WSL) {
+    const png = readWslWindowsClipboardImage()
+    if (png) {
+      return writeComposerImage(png, '.png')
+    }
+  }
+
+  return ''
 })
 
 ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
@@ -6506,7 +6543,7 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
     background: payload.background,
     foreground: payload.foreground
   }
-  mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+  applyTitleBarOverlay(mainWindow)
 })
 
 // Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).

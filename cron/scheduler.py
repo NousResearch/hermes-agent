@@ -1987,6 +1987,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     #   - wakeAgent=false gate    → treated like empty stdout (silent), since
     #                               the whole point of no_agent is that there
     #                               is no agent to wake
+    try:
+        from dotenv import load_dotenv
+        try:
+            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
+    except Exception:
+        pass
+
     if job.get("no_agent"):
         script_path = job.get("script")
         if not script_path:
@@ -2215,14 +2224,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
     try:
-        # Re-read .env and config.yaml fresh every run so provider/key
-        # changes take effect without a gateway restart.
-        from dotenv import load_dotenv
-        try:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
-
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])

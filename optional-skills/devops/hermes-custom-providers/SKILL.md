@@ -35,7 +35,17 @@ This skill provides the canonical configuration guide for any custom provider, p
 
 ### Step 1: Discover the Skill
 
-Once this skill is merged into the Hermes repository, users can find it via:
+Once this skill is merged into the Hermes repository, there are two ways to find it:
+
+**Method A — Tips hint (automatic discovery):**
+
+Hermes' startup tips will show a hint when the user is looking for a provider:
+
+> "Don't see your provider (Volcengine Ark, 火山引擎, DashScope, Kimi)? Run `hermes skills search volcengine`."
+
+This hint is displayed in the Hermes terminal interface and directly links the problem ("can't find my provider") to the solution.
+
+**Method B — Manual search:**
 
 ```bash
 # Search for Ark-related skills

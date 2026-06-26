@@ -40,6 +40,7 @@ import queue
 import sys
 import threading
 
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -614,6 +615,143 @@ def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str)
     return rendered or fallback
 
 
+@dataclass(frozen=True)
+class HindsightBankRoute:
+    """Resolved Hindsight bank route for auto-recall / auto-retain."""
+
+    name: str
+    bank_id: str
+    recall: bool = True
+    retain: bool = True
+    retain_tags: list[str] = field(default_factory=list)
+    recall_tags: list[str] = field(default_factory=list)
+    recall_tags_match: str = "any"
+    recall_types: list[str] | None = None
+
+
+def _merge_tags(*values: Any) -> list[str]:
+    merged: list[str] = []
+    for value in values:
+        for tag in _normalize_retain_tags(value):
+            if tag not in merged:
+                merged.append(tag)
+    return merged
+
+
+def _route_matches(rule: dict[str, Any], *, profile: str, workspace: str,
+                   workspace_path: str, platform: str, user: str) -> bool:
+    prefix = str(rule.get("workspace_path_prefix") or "").rstrip("/")
+    if prefix:
+        current = str(workspace_path or "").rstrip("/")
+        if not (current == prefix or current.startswith(prefix + "/")):
+            return False
+    for key, actual in {
+        "profile": profile,
+        "workspace": workspace,
+        "platform": platform,
+        "user": user,
+    }.items():
+        if key in rule and str(rule.get(key) or "") != str(actual or ""):
+            return False
+    return True
+
+
+def _resolve_hindsight_routes(
+    config: dict[str, Any],
+    *,
+    fallback_bank_id: str,
+    bank_id_template: str,
+    profile: str,
+    workspace: str,
+    workspace_path: str,
+    platform: str,
+    user: str,
+    session: str,
+) -> list[HindsightBankRoute]:
+    """Resolve configured Hindsight bank routes for this runtime context."""
+    fallback_bank = _resolve_bank_id_template(
+        bank_id_template,
+        fallback=fallback_bank_id,
+        profile=profile,
+        workspace=workspace,
+        platform=platform,
+        user=user,
+        session=session,
+    )
+    default_retain_tags = _normalize_retain_tags(config.get("retain_tags"))
+    default_recall_tags = _normalize_retain_tags(config.get("recall_tags"))
+    default_recall_tags_match = str(config.get("recall_tags_match") or "any")
+    configured_recall_types = config.get("recall_types")
+    if configured_recall_types is None:
+        default_recall_types = ["observation"]
+    elif isinstance(configured_recall_types, str):
+        default_recall_types = [t.strip() for t in configured_recall_types.split(",") if t.strip()]
+    else:
+        default_recall_types = list(configured_recall_types) or ["observation"]
+    routing = config.get("bank_routing")
+    if not isinstance(routing, dict):
+        return [
+            HindsightBankRoute(
+                name="fallback",
+                bank_id=fallback_bank,
+                retain_tags=default_retain_tags,
+                recall_tags=default_recall_tags,
+                recall_tags_match=default_recall_tags_match,
+                recall_types=default_recall_types,
+            )
+        ]
+
+    rules = [rule for rule in list(routing.get("rules") or []) if isinstance(rule, dict)]
+    matches = [
+        rule for rule in rules
+        if _route_matches(rule, profile=profile, workspace=workspace,
+                          workspace_path=workspace_path, platform=platform, user=user)
+    ]
+    matches.sort(key=lambda rule: len(str(rule.get("workspace_path_prefix") or "")), reverse=True)
+    selected = matches[:1] if str(routing.get("strategy", "first_match")) == "first_match" else matches
+
+    routes: list[HindsightBankRoute] = []
+    for rule in selected:
+        bank_id = str(rule.get("bank_id") or "").strip()
+        if not bank_id:
+            continue
+        recall_types = rule.get("recall_types")
+        routes.append(HindsightBankRoute(
+            name=str(rule.get("name") or bank_id),
+            bank_id=_sanitize_bank_segment(bank_id),
+            recall=bool(rule.get("recall", True)),
+            retain=bool(rule.get("retain", True)),
+            retain_tags=_merge_tags(default_retain_tags, rule.get("retain_tags")),
+            recall_tags=_merge_tags(default_recall_tags, rule.get("recall_tags")),
+            recall_tags_match=str(rule.get("recall_tags_match") or default_recall_tags_match),
+            recall_types=list(recall_types) if isinstance(recall_types, list) else default_recall_types,
+        ))
+
+    if not routes and routing.get("include_fallback", True):
+        routes.append(HindsightBankRoute(
+            name="fallback",
+            bank_id=fallback_bank,
+            retain_tags=default_retain_tags,
+            recall_tags=default_recall_tags,
+            recall_tags_match=default_recall_tags_match,
+            recall_types=default_recall_types,
+        ))
+
+    recall_cfg = routing.get("recall") if isinstance(routing.get("recall"), dict) else {}
+    if recall_cfg.get("include_global"):
+        global_bank = str(recall_cfg.get("global_bank_id") or fallback_bank).strip()
+        if global_bank and all(route.bank_id != _sanitize_bank_segment(global_bank) for route in routes):
+            global_types = recall_cfg.get("global_types")
+            routes.append(HindsightBankRoute(
+                name=str(recall_cfg.get("global_name") or "global"),
+                bank_id=_sanitize_bank_segment(global_bank),
+                recall=True,
+                retain=bool(recall_cfg.get("global_retain", False)),
+                recall_types=list(global_types) if isinstance(global_types, list) else None,
+            ))
+    return routes
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
@@ -654,6 +792,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._thread_id = ""
         self._agent_identity = ""
         self._agent_workspace = ""
+        self._agent_workspace_path = ""
         self._turn_index = 0
         self._client = None
         self._timeout = _DEFAULT_TIMEOUT
@@ -712,6 +851,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
         self._bank_id_template = ""
+        self._hindsight_routes: list[HindsightBankRoute] = [
+            HindsightBankRoute(name="fallback", bank_id=self._bank_id)
+        ]
 
     @property
     def name(self) -> str:
@@ -1250,6 +1392,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._thread_id = str(kwargs.get("thread_id") or "").strip()
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
+        self._agent_workspace_path = str(kwargs.get("agent_workspace_path") or kwargs.get("workspace_path") or "").strip()
         self._turn_index = 0
         self._session_turns = []
         self._last_retained_turn_count = 0
@@ -1352,6 +1495,21 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
+
+        self._hindsight_routes = _resolve_hindsight_routes(
+            self._config,
+            fallback_bank_id=static_bank_id,
+            bank_id_template=self._bank_id_template,
+            profile=self._agent_identity,
+            workspace=self._agent_workspace,
+            workspace_path=self._agent_workspace_path,
+            platform=self._platform,
+            user=self._user_id,
+            session=self._session_id,
+        )
+        primary_routes = [route for route in self._hindsight_routes if route.retain or route.recall]
+        if primary_routes:
+            self._bank_id = primary_routes[0].bank_id
 
         _client_version = "unknown"
         try:
@@ -1497,27 +1655,48 @@ class HindsightMemoryProvider(MemoryProvider):
 
         def _run():
             try:
-                if self._prefetch_method == "reflect":
-                    logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
-                    text = resp.text or ""
-                else:
-                    recall_kwargs: dict = {
-                        "bank_id": self._bank_id, "query": query,
-                        "budget": self._budget, "max_tokens": self._recall_max_tokens,
-                    }
-                    if self._recall_tags:
-                        recall_kwargs["tags"] = self._recall_tags
-                        recall_kwargs["tags_match"] = self._recall_tags_match
-                    if self._recall_types:
-                        recall_kwargs["types"] = self._recall_types
-                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
-                                 self._bank_id, len(query), self._budget)
-                    resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                    num_results = len(resp.results) if resp.results else 0
-                    logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
-                if text:
+                recall_routes = [route for route in self._hindsight_routes if route.recall]
+                if not recall_routes:
+                    recall_routes = [HindsightBankRoute(name="fallback", bank_id=self._bank_id)]
+
+                sections: list[str] = []
+                for route in recall_routes:
+                    try:
+                        if self._prefetch_method == "reflect":
+                            logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", route.bank_id, len(query))
+                            resp = self._run_hindsight_operation(lambda client, route=route: client.areflect(bank_id=route.bank_id, query=query, budget=self._budget))
+                            text = resp.text or ""
+                        else:
+                            recall_kwargs: dict = {
+                                "bank_id": route.bank_id, "query": query,
+                                "budget": self._budget, "max_tokens": self._recall_max_tokens,
+                            }
+                            using_provider_recall_tags = route.name == "fallback" and not route.recall_tags
+                            route_tags = route.recall_tags or (self._recall_tags if using_provider_recall_tags else None)
+                            if route_tags:
+                                recall_kwargs["tags"] = route_tags
+                                recall_kwargs["tags_match"] = self._recall_tags_match if using_provider_recall_tags else route.recall_tags_match
+                            route_types = route.recall_types if route.recall_types is not None else self._recall_types
+                            if route_types:
+                                recall_kwargs["types"] = route_types
+                            logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
+                                         route.bank_id, len(query), self._budget)
+                            resp = self._run_hindsight_operation(lambda client, recall_kwargs=recall_kwargs: client.arecall(**recall_kwargs))
+                            num_results = len(resp.results) if resp.results else 0
+                            logger.debug("Prefetch: recall returned %d results", num_results)
+                            text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                        if text:
+                            if len(recall_routes) == 1 and route.name == "fallback":
+                                sections.append(text)
+                            else:
+                                sections.append(f"## Hindsight Memory: {route.name} ({route.bank_id})\n{text}")
+                    except Exception as route_exc:
+                        logger.debug(
+                            "Hindsight prefetch failed for bank %s: %s",
+                            route.bank_id, route_exc, exc_info=True,
+                        )
+                if sections:
+                    text = "\n\n".join(sections)
                     with self._prefetch_lock:
                         self._prefetch_result = text
             except Exception as e:
@@ -1660,31 +1839,41 @@ class HindsightMemoryProvider(MemoryProvider):
             turn_index=self._turn_index,
         )
         num_turns = len(turns_to_retain)
-        bank_id = self._bank_id
+        retain_routes = [route for route in self._hindsight_routes if route.retain]
+        if not retain_routes:
+            logger.debug("sync_turn: no retain-enabled routes")
+            return
         retain_async_flag = self._retain_async
         retain_context = self._retain_context
 
         def _do_retain() -> None:
-            item = self._build_retain_kwargs(
-                content,
-                context=retain_context,
-                metadata=metadata_snapshot,
-                tags=lineage_tags or None,
-            )
-            item.pop("bank_id", None)
-            item.pop("retain_async", None)
-            if update_mode is not None:
-                item["update_mode"] = update_mode
-            logger.debug("Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
-                         bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns)
-            self._run_hindsight_operation(
-                lambda client: client.aretain_batch(
-                    bank_id=bank_id,
-                    items=[item],
-                    document_id=document_id,
-                    retain_async=retain_async_flag,
-                )
-            )
+            for route in retain_routes:
+                try:
+                    item = self._build_retain_kwargs(
+                        content,
+                        context=retain_context,
+                        metadata=metadata_snapshot,
+                        tags=_merge_tags(route.retain_tags, lineage_tags),
+                    )
+                    item.pop("bank_id", None)
+                    item.pop("retain_async", None)
+                    if update_mode is not None:
+                        item["update_mode"] = update_mode
+                    logger.debug("Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
+                                 route.bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns)
+                    self._run_hindsight_operation(
+                        lambda client, route=route, item=item: client.aretain_batch(
+                            bank_id=route.bank_id,
+                            items=[item],
+                            document_id=document_id,
+                            retain_async=retain_async_flag,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Hindsight retain failed for routed bank %s: %s",
+                        route.bank_id, e, exc_info=True,
+                    )
             logger.debug("Hindsight retain succeeded")
 
         self._ensure_writer()
@@ -1820,10 +2009,27 @@ class HindsightMemoryProvider(MemoryProvider):
         # everything before mutating self._* so metadata + tags + doc_id
         # all reference the old session consistently.
         if self._session_turns:
-            old_turns = list(self._session_turns)
             old_session_id = self._session_id
             old_parent_session_id = self._parent_session_id
             old_turn_index = self._turn_index
+            # Resolve doc_id + update_mode against the OLD session BEFORE
+            # we rotate _session_id, so the flush lands in the old
+            # session's document either way (legacy: per-process unique;
+            # ≥0.5.0: stable session-scoped + append).
+            old_document_id, old_update_mode = self._resolve_retain_target(
+                self._document_id
+            )
+            if old_update_mode == "append":
+                old_turns = self._session_turns[self._last_retained_turn_count:]
+            else:
+                old_turns = list(self._session_turns)
+            if not old_turns:
+                logger.debug("Hindsight flush-on-switch skipped; no unretained turns")
+            old_retain_routes = [
+                route for route in getattr(self, "_hindsight_routes", []) if route.retain
+            ]
+            if not old_retain_routes:
+                old_retain_routes = [HindsightBankRoute(name="fallback", bank_id=self._bank_id)]
             old_metadata = self._build_metadata(
                 message_count=len(old_turns) * 2,
                 turn_index=old_turn_index,
@@ -1834,40 +2040,37 @@ class HindsightMemoryProvider(MemoryProvider):
             if old_parent_session_id:
                 old_lineage_tags.append(f"parent:{old_parent_session_id}")
             old_content = "[" + ",".join(old_turns) + "]"
-            # Resolve doc_id + update_mode against the OLD session BEFORE
-            # we rotate _session_id, so the flush lands in the old
-            # session's document either way (legacy: per-process unique;
-            # ≥0.5.0: stable session-scoped + append).
-            old_document_id, old_update_mode = self._resolve_retain_target(
-                self._document_id
-            )
 
             def _flush():
-                try:
-                    item = self._build_retain_kwargs(
-                        old_content,
-                        context=self._retain_context,
-                        metadata=old_metadata,
-                        tags=old_lineage_tags or None,
-                    )
-                    item.pop("bank_id", None)
-                    item.pop("retain_async", None)
-                    if old_update_mode is not None:
-                        item["update_mode"] = old_update_mode
-                    logger.debug(
-                        "Hindsight flush-on-switch: bank=%s, doc=%s, mode=%s, num_turns=%d",
-                        self._bank_id, old_document_id, old_update_mode, len(old_turns),
-                    )
-                    self._run_hindsight_operation(
-                        lambda client: client.aretain_batch(
-                            bank_id=self._bank_id,
-                            items=[item],
-                            document_id=old_document_id,
-                            retain_async=self._retain_async,
+                for route in old_retain_routes:
+                    try:
+                        item = self._build_retain_kwargs(
+                            old_content,
+                            context=self._retain_context,
+                            metadata=old_metadata,
+                            tags=_merge_tags(route.retain_tags, old_lineage_tags),
                         )
-                    )
-                except Exception as e:
-                    logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
+                        item.pop("bank_id", None)
+                        item.pop("retain_async", None)
+                        if old_update_mode is not None:
+                            item["update_mode"] = old_update_mode
+                        logger.debug(
+                            "Hindsight flush-on-switch: bank=%s, doc=%s, mode=%s, num_turns=%d",
+                            route.bank_id, old_document_id, old_update_mode, len(old_turns),
+                        )
+                        self._run_hindsight_operation(
+                            lambda client, route=route, item=item: client.aretain_batch(
+                                bank_id=route.bank_id,
+                                items=[item],
+                                document_id=old_document_id,
+                                retain_async=self._retain_async,
+                            )
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Hindsight flush-on-switch failed for routed bank %s: %s",
+                            route.bank_id, e, exc_info=True,
+                        )
 
             # Route the flush through the same writer queue sync_turn
             # uses. That serializes it behind any still-queued retains
@@ -1875,7 +2078,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # two threads on aretain_batch against the same document, and
             # keeps shutdown's drain semantics intact. Skip enqueue if
             # shutdown has already fired — the writer is draining/gone.
-            if not self._shutting_down.is_set():
+            if old_turns and old_retain_routes and not self._shutting_down.is_set():
                 self._ensure_writer()
                 self._register_atexit()
                 self._retain_queue.put(_flush)
@@ -1888,8 +2091,11 @@ class HindsightMemoryProvider(MemoryProvider):
             self._prefetch_result = ""
 
         # 3. Now rotate to the new session.
-        if parent_session_id:
-            self._parent_session_id = str(parent_session_id).strip()
+        parent_id = str(parent_session_id or "").strip()
+        if parent_id and parent_id != new_id:
+            self._parent_session_id = parent_id
+        elif parent_id == new_id:
+            self._parent_session_id = ""
         self._session_id = new_id
         start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._document_id = f"{self._session_id}-{start_ts}"

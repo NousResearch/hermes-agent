@@ -1235,9 +1235,11 @@ def init_agent(
                     # Profile identity for per-profile provider scoping
                     try:
                         from hermes_cli.profiles import get_active_profile_name
+                        from agent.runtime_cwd import resolve_agent_cwd
                         _profile = get_active_profile_name()
                         _init_kwargs["agent_identity"] = _profile
                         _init_kwargs["agent_workspace"] = "hermes"
+                        _init_kwargs["agent_workspace_path"] = str(resolve_agent_cwd())
                     except Exception:
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)

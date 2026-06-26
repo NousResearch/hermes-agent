@@ -61,8 +61,52 @@ Config file: `~/.hermes/hindsight/config.json`
 |-----|---------|-------------|
 | `bank_id` | `hermes` | Memory bank name (static fallback used when `bank_id_template` is unset or resolves empty) |
 | `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
+| `bank_routing` | — | Advanced multi-bank routing config. Hermes resolves one or more Hindsight bank routes client-side, then fans out auto-recall and auto-retain while preserving Hindsight bank isolation. |
 | `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
 | `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
+
+### Multi-bank routing
+
+Hindsight banks are hard isolation boundaries: every retain/recall operation targets one bank. When `bank_routing` is configured, Hermes acts as the client-side orchestrator: it resolves matching routes from stable startup context, recalls from every recall-enabled route, and retains the same rich JSON turn payload to every retain-enabled route. Tags remain deterministic scope labels inside a bank.
+
+If no route matches, Hermes falls back to `bank_id_template` / `bank_id`, preserving the legacy single-bank behavior. Explicit tools (`hindsight_retain`, `hindsight_recall`, `hindsight_reflect`) still target the primary resolved route; use Hindsight MCP per-bank endpoints for explicit ad-hoc operations against other banks.
+
+Example:
+
+```json
+{
+  "bank_id": "global-user",
+  "auto_recall": true,
+  "auto_retain": true,
+  "recall_types": ["observation"],
+  "retain_tags": ["source_system:hermes-agent"],
+  "bank_routing": {
+    "strategy": "first_match",
+    "include_fallback": true,
+    "recall": {
+      "include_global": true,
+      "global_bank_id": "global-user",
+      "global_types": ["observation"]
+    },
+    "rules": [
+      {
+        "name": "common-memory-infra",
+        "workspace_path_prefix": "/Users/moroz/Projects/common-memory",
+        "bank_id": "infra",
+        "recall": true,
+        "retain": true,
+        "recall_tags": ["project:common-memory", "domain:memory"],
+        "recall_tags_match": "all_strict",
+        "retain_tags": ["project:common-memory", "domain:memory"]
+      }
+    ]
+  }
+}
+```
+
+Supported route predicates in this provider are `workspace_path_prefix`, `workspace`, `profile`, `platform`, and `user`. A route matches only when all configured predicates match. `workspace_path_prefix` uses longest-prefix precedence so nested projects choose the most specific route. `strategy: "first_match"` selects the best match; any other strategy currently keeps all matching routes.
+
+Global recall (`bank_routing.recall.include_global`) is recall-only by default so project conversations do not automatically retain into personal/global memory. To retain into a global bank, configure an explicit retain-enabled route.
 
 ### Recall
 

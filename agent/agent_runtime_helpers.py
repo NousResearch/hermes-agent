@@ -1592,6 +1592,23 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 pass
         raise
 
+    # ── Reload credential pool for new provider ──
+    # When switching providers (e.g. via /model in the desktop picker), the
+    # pool stays bound to the original provider. Without a reload,
+    # ``recover_with_credential_pool()`` sees a ``pool.provider !=
+    # agent.provider`` mismatch and short-circuits — so a transient 401 on
+    # the new provider can never be recovered via pool rotation.
+    if old_provider != new_provider:
+        try:
+            from agent.credential_pool import load_pool
+            agent._credential_pool = load_pool(new_provider)
+        except Exception as _cp_exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "Credential pool reload failed after provider switch %s -> %s: %s",
+                old_provider, new_provider, _cp_exc,
+            )
+
     # ── Re-evaluate prompt caching ──
     agent._use_prompt_caching, agent._use_native_cache_layout = (
         agent._anthropic_prompt_cache_policy(

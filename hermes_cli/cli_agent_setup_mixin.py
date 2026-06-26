@@ -308,6 +308,30 @@ class CLIAgentSetupMixin:
                         f"[bold {_accent_hex()}]{_escape(title_part)}[/] "
                         f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
                     )
+                # Check whether the session's original provider is still available.
+                # When a user removes a provider from config.yaml / .env, the
+                # resume silently switches to the current default provider without
+                # any indication — the user thinks "resume didn't work."  See #52943.
+                try:
+                    _mc_raw = session_meta.get("model_config")
+                    if _mc_raw:
+                        import json as _json
+                        _mc = _json.loads(_mc_raw) if isinstance(_mc_raw, str) else _mc_raw
+                        _orig_provider = _mc.get("provider")
+                        _orig_model = _mc.get("model", "")
+                        if _orig_provider and _orig_provider != self.provider:
+                            _warn_msg = (
+                                f"Session was created with provider '{_orig_provider}'"
+                                f"{f' (model {_orig_model})' if _orig_model else ''}, "
+                                f"which differs from the current default '{self.provider}'. "
+                                f"Resuming with the current provider."
+                            )
+                            if _quiet_mode:
+                                print(f"Warning: {_warn_msg}", file=sys.stderr)
+                            else:
+                                ChatConsole().print(f"[bold yellow]⚠ Provider changed:[/] {_warn_msg}")
+                except Exception:
+                    pass
                 self._restore_session_cwd(session_meta, quiet=_quiet_mode)
             else:
                 if _quiet_mode:

@@ -711,6 +711,25 @@ class CLICommandsMixin:
             _cprint("  Already on that session.")
             return
 
+        # Warn if the session's original provider differs from the current
+        # default — the user may not realise the session will switch providers
+        # on resume.  See #52943.
+        try:
+            _mc_raw = session_meta.get("model_config")
+            if _mc_raw:
+                import json as _json
+                _mc = _json.loads(_mc_raw) if isinstance(_mc_raw, str) else _mc_raw
+                _orig_provider = _mc.get("provider")
+                if _orig_provider and _orig_provider != self.provider:
+                    _warn = (
+                        f"⚠ Provider changed: session was created with "
+                        f"'{_orig_provider}' but the current default is "
+                        f"'{self.provider}'. Resuming with the current provider."
+                    )
+                    _cprint(f"  {_warn}")
+        except Exception:
+            pass
+
         old_session_id = self.session_id
         # End current session
         try:

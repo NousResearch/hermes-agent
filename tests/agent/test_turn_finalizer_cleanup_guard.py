@@ -41,6 +41,8 @@ class _StubAgent:
         self._interrupt_message = None
         self._tool_guardrail_halt_decision = None
         self._response_was_previewed = False
+        self._advisor_config = {"enabled": False}
+        self._persisted_messages = None
         self._skill_nudge_interval = 0
         self._iters_since_skill = 0
         for attr in (
@@ -70,9 +72,10 @@ class _StubAgent:
     def _drop_trailing_empty_response_scaffolding(self, *a, **k):
         pass
 
-    def _persist_session(self, *a, **k):
+    def _persist_session(self, messages, *a, **k):
         if "persist_session" in self._raise_in:
             raise RuntimeError("sqlite database is locked")
+        self._persisted_messages = [dict(m) for m in messages]
 
     # --- harmless no-ops ------------------------------------------------
     def _emit_status(self, *a, **k):
@@ -118,6 +121,8 @@ def _run(
         },
         {"role": "tool", "tool_call_id": "c1", "content": "file contents"},
     ]
+    if final_response is not None:
+        messages.append({"role": "assistant", "content": final_response})
     return finalize_turn(
         agent,
         final_response=final_response,
@@ -170,6 +175,39 @@ def test_clean_turn_has_no_cleanup_errors_key():
     assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
     assert result["completed"] is False
     assert "cleanup_errors" not in result
+
+
+
+
+def test_advisor_gate_runs_before_session_persist(monkeypatch):
+    from agent.advisor import AdvisorGateDecision
+    import agent.advisor as advisor_mod
+
+    def fake_gate(*args, messages, final_response, **kwargs):
+        messages[-1]["content"] = "audited final"
+        return AdvisorGateDecision(
+            final_response="audited final",
+            receipt={"verdict": "CHANGES_REQUIRED", "response_changed": True},
+            response_changed=True,
+            repaired=True,
+            turn_exit_reason="advisor_repaired",
+        )
+
+    monkeypatch.setattr(advisor_mod, "run_final_advisor_gate", fake_gate)
+    agent = _StubAgent(raise_in=())
+    agent._advisor_config = {"enabled": True, "mode": "final_gate"}
+    result = _run(
+        agent,
+        final_response="draft final",
+        api_call_count=2,
+        turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert result["final_response"] == "audited final"
+    assert result["turn_exit_reason"] == "advisor_repaired"
+    assert result["advisor"]["verdict"] == "CHANGES_REQUIRED"
+    assert agent._persisted_messages is not None
+    assert agent._persisted_messages[-1]["content"] == "audited final"
 
 
 def test_text_response_on_last_allowed_call_is_completed():

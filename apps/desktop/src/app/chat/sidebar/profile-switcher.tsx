@@ -24,6 +24,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -494,30 +495,14 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
         collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
         side="top"
       >
-        <div className="grid grid-cols-6 gap-1.5">
-          {PROFILE_SWATCHES.map(swatch => (
-            <button
-              aria-label={p.setColor(swatch)}
-              className="size-5 rounded-full transition-transform hover:scale-110"
-              key={swatch}
-              onClick={() => pickColor(swatch)}
-              style={{
-                backgroundColor: swatch,
-                boxShadow: swatch === color ? '0 0 0 2px var(--ui-bg-elevated), 0 0 0 3.5px currentColor' : undefined,
-                color: swatch
-              }}
-              type="button"
-            />
-          ))}
-        </div>
-        <button
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md py-1 text-xs text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background) hover:text-foreground"
-          onClick={() => pickColor(null)}
-          type="button"
-        >
-          <Codicon name="sync" size="0.75rem" />
-          {p.autoColor}
-        </button>
+        <ColorSwatches
+          clearIcon="sync"
+          clearLabel={p.autoColor}
+          onChange={pickColor}
+          swatches={PROFILE_SWATCHES}
+          swatchLabel={p.setColor}
+          value={color}
+        />
       </PopoverContent>
     </Popover>
   )

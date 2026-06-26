@@ -93,6 +93,19 @@ class RelayTransport(Protocol):
         """
         ...
 
+    async def go_idle(self, timeout_s: float = 10.0) -> bool:
+        """Ask the connector to flip this instance to buffered-only (Phase 5 §5.3).
+
+        Sends ``going_idle`` and awaits the connector's ``going_idle_ack`` — the
+        connector-authoritative confirmation that live delivery stopped and inbound
+        now buffers durably for replay on reconnect (Q-5.3c). Returns True on ack,
+        False on timeout / not-connected (the caller proceeds to close regardless;
+        without §5.3 wiring there is simply no buffering). Optional on a transport
+        (an in-memory stub may not implement it). Emitted as part of the gateway's
+        EXISTING drain transition — not a new idle path.
+        """
+        ...
+
     async def send_follow_up(self, action: Dict[str, Any]) -> Dict[str, Any]:
         """Act on a shared-identity capability bound to a session (A2 outbound).
 

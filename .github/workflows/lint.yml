@@ -46,12 +46,22 @@ jobs:
 
       - name: Determine base ref
         id: base
+        env:
+          # Move context values into env so the `run:` block reads them as
+          # plain bash variables instead of templating them into the shell
+          # source.  Branch / event names are attacker-influenced on PRs;
+          # binding via env keeps any future trigger change (e.g. switching
+          # to `pull_request_target`) from turning a rename into an
+          # injection sink.  See GitHub's "Use an intermediate environment
+          # variable" guidance.
+          GH_EVENT_NAME: ${{ inputs.event_name }}
+          GH_BASE_REF: ${{ github.base_ref }}
         run: |
           # For PRs, diff against the merge base with the target branch.
           # For pushes to main, diff against the previous commit on main.
-          if [ "${{ inputs.event_name }}" = "pull_request" ]; then
-            BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
-            BASE_REF="origin/${{ github.base_ref }}"
+          if [ "$GH_EVENT_NAME" = "pull_request" ]; then
+            BASE_SHA=$(git merge-base "origin/$GH_BASE_REF" HEAD)
+            BASE_REF="origin/$GH_BASE_REF"
           else
             BASE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
             BASE_REF="HEAD~1"
@@ -72,13 +82,15 @@ jobs:
           echo "HEAD ty:   $(wc -c < .lint-reports/head/ty.json) bytes"
 
       - name: Run ruff + ty on base (via git worktree)
+        env:
+          BASE_SHA_OUT: ${{ steps.base.outputs.sha }}
         run: |
           mkdir -p .lint-reports/base
           # Use a worktree so we don't clobber the main checkout. If the basex
           # SHA is identical to HEAD (e.g. first commit), skip and leave the
           # base reports empty — the diff script handles missing files.
           HEAD_SHA=$(git rev-parse HEAD)
-          BASE_SHA="${{ steps.base.outputs.sha }}"
+          BASE_SHA="$BASE_SHA_OUT"
           if [ "$BASE_SHA" = "$HEAD_SHA" ]; then
             echo "Base SHA == HEAD SHA, skipping base scan."
             echo '[]' > .lint-reports/base/ruff.json
@@ -98,14 +110,23 @@ jobs:
           echo "base ty:   $(wc -c < .lint-reports/base/ty.json) bytes"
 
       - name: Generate diff summary
+        env:
+          BASE_REF_OUT: ${{ steps.base.outputs.ref }}
+          # Bind the head ref through env to keep an attacker-chosen PR
+          # branch name (e.g. `";id;"` or `$(curl evil)`) from being
+          # spliced into this `run:` step's shell source.  The Python
+          # script only renders the value into a Markdown header, so
+          # passing it as an argv element is safe; the danger was solely
+          # in the YAML→shell templating layer.
+          HEAD_REF_OUT: ${{ inputs.event_name == 'pull_request' && github.head_ref || github.ref_name }}
         run: |
           python scripts/lint_diff.py \
             --base-ruff .lint-reports/base/ruff.json \
             --head-ruff .lint-reports/head/ruff.json \
             --base-ty   .lint-reports/base/ty.json \
             --head-ty   .lint-reports/head/ty.json \
-            --base-ref  "${{ steps.base.outputs.ref }}" \
-            --head-ref  "${{ inputs.event_name == 'pull_request' && github.head_ref || github.ref_name }}" \
+            --base-ref  "$BASE_REF_OUT" \
+            --head-ref  "$HEAD_REF_OUT" \
             --output    .lint-reports/summary.md
           cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
 

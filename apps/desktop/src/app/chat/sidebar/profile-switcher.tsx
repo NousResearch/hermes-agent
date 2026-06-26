@@ -24,6 +24,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -131,7 +132,11 @@ export function ProfileRail() {
   const defaultProfile = profiles.find(profile => profile.is_default)
   const onDefault = !isAll && activeKey === 'default'
 
-  const named = sortByProfileOrder(profiles.filter(profile => !profile.is_default), order)
+  const named = sortByProfileOrder(
+    profiles.filter(profile => !profile.is_default),
+    order
+  )
+
   const multiProfile = profiles.length > 1
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
@@ -284,6 +289,7 @@ export function ProfileRail() {
           selectProfile(name)
         }}
         open={createOpen}
+        profiles={profiles}
       />
 
       <RenameProfileDialog
@@ -467,6 +473,10 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
           aria-label={p.actionsFor(label)}
           className="w-40"
           collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
+          // Menu close refocuses the trigger — which doubles as the popover
+          // anchor — so the picker reads it as focus-outside and dies on open.
+          // Suppress the refocus and the picker survives.
+          onCloseAutoFocus={event => event.preventDefault()}
         >
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />
@@ -476,7 +486,11 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
             <Codicon name="edit" size="0.875rem" />
             <span>{p.rename}</span>
           </ContextMenuItem>
-          <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete} variant="destructive">
+          <ContextMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={onDelete}
+            variant="destructive"
+          >
             <Codicon name="trash" size="0.875rem" />
             <span>{t.common.delete}</span>
           </ContextMenuItem>
@@ -489,30 +503,14 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
         collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
         side="top"
       >
-        <div className="grid grid-cols-6 gap-1.5">
-          {PROFILE_SWATCHES.map(swatch => (
-            <button
-              aria-label={p.setColor(swatch)}
-              className="size-5 rounded-full transition-transform hover:scale-110"
-              key={swatch}
-              onClick={() => pickColor(swatch)}
-              style={{
-                backgroundColor: swatch,
-                boxShadow: swatch === color ? '0 0 0 2px var(--ui-bg-elevated), 0 0 0 3.5px currentColor' : undefined,
-                color: swatch
-              }}
-              type="button"
-            />
-          ))}
-        </div>
-        <button
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md py-1 text-xs text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background) hover:text-foreground"
-          onClick={() => pickColor(null)}
-          type="button"
-        >
-          <Codicon name="sync" size="0.75rem" />
-          {p.autoColor}
-        </button>
+        <ColorSwatches
+          clearIcon="sync"
+          clearLabel={p.autoColor}
+          onChange={pickColor}
+          swatches={PROFILE_SWATCHES}
+          swatchLabel={p.setColor}
+          value={color}
+        />
       </PopoverContent>
     </Popover>
   )

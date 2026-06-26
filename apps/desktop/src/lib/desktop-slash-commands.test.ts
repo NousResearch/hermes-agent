@@ -7,7 +7,9 @@ import {
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
   isDesktopSlashSuggestion,
-  isModelPickerCommand
+  isModelPickerCommand,
+  isPickerCommand,
+  resolveDesktopCommand
 } from './desktop-slash-commands'
 
 describe('desktop slash command curation', () => {
@@ -36,6 +38,39 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/skills')).toBe(false)
     expect(isDesktopSlashSuggestion('/voice')).toBe(false)
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
+  })
+
+  it('surfaces /tools, /save, and /personality on the desktop', () => {
+    expect(isDesktopSlashSuggestion('/tools')).toBe(true)
+    expect(isDesktopSlashSuggestion('/save')).toBe(true)
+    expect(isDesktopSlashSuggestion('/personality')).toBe(true)
+    expect(isDesktopSlashCommand('/tools')).toBe(true)
+    expect(isDesktopSlashCommand('/save')).toBe(true)
+    expect(isDesktopSlashCommand('/personality')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/tools')).toBeNull()
+    expect(desktopSlashUnavailableMessage('/save')).toBeNull()
+    expect(desktopSlashUnavailableMessage('/personality')).toBeNull()
+  })
+
+  it('routes /pet through the desktop action handler and drops /pets', () => {
+    expect(resolveDesktopCommand('/pet')?.surface).toEqual({ kind: 'action', action: 'pet' })
+    expect(resolveDesktopCommand('/pet')?.args).toBe(true)
+    expect(isDesktopSlashSuggestion('/pet')).toBe(true)
+    expect(isDesktopSlashCommand('/pet')).toBe(true)
+    expect(resolveDesktopCommand('/pets')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
+    expect(isDesktopSlashSuggestion('/pets')).toBe(false)
+    expect(isDesktopSlashCommand('/pets')).toBe(false)
+  })
+
+  it('treats /browser as an executable action command (local-gateway connect)', () => {
+    // /browser used to be terminal-only; it now resolves to a desktop action
+    // handler that routes browser.manage RPC when the gateway is local.
+    expect(isDesktopSlashCommand('/browser')).toBe(true)
+    expect(isDesktopSlashSuggestion('/browser')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/browser')).toBeNull()
+    expect(resolveDesktopCommand('/browser')?.surface).toEqual({ kind: 'action', action: 'browser' })
+    // Bare /browser expands to its sub-action options in the popover.
+    expect(resolveDesktopCommand('/browser')?.args).toBe(true)
   })
 
   it('allows aliases to execute without cluttering the popover', () => {
@@ -74,6 +109,24 @@ describe('desktop slash command curation', () => {
       ['/new', 'Start a new desktop chat'],
       ['/ship-it', 'Run release checklist']
     ])
+    // skill_count is recomputed from the filtered output (only /ship-it is an
+    // extension command — /new is a built-in) so the /help footer matches what
+    // the user actually sees rather than echoing the unfiltered backend total.
+    expect(filtered.skill_count).toBe(1)
+  })
+
+  it('recomputes skill_count to reflect only extensions surfaced on desktop', () => {
+    const filtered = filterDesktopCommandsCatalog({
+      pairs: [
+        ['/new', 'Start a new session'],
+        ['/clear', 'Clear terminal screen'],
+        ['/gif-search', 'Search for a gif'],
+        ['/ship-it', 'Run release checklist']
+      ],
+      skill_count: 12
+    })
+
+    expect(filtered.pairs?.map(([cmd]) => cmd)).toEqual(['/new', '/gif-search', '/ship-it'])
     expect(filtered.skill_count).toBe(2)
   })
 
@@ -122,5 +175,27 @@ describe('desktop slash command curation', () => {
     expect(isModelPickerCommand('/model sonnet')).toBe(true)
     expect(isModelPickerCommand('/new')).toBe(false)
     expect(isModelPickerCommand('/skills')).toBe(false)
+  })
+
+  it('gives /resume (and its aliases) a first-class session picker surface', () => {
+    expect(isPickerCommand('/resume', 'session')).toBe(true)
+    expect(isPickerCommand('/sessions', 'session')).toBe(true)
+    expect(isPickerCommand('/switch', 'session')).toBe(true)
+    // Unlike /model, /resume shows in the popover; its aliases stay hidden.
+    expect(isDesktopSlashSuggestion('/resume')).toBe(true)
+    expect(isDesktopSlashSuggestion('/sessions')).toBe(false)
+    expect(isDesktopSlashCommand('/switch')).toBe(true)
+    // The session picker is distinct from the model picker.
+    expect(isModelPickerCommand('/resume')).toBe(false)
+  })
+
+  it('resolves commands and aliases to their declared surface', () => {
+    expect(resolveDesktopCommand('/new')?.surface).toEqual({ kind: 'action', action: 'new' })
+    expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
+    expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
+    expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
+    // Skill / quick commands aren't in the registry.
+    expect(resolveDesktopCommand('/gif-search')).toBeNull()
   })
 })

@@ -766,7 +766,7 @@ class TestNpmBareSpawnsResolved:
         [
             "hermes_cli/tools_config.py",
             "hermes_cli/doctor.py",
-            "gateway/platforms/whatsapp.py",
+            "plugins/platforms/whatsapp/adapter.py",
             "tools/browser_tool.py",
         ],
     )
@@ -940,9 +940,9 @@ class TestGatewayDetachedWatcherWindowsFlags:
         breaks away from any job-object the watcher itself inherits.
 
         Static check — the watcher source is built at import time and embedded
-        verbatim in the module text.  Parsing it for an exact AST node would be
-        brittle; the textual presence of the hex flag plus the symbolic name is
-        a sufficient regression guard.
+        verbatim in the module text.  The literal Win32 bits live in
+        hermes_cli._subprocess_compat; the watcher must call that helper from
+        inside the inlined payload so runtime behavior keeps the breakaway bit.
 
         The bit was added to the inlined payload by PR #40909.  This test
         ensures a future refactor of the dedent block doesn't silently drop it.
@@ -955,14 +955,16 @@ class TestGatewayDetachedWatcherWindowsFlags:
         end = text.find(").strip()", idx)
         assert end != -1, "watcher block end not found"
         block = text[idx:end]
-        assert "0x01000000" in block, (
-            "Inlined respawn watcher must set CREATE_BREAKAWAY_FROM_JOB "
-            "(0x01000000) on the respawned gateway — without it, the new "
-            "gateway is reaped when the parent job is torn down."
+        assert "from hermes_cli._subprocess_compat import" in block
+        assert "windows_detach_flags" in block
+        assert "windows_detach_flags()" in block, (
+            "Inlined respawn watcher must call windows_detach_flags() for the "
+            "respawned gateway; that helper carries CREATE_BREAKAWAY_FROM_JOB "
+            "so the new gateway is not reaped when the parent job tears down."
         )
-        assert "_CREATE_BREAKAWAY_FROM_JOB" in block, (
-            "Inlined respawn watcher must name CREATE_BREAKAWAY_FROM_JOB "
-            "symbolically so the intent is greppable."
+        assert "See _subprocess_compat.windows_detach_flags()" in block, (
+            "Inlined respawn watcher should keep the breakaway intent greppable "
+            "near the helper call."
         )
 
     def test_launch_detached_profile_gateway_restart_outer_popen_has_access_denied_fallback(
@@ -1000,10 +1002,9 @@ class TestGatewayDetachedWatcherWindowsFlags:
         idx = text.find(marker)
         end = text.find(").strip()", idx)
         block = text[idx:end]
-        # The inlined script catches OSError on the respawn and retries
-        # with breakaway cleared via ``& ~_CREATE_BREAKAWAY_FROM_JOB``.
-        assert "~_CREATE_BREAKAWAY_FROM_JOB" in block, (
+        assert "except OSError" in block
+        assert "windows_detach_flags_without_breakaway()" in block, (
             "Inlined respawn must catch OSError on the breakaway-denied "
-            "CreateProcess and retry without the breakaway bit, matching "
-            "gateway_windows._spawn_detached's fallback pattern."
+            "CreateProcess and retry with windows_detach_flags_without_breakaway(), "
+            "matching gateway_windows._spawn_detached's fallback pattern."
         )

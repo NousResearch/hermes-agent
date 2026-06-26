@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import yaml
 
 from hermes_cli.profiles import (
     normalize_profile_name,
@@ -33,7 +34,10 @@ from hermes_cli.profiles import (
     seed_profile_skills,
     has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
+    backfill_profile_envs,
+    profiles_to_serve,
 )
+from hermes_cli.config import DEFAULT_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +162,30 @@ class TestCreateProfile:
                         "plans", "workspace", "cron"]:
             assert (profile_dir / subdir).is_dir(), f"Missing subdir: {subdir}"
 
+    def test_seeds_placeholder_env_file(self, profile_env):
+        """Fresh profiles get their own .env (owner-only) so channel/env
+        writes are profile-scoped from day one instead of falling through
+        to the shell environment / root install."""
+        import stat
+        profile_dir = create_profile("coder", no_alias=True)
+        env_path = profile_dir / ".env"
+        assert env_path.exists()
+        content = env_path.read_text(encoding="utf-8")
+        # Placeholder only — no credentials leak in from anywhere.
+        assert all(
+            line.startswith("#") or not line.strip()
+            for line in content.splitlines()
+        )
+        mode = stat.S_IMODE(env_path.stat().st_mode)
+        assert mode == 0o600
+
+    def test_seeded_env_does_not_clobber_cloned_env(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / ".env").write_text("KEY=val")
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        assert (profile_dir / ".env").read_text() == "KEY=val"
+
     def test_duplicate_raises_file_exists(self, profile_env):
         create_profile("coder", no_alias=True)
         with pytest.raises(FileExistsError):
@@ -181,9 +209,25 @@ class TestCreateProfile:
 
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
 
-        assert (profile_dir / "config.yaml").read_text() == "model: test"
-        assert (profile_dir / ".env").read_text() == "KEY=val"
+        cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert cloned_config["model"] == "test"
+        assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_clone_config_migrates_legacy_config_version(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n",
+            encoding="utf-8",
+        )
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+
+        assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert cloned_config["model"]["provider"] == "openrouter"
 
     def test_clone_config_copies_source_skills(self, profile_env):
         tmp_path = profile_env
@@ -244,9 +288,9 @@ class TestCreateProfile:
     def test_clone_all_excludes_default_infrastructure(self, profile_env):
         """--clone-all from default profile excludes hermes-agent, .worktrees,
         bin, node_modules at root, plus __pycache__/*.pyc/*.pyo/*.sock/*.tmp
-        at any depth.  Profile data (config, env, skills, sessions, logs,
-        state.db) must be preserved — clone-all means "complete snapshot
-        minus infrastructure."
+        at any depth.  Profile data (config, env, skills, logs) must be
+        preserved — clone-all means "complete snapshot minus infrastructure
+        and per-profile history."
         """
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
@@ -272,8 +316,6 @@ class TestCreateProfile:
         (default_home / "skills" / "my-skill" / "SKILL.md").write_text("skill")
         (default_home / "config.yaml").write_text("model: gpt-4")
         (default_home / ".env").write_text("KEY=val")
-        (default_home / "state.db").write_text("sessions-data")
-        (default_home / "sessions").mkdir(exist_ok=True)
         (default_home / "logs").mkdir(exist_ok=True)
         (default_home / "logs" / "gateway.log").write_text("log")
 
@@ -295,16 +337,48 @@ class TestCreateProfile:
         assert (profile_dir / "skills" / "my-skill" / "SKILL.md").read_text() == "skill"
         assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
         assert (profile_dir / ".env").read_text() == "KEY=val"
-        assert (profile_dir / "state.db").read_text() == "sessions-data"
-        assert (profile_dir / "sessions").exists()
         assert (profile_dir / "logs" / "gateway.log").read_text() == "log"
+
+    def test_clone_all_excludes_history_artifacts(self, profile_env):
+        """--clone-all excludes the source's session history, backups, and
+        snapshots — a clone is a fresh workspace, and these can reach tens
+        of GB.  Applies to ANY source profile, not just default.
+        """
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "state.db").write_text("sessions-data")
+        (default_home / "state.db-wal").write_text("wal")
+        (default_home / "state.db-shm").write_text("shm")
+        (default_home / "sessions" / "20260101_old").mkdir(parents=True)
+        (default_home / "backups").mkdir(exist_ok=True)
+        (default_home / "backups" / "backup.tar.gz").write_text("archive")
+        (default_home / "state-snapshots" / "snap1").mkdir(parents=True)
+        (default_home / "checkpoints" / "cp1").mkdir(parents=True)
+        # Data that should still copy
+        (default_home / "config.yaml").write_text("model: gpt-4")
+        # Nested dirs with the same names must NOT be excluded (root-only)
+        (default_home / "workspace" / "backups").mkdir(parents=True)
+        (default_home / "workspace" / "backups" / "user-data.txt").write_text("mine")
+
+        profile_dir = create_profile("fresh", clone_all=True, no_alias=True)
+
+        for history in (
+            "state.db", "state.db-wal", "state.db-shm",
+            "sessions", "backups", "state-snapshots", "checkpoints",
+        ):
+            assert not (profile_dir / history).exists(), history
+        assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
+        # Root-only: nested same-name dirs survive
+        assert (profile_dir / "workspace" / "backups" / "user-data.txt").read_text() == "mine"
 
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
         # No error; optional files just not copied
         assert not (profile_dir / "config.yaml").exists()
-        assert not (profile_dir / ".env").exists()
+        # .env is always seeded (placeholder) so the profile has its own
+        # credentials file even when the clone source lacked one.
+        assert (profile_dir / ".env").exists()
         # SOUL.md is always seeded with the default even when clone source lacks it
         assert (profile_dir / "SOUL.md").exists()
 
@@ -417,6 +491,60 @@ class TestNoSkillsOptOut:
         r2 = seed_profile_skills(profile_dir, quiet=True)
         assert r2 == {"copied": []}
         assert len(called) == 1
+
+
+# ===================================================================
+# TestBackfillProfileEnvs
+# ===================================================================
+
+class TestBackfillProfileEnvs:
+    """Tests for backfill_profile_envs() — the `hermes update` pass that
+    gives pre-#44792 profiles (created before .env seeding) their own
+    .env, copied from the default install so credentials don't break."""
+
+    def test_copies_default_env_into_envless_profiles(self, profile_env):
+        import stat
+        tmp_path = profile_env
+        (tmp_path / ".hermes" / ".env").write_text("OPENROUTER_API_KEY=root-key\n")
+        p1 = create_profile("old1", no_alias=True)
+        p2 = create_profile("old2", no_alias=True)
+        # Simulate pre-#44792 profiles: no .env
+        (p1 / ".env").unlink()
+        (p2 / ".env").unlink()
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert sorted(backfilled) == ["old1", "old2"]
+        for p in (p1, p2):
+            assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
+            assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
+
+    def test_never_overwrites_existing_profile_env(self, profile_env):
+        tmp_path = profile_env
+        (tmp_path / ".hermes" / ".env").write_text("KEY=root\n")
+        p = create_profile("hasenv", no_alias=True)
+        (p / ".env").write_text("KEY=mine\n")
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert backfilled == []
+        assert (p / ".env").read_text() == "KEY=mine\n"
+
+    def test_placeholder_when_default_has_no_env(self, profile_env):
+        p = create_profile("noroot", no_alias=True)
+        (p / ".env").unlink()
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert backfilled == ["noroot"]
+        content = (p / ".env").read_text(encoding="utf-8")
+        assert all(
+            line.startswith("#") or not line.strip()
+            for line in content.splitlines()
+        )
+
+    def test_no_profiles_root_is_noop(self, profile_env):
+        assert backfill_profile_envs(quiet=True) == []
 
 
 # ===================================================================
@@ -651,13 +779,14 @@ class TestWrapperScript:
 
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "darwin")
+        monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
         assert wrapper.name == "mybot"
         content = wrapper.read_text()
         assert content.startswith("#!/bin/sh")
-        assert "hermes -p mybot" in content
+        assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
     def test_creates_bat_on_windows(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "win32")
@@ -1317,6 +1446,149 @@ class TestEdgeCases:
             cleanup_stale=False,
         )
 
+    def test_gateway_running_check_falls_back_to_runtime_state(self, profile_env):
+        """A live gateway whose PID-file/lock check fails closed (separate-process
+        reader, e.g. the dashboard s6 service in Docker) is still detected via the
+        profile's gateway_state.json validated against the live process table.
+
+        Regression: the Profiles view used to show "Gateway stopped" while the
+        sidebar (which already has this fallback) showed "Gateway running" for the
+        same live gateway. See get_running_pid() short-circuiting on an
+        unheld runtime lock before it inspects the PID record.
+        """
+        import os
+        import gateway.status as gw_status
+        from hermes_cli.profiles import _check_gateway_running
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir(parents=True, exist_ok=True)
+
+        # Write a realistic gateway_state.json pointing at THIS live process with
+        # a gateway-shaped argv, so get_runtime_status_running_pid validates it.
+        live_pid = os.getpid()
+        (default_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": live_pid,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "start_time": gw_status._get_process_start_time(live_pid),
+                    "gateway_state": "running",
+                    "active_agents": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # Primary pid-file/lock check returns None (no lock held by this reader),
+        # exactly as it does for a separate-process dashboard. The fallback must
+        # then read the state file and confirm the gateway is alive by checking
+        # the recorded PID's live command line. In the real separate-process
+        # scenario that PID belongs to the live gateway, so mock its command
+        # line to a bare ``gateway run`` (this is the default/root home, which
+        # runs the gateway with no profile flag).
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes gateway run --replace",
+        ):
+            assert _check_gateway_running(default_home) is True
+
+    def test_gateway_running_check_runtime_state_stopped(self, profile_env):
+        """A gateway_state.json with state 'stopped' must NOT be reported running,
+        even when the recorded PID happens to be alive."""
+        import os
+        from hermes_cli.profiles import _check_gateway_running
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir(parents=True, exist_ok=True)
+        (default_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "gateway_state": "stopped",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=None):
+            assert _check_gateway_running(default_home) is False
+
+    def test_gateway_running_check_rejects_pid_reused_by_other_profile(self, profile_env):
+        """Regression (user report): the dashboard showed a NAMED profile's
+        gateway green while ``hermes -p <name> gateway status`` showed it
+        stopped.
+
+        Per-profile Docker supervision: a named profile (``coder``) left a
+        ``gateway_state=running`` record whose PID the OS later recycled onto a
+        DIFFERENT live process (here the default profile's gateway).  The
+        ``_check_gateway_running`` fallback must scope the live PID to *this*
+        profile's command line, so a recycled PID hosting another profile's
+        gateway is not reported running for ``coder``.
+        """
+        from hermes_cli.profiles import _check_gateway_running
+
+        tmp_path = profile_env
+        coder_home = tmp_path / ".hermes" / "profiles" / "coder"
+        coder_home.mkdir(parents=True, exist_ok=True)
+        (coder_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": 139,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "gateway_state": "running",
+                    "active_agents": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # PID 139 is alive but is the DEFAULT gateway (bare, no -p coder), not
+        # coder's. start_time is absent so the PID-reuse guard cannot catch it;
+        # the profile scope must.
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._pid_exists", return_value=True
+        ), patch("gateway.status._get_process_start_time", return_value=None), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes gateway run --replace",
+        ):
+            assert _check_gateway_running(coder_home) is False
+
+    def test_gateway_running_check_detects_matching_named_profile(self, profile_env):
+        """A genuinely-live named gateway (``-p coder`` on its command line) is
+        still reported running for that profile."""
+        from hermes_cli.profiles import _check_gateway_running
+
+        tmp_path = profile_env
+        coder_home = tmp_path / ".hermes" / "profiles" / "coder"
+        coder_home.mkdir(parents=True, exist_ok=True)
+        (coder_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": 139,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "start_time": 1000,
+                    "gateway_state": "running",
+                    "active_agents": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._pid_exists", return_value=True
+        ), patch("gateway.status._get_process_start_time", return_value=1000), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes -p coder gateway run --replace",
+        ):
+            assert _check_gateway_running(coder_home) is True
+
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""
         validate_profile_name("a")
@@ -1343,8 +1615,10 @@ class TestEdgeCases:
         target_dir = create_profile(
             "target", clone_from="source", clone_config=True, no_alias=True,
         )
-        assert (target_dir / "config.yaml").read_text() == "model: cloned"
-        assert (target_dir / ".env").read_text() == "SECRET=yes"
+        cloned_config = yaml.safe_load((target_dir / "config.yaml").read_text())
+        assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert cloned_config["model"] == "cloned"
+        assert (target_dir / ".env").read_text().strip() == "SECRET=yes"
 
     def test_delete_clears_active_profile(self, profile_env):
         """Deleting the active profile resets active to default."""
@@ -1357,3 +1631,48 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+class TestProfilesToServe:
+    """profiles_to_serve(multiplex) — the gateway's profile-enumeration chokepoint."""
+
+    def test_off_returns_only_active_default(self, profile_env):
+        serve = profiles_to_serve(multiplex=False)
+        assert len(serve) == 1
+        name, home = serve[0]
+        assert name == "default"
+        assert home == _get_default_hermes_home()
+
+    def test_off_returns_only_active_named(self, profile_env, monkeypatch):
+        # A named profile's gateway runs with HERMES_HOME pointing at the
+        # profile dir; get_active_profile_name() infers the name from there.
+        create_profile("coder", no_alias=True)
+        monkeypatch.setenv("HERMES_HOME", str(get_profile_dir("coder")))
+        serve = profiles_to_serve(multiplex=False)
+        assert len(serve) == 1
+        assert serve[0][0] == "coder"
+        assert serve[0][1] == get_profile_dir("coder")
+
+    def test_on_returns_default_plus_all_named(self, profile_env):
+        create_profile("coder", no_alias=True)
+        create_profile("writer", no_alias=True)
+        serve = dict(profiles_to_serve(multiplex=True))
+        assert set(serve) == {"default", "coder", "writer"}
+        assert serve["default"] == _get_default_hermes_home()
+        assert serve["coder"] == get_profile_dir("coder")
+
+    def test_on_default_always_first(self, profile_env):
+        create_profile("coder", no_alias=True)
+        serve = profiles_to_serve(multiplex=True)
+        assert serve[0][0] == "default"
+
+    def test_on_active_profile_does_not_change_set(self, profile_env):
+        """Enumeration is independent of which profile is active."""
+        create_profile("coder", no_alias=True)
+        set_active_profile("coder")
+        serve = dict(profiles_to_serve(multiplex=True))
+        assert set(serve) == {"default", "coder"}
+
+    def test_on_no_named_profiles_returns_just_default(self, profile_env):
+        serve = profiles_to_serve(multiplex=True)
+        assert [n for n, _ in serve] == ["default"]

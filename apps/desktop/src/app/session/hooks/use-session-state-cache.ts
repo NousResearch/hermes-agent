@@ -5,7 +5,22 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking, setTurnStartedAt } from '@/store/session'
+import {
+  $busy,
+  $messages,
+  noteSessionActivity,
+  onSessionWatchdogClear,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentPersonality,
+  setCurrentProvider,
+  setCurrentReasoningEffort,
+  setCurrentServiceTier,
+  setSessionAttention,
+  setSessionWorking,
+  setTurnStartedAt,
+  setYoloActive
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -40,6 +55,16 @@ interface SessionStateCacheOptions {
   setMessages: (messages: ChatMessage[]) => void
 }
 
+function syncRuntimeMetadataToView(state: ClientSessionState) {
+  setCurrentModel(state.model ?? '')
+  setCurrentProvider(state.provider ?? '')
+  setCurrentReasoningEffort(state.reasoningEffort ?? '')
+  setCurrentServiceTier(state.serviceTier ?? '')
+  setCurrentFastMode(state.fast ?? false)
+  setYoloActive(state.yolo ?? false)
+  setCurrentPersonality(state.personality ?? '')
+}
+
 export function useSessionStateCache({
   activeSessionId,
   busyRef,
@@ -55,6 +80,9 @@ export function useSessionStateCache({
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
+  // Runtime id whose transcript currently occupies `$messages` — lets the
+  // flush below tell a same-session refresh from a thread switch.
+  const viewSessionIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId
@@ -118,12 +146,24 @@ export function useSessionStateCache({
     // jerks the scroll position while the user is reading. Skip the publish when
     // the merged result is content-identical to what's already on screen.
     const currentMessages = $messages.get()
-    const nextMessages = preserveLocalAssistantErrors(pending.state.messages, currentMessages)
+
+    // On a thread switch `$messages` still holds the *previous* thread, so
+    // preserving its local errors would graft that thread's failed turn (e.g.
+    // an out-of-funds error) onto this one — then cascade it everywhere as the
+    // polluted view becomes the next switch's baseline. Only carry errors
+    // across a same-session refresh; our cached state already keeps its own.
+    const nextMessages =
+      viewSessionIdRef.current === pending.sessionId
+        ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
+        : pending.state.messages
 
     if (!sameMessageList(nextMessages, currentMessages)) {
       setMessages(nextMessages)
     }
 
+    viewSessionIdRef.current = pending.sessionId
+
+    syncRuntimeMetadataToView(pending.state)
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
@@ -148,6 +188,7 @@ export function useSessionStateCache({
         return
       }
 
+      syncRuntimeMetadataToView(state)
       pendingViewStateRef.current = { sessionId, state }
 
       // Terminal / attention transitions (turn finished, error, or the agent is
@@ -235,6 +276,31 @@ export function useSessionStateCache({
       return next
     },
     [ensureSessionState, syncSessionStateToView]
+  )
+
+  // When the store watchdog force-clears a stuck session (8 min of stream
+  // silence — a hung or looping turn that never delivered its terminal event),
+  // also drop that session's busy/awaiting flags here. Clearing the sidebar dot
+  // alone leaves the composer wedged on "Thinking"/Stop; updateSessionState
+  // re-syncs `$busy` when the healed session is the one on screen.
+  useEffect(
+    () =>
+      onSessionWatchdogClear(storedSessionId => {
+        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+
+        if (!runtimeId || !state?.busy) {
+          return
+        }
+
+        updateSessionState(runtimeId, current => ({
+          ...current,
+          awaitingResponse: false,
+          busy: false,
+          needsInput: false
+        }))
+      }),
+    [updateSessionState]
   )
 
   return {

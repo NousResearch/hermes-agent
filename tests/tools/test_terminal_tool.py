@@ -22,6 +22,14 @@ def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
     assert sudo_stdin is None
 
 
+def test_terminal_schema_advertises_persistent_env_state():
+    description = terminal_tool.TERMINAL_TOOL_DESCRIPTION
+
+    assert "exported environment variables persist between calls" in description
+    assert "activate a virtualenv" in description
+    assert "do not re-source the same environment before every command" in description
+
+
 def test_printf_literal_sudo_does_not_trigger_rewrite(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
@@ -88,6 +96,30 @@ def test_cached_sudo_password_is_used_when_env_is_unset(monkeypatch):
 
     assert transformed == "echo ok && sudo -S -p '' whoami"
     assert sudo_stdin == "cached-pass\n"
+
+
+def test_registered_sudo_callback_is_used_without_interactive_env(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+
+    calls = []
+
+    def sudo_callback():
+        calls.append("called")
+        return "callback-pass"
+
+    terminal_tool.set_sudo_password_callback(sudo_callback)
+    try:
+        transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+            "echo ok | sudo tee /tmp/hermes-test"
+        )
+    finally:
+        terminal_tool.set_sudo_password_callback(None)
+
+    assert calls == ["called"]
+    assert transformed == "echo ok | sudo -S -p '' tee /tmp/hermes-test"
+    assert sudo_stdin == "callback-pass\n"
 
 
 def test_cached_sudo_password_isolated_by_session_key(monkeypatch):
@@ -211,3 +243,59 @@ def test_get_env_config_still_rejects_bad_docker_json_for_docker_backend(monkeyp
         assert "TERMINAL_DOCKER_VOLUMES" in str(exc)
     else:
         raise AssertionError("Docker backend must validate TERMINAL_DOCKER_VOLUMES")
+
+
+def test_sudo_wrong_password_failure_detects_rejection_output():
+    output = (
+        "sudo: Authentication failed, try again.\n\n"
+        "sudo: maximum 3 incorrect authentication attempts\n"
+    )
+    assert terminal_tool._sudo_wrong_password_failure(output) is True
+
+
+def test_sudo_wrong_password_failure_ignores_tty_required_message():
+    output = "sudo: a terminal is required to authenticate"
+    assert terminal_tool._sudo_wrong_password_failure(output) is False
+
+
+def test_invalidate_cached_sudo_on_auth_failure_clears_session_cache(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    terminal_tool._set_cached_sudo_password("wrong-pass")
+
+    cleared = terminal_tool._invalidate_cached_sudo_on_auth_failure(
+        "sudo apt install fprintd",
+        "sudo: Authentication failed, try again.",
+    )
+
+    assert cleared is True
+    assert terminal_tool._get_cached_sudo_password() == ""
+
+
+def test_invalidate_cached_sudo_on_auth_failure_keeps_env_password(monkeypatch):
+    monkeypatch.setenv("SUDO_PASSWORD", "from-env")
+    terminal_tool._set_cached_sudo_password("wrong-pass")
+
+    cleared = terminal_tool._invalidate_cached_sudo_on_auth_failure(
+        "sudo true",
+        "sudo: Authentication failed, try again.",
+    )
+
+    assert cleared is False
+    assert terminal_tool._get_cached_sudo_password() == "wrong-pass"
+
+
+def test_transform_sudo_command_pipes_one_password_line_per_invocation(monkeypatch):
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+        "sudo true && sudo whoami"
+    )
+
+    assert transformed == "sudo -S -p '' true && sudo -S -p '' whoami"
+    assert sudo_stdin == "testpass\ntestpass\n"
+
+
+def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
+    assert terminal_tool._count_real_sudo_invocations("grep sudo README.md") == 0
+    assert terminal_tool._count_real_sudo_invocations("sudo a; sudo b") == 2

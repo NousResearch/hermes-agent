@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import tools.file_tools as ft
+import tools.terminal_tool as terminal_tool
 
 
 @pytest.fixture
@@ -218,6 +219,28 @@ def test_absolute_terminal_cwd_anchors_with_empty_registry(_isolated_cwd, monkey
     assert not str(resolved).startswith(str(decoy))
 
 
+def test_registered_task_cwd_override_anchors_before_terminal_env_exists(_isolated_cwd, monkeypatch):
+    """TUI/Desktop sessions register cwd by raw session key before tools run.
+
+    CWD-only overrides collapse to the shared terminal environment key, but the
+    file resolver must still read the raw task/session override before falling
+    back to TERMINAL_CWD or the process cwd.
+    """
+    workspace, decoy = _isolated_cwd
+    task_id = "desktop-session-cwd"
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+
+    terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+
+    resolved = ft._resolve_path_for_task("target.py", task_id=task_id)
+
+    assert terminal_tool._resolve_container_task_id(task_id) == "default"
+    assert resolved == (workspace / "target.py")
+    assert not str(resolved).startswith(str(decoy))
+
+
 def test_warning_fires_from_terminal_cwd_when_registry_empty(_isolated_cwd, monkeypatch):
     """Divergence warning must fire even before any terminal command runs.
 
@@ -292,3 +315,82 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     # And the decoy copy is untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
 
+
+# ── Fix D: shared terminal env must not leak its cwd across worktree sessions ─
+# (June 2026: two desktop sessions, each on its own worktree, share the single
+# "default" terminal environment. Its `cwd` tracks whichever session ran the
+# last command, so a file edit from the OTHER session resolved against that
+# foreign cwd and silently landed in the wrong worktree. terminal_tool now
+# stamps env.cwd_owner with the driving session; file tools trust the shared
+# env's live cwd only when the resolving session owns it.)
+
+
+class _FakeOwnedEnv:
+    def __init__(self, cwd: str, cwd_owner: str):
+        self.cwd = cwd
+        self.cwd_owner = cwd_owner
+
+
+@pytest.fixture
+def _two_worktree_sessions(tmp_path, monkeypatch):
+    """Two worktree sessions sharing one terminal env owned by session B."""
+    wt_a = tmp_path / "wt_a"
+    wt_b = tmp_path / "wt_b"
+    main = tmp_path / "main"
+    for d in (wt_a, wt_b, main):
+        d.mkdir()
+        (d / "target.py").write_text(f"{d.name}\n")
+    monkeypatch.chdir(main)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+    # Both sessions register their worktree cwd (TUI/desktop registration path).
+    terminal_tool.register_task_env_overrides("sess-a", {"cwd": str(wt_a)})
+    terminal_tool.register_task_env_overrides("sess-b", {"cwd": str(wt_b)})
+    # The shared "default" env: session B ran the last command, so its live cwd
+    # is wt_b and B owns it.
+    monkeypatch.setattr(
+        terminal_tool,
+        "_active_environments",
+        {"default": _FakeOwnedEnv(str(wt_b), "sess-b")},
+    )
+    return wt_a, wt_b, main
+
+
+def test_live_cwd_ignored_for_non_owning_session(_two_worktree_sessions):
+    wt_a, wt_b, _main = _two_worktree_sessions
+    # Owner sees the live cwd; the other session must NOT inherit it.
+    assert ft._get_live_tracking_cwd("sess-b") == str(wt_b)
+    assert ft._get_live_tracking_cwd("sess-a") is None
+
+
+def test_resolution_routes_to_resolving_sessions_worktree(_two_worktree_sessions):
+    """The wrong-worktree fix: A resolves into wt_a, not the shared env's wt_b."""
+    wt_a, wt_b, _main = _two_worktree_sessions
+    # Session A does not own the shared env → falls back to its own registered
+    # worktree cwd instead of B's live cwd.
+    resolved_a = ft._resolve_path_for_task("target.py", task_id="sess-a")
+    assert resolved_a == (wt_a / "target.py")
+    assert not str(resolved_a).startswith(str(wt_b))
+
+
+def test_owning_session_still_resolves_against_live_cwd(_two_worktree_sessions):
+    """No regression: the owner keeps resolving against the live cwd."""
+    wt_a, wt_b, _main = _two_worktree_sessions
+    resolved_b = ft._resolve_path_for_task("target.py", task_id="sess-b")
+    assert resolved_b == (wt_b / "target.py")
+    assert not str(resolved_b).startswith(str(wt_a))
+
+
+def test_unknown_owner_keeps_prior_single_session_behavior(tmp_path, monkeypatch):
+    """An env with no owner (CLI / legacy) still yields its live cwd."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+    monkeypatch.setattr(
+        terminal_tool,
+        "_active_environments",
+        {"default": _FakeOwnedEnv(str(ws), "")},
+    )
+    assert ft._get_live_tracking_cwd("default") == str(ws)
+    assert ft._get_live_tracking_cwd("any-session") == str(ws)

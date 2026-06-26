@@ -34,7 +34,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -42,9 +42,28 @@ def _no_auto_discovery(monkeypatch):
     """Disable DoH auto-discovery so connect() uses the plain builder chain."""
     async def _noop():
         return []
-    monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", _noop)
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.discover_fallback_ips", _noop)
     # Mock HTTPXRequest so the builder chain doesn't fail
-    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", lambda **kwargs: MagicMock())
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.HTTPXRequest", lambda **kwargs: MagicMock())
+
+
+async def _cancel_heartbeat(adapter):
+    """Cancel the lifetime heartbeat task connect() starts in polling mode.
+
+    These tests call the real connect() but never disconnect(), so the
+    _polling_heartbeat_loop task would otherwise outlive the test. With
+    asyncio.sleep monkeypatched to instant, leaving it running busy-spins the
+    event loop and starves the test (CI per-file timeout). disconnect() does
+    this in production; tests that only connect() must do it themselves.
+    """
+    task = getattr(adapter, "_polling_heartbeat_task", None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    adapter._polling_heartbeat_task = None
 
 
 @pytest.mark.asyncio
@@ -103,7 +122,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
-    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     # Speed up retries for testing
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -126,6 +145,11 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
     assert adapter.has_fatal_error is False, "First conflict should not be fatal"
     assert adapter._polling_conflict_count == 0, "Count should reset after successful retry"
+
+    # connect() now starts a lifetime _polling_heartbeat_loop task. With
+    # asyncio.sleep mocked to instant above, it must not be left running or it
+    # busy-spins on the event loop and starves the test. Cancel it explicitly.
+    await _cancel_heartbeat(adapter)
 
 
 @pytest.mark.asyncio
@@ -179,7 +203,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
-    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     # Speed up retries for testing
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -205,6 +229,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     )
     assert adapter.has_fatal_error is True
     fatal_handler.assert_awaited_once()
+    await _cancel_heartbeat(adapter)
 
 
 @pytest.mark.asyncio
@@ -232,7 +257,7 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
         start=AsyncMock(),
     )
     builder.build.return_value = app
-    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     ok = await adapter.connect()
 
@@ -277,7 +302,7 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
-        "gateway.platforms.telegram.Application",
+        "plugins.platforms.telegram.adapter.Application",
         SimpleNamespace(builder=MagicMock(return_value=builder)),
     )
 
@@ -285,6 +310,7 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
 
     assert ok is True
     bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    await _cancel_heartbeat(adapter)
 
 
 @pytest.mark.asyncio
@@ -301,7 +327,7 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     adapter._app = app
 
     warning = MagicMock()
-    monkeypatch.setattr("gateway.platforms.telegram.logger.warning", warning)
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.logger.warning", warning)
 
     await adapter.disconnect()
 
@@ -367,7 +393,7 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
-        "gateway.platforms.telegram.Application",
+        "plugins.platforms.telegram.adapter.Application",
         SimpleNamespace(builder=MagicMock(return_value=builder)),
     )
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -398,3 +424,68 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
         await adapter._polling_error_task
     except (asyncio.CancelledError, Exception):
         pass
+    await _cancel_heartbeat(adapter)
+
+
+def _build_polling_app(monkeypatch):
+    """Wire a mock PTB Application whose start_polling captures kwargs."""
+    captured = {}
+
+    async def fake_start_polling(**kwargs):
+        captured.update(kwargs)
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_cold_connect_drops_pending_updates(monkeypatch):
+    """A cold first boot (is_reconnect=False) drops the stale Bot API queue."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    captured = _build_polling_app(monkeypatch)
+
+    ok = await adapter.connect()  # default is_reconnect=False
+
+    assert ok is True
+    assert captured["drop_pending_updates"] is True
+    await _cancel_heartbeat(adapter)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_preserves_pending_updates(monkeypatch):
+    """A watcher reconnect (is_reconnect=True) preserves the queue Telegram
+    accumulated during the outage — the core of #46621."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    captured = _build_polling_app(monkeypatch)
+
+    ok = await adapter.connect(is_reconnect=True)
+
+    assert ok is True
+    assert captured["drop_pending_updates"] is False
+    await _cancel_heartbeat(adapter)

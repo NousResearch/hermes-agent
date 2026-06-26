@@ -104,6 +104,38 @@ class TestIsThinkingOnlyAssistant:
         }
         assert AIAgent._is_thinking_only_assistant(msg)
 
+    def test_codex_reasoning_items_list_form_detected(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"}
+            ],
+        }
+        assert AIAgent._is_thinking_only_assistant(msg)
+
+    def test_codex_reasoning_items_with_visible_text_is_not_thinking_only(self):
+        msg = {
+            "role": "assistant",
+            "content": "Visible answer",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"}
+            ],
+        }
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
+    def test_empty_codex_reasoning_items_list_is_not_thinking_only(self):
+        msg = {"role": "assistant", "content": "", "codex_reasoning_items": []}
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
+    def test_non_reasoning_codex_items_are_not_thinking_only(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [None, "x", {"type": "other"}],
+        }
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
     def test_user_message_never_thinking_only(self):
         assert not AIAgent._is_thinking_only_assistant({"role": "user", "content": ""})
 

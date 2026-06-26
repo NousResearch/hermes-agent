@@ -8203,6 +8203,12 @@ def _notification_poller_loop(
         try:
             _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
+            # Async delegation completions inject messages into a session
+            # that the desktop may not be actively viewing. Emit a
+            # sessions.changed event so the desktop knows to refresh its
+            # sidebar session list (see #desktop-async-delegation-refresh).
+            if evt.get("type") == "async_delegation":
+                _emit("sessions.changed", sid, {})
         except Exception as exc:
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
@@ -8246,6 +8252,9 @@ def _notification_poller_loop(
         try:
             _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
+            # Same sessions.changed signal for the drain path (see above).
+            if evt.get("type") == "async_delegation":
+                _emit("sessions.changed", sid, {})
         except Exception as exc:
             print(
                 f"[tui_gateway] notification poller dispatch failed: "

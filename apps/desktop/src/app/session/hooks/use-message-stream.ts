@@ -1100,6 +1100,13 @@ export function useMessageStream({
             title: translateNow('notifications.native.inputTitle')
           })
         }
+      } else if (event.type === 'sessions.changed') {
+        // Async delegation (background subagent) completions inject messages
+        // into a session that may not be the active one. The backend emits
+        // this event so the desktop knows to refresh its sidebar session list
+        // and sync across windows. See #desktop-async-delegation-refresh.
+        void refreshSessions().catch(() => undefined)
+        broadcastSessionsChanged()
       } else if (event.type === 'secret.request') {
         // Skill credential capture (tools/skills_tool.py). Blocked on
         // secret.respond {request_id, value}.

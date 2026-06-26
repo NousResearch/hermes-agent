@@ -136,13 +136,64 @@ try {
   process.exit(3);
 }
 
-const app = await Spectrum({
-  projectId,
-  projectSecret,
-  providers: [imessage.config()],
-  options: { flattenGroups: true },
-  telemetry,
+// Start a temporary health-check server FIRST so adapter can detect we're alive
+// Then initialize Spectrum asynchronously (may take time due to rate limits)
+let app = null;
+
+// Temporary health-check server (just responds to /health)
+const healthServer = http.createServer((req, res) => {
+  if (req.url === '/health') {
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ status: 'initializing' }));
+  } else {
+    res.statusCode = 503;
+    res.end('Service Unavailable');
+  }
 });
+
+await new Promise((resolve) => {
+  healthServer.listen(port, bind, () => {
+    console.error(`photon-sidecar: health-check listening on ${bind}:${port}`);
+    resolve();
+  });
+});
+
+// Now initialize Spectrum with retry logic for rate limits (429)
+const MAX_INIT_RETRIES = 5;
+for (let attempt = 0; attempt < MAX_INIT_RETRIES; attempt++) {
+  try {
+    app = await Spectrum({
+      projectId,
+      projectSecret,
+      providers: [imessage.config()],
+      options: { flattenGroups: true },
+      telemetry,
+    });
+    console.error(`photon-sidecar: Spectrum initialized successfully`);
+    break;
+  } catch (e) {
+    if (e?.code === "RATE_LIMITED" || e?.status === 429) {
+      const retryAfter = e?.retryAfter || 60;
+      console.error(
+        `photon-sidecar: Rate limited during init (attempt ${attempt + 1}/${MAX_INIT_RETRIES}). ` +
+        `Waiting ${retryAfter}s before retry...`
+      );
+      await new Promise(r => setTimeout(r, retryAfter * 1000));
+    } else {
+      console.error(`photon-sidecar: Spectrum init failed: ${e?.message || e}`);
+      throw e;
+    }
+  }
+}
+if (!app) {
+  console.error("photon-sidecar: Failed to initialize after rate limit retries");
+  process.exit(4);
+}
+
+// Close the temporary health-check server
+await new Promise((resolve) => healthServer.close(resolve));
+console.error(`photon-sidecar: health-check server closed, starting full server...`);
 
 // ---------------------------------------------------------------------------
 // Inbound: forward `app.messages` (gRPC stream) to the Python consumer.
@@ -671,6 +722,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// Start the full HTTP server now that Spectrum is initialized
 server.listen(port, bind, () => {
   console.error(`photon-sidecar: listening on ${bind}:${port}`);
 });

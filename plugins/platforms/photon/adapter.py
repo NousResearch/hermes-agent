@@ -842,7 +842,7 @@ class PhotonAdapter(BasePlatformAdapter):
         )
 
     async def _supervise_sidecar(self, proc: subprocess.Popen) -> None:
-        """Pump the sidecar's stdout/stderr into our logger."""
+        """Pump the sidecar's stdout/stderr into our logger, and auto-restart on crash."""
         if proc.stdout is None:  # subprocess was launched without stdout=PIPE
             return
         stdout = proc.stdout
@@ -870,6 +870,69 @@ class PhotonAdapter(BasePlatformAdapter):
                 await self._notify_fatal_error()
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("[photon] fatal-error notification failed: %s", exc)
+
+            # Auto-restart the sidecar with exponential backoff
+            await self._auto_restart_sidecar()
+
+    # Auto-restart state
+    _RESTART_MAX_ATTEMPTS = 5
+    _RESTART_WINDOW_SECONDS = 600  # 10 minutes
+    _restart_timestamps: list = []
+
+    async def _auto_restart_sidecar(self) -> None:
+        """Attempt to restart the sidecar after a crash, with rate limiting."""
+        now = time.time()
+
+        # Prune old timestamps outside the window
+        self._restart_timestamps = [
+            t for t in self._restart_timestamps
+            if now - t < self._RESTART_WINDOW_SECONDS
+        ]
+
+        # Reset counter if sidecar was stable for a long time (30+ minutes)
+        # This prevents permanent lockout after transient failures
+        if self._restart_timestamps:
+            last_restart = max(self._restart_timestamps)
+            stable_duration = now - last_restart
+            if stable_duration > 1800:  # 30 minutes
+                logger.info(
+                    "[photon] sidecar was stable for %.0fs, resetting restart counter",
+                    stable_duration
+                )
+                self._restart_timestamps = []
+
+        if len(self._restart_timestamps) >= self._RESTART_MAX_ATTEMPTS:
+            # Instead of giving up permanently, schedule a retry after 5 minutes
+            logger.warning(
+                "[photon] too many restarts (%d in %ds) — scheduling retry in 5 minutes",
+                len(self._restart_timestamps),
+                self._RESTART_WINDOW_SECONDS,
+            )
+            # Clear timestamps to allow retry
+            self._restart_timestamps = []
+            await asyncio.sleep(300)  # Wait 5 minutes before retrying
+            # Fall through to attempt restart
+
+        self._restart_timestamps.append(now)
+        attempt = len(self._restart_timestamps)
+        backoff = min(2 ** attempt, 30.0)
+
+        logger.info(
+            "[photon] auto-restart attempt %d/%d (backoff %.1fs)",
+            attempt, self._RESTART_MAX_ATTEMPTS, backoff,
+        )
+        await asyncio.sleep(backoff)
+
+        if not self._inbound_running:
+            return  # adapter was disconnected while waiting
+
+        try:
+            # Clean up the old process reference
+            self._sidecar_proc = None
+            await self._start_sidecar()
+            logger.info("[photon] sidecar auto-restarted successfully")
+        except Exception as e:
+            logger.error("[photon] sidecar auto-restart failed: %s", e)
 
     async def _stop_sidecar(self) -> None:
         proc = self._sidecar_proc

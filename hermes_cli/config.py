@@ -307,6 +307,7 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 # =============================================================================
 
 _MANAGED_TRUE_VALUES = ("true", "1", "yes")
+_MANAGED_FALSE_VALUES = ("false", "0", "no", "off")
 _MANAGED_SYSTEM_NAMES = {
     "brew": "Homebrew",
     "homebrew": "Homebrew",
@@ -320,6 +321,11 @@ def get_managed_system() -> Optional[str]:
     raw = os.getenv("HERMES_MANAGED", "").strip()
     if raw:
         normalized = raw.lower()
+        # Explicit falsey values mean "not managed" — don't treat them as an
+        # opaque package-manager name (HERMES_MANAGED=false previously made
+        # is_managed() return True and blocked updates).
+        if normalized in _MANAGED_FALSE_VALUES:
+            return None
         if normalized in _MANAGED_TRUE_VALUES:
             return "NixOS"
         return _MANAGED_SYSTEM_NAMES.get(normalized, raw)

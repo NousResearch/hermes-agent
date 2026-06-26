@@ -279,6 +279,109 @@ def _is_backend_available(backend: str) -> bool:
     return False
 
 
+# ─── Fallback Chain & Multi-Source Search ────────────────────────────────────
+
+def _get_valid_engine_names() -> set[str]:
+    """Return the set of currently-registered search provider names.
+
+    Used by ``web_search_tool`` to validate the ``search_engine`` parameter.
+    Dynamically sourced from the provider registry so adding a new provider
+    automatically extends the valid choices — no hardcoded list.
+    """
+    try:
+        from agent.web_search_registry import list_provider_names
+        return set(list_provider_names())
+    except Exception:
+        return set()
+
+
+def _get_fallback_chain() -> list[str]:
+    """Return an ordered list of backends to try when ``search_engine == "auto"``.
+
+    Priority:
+    1. ``web.backend`` — explicit choice from config (always first)
+    2. ``web.fallback_backends`` — user-configured ordered list
+    3. All other registered providers not already in the chain
+    """
+    cfg = _load_web_config()
+
+    # Build unique-ordered chain.  Explicit backend goes first, then
+    # user-configured fallback list, then auto-discovered remainder.
+    chain: list[str] = []
+
+    primary = (cfg.get("backend") or "").lower().strip()
+    if primary:
+        chain.append(primary)
+
+    user_fbs = cfg.get("fallback_backends", [])
+    if isinstance(user_fbs, str):
+        user_fbs = [b.strip() for b in user_fbs.split(",") if b.strip()]
+    for b in user_fbs:
+        if b not in chain:
+            chain.append(b)
+
+    # Append remaining registered providers (those not already listed).
+    # The registry returns providers in registration order, which for
+    # bundled plugins is the backend_candidates tuple order.
+    try:
+        from agent.web_search_registry import list_provider_names
+        for name in list_provider_names():
+            if name not in chain:
+                chain.append(name)
+    except Exception:
+        pass
+
+    return chain
+
+
+def _search_with_fallback(
+    query: str,
+    limit: int,
+    chain: list[str],
+) -> tuple[dict | None, list[str]]:
+    """Try each backend in *chain* until one succeeds.
+
+    Returns ``(success_result, error_trace)``.  A backend is skipped
+    when it is not found, not available, returns an error, or returns
+    zero results.  ``success_result`` is ``None`` when all backends fail.
+    """
+    from agent.web_search_registry import get_provider
+
+    errors: list[str] = []
+    for name in chain:
+        provider = get_provider(name)
+        if provider is None or not provider.supports_search():
+            errors.append(f"{name}: not found or search unsupported")
+            continue
+        if not provider.is_available():
+            errors.append(f"{name}: not available (missing key or package)")
+            continue
+
+        try:
+            result = provider.search(query, limit)
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+            continue
+
+        if not isinstance(result, dict):
+            errors.append(f"{name}: unexpected response type {type(result).__name__}")
+            continue
+        if not result.get("success"):
+            errors.append(f"{name}: {result.get('error', 'unknown error')}")
+            continue
+        if not len(result.get("data", {}).get("web", [])):
+            errors.append(f"{name}: returned 0 results")
+            continue
+
+        # Success — return immediately
+        return result, errors
+
+    return None, errors
+
+
+# ─── Tool Functions ──────────────────────────────────────────────────────────
+
+
 def _ddgs_package_importable() -> bool:
     """Return True when the ``ddgs`` Python package can be imported.
 
@@ -820,12 +923,14 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def web_search_tool(query: str, limit: int = 5, search_engine: str = "auto") -> str:
     """
-    Search the web for information using available search API backend.
+    Search the web for information using available search API backends.
 
     This function provides a generic interface for web search that can work
-    with multiple backends (Parallel or Firecrawl).
+    with multiple backends. When ``search_engine`` is ``"auto"`` (default),
+    backends from ``web.fallback_backends`` are tried in order until one
+    succeeds.  Explicit engine names run a single backend with no fallback.
 
     Note: This function returns search result metadata only (URLs, titles, descriptions).
     Use web_extract_tool to get full content from specific URLs.
@@ -833,6 +938,10 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Args:
         query (str): The search query to look up
         limit (int): Maximum number of results to return (default: 5)
+        search_engine (str): Which provider to use. ``"auto"`` walks the
+            fallback chain.  Any registered provider name (e.g. ``"baidu"``,
+            ``"serper"``, ``"ddgs"``) runs that single backend.  Defaults to
+            ``"auto"``.
     
     Returns:
         str: JSON string containing search results with the following structure:
@@ -850,9 +959,6 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                      ]
                  }
              }
-    
-    Raises:
-        Exception: If search fails or API key is not set
     """
     try:
         limit = int(limit)
@@ -876,38 +982,52 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
-        # now live as plugins; the dispatcher is just a registry lookup +
-        # delegation. Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
-            get_active_search_provider,
             get_provider as _wsp_get_provider,
         )
 
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
-            provider = get_active_search_provider()
-
-        if provider is None:
-            response_data = {
-                "success": False,
-                "error": (
-                    "No web search provider configured. "
-                    "Run `hermes tools` to set one up."
-                ),
-            }
-        else:
+        # --- Explicit engine requested ---
+        if search_engine and search_engine != "auto":
+            provider = _wsp_get_provider(search_engine)
+            if provider is None:
+                valid = _get_valid_engine_names()
+                return tool_error(
+                    f"Unknown search engine: '{search_engine}'. "
+                    f"Valid values: {', '.join(repr(e) for e in sorted(valid))}"
+                )
+            if not provider.supports_search():
+                return tool_error(
+                    f"Provider '{search_engine}' does not support search."
+                )
             logger.info(
-                "Web search via %s: '%s' (limit: %d)",
+                "Web search via %s (explicit): '%s' (limit: %d)",
                 provider.name, query, limit,
             )
             response_data = provider.search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        # --- Auto mode: fallback chain ---
+        chain = _get_fallback_chain()
+        response_data, errors = _search_with_fallback(query, limit, chain)
+
+        if response_data is None:
+            summary = "; ".join(errors[-3:]) if errors else "All backends exhausted"
+            response_data = {
+                "success": False,
+                "error": (
+                    f"No web search backend available. Tried: "
+                    f"{', '.join(chain)}. Last errors: {summary}"
+                ),
+            }
+        elif errors:
+            # Attach fallback trace for observability
+            response_data.setdefault("_fallback_trace", errors)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)

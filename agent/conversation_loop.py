@@ -739,6 +739,16 @@ def run_conversation(
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
 
+            # Strip internal-only DB fields that live messages never carry.
+            # These leak into api_msg from state.db loaded messages (resume,
+            # cron, gateway replay) and break the provider's byte-level
+            # prompt cache — every extra field shifts the serialized bytes.
+            for _db_field in ('id', 'session_id', 'token_count',
+                              'reasoning_details', 'codex_reasoning_items',
+                              'codex_message_items', 'platform_message_id',
+                              'observed', 'active', 'compacted', 'name'):
+                api_msg.pop(_db_field, None)
+
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks
             # with target="user_message" (the default).  Both are

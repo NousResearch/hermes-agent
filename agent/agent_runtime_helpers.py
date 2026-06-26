@@ -391,7 +391,19 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         role = msg.get("role")
         if role == "assistant":
             known_tool_ids = set()
-            for tc in (msg.get("tool_calls") or []):
+            # tool_calls arrives as a JSON string when messages are loaded
+            # from state.db (resume, cron, gateway replay).  Parse it so
+            # the known_tool_ids loop below can match tool_call_ids —
+            # otherwise iterating a string character-by-character produces
+            # an empty set and every tool message gets misclassified as
+            # "stray" and dropped, corrupting the message sequence.
+            raw_tc = msg.get("tool_calls")
+            if isinstance(raw_tc, str):
+                try:
+                    raw_tc = json.loads(raw_tc)
+                except (json.JSONDecodeError, TypeError):
+                    raw_tc = []
+            for tc in (raw_tc or []):
                 tc_id = tc.get("id") if isinstance(tc, dict) else None
                 if tc_id:
                     known_tool_ids.add(tc_id)

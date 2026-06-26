@@ -103,6 +103,14 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
+    def test_terminal_command_windows_backslash_path_extraction(self, project):
+        """Windows backslash paths in terminal commands must survive parsing."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        raw_path = str(project / "frontend" / "index.ts").replace("/", "\\")
+        result = tracker.check_tool_call("terminal", {"command": f"cat {raw_path}"})
+        assert result is not None
+        assert "Frontend rules" in result
+
     def test_terminal_cd_command(self, project):
         """cd into a directory with hints."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

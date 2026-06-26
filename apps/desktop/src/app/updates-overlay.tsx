@@ -60,6 +60,7 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
+  const updateAvailable = status?.updateAvailable || behind > 0
 
   const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'
@@ -119,6 +120,7 @@ export function UpdatesOverlay() {
             onRetryCheck={() => void check()}
             status={status}
             target={target}
+            updateAvailable={updateAvailable}
           />
         )}
       </DialogContent>
@@ -134,7 +136,8 @@ function IdleView({
   onLater,
   onRetryCheck,
   status,
-  target
+  target,
+  updateAvailable
 }: {
   behind: number
   checking: boolean
@@ -144,6 +147,7 @@ function IdleView({
   onRetryCheck: () => void
   status: DesktopUpdateStatus | null
   target: UpdateTarget
+  updateAvailable: boolean
 }) {
   const { t } = useI18n()
   const u = t.updates
@@ -196,7 +200,7 @@ function IdleView({
     )
   }
 
-  if (behind === 0) {
+  if (!updateAvailable) {
     return (
       <CenteredStatus
         body={target === 'backend' ? u.latestBodyBackend : u.latestBody}

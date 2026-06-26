@@ -40,6 +40,8 @@ import {
 } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
+import { hmrActive, stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
 // raise a recoverable boot error. Otherwise a dropped remote gateway loops the
 // backoff forever behind the fullscreen CONNECTING overlay with no way to reach
@@ -233,9 +235,33 @@ export function useGatewayBoot({
       progress: 6
     })
 
-    const gateway = new HermesGateway()
+    // HMR adoption: in a dev hot update, the previous effect instance parked its
+    // still-open socket instead of closing it (see the cleanup below). Re-adopt
+    // it so an edit doesn't drop the live agent session. A stale (closed) parked
+    // socket is discarded and we boot fresh. No-op in production (survivor is
+    // always null — the stash path is gated on import.meta.hot).
+    const survivor = takeGatewaySurvivor()
+    let adoptedFromHmr = false
+    let gateway: HermesGateway
+
+    if (survivor && !survivorIsStale(survivor)) {
+      gateway = survivor.gateway
+      adoptedFromHmr = true
+    } else {
+      if (survivor) {
+        // Parked socket died between edits (e.g. backend restart) — release it.
+        try {
+          survivor.gateway.close()
+        } catch {
+          // ignore
+        }
+      }
+
+      gateway = new HermesGateway()
+    }
+
     callbacksRef.current.onGatewayReady(gateway)
-    setPrimaryGateway(gateway, normalizeProfileKey($activeGatewayProfile.get()))
+    setPrimaryGateway(gateway, survivor?.profile ?? normalizeProfileKey($activeGatewayProfile.get()))
     // Secondary (background-profile) sockets funnel into the same handler.
     configureGatewayRegistry({ onEvent: event => callbacksRef.current.handleGatewayEvent(event) })
 
@@ -377,10 +403,12 @@ export function useGatewayBoot({
         })
         await ensureDefaultWorkspaceCwd()
         const remoteDefault = await desktopDefaultCwd().catch(() => null)
+
         if (remoteDefault?.cwd && !$activeSessionId.get() && !$currentCwd.get()) {
           setCurrentCwd(remoteDefault.cwd)
           setCurrentBranch(remoteDefault.branch || '')
         }
+
         await callbacksRef.current.refreshHermesConfig()
 
         if (cancelled) {
@@ -405,7 +433,41 @@ export function useGatewayBoot({
       }
     }
 
-    void boot()
+    // Adopt the parked socket without re-running the full boot handshake: the
+    // socket is already open, the backend session is untouched, and we already
+    // know the profile. We only re-publish the connection, re-sync config +
+    // sessions (cheap, and the backend may have moved on between edits), and
+    // dismiss any boot overlay. This is what keeps a live, mid-stream session
+    // intact across an HMR update.
+    async function adoptBoot() {
+      bootCompleted = true
+      completeDesktopBoot()
+
+      if (survivor?.connection) {
+        publish(survivor.connection)
+      }
+
+      $activeGatewayProfile.set(survivor?.profile ?? $activeGatewayProfile.get())
+      void ensureGatewayForProfile(survivor?.profile ?? $activeGatewayProfile.get())
+
+      // Mirror the current (already-open) socket state into the composer so the
+      // input doesn't sit disabled after the swap.
+      reportPrimaryGatewayState(gateway.connectionState)
+
+      await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
+
+      if (cancelled) {
+        return
+      }
+
+      await callbacksRef.current.refreshSessions().catch(() => undefined)
+    }
+
+    if (adoptedFromHmr) {
+      void adoptBoot()
+    } else {
+      void boot()
+    }
 
     return () => {
       cancelled = true
@@ -422,6 +484,24 @@ export function useGatewayBoot({
       offExit()
       offWindowState?.()
       offBootProgress()
+
+      // HMR teardown vs. real unmount. On a hot update we must NOT close the
+      // socket — that's the whole bug. Detach this instance's listeners (their
+      // closures capture the disposed module), park the still-open gateway, and
+      // let the freshly loaded effect re-adopt it. Secondaries are owned by the
+      // gateway store (HMR-stable module state), so they survive untouched.
+      // Production: import.meta.hot is undefined, so this branch never runs and
+      // the original destructive teardown below is byte-for-byte preserved.
+      if (hmrActive() && gateway.connectionState === 'open') {
+        stashGatewaySurvivor({
+          gateway,
+          profile: survivor?.profile ?? $activeGatewayProfile.get(),
+          connection: $connection.get()
+        })
+
+        return
+      }
+
       closeSecondaryGateways()
       gateway.close()
       publish(null)

@@ -21,28 +21,8 @@ const normKey = (profile: string | null | undefined): string => (profile ?? '').
 // narrow the getter to a constant across guards (it genuinely changes).
 const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionState === 'open'
 
-// The active gateway instance, exposed for inline message-stream components
-// (e.g. inline ClarifyTool, model overlays) that call gateway methods without
-// the instance threaded down through props.
-export const $gateway = atom<HermesGateway | null>(null)
-
 interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
-}
-
-let config: RegistryConfig | null = null
-
-export function configureGatewayRegistry(cfg: RegistryConfig): void {
-  config = cfg
-}
-
-// ── Primary (window) backend ───────────────────────────────────────────────
-let primaryGateway: HermesGateway | null = null
-let primaryProfile = 'default'
-
-export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
-  primaryGateway = gateway
-  primaryProfile = normKey(profile)
 }
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
@@ -59,20 +39,74 @@ interface Secondary {
   wantOpen: boolean
 }
 
-const secondaries = new Map<string, Secondary>()
+// ── HMR-stable module state ─────────────────────────────────────────────────
+// All mutable singletons (live sockets, active-profile routing, the event
+// registry) live in ONE container parked on globalThis, NOT in module-level
+// `let`/`const` bindings. Reason: this module is imported widely without an HMR
+// boundary that accepts it, so editing it (or anything that fans out to it)
+// makes Vite issue a FULL PAGE RELOAD — which would kill every live socket and
+// drop the agent session on an unrelated edit. Persisting the state on
+// globalThis + self-accepting HMR (bottom of file) turns that full reload into
+// an in-place hot update that preserves the sockets. Production strips
+// import.meta.hot, and a fresh page realm starts with an empty container, so the
+// runtime behavior is identical to plain module state.
+interface GatewayRegistryState {
+  config: RegistryConfig | null
+  primaryGateway: HermesGateway | null
+  primaryProfile: string
+  activeKey: string
+  secondaries: Map<string, Secondary>
+  $gateway: ReturnType<typeof atom<HermesGateway | null>>
+}
 
-let activeKey = 'default'
+const STATE_KEY = Symbol.for('hermes.desktop.gatewayRegistryState')
+
+function gatewayState(): GatewayRegistryState {
+  const store = globalThis as unknown as { [STATE_KEY]?: GatewayRegistryState }
+
+  if (!store[STATE_KEY]) {
+    store[STATE_KEY] = {
+      config: null,
+      primaryGateway: null,
+      primaryProfile: 'default',
+      activeKey: 'default',
+      secondaries: new Map<string, Secondary>(),
+      // The active gateway instance, exposed for inline message-stream
+      // components (inline ClarifyTool, model overlays) that call gateway
+      // methods without the instance threaded down through props.
+      $gateway: atom<HermesGateway | null>(null)
+    }
+  }
+
+  return store[STATE_KEY]
+}
+
+const g = gatewayState()
+
+// Re-exported as a stable binding: the atom instance lives in `g`, so every hot
+// reload of this module hands back the SAME atom subscribers are already wired
+// to. (A fresh `atom()` per reload would orphan existing subscriptions.)
+export const $gateway = g.$gateway
+
+export function configureGatewayRegistry(cfg: RegistryConfig): void {
+  g.config = cfg
+}
+
+export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
+  g.primaryGateway = gateway
+  g.primaryProfile = normKey(profile)
+}
 
 export function isActivePrimary(): boolean {
-  return activeKey === primaryProfile
+  return g.activeKey === g.primaryProfile
 }
 
 export function activeGateway(): HermesGateway | null {
-  if (activeKey === primaryProfile) {
-    return primaryGateway
+  if (g.activeKey === g.primaryProfile) {
+    return g.primaryGateway
   }
 
-  return secondaries.get(activeKey)?.gateway ?? primaryGateway
+  return g.secondaries.get(g.activeKey)?.gateway ?? g.primaryGateway
 }
 
 // Mirror a backend's connection state into the global composer state, but only
@@ -80,19 +114,19 @@ export function activeGateway(): HermesGateway | null {
 // composer reflect the active profile's socket without a background reconnect
 // flipping the foreground enabled/disabled state.
 function reportGatewayState(profile: string, state: ConnectionState): void {
-  if (normKey(profile) === activeKey) {
+  if (normKey(profile) === g.activeKey) {
     setGatewayState(state)
   }
 }
 
 export function reportPrimaryGatewayState(state: ConnectionState): void {
-  reportGatewayState(primaryProfile, state)
+  reportGatewayState(g.primaryProfile, state)
 }
 
 function setActive(profile: string): void {
-  activeKey = normKey(profile)
+  g.activeKey = normKey(profile)
   const gateway = activeGateway()
-  $gateway.set(gateway)
+  g.$gateway.set(gateway)
   setGatewayState(gateway?.connectionState ?? 'closed')
 }
 
@@ -165,7 +199,7 @@ function createSecondary(profile: string): Secondary {
     wantOpen: true
   }
 
-  entry.offEvent = gateway.onEvent(event => config?.onEvent(event))
+  entry.offEvent = gateway.onEvent(event => g.config?.onEvent(event))
   entry.offState = gateway.onState(state => {
     reportGatewayState(profile, state)
 
@@ -177,7 +211,7 @@ function createSecondary(profile: string): Secondary {
     }
   })
 
-  secondaries.set(profile, entry)
+  g.secondaries.set(profile, entry)
 
   return entry
 }
@@ -187,13 +221,13 @@ function createSecondary(profile: string): Secondary {
 export async function ensureGatewayForProfile(profile: string): Promise<void> {
   const key = normKey(profile)
 
-  if (key === primaryProfile) {
+  if (key === g.primaryProfile) {
     setActive(key)
 
     return
   }
 
-  let entry = secondaries.get(key)
+  let entry = g.secondaries.get(key)
 
   if (!entry) {
     entry = createSecondary(key)
@@ -218,11 +252,11 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 // Reconnect the active gateway after a transient request failure. Primary
 // reconnects are owned by use-gateway-boot, so we only drive secondaries here.
 export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
-  if (activeKey === primaryProfile) {
-    return primaryGateway
+  if (g.activeKey === g.primaryProfile) {
+    return g.primaryGateway
   }
 
-  const entry = secondaries.get(activeKey)
+  const entry = g.secondaries.get(g.activeKey)
 
   if (!entry) {
     return null
@@ -237,7 +271,7 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
 
 // Wake signal (sleep/network/visibility): nudge every live secondary back open.
 export function reconnectSecondaryGateways(): void {
-  for (const entry of secondaries.values()) {
+  for (const entry of g.secondaries.values()) {
     if (!entry.wantOpen || isOpen(entry.gateway)) {
       continue
     }
@@ -253,7 +287,7 @@ export function reconnectSecondaryGateways(): void {
 export function touchSecondaryGateways(): void {
   const desktop = window.hermesDesktop
 
-  for (const entry of secondaries.values()) {
+  for (const entry of g.secondaries.values()) {
     if (entry.wantOpen) {
       void desktop?.touchBackend?.(entry.profile).catch(() => undefined)
     }
@@ -263,8 +297,8 @@ export function touchSecondaryGateways(): void {
 // Close + evict secondaries whose profile is neither active nor in `keep`
 // (profiles with a running / needs-input session). Bounds cost to live work.
 export function pruneSecondaryGateways(keep: Set<string>): void {
-  for (const [key, entry] of [...secondaries]) {
-    if (key === activeKey || keep.has(key)) {
+  for (const [key, entry] of [...g.secondaries]) {
+    if (key === g.activeKey || keep.has(key)) {
       continue
     }
 
@@ -273,12 +307,12 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
     entry.offEvent()
     entry.offState()
     entry.gateway.close()
-    secondaries.delete(key)
+    g.secondaries.delete(key)
   }
 }
 
 export function closeSecondaryGateways(): void {
-  for (const entry of secondaries.values()) {
+  for (const entry of g.secondaries.values()) {
     entry.wantOpen = false
     clearTimer(entry)
     entry.offEvent()
@@ -286,5 +320,12 @@ export function closeSecondaryGateways(): void {
     entry.gateway.close()
   }
 
-  secondaries.clear()
+  g.secondaries.clear()
+}
+
+// Self-accept so editing this module (or a fan-out that lands here) is an
+// in-place hot update instead of a full page reload — the live sockets in `g`
+// survive the swap. Dev-only: production strips import.meta.hot.
+if (import.meta.hot) {
+  import.meta.hot.accept()
 }

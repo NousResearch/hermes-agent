@@ -44,6 +44,7 @@ const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-ma
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
+const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
 const {
@@ -399,14 +400,9 @@ const WINDOW_BUTTON_POSITION = {
   x: 24,
   y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
 }
-// Width Electron reserves for the Windows/Linux native min/max/close cluster
-// when `titleBarOverlay` is enabled. The OS paints these buttons in the
-// top-right corner of the renderer; we have to leave that much room on the
-// right edge so our system tools (file browser, haptics, settings) don't sit
-// underneath them. macOS uses left-side traffic lights instead and reports a
-// position via getWindowButtonPosition(), so this width is non-zero only on
-// non-macOS platforms.
-const NATIVE_OVERLAY_BUTTON_WIDTH = 144
+// Right-edge window-control reservation width now lives in
+// titlebar-overlay-width.cjs (NATIVE_OVERLAY_BUTTON_WIDTH) so the decision is
+// pure + unit-testable; computeNativeOverlayWidth() applies it per platform.
 const APP_ICON_PATHS = [
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
@@ -525,11 +521,12 @@ function getTitleBarOverlayOptions() {
     return { height: TITLEBAR_HEIGHT }
   }
 
-  // Window Controls Overlay is a Windows/macOS-only Electron feature. On Linux
-  // (including WSLg, where the RDP host draws its own min/max/close) requesting
-  // it does nothing useful, so disable it and let the frameless window stand on
-  // its own (titleBarStyle stays 'hidden').
-  if (!IS_WINDOWS) {
+  // Window Controls Overlay: Windows paints it natively, and WSLg honors it too
+  // (it renders through a real compositor), so keep it enabled there — disabling
+  // it removes the min/max/close buttons entirely. Only plain (non-WSL) Linux,
+  // where some WMs/builds don't support WCO, falls through to no overlay; the
+  // frameless titleBarStyle 'hidden' still applies.
+  if (!IS_WINDOWS && !IS_WSL) {
     return false
   }
 
@@ -551,9 +548,9 @@ function getTitleBarOverlayOptions() {
 }
 
 // Push refreshed overlay options to a live window after a theme/appearance
-// change. No-op on Linux (incl. WSLg), where the overlay is unsupported and
-// getTitleBarOverlayOptions() returns false — calling setTitleBarOverlay there
-// can throw on some Electron Linux builds.
+// change. No-op only on plain (non-WSL) Linux, where getTitleBarOverlayOptions()
+// returns false; the try/catch additionally guards builds where
+// setTitleBarOverlay isn't supported.
 function applyTitleBarOverlay(win) {
   const options = getTitleBarOverlayOptions()
   if (!options || typeof options !== 'object') {
@@ -3787,15 +3784,16 @@ function getWindowButtonPosition() {
 }
 
 function getNativeOverlayWidth() {
-  // Only Windows paints an Electron Window Controls Overlay on the right that
-  // the renderer must inset its right cluster to clear.
-  //   - macOS reports traffic-light coords via windowButtonPosition; its
-  //     titleBarOverlay doesn't reserve right-edge space.
-  //   - Linux (incl. WSLg) doesn't support titleBarOverlay at all — Electron
-  //     paints no native controls there, so reserving width just leaves a dead
-  //     gap and, under WSLg (where the RDP host draws its own min/max/close),
-  //     pushes the right tools out of alignment with those host buttons.
-  return IS_WINDOWS ? NATIVE_OVERLAY_BUTTON_WIDTH : 0
+  // Right-edge width the renderer must keep clear for the native window controls.
+  // Returned to the renderer as --titlebar-tools-right; it anchors the system
+  // tool cluster and feeds the title's max-width + drag-region math.
+  //   - Windows: Electron's Window Controls Overlay paints min/max/close in the
+  //     renderer's top-right.
+  //   - WSLg: honors the same WCO feature, so it reserves the same width.
+  //   - macOS: traffic lights sit on the LEFT (windowButtonPosition); no
+  //     right-edge reservation. Plain Linux: WCO disabled → no reservation.
+  // Decision logic lives in titlebar-overlay-width.cjs (pure + unit-tested).
+  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL })
 }
 
 function getWindowState() {

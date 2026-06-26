@@ -66,6 +66,30 @@ export async function readDesktopFileText(path: string): Promise<HermesReadFileT
   return desktop.api<HermesReadFileTextResult>({ path: fsPath('read-text', path) })
 }
 
+// Save UTF-8 text back to a file. Local writes go through the hardened Electron
+// IPC; remote writes hit the dashboard's POST /api/fs/write-text (same path
+// hardening, parent-must-exist, size cap) so the editor behaves identically in
+// both modes. Stale-on-disk detection is the caller's job (re-read before save).
+export async function writeDesktopFileText(path: string, content: string): Promise<{ path: string }> {
+  const desktop = bridge()
+
+  if (!isDesktopFsRemoteMode()) {
+    if (!desktop.writeTextFile) {
+      throw new Error('Saving is not available')
+    }
+
+    return desktop.writeTextFile(path, content)
+  }
+
+  const result = await desktop.api<{ ok?: boolean; path?: string }>({
+    body: { content, path },
+    method: 'POST',
+    path: '/api/fs/write-text'
+  })
+
+  return { path: result.path || path }
+}
+
 export async function readDesktopFileDataUrl(path: string): Promise<string> {
   const desktop = bridge()
 

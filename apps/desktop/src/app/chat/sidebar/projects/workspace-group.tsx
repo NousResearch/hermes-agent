@@ -129,7 +129,11 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
           )}
           {hiddenCount > 0 &&
             (isProfileGroup ? (
-              <SidebarLoadMoreRow loading={Boolean(group.loadingMore)} onClick={handleProfileLoadMore} step={nextCount} />
+              <SidebarLoadMoreRow
+                loading={Boolean(group.loadingMore)}
+                onClick={handleProfileLoadMore}
+                step={nextCount}
+              />
             ) : (
               <WorkspaceShowMoreButton
                 count={nextCount}

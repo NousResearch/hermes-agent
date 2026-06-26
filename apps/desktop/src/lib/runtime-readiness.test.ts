@@ -67,6 +67,7 @@ describe('interpretRuntimeReadiness', () => {
 describe('fetchRuntimeReadinessSignals', () => {
   it('scopes setup.runtime_check to the requested provider', async () => {
     const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
     const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
 
@@ -83,10 +84,7 @@ describe('fetchRuntimeReadinessSignals', () => {
 
     await fetchRuntimeReadinessSignals(requestGateway, 'nous')
 
-    expect(calls).toEqual([
-      { method: 'setup.status' },
-      { method: 'setup.runtime_check', params: { provider: 'nous' } }
-    ])
+    expect(calls).toEqual([{ method: 'setup.status' }, { method: 'setup.runtime_check', params: { provider: 'nous' } }])
   })
 })
 

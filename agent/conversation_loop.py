@@ -2011,9 +2011,21 @@ def run_conversation(
                     agent.thinking_callback("")
                 api_elapsed = time.time() - api_start_time
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
-                agent._persist_session(messages, conversation_history)
                 interrupted = True
-                final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
+                # Preserve any assistant text already streamed to the user
+                # before the stop landed. Dropping it leaves history with no
+                # record of the half-finished reply on screen, so the next turn
+                # the model "forgets" what it just said — exactly what users hit
+                # when they stop to redirect mid-response.
+                _partial = agent._strip_think_blocks(
+                    getattr(agent, "_current_streamed_assistant_text", "") or ""
+                ).strip()
+                if _partial:
+                    messages.append({"role": "assistant", "content": _partial})
+                    final_response = _partial
+                else:
+                    final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
+                agent._persist_session(messages, conversation_history)
                 break
 
             except Exception as api_error:
@@ -3527,6 +3539,65 @@ def run_conversation(
                             force=True,
                         )
 
+                    # Detect thinking-timeout pattern: a known reasoning model
+                    # hit a transport-layer error before the first content
+                    # token arrived.  Distinct from _is_stream_drop above
+                    # (which fires for large file-write stream drops) and
+                    # from any classifier reason that's not a transport
+                    # timeout.  Reuses the reasoning-model allowlist from
+                    # agent/reasoning_timeouts.py (Fixes #52217) so the
+                    # trigger is consistent with what the per-model
+                    # stale-timeout floor covers.  After the classifier
+                    # override at agent/error_classifier.py:720-738 (this
+                    # PR), transport disconnects on reasoning models route
+                    # to FailoverReason.timeout rather than
+                    # context_overflow, so this branch actually fires.
+                    # Detection and message text live in
+                    # agent.thinking_timeout_guidance so they're
+                    # unit-testable without driving the full retry loop.
+                    # (Part 2 of Fixes #52310.)
+                    from agent.thinking_timeout_guidance import (
+                        is_thinking_timeout,
+                    )
+                    _is_thinking_timeout = is_thinking_timeout(
+                        classified,
+                        _model,
+                        error_msg,
+                    )
+                    if _is_thinking_timeout:
+                        agent._vprint(
+                            f"{agent.log_prefix}   💡 The model's thinking "
+                            f"phase exceeded the upstream proxy's idle "
+                            f"timeout before the first content token "
+                            f"arrived. This is a known issue with "
+                            f"reasoning models behind cloud gateways "
+                            f"(NVIDIA NIM, OpenAI, Anthropic, DeepSeek).",
+                            force=True,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}      Workarounds in priority order:",
+                            force=True,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}      1. Set "
+                            f"`providers.{_provider}.models.{_model}.stale_timeout_seconds: 900` "
+                            f"in `~/.hermes/config.yaml` to extend the per-call "
+                            f"timeout. (Hermes's built-in floor is 600s for "
+                            f"known reasoning models — if you still see this "
+                            f"after raising, the upstream cap is even shorter.)",
+                            force=True,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}      2. Lower `reasoning_budget` or set "
+                            f"`reasoning_effort: medium` on this model if the provider supports it.",
+                            force=True,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}      3. Use a smaller / faster reasoning "
+                            f"model if the task doesn't require deep thinking.",
+                            force=True,
+                        )
+
                     logger.error(
                         "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
                         agent.log_prefix, max_retries, _final_summary,
@@ -3543,7 +3614,22 @@ def run_conversation(
                             _final_response += f"\n\n{_billing_guidance}"
                     else:
                         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
-                    if _is_stream_drop:
+                    if _is_thinking_timeout:
+                        # Thinking-timeout guidance overrides the generic
+                        # stream-drop guidance — the latter is wrong for
+                        # this case (it suggests splitting large file
+                        # writes, which isn't what happened).  See the
+                        # reasoning-model override at
+                        # agent/error_classifier.py:720-738 and the
+                        # detection block above for context.
+                        from agent.thinking_timeout_guidance import (
+                            build_thinking_timeout_guidance,
+                        )
+                        _final_response += build_thinking_timeout_guidance(
+                            provider=_provider,
+                            model=_model,
+                        )
+                    elif _is_stream_drop:
                         _final_response += (
                             "\n\nThe provider's stream connection keeps "
                             "dropping — this often happens when generating "

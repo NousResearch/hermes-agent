@@ -190,9 +190,7 @@ describe('createGatewayEventHandler', () => {
       type: 'review.summary'
     } as any)
 
-    expect(ctx.system.sys).toHaveBeenCalledWith(
-      "💾 Self-improvement review: Skill 'hermes-release' patched"
-    )
+    expect(ctx.system.sys).toHaveBeenCalledWith("💾 Self-improvement review: Skill 'hermes-release' patched")
   })
 
   it('ignores review.summary events with empty or missing text', () => {
@@ -879,7 +877,10 @@ describe('createGatewayEventHandler', () => {
   it('defaults approval overlays to allowPermanent when the backend omits the field', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
-    onEvent({ payload: { command: 'rm -rf /tmp/x', description: 'dangerous command' }, type: 'approval.request' } as any)
+    onEvent({
+      payload: { command: 'rm -rf /tmp/x', description: 'dangerous command' },
+      type: 'approval.request'
+    } as any)
 
     expect(getOverlayState().approval).toMatchObject({ allowPermanent: true })
   })
@@ -1188,9 +1189,9 @@ describe('createGatewayEventHandler', () => {
     // Settle flips busy false (the single drain edge) and the backend
     // "Operation interrupted…" line is suppressed (not appended).
     expect(getUiState().busy).toBe(false)
-    expect(appended.slice(before).some(m => typeof m.text === 'string' && m.text.includes('Operation interrupted'))).toBe(
-      false
-    )
+    expect(
+      appended.slice(before).some(m => typeof m.text === 'string' && m.text.includes('Operation interrupted'))
+    ).toBe(false)
   })
 
   it('persists an abandoned (timed-out) clarify into the transcript when the clarify tool completes', () => {

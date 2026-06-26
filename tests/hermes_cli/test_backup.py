@@ -2098,6 +2098,32 @@ class TestRestoreCronJobsIfEmptied:
         result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
         assert result is None
 
+    def test_restores_when_partial_job_loss(self, tmp_path):
+        """Desktop scheduler overwrites jobs.json with its own small set,
+        losing tool-created crons while keeping desktop-tracked ones."""
+        from hermes_cli.backup import restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        # Pre-update: 19 jobs (18 tool-created + 1 desktop watchdog).
+        self._seed_jobs(
+            jobs_path,
+            [{"id": f"job-{i}"} for i in range(19)],
+        )
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # Desktop scheduler overwrites with only its own 1 job.
+        jobs_path.write_text(json.dumps({"jobs": [{"id": "desktop-watchdog"}]}))
+
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result is not None
+        assert result["restored"] is True
+        assert result["job_count"] == 19
+
+        # The live file now has all 19 jobs back.
+        restored = json.loads(jobs_path.read_text())
+        assert len(restored["jobs"]) == 19
+
     def test_noop_when_snapshot_had_no_jobs(self, tmp_path):
         from hermes_cli.backup import restore_cron_jobs_if_emptied
         hermes_home = tmp_path / ".hermes"

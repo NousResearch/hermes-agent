@@ -25,7 +25,7 @@ const {
   waitForDashboardReadyFile,
   resolvePortAnnounceTimeoutMs,
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
-  MIN_PORT_ANNOUNCE_TIMEOUT_MS,
+  MIN_PORT_ANNOUNCE_TIMEOUT_MS
 } = require('./backend-ready.cjs')
 
 // A minimal stand-in for a spawned child process: an EventEmitter with a

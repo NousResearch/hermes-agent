@@ -10,6 +10,7 @@ import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overla
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
@@ -25,6 +26,7 @@ import {
 import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
+  $fileBrowserOpen,
   $panesFlipped,
   $pinnedSessionIds,
   $sessionsLimit,
@@ -42,8 +44,14 @@ import {
   unpinSession
 } from '../store/layout'
 import { respondToApprovalAction } from '../store/native-notifications'
+import { $paneOpen } from '../store/panes'
 import { setPetActivity } from '../store/pet'
-import { setPetOverlayOpenAppHandler, setPetOverlaySubmitHandler } from '../store/pet-overlay'
+import { setPetScale } from '../store/pet-gallery'
+import {
+  setPetOverlayOpenAppHandler,
+  setPetOverlayScaleHandler,
+  setPetOverlaySubmitHandler
+} from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -223,6 +231,8 @@ export function DesktopController() {
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const terminalTakeover = useStore($terminalTakeover)
   const reviewOpen = useStore($reviewOpen)
+  const fileBrowserOpen = useStore($fileBrowserOpen)
+  const previewPaneOpen = useStore($paneOpen(PREVIEW_PANE_ID))
   const panesFlipped = useStore($panesFlipped)
   const profileScope = useStore($profileScope)
   // Below SIDEBAR_COLLAPSE_BREAKPOINT_PX there's no room for a docked rail —
@@ -934,6 +944,8 @@ export function DesktopController() {
   submitTextRef.current = submitText
   const resumeSessionRef = useRef(resumeSession)
   resumeSessionRef.current = resumeSession
+  const requestGatewayRef = useRef(requestGateway)
+  requestGatewayRef.current = requestGateway
 
   useEffect(() => {
     if (isSecondaryWindow()) {
@@ -941,6 +953,9 @@ export function DesktopController() {
     }
 
     setPetOverlaySubmitHandler(text => void submitTextRef.current(text))
+    // Alt+wheel resize from the popped-out pet — persist it through this
+    // window's gateway (the overlay has none) so it survives restart.
+    setPetOverlayScaleHandler(scale => setPetScale(requestGatewayRef.current, scale))
     // Mail icon: $sessions is ordered most-recent-first; the pet is global (not
     // per session) so "most recent" is the right target. main.cjs already raised
     // the window before forwarding this.
@@ -955,6 +970,7 @@ export function DesktopController() {
     return () => {
       setPetOverlaySubmitHandler(null)
       setPetOverlayOpenAppHandler(null)
+      setPetOverlayScaleHandler(null)
     }
   }, [])
 
@@ -1186,7 +1202,7 @@ export function DesktopController() {
       }}
       onDismissError={dismissError}
       onEdit={editMessage}
-      onPasteClipboardImage={() => void composer.pasteClipboardImage()}
+      onPasteClipboardImage={opts => composer.pasteClipboardImage(opts)}
       onPickFiles={() => void composer.pickContextPaths('file')}
       onPickFolders={() => void composer.pickContextPaths('folder')}
       onPickImages={() => void composer.pickImages()}
@@ -1206,6 +1222,17 @@ export function DesktopController() {
   // browser + preview rail → left. Same panes, swapped sides.
   const sidebarSide = panesFlipped ? 'right' : 'left'
   const railSide = panesFlipped ? 'left' : 'right'
+
+  // Other sidebars docked as real columns on the terminal's rail. Force-collapsed
+  // hover-reveal overlays (narrow window) don't take a column, so they don't count.
+  const railColumnOpen =
+    (chatOpen && Boolean(previewTarget || filePreviewTarget) && previewPaneOpen) ||
+    (chatOpen && !narrowViewport && fileBrowserOpen) ||
+    (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
+
+  // Once the terminal would share its rail with another sidebar, drop it to a
+  // full-width row beneath them rather than cramming in one more skinny column.
+  const terminalAsRow = terminalSidebarOpen && railColumnOpen
 
   const previewPane = (
     <Pane
@@ -1277,18 +1304,31 @@ export function DesktopController() {
 
   const terminalPane = (
     <Pane
+      bottomRow={terminalAsRow}
       defaultOpen
       disabled={!terminalSidebarOpen}
       divider
+      height="38vh"
       id="terminal-sidebar"
       key="terminal-sidebar"
+      maxHeight="80vh"
       maxWidth="80vw"
+      minHeight="8rem"
       minWidth="22vw"
       resizable
       side={railSide}
       width="42vw"
     >
-      <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-(--ui-editor-surface-background) pt-(--titlebar-height)">
+      {/* As a column the terminal clears the titlebar; as a bottom row it sits
+          below the rail's panes (so it fills its row edge-to-edge) and gets a
+          left border separating it from the chat — the column-mode separator
+          lives on the resize sash, which moves to the top edge as a row. */}
+      <div
+        className={cn(
+          'relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-(--ui-editor-surface-background)',
+          terminalAsRow ? 'border-l border-(--ui-stroke-secondary) pt-0' : 'pt-(--titlebar-height)'
+        )}
+      >
         <TerminalSlot />
       </div>
     </Pane>

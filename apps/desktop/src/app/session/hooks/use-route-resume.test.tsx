@@ -24,11 +24,7 @@ interface HarnessProps {
   startFreshSessionDraft: (focus: boolean) => unknown
 }
 
-function RouteResumeHarness({
-  resumeFailedSessionId = null,
-  resumeExhaustedSessionId = null,
-  ...props
-}: HarnessProps) {
+function RouteResumeHarness({ resumeFailedSessionId = null, resumeExhaustedSessionId = null, ...props }: HarnessProps) {
   useRouteResume({ ...props, resumeExhaustedSessionId, resumeFailedSessionId })
 
   return null
@@ -424,11 +420,13 @@ describe('useRouteResume bounded auto-retry after a failed resume', () => {
     // the store, which doesn't feed back into the prop in this harness.
     const { rerender } = render(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
     resumeSession.mockClear()
+
     for (let i = 0; i < 8; i += 1) {
       vi.advanceTimersByTime(8_000)
       rerender(<RouteResumeHarness {...props} resumeFailedSessionId={null} />)
       rerender(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
     }
+
     expect(resumeSession.mock.calls.length).toBe(4) // capped
     expect($resumeExhaustedSessionId.get()).toBe('session-1')
 
@@ -464,6 +462,7 @@ describe('useRouteResume bounded auto-retry after a failed resume', () => {
     const { rerender } = render(
       <RouteResumeHarness {...props} resumeFailedSessionId="session-1" resumeSession={vi.fn(async () => undefined)} />
     )
+
     for (let j = 0; j < 8; j += 1) {
       rerender(
         <RouteResumeHarness {...props} resumeFailedSessionId="session-1" resumeSession={vi.fn(async () => undefined)} />

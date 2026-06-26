@@ -600,6 +600,35 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
         assert "does not exist" in result["error"]
 
+    def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_usage.is_protected_builtin", return_value=False), \
+                 patch("tools.skill_usage.is_hub_installed", return_value=False), \
+                 patch("tools.skill_usage.is_bundled",
+                       side_effect=lambda skill_name: skill_name == "bundled"):
+                skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
+                skill_manage(action="create", name="bundled", content=VALID_SKILL_CONTENT)
+                raw = skill_manage(
+                    action="delete",
+                    name="bundled",
+                    absorbed_into="umbrella",
+                )
+        finally:
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+        assert (tmp_path / "bundled" / "SKILL.md").exists()
+
 
 class TestSecurityScanGate:
     """_security_scan_skill is gated by skills.guard_agent_created config flag."""
@@ -848,6 +877,40 @@ class TestExternalSkillMutations:
         assert result["success"] is True, result
         assert (local / "fresh-skill" / "SKILL.md").exists()
         assert not (external / "fresh-skill").exists()
+
+    def test_background_review_refuses_to_patch_external_skill(self, tmp_path):
+        """Autonomous curator runs treat skills.external_dirs as read-only."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _two_roots(local, external), patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=[external.resolve()],
+            ):
+                raw = skill_manage(
+                    action="patch",
+                    name="ext-skill",
+                    old_string="OLD_MARKER",
+                    new_string="NEW_MARKER",
+                )
+        finally:
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "external" in result["error"].lower()
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
+        assert "NEW_MARKER" not in (skill_dir / "SKILL.md").read_text()
 
 
 

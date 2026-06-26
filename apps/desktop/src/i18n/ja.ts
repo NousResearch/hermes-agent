@@ -1438,7 +1438,8 @@ export const ja = defineLocale({
       copyPath: 'パスをコピー',
       removeFromSidebar: 'サイドバーから削除',
       createFailed: 'プロジェクトを作成できませんでした',
-      deleteConfirm: 'Hermes から保存済みプロジェクトを削除します。ファイル・git リポジトリ・ワークツリーはそのまま残ります。',
+      deleteConfirm:
+        'Hermes から保存済みプロジェクトを削除します。ファイル・git リポジトリ・ワークツリーはそのまま残ります。',
       startWork: '新しいワークツリー',
       newWorktreeTitle: '新しいワークツリー',
       newWorktreeDesc: 'このワークツリーのブランチ名を入力してください。',
@@ -2026,6 +2027,15 @@ export const ja = defineLocale({
     truncated: '最初の 512 KB を表示しています。',
     noInlineTitle: 'インラインプレビューなし',
     noInlineBody: mimeType => `${mimeType || 'このファイルタイプ'} はコンテキストとして添付できます。`,
+    edit: '編集',
+    editing: '編集中',
+    unsavedChanges: '未保存の変更',
+    saveFailed: message => `保存できませんでした：${message}`,
+    diskChangedTitle: 'ファイルがディスク上で変更されました',
+    diskChangedBody:
+      'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',
+    overwrite: '上書き',
+    discardReload: '破棄して再読み込み',
     console: {
       deselect: 'エントリーの選択を解除',
       select: 'エントリーを選択',
@@ -2141,10 +2151,8 @@ export const ja = defineLocale({
       loadingQuestion: '質問を読み込み中…',
       other: 'その他（回答を入力）',
       placeholder: '回答を入力…',
-      shortcutSuffix: ' で送信',
-      back: '戻る',
       skip: 'スキップ',
-      send: '送信'
+      continueLabel: '続行'
     },
     tool: {
       code: 'コード',

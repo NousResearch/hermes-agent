@@ -623,13 +623,20 @@ def _handle_block(args: dict, **kw) -> str:
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
     reason = redact_sensitive_text(str(reason), force=True)
+    kind = args.get("kind")
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
+        if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
+            conn.close()
+            return tool_error(
+                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)"
+            )
         try:
             ok = kb.block_task(
                 conn, tid,
                 reason=reason,
+                kind=kind,
                 expected_run_id=_worker_run_id(tid),
             )
             if not ok:
@@ -638,7 +645,15 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            # Tell the worker where the task actually landed so it doesn't
+            # assume it's sitting in 'blocked' when routing sent it elsewhere.
+            landed = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=landed.status if landed else "blocked",
+                block_kind=kind,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -1192,11 +1207,16 @@ KANBAN_COMPLETE_SCHEMA = {
 KANBAN_BLOCK_SCHEMA = {
     "name": "kanban_block",
     "description": (
-        "Transition the task to blocked because you need human input "
-        "to proceed. ``reason`` will be shown to the human on the "
-        "board and included in context when someone unblocks you. "
-        "Use for genuine blockers only — don't block on things you can "
-        "resolve yourself."
+        "Stop work on this task and route it according to WHY you're stuck. "
+        "Set ``kind`` to say which: 'dependency' (waiting on another task — "
+        "goes to todo and auto-resumes when that task finishes, no human "
+        "needed), 'needs_input' (you need a human decision/answer), "
+        "'capability' (a hard wall: no access, missing credentials, an action "
+        "no agent can do), or 'transient' (a flaky failure that may clear). "
+        "``reason`` is shown to the human on the board. If a task keeps "
+        "getting unblocked and re-blocked for the same reason, it is "
+        "auto-escalated to triage. Use for genuine blockers only — don't "
+        "block on things you can resolve yourself."
     ),
     "parameters": {
         "type": "object",
@@ -1208,9 +1228,18 @@ KANBAN_BLOCK_SCHEMA = {
             "reason": {
                 "type": "string",
                 "description": (
-                    "What you need answered, in one or two sentences. "
-                    "Don't paste the whole conversation; the human has "
-                    "the board and can ask follow-ups via comments."
+                    "What you need answered or what stopped you, in one or "
+                    "two sentences. Don't paste the whole conversation; the "
+                    "human has the board and can ask follow-ups via comments."
+                ),
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["dependency", "needs_input", "capability", "transient"],
+                "description": (
+                    "Why you're blocked. 'dependency' waits in todo and "
+                    "resumes automatically; the others surface to a human. "
+                    "Omit only if none apply."
                 ),
             },
             "board": _board_schema_prop(),

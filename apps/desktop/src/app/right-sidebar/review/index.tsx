@@ -83,61 +83,61 @@ export function ReviewPane() {
     >
       {(loading || isRepo) && (
         <RightSidebarSectionHeader data-suppress-pane-reveal-side="">
-        <div className="flex min-w-0 flex-1">
-          <SidebarPanelLabel>{c.review}</SidebarPanelLabel>
-        </div>
-        <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
-          <Button
-            aria-label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}
-            className={ACTION_BTN}
-            disabled={!hasFiles}
-            onClick={toggleReviewTreeMode}
-            size="icon-xs"
-            variant="ghost"
-          >
-            <Codicon name={treeMode === 'tree' ? 'list-flat' : 'list-tree'} size="0.8125rem" />
-          </Button>
-        </Tip>
-        <Tip label={c.stageAll}>
-          <Button
-            aria-label={c.stageAll}
-            className={ACTION_BTN}
-            disabled={!hasFiles}
-            onClick={() => void stageReviewFile(null).catch(err => notifyError(err, c.stageAll))}
-            size="icon-xs"
-            variant="ghost"
-          >
-            <Codicon name="add" size="0.8125rem" />
-          </Button>
-        </Tip>
-        <Tip label={c.revertAll}>
-          <Button
-            aria-label={c.revertAll}
-            className={ACTION_BTN}
-            disabled={!hasFiles}
-            onClick={() => requestRevert(null)}
-            size="icon-xs"
-            variant="ghost"
-          >
-            <Codicon name="discard" size="0.8125rem" />
-          </Button>
-        </Tip>
-        <Tip label={t.rightSidebar.refreshTree}>
-          <Button
-            aria-label={t.rightSidebar.refreshTree}
-            className={ACTION_BTN}
-            onClick={() => void refreshReview()}
-            size="icon-xs"
-            variant="ghost"
-          >
-            <Codicon name="refresh" size="0.8125rem" spinning={loading} />
-          </Button>
-        </Tip>
-        <Tip label={c.close}>
-          <Button aria-label={c.close} className={ACTION_BTN} onClick={closeReview} size="icon-xs" variant="ghost">
-            <Codicon name="close" size="0.8125rem" />
-          </Button>
-        </Tip>
+          <div className="flex min-w-0 flex-1">
+            <SidebarPanelLabel>{c.review}</SidebarPanelLabel>
+          </div>
+          <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
+            <Button
+              aria-label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}
+              className={ACTION_BTN}
+              disabled={!hasFiles}
+              onClick={toggleReviewTreeMode}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name={treeMode === 'tree' ? 'list-flat' : 'list-tree'} size="0.8125rem" />
+            </Button>
+          </Tip>
+          <Tip label={c.stageAll}>
+            <Button
+              aria-label={c.stageAll}
+              className={ACTION_BTN}
+              disabled={!hasFiles}
+              onClick={() => void stageReviewFile(null).catch(err => notifyError(err, c.stageAll))}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name="add" size="0.8125rem" />
+            </Button>
+          </Tip>
+          <Tip label={c.revertAll}>
+            <Button
+              aria-label={c.revertAll}
+              className={ACTION_BTN}
+              disabled={!hasFiles}
+              onClick={() => requestRevert(null)}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name="discard" size="0.8125rem" />
+            </Button>
+          </Tip>
+          <Tip label={t.rightSidebar.refreshTree}>
+            <Button
+              aria-label={t.rightSidebar.refreshTree}
+              className={ACTION_BTN}
+              onClick={() => void refreshReview()}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name="refresh" size="0.8125rem" spinning={loading} />
+            </Button>
+          </Tip>
+          <Tip label={c.close}>
+            <Button aria-label={c.close} className={ACTION_BTN} onClick={closeReview} size="icon-xs" variant="ghost">
+              <Codicon name="close" size="0.8125rem" />
+            </Button>
+          </Tip>
         </RightSidebarSectionHeader>
       )}
 

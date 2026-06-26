@@ -253,13 +253,11 @@ def evaluate_credits_notices(
     latch = {"active": set[str], "seen_below_90": bool, "usage_band": Optional[int]}.
 
     ``model_is_free``: True when the session's active model is a Nous free-tier
-    model (see :func:`is_free_tier_model`). Suppresses BOTH the ``credits.depleted``
-    notice AND the ``credits.usage`` gauge (50/75/90% bands) — a free model is $0
-    and cannot add to the subscription cap, so neither alarm is actionable there
-    and both just read as "the free model is charging me". A showing gauge/banner
-    is cleared on the switch to a free model. Suppression does NOT emit the
-    "restored" success notice; that fires only on a genuine ``paid_access`` flip
-    back to True.
+    model (see :func:`is_free_tier_model`). Suppresses the ``credits.depleted``
+    notice — a depleted account on a free model can keep inferencing, so the
+    error banner is noise (and confuses free-tier users who never had credits).
+    Suppression does NOT emit the "restored" success notice; that fires only on
+    a genuine ``paid_access`` flip back to True.
 
     Returns ``(to_show: list[AgentNotice], to_clear: list[str])``.
     Caller emits to_clear FIRST, then to_show.
@@ -309,23 +307,9 @@ def evaluate_credits_notices(
     # ── usage gauge (escalating single notice: 50 → 75 → 90) ──────────────────
     # Show only the highest crossed band; replace the line when the band changes
     # (climb or step-down on recovery); clear entirely when usage drops below the
-    # lowest band, the denominator disappears (uf is None), or the active model is
-    # free.
-    #
-    # Free-model suppression (billing-confusion report): a free model is $0 and
-    # cannot add to the subscription cap, so a cap-usage warning while on a free
-    # model is not actionable — it just reads as "the free model is charging me".
-    # This mirrors the `credits.depleted` suppression below: if we already hide
-    # the harder "access paused" alarm on free models, the softer pre-warning has
-    # no business firing there either. ``not model_is_free`` forces target_band to
-    # None on a free model, which both suppresses a new band and CLEARS one that
-    # was already showing (e.g. user switches from a paid to a free model).
+    # lowest band or the denominator disappears (uf is None).
     shown_band = latch.get("usage_band")  # the pct label currently displayed, or None
-    target_band = (
-        current_band[2]
-        if (current_band and latch["seen_below_90"] and not model_is_free)
-        else None
-    )
+    target_band = current_band[2] if (current_band and latch["seen_below_90"]) else None
     if target_band != shown_band:
         if CREDITS_USAGE_KEY in active:
             to_clear.append(CREDITS_USAGE_KEY)
@@ -335,13 +319,9 @@ def evaluate_credits_notices(
             # without subscription_limit_usd. Render "$? cap" rather than "$None cap".
             _cap_usd = state.subscription_limit_usd or "?"
             _level = current_band[1]  # type: ignore[index]  (current_band set when target_band set)
-            # "Monthly credits …" frames this as cumulative consumption of the
-            # recurring subscription cap, NOT a per-message charge — the #1 misread
-            # behind the billing-confusion report.
-            _icon = "⚠" if _level == "warn" else "•"
             to_show.append(
                 AgentNotice(
-                    text=f"{_icon} Monthly credits {target_band}% used · ${_cap_usd} cap",
+                    text=f"{'⚠' if _level == 'warn' else '•'} Credits {target_band}% used · ${_cap_usd} cap",
                     level=_level,
                     kind=CREDITS_NOTICE_KIND,
                     key=CREDITS_USAGE_KEY,

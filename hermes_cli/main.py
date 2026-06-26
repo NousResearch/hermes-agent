@@ -11979,6 +11979,22 @@ def cmd_dashboard(args):
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
 
+# ── Frontend isolation from a desktop-inherited HERMES_WEB_DIST ────
+    # The Desktop Electron app spawns its dashboard backend with BOTH
+    # HERMES_DESKTOP=1 and HERMES_WEB_DIST=<app.asar/dist> (the packaged
+    # desktop frontend).  A standalone `hermes dashboard` launched from a
+    # shell that inherited that HERMES_WEB_DIST (e.g. a terminal opened by
+    # Desktop) would then serve the desktop frontend instead of the
+    # dashboard's own bundled web_dist, producing a white screen titled
+    # "Hermes" with "Desktop IPC bridge is unavailable." (issue #52945).
+    # The Web Dashboard always ships its own frontend at
+    # hermes_cli/web_dist, so drop an inherited HERMES_WEB_DIST unless this
+    # process IS the desktop-spawned backend (HERMES_DESKTOP=1, which
+    # legitimately points at the packaged dist).
+    if os.environ.get("HERMES_DESKTOP") != "1":
+        os.environ.pop("HERMES_WEB_DIST", None)
+
+
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
     # profile via the per-request ?profile= scoping. Running one dashboard

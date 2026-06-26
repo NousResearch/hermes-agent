@@ -232,3 +232,45 @@ class TestUnifiedDashboardRouting:
                 "thread_name": "dashboard-mcp-discovery",
             }
         ]
+
+
+class TestDashboardWebDistIsolation:
+    """`hermes dashboard` must serve its OWN bundled frontend, not a
+    HERMES_WEB_DIST inherited from a Desktop Electron parent (issue #52945).
+    Desktop spawns its backend with HERMES_DESKTOP=1 + HERMES_WEB_DIST set to
+    the packaged app.asar/dist; a standalone dashboard launched from a shell
+    that inherited that env would otherwise white-screen on the desktop
+    frontend."""
+
+    def test_standalone_dashboard_drops_inherited_web_dist(self, main_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.setenv("HERMES_WEB_DIST", "/Applications/Hermes.app/Contents/Resources/app.asar/dist")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        # Bail right after the isolation block so we don't start a server.
+        monkeypatch.setitem(sys.modules, "fastapi", None)
+
+        with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
+            main_mod.cmd_dashboard(_args())
+
+        # The inherited desktop dist was dropped → web_server falls back to the
+        # bundled hermes_cli/web_dist.
+        assert "HERMES_WEB_DIST" not in main_mod.os.environ
+
+    def test_desktop_spawned_backend_keeps_web_dist(self, main_mod, monkeypatch):
+        """The desktop-spawned backend itself (HERMES_DESKTOP=1) legitimately
+        points HERMES_WEB_DIST at the packaged dist; the guard must NOT strip
+        it for that process."""
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        packaged = "/Applications/Hermes.app/Contents/Resources/app.asar/dist"
+        monkeypatch.setenv("HERMES_WEB_DIST", packaged)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        monkeypatch.setitem(sys.modules, "fastapi", None)
+
+        with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
+            main_mod.cmd_dashboard(_args())
+
+        assert main_mod.os.environ.get("HERMES_WEB_DIST") == packaged

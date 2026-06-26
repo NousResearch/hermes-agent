@@ -503,9 +503,7 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   return (
     <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
       <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed">
-        {beforeRows > 0 && (
-          <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />
-        )}
+        {beforeRows > 0 && <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />}
         {visibleChunks.map(chunk => (
           <Fragment key={chunk.start}>
             <div className="select-none text-right text-muted-foreground/55">
@@ -547,9 +545,7 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
             </div>
           </Fragment>
         ))}
-        {afterRows > 0 && (
-          <div aria-hidden className="col-span-2" style={{ height: afterRows * SOURCE_LINE_PX }} />
-        )}
+        {afterRows > 0 && <div aria-hidden className="col-span-2" style={{ height: afterRows * SOURCE_LINE_PX }} />}
       </div>
     </div>
   )
@@ -880,11 +876,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
     return (
       <PreviewEmptyState
-        body={
-          binary
-            ? t.preview.binaryBody(target.label)
-            : t.preview.largeBody(target.label, formatBytes(size))
-        }
+        body={binary ? t.preview.binaryBody(target.label) : t.preview.largeBody(target.label, formatBytes(size))}
         primaryAction={{ label: t.preview.previewAnyway, onClick: () => setForcePreview(true) }}
         title={binary ? t.preview.binaryTitle : t.preview.largeTitle}
         tone="warning"
@@ -981,10 +973,5 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     )
   }
 
-  return (
-    <PreviewEmptyState
-      body={t.preview.noInlineBody(target.mimeType || '')}
-      title={t.preview.noInlineTitle}
-    />
-  )
+  return <PreviewEmptyState body={t.preview.noInlineBody(target.mimeType || '')} title={t.preview.noInlineTitle} />
 }

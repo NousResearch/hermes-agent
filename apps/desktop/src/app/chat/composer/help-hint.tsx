@@ -33,7 +33,7 @@ export function HelpHint() {
 
       <Section title={c.hotkeys}>
         {COMPOSER_HOTKEY_ROWS.map(row => (
-          <HotkeyRow description={c.hotkeyDescs[row.id] ?? ''} combos={[...row.combos]} key={row.id} />
+          <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? ''} key={row.id} />
         ))}
       </Section>
 

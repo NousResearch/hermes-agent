@@ -3,12 +3,7 @@ import { contextPath } from '@/lib/chat-runtime'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
 
-import {
-  composerPlainText,
-  normalizeComposerEditorDom,
-  placeCaretEnd,
-  refChipElement
-} from './rich-editor'
+import { composerPlainText, normalizeComposerEditorDom, placeCaretEnd, refChipElement } from './rich-editor'
 
 /** A chip to insert: a raw `@kind:value` string, or a typed value + display label. */
 export type InlineRefInput = string | { kind: string; label?: string; value: string }
@@ -159,6 +154,7 @@ export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonl
   editor.focus({ preventScroll: true })
 
   const selection = window.getSelection()
+
   const range =
     selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer)
       ? selection.getRangeAt(0)

@@ -77,13 +77,7 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
-import {
-  $newChatProfile,
-  $profiles,
-  $profileScope,
-  ALL_PROFILES,
-  normalizeProfileKey
-} from '@/store/profile'
+import { $newChatProfile, $profiles, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
   $activeProjectId,
   $projects,
@@ -247,7 +241,12 @@ function ReorderableList({
   }
 
   return (
-    <DndContext autoScroll={reorderAutoScroll} collisionDetection={closestCenter} onDragEnd={handleDragEnd} sensors={sensors}>
+    <DndContext
+      autoScroll={reorderAutoScroll}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+      sensors={sensors}
+    >
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>
         {children}
       </SortableContext>
@@ -1119,9 +1118,7 @@ export function ChatSidebar({
   )
 
   const recentsVirtualizes =
-    !displayAgentGroups?.length &&
-    !agentProjectTree?.length &&
-    displayAgentSessions.length >= VIRTUALIZE_THRESHOLD
+    !displayAgentGroups?.length && !agentProjectTree?.length && displayAgentSessions.length >= VIRTUALIZE_THRESHOLD
 
   // Keep the persisted parent + worktree orders reconciled with what's on screen:
   // freshly-seen repos/worktrees surface at the top, vanished ones drop out of
@@ -1439,11 +1436,13 @@ export function ChatSidebar({
                 }
                 label={sessionsLabel}
                 labelMeta={
-                  worktreeGroupingActive
-                    ? reposScanning && !projectsSkeletonVisible
-                      ? <GlyphSpinner ariaLabel={s.loading} className="text-[0.6875rem] text-(--ui-text-quaternary)" />
-                      : undefined
-                    : recentsMeta
+                  worktreeGroupingActive ? (
+                    reposScanning && !projectsSkeletonVisible ? (
+                      <GlyphSpinner ariaLabel={s.loading} className="text-[0.6875rem] text-(--ui-text-quaternary)" />
+                    ) : undefined
+                  ) : (
+                    recentsMeta
+                  )
                 }
                 liveSessions={inProject ? agentSessions : undefined}
                 onArchiveSession={onArchiveSession}
@@ -1458,7 +1457,9 @@ export function ChatSidebar({
                 onTogglePin={pinSession}
                 open={agentsOpen}
                 pinned={false}
-                projectBackRow={inProject ? <ProjectBackRow label={s.projects.back} onClick={exitProjectScope} /> : undefined}
+                projectBackRow={
+                  inProject ? <ProjectBackRow label={s.projects.back} onClick={exitProjectScope} /> : undefined
+                }
                 projectContent={inProject ? enteredProjectContent : undefined}
                 projectOverview={projectOverview}
                 projectOverviewPreviews={overviewPreviews}
@@ -1562,7 +1563,15 @@ interface SidebarSectionHeaderProps {
   collapsible?: boolean
 }
 
-function SidebarSectionHeader({ label, open, onToggle, action, meta, icon, collapsible = true }: SidebarSectionHeaderProps) {
+function SidebarSectionHeader({
+  label,
+  open,
+  onToggle,
+  action,
+  meta,
+  icon,
+  collapsible = true
+}: SidebarSectionHeaderProps) {
   const labelBody = (
     <>
       {icon}
@@ -1597,7 +1606,10 @@ function SidebarSessionSkeletons() {
   return (
     <div aria-hidden="true" className="grid gap-px">
       {['w-32', 'w-40', 'w-28', 'w-36', 'w-24'].map((width, i) => (
-        <div className="grid min-h-[1.625rem] grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md pl-2" key={`${width}-${i}`}>
+        <div
+          className="grid min-h-[1.625rem] grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md pl-2"
+          key={`${width}-${i}`}
+        >
           <Skeleton className={cn('h-3 rounded-sm', width)} />
           <Skeleton className="mx-auto size-3.5 rounded-sm opacity-60" />
         </div>
@@ -1732,8 +1744,7 @@ function SidebarSessionsSection({
   const hasProjectContent = Boolean(projectContent && projectContent.sessionCount > 0)
 
   const showEmptyState =
-    forceEmptyState ||
-    (!hasGroupedSessions && !hasProjectOverview && !hasProjectContent && sessions.length === 0)
+    forceEmptyState || (!hasGroupedSessions && !hasProjectOverview && !hasProjectContent && sessions.length === 0)
 
   // The flat recents/pinned list is the only place sessions reorder by hand;
   // grouped/tree views always sort by creation date and never drag.
@@ -1828,7 +1839,11 @@ function SidebarSessionsSection({
 
     inner =
       projectsDraggable && onReorderProjects ? (
-        <ReorderableList ids={projectOverview.map(project => project.id)} onReorder={onReorderProjects} sensors={dndSensors}>
+        <ReorderableList
+          ids={projectOverview.map(project => project.id)}
+          onReorder={onReorderProjects}
+          sensors={dndSensors}
+        >
           {rows}
         </ReorderableList>
       ) : (
@@ -1837,7 +1852,12 @@ function SidebarSessionsSection({
   } else if (groups?.length) {
     // Profile/source groups never reorder; render them flat with static rows.
     inner = groups.map(group => (
-      <SidebarWorkspaceGroup group={group} key={group.id} onNewSession={onNewSessionInWorkspace} renderRows={renderRows} />
+      <SidebarWorkspaceGroup
+        group={group}
+        key={group.id}
+        onNewSession={onNewSessionInWorkspace}
+        renderRows={renderRows}
+      />
     ))
   } else if (flatVirtualized) {
     const virtual = (

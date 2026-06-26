@@ -108,6 +108,7 @@ export async function refreshReview(): Promise<void> {
   if (!$reviewOpen.get() || !ctx) {
     $reviewFiles.set([])
     $reviewIsRepo.set(Boolean(ctx))
+
     // Critical: clear loading on the no-cwd / not-a-repo path too. It's set
     // true (optimistically) before a refresh is scheduled, so skipping it here
     // strands the pane on a forever-skeleton for a fresh, detached chat.

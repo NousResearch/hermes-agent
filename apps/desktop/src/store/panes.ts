@@ -25,7 +25,9 @@ function isSnapshot(value: unknown): value is PaneStateSnapshot {
     return false
   }
 
-  const widthOk = r.widthOverride === undefined || (typeof r.widthOverride === 'number' && Number.isFinite(r.widthOverride))
+  const widthOk =
+    r.widthOverride === undefined || (typeof r.widthOverride === 'number' && Number.isFinite(r.widthOverride))
+
   const heightOk =
     r.heightOverride === undefined || (typeof r.heightOverride === 'number' && Number.isFinite(r.heightOverride))
 

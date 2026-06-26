@@ -48,14 +48,18 @@ const renderBillingError = (
       sys('🔴 Terminal billing is turned off for this org — an admin must enable it on the portal.')
 
       break
-
     case 'monthly_cap_exceeded': {
       // Surface the remaining headroom the server attaches (parity with the CLI).
       const remaining = env.payload?.remainingUsd
-      sys(remaining != null ? `🔴 Monthly spend cap reached — $${remaining} headroom left.` : '🔴 Monthly spend cap reached.')
+      sys(
+        remaining != null
+          ? `🔴 Monthly spend cap reached — $${remaining} headroom left.`
+          : '🔴 Monthly spend cap reached.'
+      )
 
       break
     }
+
     case 'rate_limited': {
       const mins = env.retry_after ? ` (try again in ~${Math.max(1, Math.round(env.retry_after / 60))} min)` : ''
       sys(`🟡 Too many charges right now${mins}. This isn't a payment failure.`)
@@ -105,6 +109,7 @@ const armStepUp = (sys: Sys, ctx: SlashRunCtx): void => {
                           '🟡 Permission granted, but terminal billing is still turned off ' +
                             'for this org. Enable it in the portal, then run /billing again.'
                         )
+
                         if (s.portal_url) {
                           sys(`Portal: ${s.portal_url}`)
                         }
@@ -177,6 +182,7 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
               '🟡 Still processing after 5 minutes — this is a timeout, not a failure. ' +
                 'Check /billing or the portal shortly.'
             )
+
             if (portalUrl) {
               sys(`Portal: ${portalUrl}`)
             }

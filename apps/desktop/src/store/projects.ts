@@ -142,10 +142,7 @@ export function projectIdForCwd(cwd: string): null | string {
     // Match project + repo roots AND each worktree-lane path: a linked worktree
     // (e.g. a sibling `repo-retry`) lives OUTSIDE the repo root, so root-prefix
     // matching alone would miss it — but it's still part of the project.
-    const paths = [
-      project.path,
-      ...project.repos.flatMap(repo => [repo.path, ...repo.groups.map(group => group.path)])
-    ]
+    const paths = [project.path, ...project.repos.flatMap(repo => [repo.path, ...repo.groups.map(group => group.path)])]
 
     for (const path of paths) {
       const p = (path || '').trim()

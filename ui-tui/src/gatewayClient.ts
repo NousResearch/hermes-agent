@@ -410,7 +410,9 @@ export class GatewayClient extends EventEmitter {
         return
       }
 
-      this.lifecycle(`[lifecycle] child exit ${describeChild(ownedProc)} code=${code ?? 'null'} signal=${signal ?? 'null'}`)
+      this.lifecycle(
+        `[lifecycle] child exit ${describeChild(ownedProc)} code=${code ?? 'null'} signal=${signal ?? 'null'}`
+      )
       this.handleTransportExit(code)
     })
   }
@@ -741,7 +743,9 @@ export class GatewayClient extends EventEmitter {
     const proc = this.proc
     const killed = proc?.kill()
 
-    this.lifecycle(`[lifecycle] GatewayClient.kill reason=${reason} ${describeChild(proc)} killResult=${killed ?? 'none'}`)
+    this.lifecycle(
+      `[lifecycle] GatewayClient.kill reason=${reason} ${describeChild(proc)} killResult=${killed ?? 'none'}`
+    )
     this.closeGatewaySocket()
     this.closeSidecarSocket()
     this.clearReadyTimer()

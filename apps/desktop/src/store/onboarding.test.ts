@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { OAuthProvider } from '@/types/hermes'
-
 import * as notifications from '@/store/notifications'
+import type { OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
@@ -486,7 +485,11 @@ describe('saveOnboardingLocalEndpoint', () => {
 
     // The probe must receive the key so an auth-gated /v1/models enumerates.
     const probe = calls.find(c => c.path === '/api/providers/validate')
-    expect(probe?.body).toMatchObject({ key: 'OPENAI_BASE_URL', value: 'https://text.example.com/v1', api_key: 'sk-secret' })
+    expect(probe?.body).toMatchObject({
+      key: 'OPENAI_BASE_URL',
+      value: 'https://text.example.com/v1',
+      api_key: 'sk-secret'
+    })
 
     // And the key must be persisted alongside the endpoint for runtime auth.
     const assign = calls.find(c => c.path === '/api/model/set')

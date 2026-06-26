@@ -17,12 +17,28 @@ const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local'
 const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
 const selectPaths = vi.fn(async () => ['/local'])
+
 const api = vi.fn(async ({ path }: { path: string }) => {
-  if (path.startsWith('/api/fs/list?')) return { entries: [{ name: 'remote', path: '/remote', isDirectory: true }] }
-  if (path.startsWith('/api/fs/read-text?')) return { path: '/remote/file.txt', text: 'remote', byteSize: 6 }
-  if (path.startsWith('/api/fs/read-data-url?')) return { dataUrl: 'data:text/plain;base64,cmVtb3Rl' }
-  if (path.startsWith('/api/fs/git-root?')) return { root: '/remote' }
-  if (path === '/api/fs/default-cwd') return { cwd: '/backend/project', branch: 'main' }
+  if (path.startsWith('/api/fs/list?')) {
+    return { entries: [{ name: 'remote', path: '/remote', isDirectory: true }] }
+  }
+
+  if (path.startsWith('/api/fs/read-text?')) {
+    return { path: '/remote/file.txt', text: 'remote', byteSize: 6 }
+  }
+
+  if (path.startsWith('/api/fs/read-data-url?')) {
+    return { dataUrl: 'data:text/plain;base64,cmVtb3Rl' }
+  }
+
+  if (path.startsWith('/api/fs/git-root?')) {
+    return { root: '/remote' }
+  }
+
+  if (path === '/api/fs/default-cwd') {
+    return { cwd: '/backend/project', branch: 'main' }
+  }
+
   throw new Error(`unexpected path ${path}`)
 })
 
@@ -55,7 +71,9 @@ describe('desktop filesystem facade', () => {
   it('uses local Electron filesystem methods in local mode', async () => {
     $connection.set({ mode: 'local' } as never)
 
-    await expect(readDesktopDir('/work')).resolves.toEqual({ entries: [{ name: 'local', path: '/local', isDirectory: true }] })
+    await expect(readDesktopDir('/work')).resolves.toEqual({
+      entries: [{ name: 'local', path: '/local', isDirectory: true }]
+    })
     await expect(readDesktopFileText('/work/file.txt')).resolves.toMatchObject({ text: 'local' })
     await expect(readDesktopFileDataUrl('/work/file.txt')).resolves.toBe('data:text/plain;base64,bG9jYWw=')
     await expect(desktopGitRoot('/work')).resolves.toBe('/local')

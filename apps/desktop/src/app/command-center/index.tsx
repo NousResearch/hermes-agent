@@ -5,14 +5,7 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import {
-  getActionStatus,
-  getLogs,
-  getStatus,
-  getUsageAnalytics,
-  restartGateway,
-  updateHermes
-} from '@/hermes'
+import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -336,11 +329,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                             onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
                             title={pinned ? cc.unpinSession : cc.pinSession}
                           >
-                            {pinned ? (
-                              <BookmarkFilled className="size-3.5" />
-                            ) : (
-                              <Bookmark className="size-3.5" />
-                            )}
+                            {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}
                           </RowIconButton>
                           <RowIconButton
                             onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
@@ -404,7 +393,11 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                     {systemAction && (
                       <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                         {systemAction.name} ·{' '}
-                        {systemAction.running ? cc.actionRunning : systemAction.exit_code === 0 ? cc.actionDone : cc.actionFailed}
+                        {systemAction.running
+                          ? cc.actionRunning
+                          : systemAction.exit_code === 0
+                            ? cc.actionDone
+                            : cc.actionFailed}
                       </div>
                     )}
                   </div>

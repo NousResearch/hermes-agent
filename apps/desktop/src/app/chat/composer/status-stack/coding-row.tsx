@@ -4,14 +4,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { StatusRow } from '@/components/chat/status-row'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList
-} from '@/components/ui/command'
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import {
   Dialog,
   DialogContent,
@@ -240,7 +233,8 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     branchTargets.push({ base: undefined, label: s.newBranch })
   }
 
-  const switchTarget = onSwitchBranch && current && status.defaultBranch && status.defaultBranch !== current ? status.defaultBranch : null
+  const switchTarget =
+    onSwitchBranch && current && status.defaultBranch && status.defaultBranch !== current ? status.defaultBranch : null
 
   // Other worktrees to jump into — everything except the one we're already in
   // (matched by its checked-out branch) and the bare/main placeholder entry.

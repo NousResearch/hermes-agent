@@ -13,7 +13,7 @@ function readElectronFile(name) {
 
 function requireHiddenChildOptions(source, needle) {
   const match = needle instanceof RegExp ? needle.exec(source) : null
-  const index = needle instanceof RegExp ? match?.index ?? -1 : source.indexOf(needle)
+  const index = needle instanceof RegExp ? (match?.index ?? -1) : source.indexOf(needle)
   assert.notEqual(index, -1, `missing call site: ${needle}`)
   const snippet = source.slice(index, index + 700)
   assert.match(

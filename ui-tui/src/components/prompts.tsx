@@ -84,7 +84,11 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   // tail (mirrors the CLI approval panel fix — the full command must be
   // reviewable before approving). Border + paddingX + inner padding ≈ 8 cols.
   const innerWidth = Math.max(20, cols - 8)
-  const rawLines = req.command.split('\n').flatMap(line => wrapAnsi(line, innerWidth, { hard: true, trim: false }).split('\n'))
+
+  const rawLines = req.command
+    .split('\n')
+    .flatMap(line => wrapAnsi(line, innerWidth, { hard: true, trim: false }).split('\n'))
+
   const shown = rawLines.slice(0, CMD_PREVIEW_LINES)
   const overflow = rawLines.length - shown.length
 
@@ -119,9 +123,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
         </Text>
       ))}
 
-      <Text color={t.color.muted}>
-        ↑/↓ select · Enter confirm · 1-{opts.length} quick pick · Esc/Ctrl+C deny
-      </Text>
+      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{opts.length} quick pick · Esc/Ctrl+C deny</Text>
     </Box>
   )
 }

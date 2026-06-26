@@ -18,7 +18,12 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions, getMoaModels } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { currentPickerSelection, displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import {
+  currentPickerSelection,
+  displayModelName,
+  modelDisplayParts,
+  reasoningEffortLabel
+} from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
@@ -185,18 +190,14 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   }
 
   const groups = useMemo(
-    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
+    () =>
+      groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
     [providers, search, optionsModel, optionsProvider, effectiveVisibleModels]
   )
 
   return (
     <>
-      <DropdownMenuSearch
-        aria-label={copy.search}
-        onValueChange={setSearch}
-        placeholder={copy.search}
-        value={search}
-      />
+      <DropdownMenuSearch aria-label={copy.search} onValueChange={setSearch} placeholder={copy.search} value={search} />
 
       <DropdownMenuSeparator className="mx-0" />
 
@@ -246,8 +247,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // defaults when unset). Row label AND submenu read from these so
                 // they never disagree.
                 const preset = modelPresets[modelPresetKey(group.provider.slug, family.id)] ?? {}
-                const effEffort = isCurrent ? currentReasoningEffort : preset.effort ?? ''
-                const effFast = isCurrent ? currentFastMode : preset.fast ?? false
+                const effEffort = isCurrent ? currentReasoningEffort : (preset.effort ?? '')
+                const effFast = isCurrent ? currentFastMode : (preset.fast ?? false)
 
                 const fastControl = resolveFastControl(
                   activeId ?? family.id,
@@ -331,7 +332,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
               }}
             >
               <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
-              {activeMoaPreset === preset ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
+              {activeMoaPreset === preset ? (
+                <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
+              ) : null}
             </DropdownMenuItem>
           ))}
           <DropdownMenuSeparator className="mx-0" />

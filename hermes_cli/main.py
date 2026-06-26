@@ -7438,6 +7438,50 @@ def _refresh_active_lazy_features() -> None:
         print("  `hermes update` once the upstream issue is resolved.")
 
 
+def _refresh_active_memory_provider() -> None:
+    """Reinstall pip dependencies for the active memory provider after an update.
+
+    Mirrors :func:`_refresh_active_lazy_features` for memory-provider plugins.
+    ``hermes update`` rebuilds the venv (``uv pip install -e .[all]``), which
+    removes plugin dependencies declared in ``plugin.yaml`` (e.g. ``mem0ai``
+    for the Mem0 OSS provider) that ``hermes memory setup`` installed but that
+    are not part of the core ``.[all]`` extra. Without this step the active
+    provider's backend fails to import on the next gateway start
+    (``No module named 'mem0'``) even though ``hermes memory status`` still
+    reports it as installed.
+
+    ``memory_setup._install_dependencies`` is idempotent — it only installs
+    packages that fail to import — so re-running it on every update is a safe
+    no-op when the provider's deps are already present.
+
+    Never raises. A failure here must not block the rest of the update.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.memory_setup import _install_dependencies
+    except Exception as exc:
+        logger.debug("Memory provider refresh skipped (import failed): %s", exc)
+        return
+
+    try:
+        provider = (load_config().get("memory", {}) or {}).get("provider", "")
+    except Exception as exc:
+        logger.debug("Memory provider refresh skipped (config read failed): %s", exc)
+        return
+
+    if not provider:
+        return
+
+    print()
+    print(f"→ Refreshing active memory provider '{provider}' dependencies...")
+    try:
+        _install_dependencies(provider)
+    except Exception as exc:
+        # _install_dependencies swallows its own install errors, but defend
+        # the update flow against unexpected provider/config failures.
+        print(f"  ⚠ Memory provider refresh failed unexpectedly: {exc}")
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -9326,6 +9370,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _clear_update_incomplete_marker()
 
         _refresh_active_lazy_features()
+        _refresh_active_memory_provider()
 
         _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")

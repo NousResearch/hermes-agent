@@ -51,6 +51,24 @@ logger = logging.getLogger("gateway.run")
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
 
+def _persist_write_approval(config_path, subsystem: str, value) -> object:
+    """Persist ``<subsystem>.write_approval`` to config.yaml, preserving the
+    3-state mode. ``value`` is ``True``/``False``/``"background_only"``; strings
+    are stored verbatim (NOT coerced to bool) so ``background_only`` survives on
+    the gateway/Telegram path the same way it does on the CLI. Returns the
+    stored value.
+    """
+    import yaml
+    user_config = {}
+    if config_path.exists():
+        with open(config_path, encoding="utf-8") as f:
+            user_config = yaml.safe_load(f) or {}
+    stored = value if isinstance(value, str) else bool(value)
+    user_config.setdefault(subsystem, {})["write_approval"] = stored
+    atomic_yaml_write(config_path, user_config)
+    return stored
+
+
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code.
 
@@ -2442,14 +2460,8 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(event.source)
         config_path = _hermes_home / "config.yaml"
 
-        def _set_approval(enabled: bool):
-            import yaml
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-            user_config.setdefault("memory", {})["write_approval"] = bool(enabled)
-            atomic_yaml_write(config_path, user_config)
+        def _set_approval(value):
+            _persist_write_approval(config_path, "memory", value)
             # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)
 
@@ -2463,7 +2475,7 @@ class GatewaySlashCommandsMixin:
         )
         if out is None:
             out = ("Unknown /memory subcommand. Use: pending, approve <id>, "
-                   "reject <id>, approval <on|off>.")
+                   "reject <id>, show <id>, approval <off|on|background_only>.")
         return out
 
     async def _handle_skills_command(self, event: MessageEvent) -> str:
@@ -2498,14 +2510,8 @@ class GatewaySlashCommandsMixin:
                     "Enable it with /skills approval on, then review staged "
                     "writes here with /skills pending.")
 
-        def _set_approval(enabled: bool):
-            import yaml
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-            user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
-            atomic_yaml_write(config_path, user_config)
+        def _set_approval(value):
+            _persist_write_approval(config_path, "skills", value)
             # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)
 
@@ -2514,8 +2520,8 @@ class GatewaySlashCommandsMixin:
         )
         if out is None:
             return ("Unknown /skills subcommand on this platform. Use: pending, "
-                    "approve <id>, reject <id>, diff <id>, approval <on|off>. "
-                    "(Search/install are CLI-only.)")
+                    "approve <id>, reject <id>, diff <id>, show <id>, "
+                    "approval <off|on|background_only>. (Search/install are CLI-only.)")
 
         # Chat bubbles can't hold a full skill diff — truncate and point at
         # the real review surface. (Note: `hermes skills diff <name>` is a

@@ -1214,6 +1214,20 @@ def _classify_by_message(
             should_fallback=True,
         )
 
+    # Overloaded / server-busy patterns — must come BEFORE the rate_limit and
+    # billing checks so that a message-only "overloaded" (no 503/529 status,
+    # e.g. some Anthropic-compatible proxies) classifies as a transient
+    # overload (backoff + retry) instead of falling through to `unknown` or
+    # incorrectly triggering credential rotation.
+    if any(p in error_msg for p in (
+        "overloaded", "temporarily overloaded",
+        "service is temporarily overloaded",
+    )):
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+        )
+
     # Billing patterns
     if any(p in error_msg for p in _BILLING_PATTERNS):
         return result_fn(

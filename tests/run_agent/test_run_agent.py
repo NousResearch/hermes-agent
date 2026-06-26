@@ -4603,6 +4603,36 @@ class TestRunConversation:
         assert result["api_calls"] == 3
         assert result["completed"] is False
 
+    def test_ollama_false_length_context_error_skips_continuation(self, agent):
+        """Tiny Ollama completions at the 4096-token ceiling should stop with
+        a context diagnostic instead of injecting bogus continuation prompts."""
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "gemma4:e2b"
+        agent._ollama_num_ctx = 131072
+
+        resp = _mock_response(content="כן", finish_reason="length")
+        resp.usage = SimpleNamespace(
+            prompt_tokens=4095,
+            completion_tokens=1,
+            total_tokens=4096,
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["api_calls"] == 1
+        assert result["completed"] is False
+        assert "runtime context too small" in result["final_response"].lower()
+        assert "4,096-token" in result["final_response"]
+        assert "finish_reason='length'" in result["error"]
+
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
         self._setup_agent(agent)
         bad_tc = _mock_tool_call(

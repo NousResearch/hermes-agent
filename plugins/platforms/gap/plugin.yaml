@@ -1,0 +1,10 @@
+name: gap
+label: Gap (گپ)
+kind: platform
+version: 1.0.0
+description: Gap (گپ) adapter.
+author: Hermes Core Team
+requires_env:
+  - name: GAP_BOT_TOKEN\n    description: "GAP_BOT_TOKEN"\n    prompt: "GAP_BOT_TOKEN"\n    password: true\n
+optional_env:
+

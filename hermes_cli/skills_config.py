@@ -24,6 +24,21 @@ PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 
+def _normalize_string_set(values) -> Set[str]:
+    """Coerce a config value (None / scalar / list) into a set of non-empty
+    trimmed strings. A bare scalar (``disabled: my-skill``) becomes a
+    single-element set instead of a set of its characters; None becomes empty.
+    """
+    if values is None:
+        return set()
+    if isinstance(values, str):
+        values = [values]
+    try:
+        return {str(v).strip() for v in values if str(v).strip()}
+    except TypeError:
+        return set()
+
+
 def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str]:
     """Return disabled skill names: the global list unioned with the
     platform-specific list when a platform is given.
@@ -33,13 +48,15 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str
     mirrors ``agent.skill_utils.get_disabled_skill_names``.
     """
     skills_cfg = config.get("skills", {})
-    global_disabled = set(skills_cfg.get("disabled", []))
+    if not isinstance(skills_cfg, dict):
+        return set()
+    global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
     if platform is None:
         return global_disabled
     platform_disabled = cfg_get(skills_cfg, "platform_disabled", platform)
     if platform_disabled is None:
         return global_disabled
-    return global_disabled | set(platform_disabled)
+    return global_disabled | _normalize_string_set(platform_disabled)
 
 
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):

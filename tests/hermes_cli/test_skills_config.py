@@ -50,6 +50,23 @@ class TestGetDisabledSkills:
         from hermes_cli.skills_config import get_disabled_skills
         assert get_disabled_skills({"skills": {"disabled": []}}) == set()
 
+    def test_scalar_disabled_is_normalized_to_single_skill(self):
+        """A bare scalar `disabled: my-skill` must become {"my-skill"}, not a
+        set of its characters. (#14094)"""
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": {"disabled": "my-skill"}}) == {"my-skill"}
+
+    def test_null_skills_section_returns_empty(self):
+        """`skills: null` (valid YAML) must not crash with AttributeError on
+        .get(); it returns an empty set."""
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": None}) == set()
+
+    def test_scalar_platform_disabled_is_normalized(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        config = {"skills": {"platform_disabled": {"telegram": "tg-skill"}}}
+        assert get_disabled_skills(config, platform="telegram") == {"tg-skill"}
+
 
 # ---------------------------------------------------------------------------
 # save_disabled_skills

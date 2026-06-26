@@ -211,6 +211,50 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert agent.api_mode == "anthropic_messages"
 
+    def test_cross_provider_fallback_uses_fallback_base_url(self):
+        """A stale primary base_url must not leak into a different fallback provider.
+
+        This pins the SASSy/WebUI failure mode: an invalid Codex model failed
+        over to DeepSeek, but the request kept the Codex ChatGPT base URL and
+        surfaced a Cloudflare HTML 403 as "model not found". Activating a
+        cross-provider fallback must rewrite both ``agent.base_url`` and the
+        request ``_client_kwargs`` to the fallback client's endpoint.
+        """
+        fbs = [{"provider": "deepseek", "model": "deepseek-v4-pro"}]
+        agent = _make_agent(fallback_model=fbs)
+        setattr(agent, "provider", "openai-codex")
+        setattr(agent, "model", "codex/chat-gpt-5.5")
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        setattr(agent, "_client_kwargs", {
+            "api_key": "codex-key",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        })
+        primary_pool = MagicMock()
+        primary_pool.provider = "openai-codex"
+        setattr(agent, "_credential_pool", primary_pool)
+
+        fallback_url = "https://api.deepseek.com/v1"
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url=fallback_url, api_key="ds-key"),
+                    "deepseek-v4-pro",
+                ),
+            ) as mock_rpc,
+            patch("agent.chat_completion_helpers.get_provider_request_timeout", return_value=None),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        mock_rpc.assert_called_once()
+        assert getattr(agent, "provider") == "deepseek"
+        assert getattr(agent, "model") == "deepseek-v4-pro"
+        assert agent.base_url.rstrip("/") == fallback_url.rstrip("/")
+        client_kwargs = getattr(agent, "_client_kwargs")
+        assert client_kwargs["base_url"].rstrip("/") == fallback_url.rstrip("/")
+        assert "chatgpt.com/backend-api/codex" not in client_kwargs["base_url"]
+        assert getattr(agent, "_credential_pool") is None
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

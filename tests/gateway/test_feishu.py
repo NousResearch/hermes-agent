@@ -1337,7 +1337,11 @@ class TestAdapterBehavior(unittest.TestCase):
         text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "")
-        self.assertEqual(msg_type.value, "audio")
+        # Lark "audio" msg_type is a native voice recording (the fixture is
+        # literally voice.ogg) — it must classify as VOICE so the gateway
+        # auto-transcribes it, not AUDIO (a non-transcribed file attachment).
+        # See the #28993 follow-up fix in _resolve_normalized_message_type.
+        self.assertEqual(msg_type.value, "voice")
         self.assertEqual(media_urls, ["/tmp/feishu-audio.ogg"])
         self.assertEqual(media_types, ["audio/ogg"])
 

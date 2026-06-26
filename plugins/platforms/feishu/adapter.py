@@ -3683,7 +3683,15 @@ class FeishuAdapter(BasePlatformAdapter):
         if preferred == "photo":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.PHOTO)
         if preferred == "audio":
-            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.AUDIO)
+            # Lark's native "audio" msg_type is an in-app voice recording, not
+            # an uploaded audio file (those arrive as "file"/"media" and are
+            # normalized to "document"). Classify it as VOICE so the gateway
+            # auto-transcribes it (Opus → STT) the same way
+            # Discord/DingTalk/Telegram/etc. do — otherwise a Feishu voice note
+            # reaches the agent as an untranscribable AUDIO attachment and is
+            # silently ignored. Follow-up to #28993, which added native
+            # voice-note transcription for Discord + DingTalk.
+            return MessageType.VOICE
         if preferred == "document":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
         return MessageType.TEXT

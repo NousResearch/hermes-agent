@@ -697,8 +697,16 @@ const server = http.createServer(async (req, res) => {
       const space = await resolveSpace(spaceId);
       // iMessage renders markdown natively; spectrum-ts degrades it to
       // readable plain text on platforms that don't.
+      // spectrumMarkdown() enables enableDataDetection in the underlying
+      // iMessage API, which can 500 on messages containing raw URLs.
+      // Plain-text URLs are auto-linked by iMessage, so route markdown
+      // messages that contain URLs through spectrumText while preserving
+      // spectrumMarkdown for URL-free markdown.
+      const hasUrl = /https?:\/\/[^\s)'"<>]+/i.test(text);
       const builder =
-        format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
+        format === "markdown" && !hasUrl
+          ? spectrumMarkdown(text)
+          : spectrumText(text);
       const result = await space.send(builder);
       return ok(res, { messageId: result?.id || null });
     }

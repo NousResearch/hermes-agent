@@ -242,6 +242,21 @@ class TestModeAwareSchema(unittest.TestCase):
         self.assertIn("script approval guard", desc)
         self.assertIn("Call terminal directly", desc)
 
+    def test_terminal_disabled_schema_omits_terminal_tool_reference(self):
+        """When terminal is not an enabled sandbox tool, the schema must not
+        point the model at the terminal tool (cross-tool-reference pitfall) —
+        but it should still warn against subprocess-wrapping to dodge review."""
+        no_terminal = {"web_search", "read_file", "write_file", "search_files", "patch"}
+        desc = build_execute_code_schema(
+            enabled_sandbox_tools=no_terminal, mode="project"
+        )["description"]
+        self.assertNotIn("Call terminal directly", desc)
+        self.assertNotIn("terminal's command-level guard", desc)
+        self.assertNotIn("wrap a single terminal command", desc)
+        # The subprocess-bypass guidance still stands without naming the tool.
+        self.assertIn("script approval guard", desc)
+        self.assertIn("subprocess", desc)
+
     def test_neither_description_uses_sandbox_language(self):
         """REGRESSION GUARD for commit 39b83f34.
 

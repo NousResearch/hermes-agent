@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   check-freshness:
-    if: github.repository == 'wnml-io/hermes-agent'
+    if: github.repository == 'wnml-io/hermes-agent' || github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     steps:
       - name: Probe live index
@@ -108,7 +108,7 @@ jobs:
           fi
 
       - name: Open issue on degraded / failed probe
-        if: steps.probe.outputs.status != 'ok'
+        if: steps.probe.outputs.status != 'ok' && github.event.repository.has_issues
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STATUS: ${{ steps.probe.outputs.status }}
@@ -147,3 +147,10 @@ jobs:
               --title "$TITLE_PREFIX Skills index is stale or degraded ($STATUS)" \
               --body "$BODY"
           fi
+
+      - name: Log degraded state when issues are disabled
+        if: steps.probe.outputs.status != 'ok' && !github.event.repository.has_issues
+        run: |
+          echo "Skipping issue reporting because issues are disabled on ${GITHUB_REPOSITORY}."
+          echo "Probe status: ${{ steps.probe.outputs.status }}"
+          echo "Probe detail: ${{ steps.probe.outputs.detail }}"

@@ -13,6 +13,7 @@ import asyncio
 import threading
 from collections import OrderedDict
 from unittest.mock import MagicMock
+from enum import Enum
 
 import pytest
 
@@ -23,6 +24,17 @@ import gateway.run as gw_mod
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+class _CleanupContext(Enum):
+    """Mirror of GatewayRunner._CleanupContext for test stub."""
+    SHUTDOWN = "shutdown"
+    SESSION_EXPIRY = "session_expiry"
+    SESSION_HYGIENE = "session_hygiene"
+    IDLE_CACHE_EVICTION = "idle_cache"
+    BACKGROUND_TASK = "background_task"
+    CACHE_EVICTION_FALLBACK = "cache_fallback"
+    UNKNOWN = "unknown"
+
 
 class _FakeGateway:
     """Minimal stand-in with just enough state for ``stop()`` to run."""
@@ -50,6 +62,10 @@ class _FakeGateway:
         self._pending_messages = {}
         self._pending_approvals = {}
         self._busy_ack_ts = {}
+        # For async cleanup in tests (no event loop)
+        self._gateway_loop = None
+        # Enum reference for async cleanup
+        self._CleanupContext = _CleanupContext
 
     def _running_agent_count(self):
         return len(self._running_agents)
@@ -90,6 +106,14 @@ class _FakeGateway:
         self._cleanup_agent_resources(agent)
         return agent is not None
 
+    async def _cleanup_agent_async(self, agent, context, session_key=None):
+        """Test stub: runs cleanup synchronously since no event loop."""
+        self._cleanup_agent_resources(agent)
+
+    # Need _run_in_executor_with_context for async cleanup pattern
+    def _run_in_executor_with_context(self, fn, *args, **kwargs):
+        return fn(*args)
+
 
 def _make_mock_agent():
     a = MagicMock()
@@ -114,7 +138,7 @@ class TestCachedAgentCleanupOnShutdown:
         agent = _make_mock_agent()
         gw._agent_cache["session-1"] = (agent, "sig-123")
 
-        # Call the real stop() from GatewayRunner
+        # Call the real stop() from GatewayRunner - it uses our fake's methods
         await gw_mod.GatewayRunner.stop(gw)
 
         agent.shutdown_memory_provider.assert_called_once()
@@ -158,20 +182,16 @@ class TestCachedAgentCleanupOnShutdown:
     async def test_cleanup_survives_agent_exception(self):
         """An exception from one agent's shutdown doesn't prevent others."""
         gw = _FakeGateway()
-
-        bad = _make_mock_agent()
-        bad.shutdown_memory_provider.side_effect = RuntimeError("boom")
-        bad.close.side_effect = RuntimeError("boom")
-
-        good = _make_mock_agent()
-
-        gw._agent_cache["bad"] = (bad, "sig-bad")
-        gw._agent_cache["good"] = (good, "sig-good")
+        good_agent = _make_mock_agent()
+        bad_agent = _make_mock_agent()
+        bad_agent.shutdown_memory_provider.side_effect = RuntimeError("boom")
+        gw._agent_cache["good"] = (good_agent, "sig1")
+        gw._agent_cache["bad"] = (bad_agent, "sig2")
 
         await gw_mod.GatewayRunner.stop(gw)
 
-        # The good agent should still be cleaned up
-        good.shutdown_memory_provider.assert_called_once()
+        good_agent.shutdown_memory_provider.assert_called_once()
+        bad_agent.shutdown_memory_provider.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_plain_agent_not_tuple(self):

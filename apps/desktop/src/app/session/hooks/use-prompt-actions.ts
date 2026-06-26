@@ -32,17 +32,17 @@ import {
   $composerAttachments,
   clearComposerAttachments,
   type ComposerAttachment,
+  composerContextBlocksFromDraft,
   setComposerAttachmentUploadState,
   setComposerDraft,
-  terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
-import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
+import { clearPreviewArtifacts } from '@/store/preview-status'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
@@ -560,11 +560,12 @@ export function usePromptActions({
       // this, the sibling iterations below (a.kind / a.label / a.refText, and the
       // sync step) throw "Cannot read properties of undefined (reading 'refText')"
       // and break the chat surface.
+
       const attachments = (options?.attachments ?? $composerAttachments.get()).filter(
         (a): a is ComposerAttachment => Boolean(a)
       )
 
-      const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
+      const composerContextBlocks = composerContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
 
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
@@ -578,13 +579,14 @@ export function usePromptActions({
         // atts may be the post-sync array, which can reintroduce holes; filter
         // before touching a.refText / a.kind.
         const present = atts.filter((a): a is ComposerAttachment => Boolean(a))
+
         const contextRefs = present
           .map(a => a.refText)
           .filter(Boolean)
           .join('\n')
 
         return (
-          [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
+          [contextRefs, composerContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
           (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }
@@ -593,7 +595,7 @@ export function usePromptActions({
       // from $busy by a separate effect) may still read true — honoring it would
       // bounce the drained send. The drain lock serializes them; the user path
       // keeps the guard so a stray Enter mid-turn can't double-submit.
-      const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
+      const hasSendable = Boolean(visibleText || composerContextBlocks || attachments.length || hasImage)
 
       if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
         return false

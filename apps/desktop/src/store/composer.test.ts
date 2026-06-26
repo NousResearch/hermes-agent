@@ -2,13 +2,22 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   $composerAttachments,
+  $composerContextReferences,
   addComposerAttachment,
+  clearComposerContextReferences,
   clearSessionDraft,
   type ComposerAttachment,
+  composerContextBlocksFromDraft,
+  composerContextReferencePreview,
+  nextComposerContextReferenceLabel,
+  reconcileComposerContextReferences,
   removeComposerAttachment,
   SESSION_DRAFTS_STORAGE_KEY,
+  setComposerSelectionReference,
+  setComposerTerminalSelection,
   stashSessionDraft,
   takeSessionDraft,
+  terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from './composer'
 
@@ -43,6 +52,43 @@ describe('updateComposerAttachment', () => {
 
     expect(updated).toBe(false)
     expect($composerAttachments.get()).toHaveLength(0)
+  })
+})
+
+describe('composer context references', () => {
+  afterEach(() => {
+    clearComposerContextReferences()
+  })
+
+  it('keeps terminal selection blocks compatible with the existing shortcut', () => {
+    setComposerTerminalSelection('zsh:4-6', 'npm test\nPASS')
+
+    expect(terminalContextBlocksFromDraft('@terminal:`zsh:4-6`')).toEqual(['```terminal\nnpm test\nPASS\n```'])
+  })
+
+  it('turns generic selection refs into hidden selected-context blocks', () => {
+    setComposerSelectionReference('_selection', 'Selected assistant text')
+
+    expect(composerContextBlocksFromDraft('@selection:`_selection` please use this')).toEqual([
+      'Selected context (_selection):\n```text\nSelected assistant text\n```'
+    ])
+    expect(composerContextReferencePreview('selection', '_selection')).toBe('Selected assistant text')
+  })
+
+  it('allocates unique labels for repeated floating selections', () => {
+    expect(nextComposerContextReferenceLabel('selection', '_selection')).toBe('_selection')
+    setComposerSelectionReference('_selection', 'first')
+
+    expect(nextComposerContextReferenceLabel('selection', '_selection')).toBe('_selection-2')
+  })
+
+  it('reconciles deleted context chips out of the preview store', () => {
+    setComposerSelectionReference('_selection', 'first')
+    setComposerTerminalSelection('zsh:1', 'second')
+
+    expect(Object.keys($composerContextReferences.get())).toHaveLength(2)
+    reconcileComposerContextReferences('@terminal:`zsh:1`')
+    expect($composerContextReferences.get()).toEqual({ 'terminal:zsh:1': 'second' })
   })
 })
 

@@ -212,7 +212,7 @@ export const zh: Translations = {
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.showFiles': '显示文件浏览器',
       'view.showTerminal': '显示终端',
-      'view.terminalSelection': '将终端选区发送到输入框',
+      'view.terminalSelection': '将选中文本引用到输入框',
       'view.closePreviewTab': '关闭预览标签',
       'view.flipPanes': '交换侧边栏位置',
       'appearance.toggleMode': '切换浅色/深色',
@@ -2214,7 +2214,7 @@ export const zh: Translations = {
       failed: error => `移交失败：${error}`,
       timedOut: '等待网关超时。`hermes gateway` 是否正在运行？'
     },
-    quoteSelection: '引用到输入框',
+    quoteSelection: '引用选区',
   },
 
   errors: {

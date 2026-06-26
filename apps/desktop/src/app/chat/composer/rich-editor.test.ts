@@ -34,6 +34,17 @@ describe('renderComposerContents', () => {
     expect(editor.textContent).toContain('<b>raw</b>')
     expect(composerPlainText(editor)).toBe('@file:`<img src=x onerror=alert(1)>` <b>raw</b>')
   })
+
+  it('renders generic selection refs as non-editable chips', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    renderComposerContents(editor, '@selection:_selection')
+
+    const chip = editor.querySelector('[data-ref-kind="selection"]') as HTMLElement | null
+    expect(chip?.dataset.refId).toBe('_selection')
+    expect(composerPlainText(editor)).toBe('@selection:`_selection`')
+  })
 })
 
 describe('normalizeComposerEditorDom', () => {

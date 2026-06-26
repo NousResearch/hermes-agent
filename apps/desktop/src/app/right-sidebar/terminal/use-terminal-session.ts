@@ -6,6 +6,7 @@ import { Terminal } from '@xterm/xterm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
+import { selectionIntersectsSelector, THREAD_SELECTION_VIEWPORT_SELECTOR } from '@/app/chat/selection-reference'
 import { triggerHaptic } from '@/lib/haptics'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
@@ -262,14 +263,6 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     onAddSelectionToChatRef.current = onAddSelectionToChat
   }, [onAddSelectionToChat])
 
-  // Live selection at call time. A redraw-heavy TUI (spinners, clocks) outruns
-  // onSelectionChange, so trust xterm directly — fall back to the native
-  // selection — rather than the cached ref / React state.
-  const readSelection = useCallback(
-    () => termRef.current?.getSelection() || window.getSelection()?.toString() || '',
-    []
-  )
-
   const addSelectionToChat = useCallback(() => {
     const termSelection = (termRef.current?.getSelection() || selectionRef.current).trim()
     const selectedText = termSelection || window.getSelection()?.toString() || ''
@@ -295,12 +288,25 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     triggerHaptic('selection')
   }, [])
 
-  // Always listen — gating on the React selection state misses selections the
-  // TUI redraw races. Only swallow ⌘/Ctrl+L when there's text to send, else it
-  // must reach the shell as clear-screen.
+  // Always listen — gating on the React selection state misses terminal selections
+  // the TUI redraw races. Only swallow ⌘/Ctrl+L when there's text this handler
+  // owns; chat-thread selections have their own `_selection` shortcut and must
+  // not be captured here.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isAddSelectionShortcut(event) || !readSelection().trim()) {
+      if (!isAddSelectionShortcut(event)) {
+        return
+      }
+
+      const termSelection = (termRef.current?.getSelection() || selectionRef.current).trim()
+      const nativeSelection = window.getSelection()
+      const nativeSelectionText = nativeSelection?.toString().trim() || ''
+
+      if (!termSelection && selectionIntersectsSelector(nativeSelection, THREAD_SELECTION_VIEWPORT_SELECTOR)) {
+        return
+      }
+
+      if (!termSelection && !nativeSelectionText) {
         return
       }
 
@@ -312,7 +318,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     window.addEventListener('keydown', onKeyDown, { capture: true })
 
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
-  }, [addSelectionToChat, readSelection])
+  }, [addSelectionToChat])
 
   useEffect(() => {
     const host = hostRef.current

@@ -18,7 +18,7 @@ import {
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
-export const REF_RE = /@(file|folder|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
+export const REF_RE = /@(file|folder|url|image|tool|line|terminal|selection|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
 
 const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }
 

@@ -2110,7 +2110,7 @@ export const zhHant = defineLocale({
       failed: error => `移交失敗：${error}`,
       timedOut: '等待閘道逾時。`hermes gateway` 是否正在執行？'
     },
-    quoteSelection: '引用到輸入框',
+    quoteSelection: '引用選區',
   },
 
   errors: {

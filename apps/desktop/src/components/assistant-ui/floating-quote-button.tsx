@@ -3,11 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { requestComposerInsert } from '@/app/chat/composer/focus'
+import { type BrowserSelectionMatch, currentThreadSelection } from '@/app/chat/selection-reference'
+import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
+import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
+import { triggerHaptic } from '@/lib/haptics'
 import { Quote as QuoteIcon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { nextComposerContextReferenceLabel, setComposerSelectionReference } from '@/store/composer'
 
-const VIEWPORT_SELECTOR = '[data-slot="aui_thread-viewport"]'
 // Hide button after this many ms of no selection (avoids flicker when clicking)
 const HIDE_DELAY_MS = 300
 // Vertical distance from the top of the selection rect to the bottom of the button
@@ -31,37 +35,30 @@ export function FloatingQuoteButton() {
     hideTimerRef.current = setTimeout(() => setVisible(false), HIDE_DELAY_MS)
   }, [clearHideTimer])
 
+  const quoteSelection = useCallback((match: BrowserSelectionMatch) => {
+    const label = nextComposerContextReferenceLabel('selection', '_selection')
+
+    setComposerSelectionReference(label, match.text)
+    requestComposerInsert(`@selection:${formatRefValue(label)}`, { mode: 'inline', target: 'main' })
+    triggerHaptic('selection')
+    match.selection.removeAllRanges()
+    setVisible(false)
+  }, [])
+
   const handleSelectionChange = useCallback(() => {
-    const selection = window.getSelection()
-    if (!selection || selection.isCollapsed || !selection.rangeCount) {
+    const match = currentThreadSelection()
+
+    if (!match) {
       scheduleHide()
-      return
-    }
 
-    const selectedText = selection.toString().trim()
-    if (!selectedText) {
-      scheduleHide()
-      return
-    }
-
-    // Require the selection to be inside the thread viewport
-    const viewport = document.querySelector(VIEWPORT_SELECTOR)
-    if (!viewport) {
-      setVisible(false)
-      return
-    }
-
-    const range = selection.getRangeAt(0)
-    if (!viewport.contains(range.commonAncestorContainer)) {
-      setVisible(false)
       return
     }
 
     clearHideTimer()
 
     // Position the button just above the selection, horizontally centered
-    const rect = range.getBoundingClientRect()
-    const viewportRect = viewport.getBoundingClientRect()
+    const rect = match.range.getBoundingClientRect()
+    const viewportRect = match.viewport.getBoundingClientRect()
 
     const buttonHeight = 32
     const buttonHalfWidth = 16
@@ -76,22 +73,37 @@ export function FloatingQuoteButton() {
   }, [clearHideTimer, scheduleHide])
 
   const handleQuote = useCallback(() => {
-    const selection = window.getSelection()
-    if (!selection) return
+    const match = currentThreadSelection()
 
-    const text = selection.toString().trim()
-    if (!text) return
-
-    requestComposerInsert(text, { mode: 'block' })
-    selection.removeAllRanges()
-    setVisible(false)
-  }, [])
-
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      setVisible(false)
+    if (match) {
+      quoteSelection(match)
     }
-  }, [])
+  }, [quoteSelection])
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setVisible(false)
+
+        return
+      }
+
+      if (!isAddSelectionShortcut(e)) {
+        return
+      }
+
+      const match = currentThreadSelection()
+
+      if (!match) {
+        return
+      }
+
+      e.preventDefault()
+      e.stopPropagation()
+      quoteSelection(match)
+    },
+    [quoteSelection]
+  )
 
   useEffect(() => {
     document.addEventListener('selectionchange', handleSelectionChange)
@@ -104,14 +116,16 @@ export function FloatingQuoteButton() {
     }
   }, [handleSelectionChange, handleKeyDown, clearHideTimer])
 
-  if (!visible) return null
+  if (!visible) {
+    return null
+  }
 
   return (
     <button
       aria-label={t.desktop.quoteSelection}
       className={cn(
         'pointer-events-auto absolute z-50 flex h-8 w-8 items-center justify-center',
-        'rounded-md bg-(--ui-popover-background) text-muted-foreground shadow-lg',
+        'rounded-md bg-popover text-muted-foreground shadow-lg',
         'ring-1 ring-(--ui-stroke-primary)',
         'transition-all duration-150 ease-out',
         'hover:bg-(--ui-row-hover-background) hover:text-foreground hover:scale-110',

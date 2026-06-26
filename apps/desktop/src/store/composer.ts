@@ -19,7 +19,11 @@ export interface ComposerAttachment {
 
 export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
-export const $composerTerminalSelections = atom<Record<string, string>>({})
+export const $composerContextReferences = atom<Record<string, string>>({})
+// Back-compat name for older terminal-selection callers. Values are keyed by
+// `${kind}:${label}` so the same hidden-context mechanism can power generic
+// thread selections as well as terminal selections.
+export const $composerTerminalSelections = $composerContextReferences
 
 // Per-thread draft stash for the decoupled composer. Session lifecycle never
 // touches this — only ChatBar's scope swap reads/writes it. Text mirrors to
@@ -189,7 +193,10 @@ export function setComposerAttachmentUploadState(id: string, uploadState?: Compo
   $composerAttachments.set(next)
 }
 
-const TERMINAL_REF_RE = /@terminal:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
+export type ComposerContextReferenceKind = 'selection' | 'terminal'
+
+const CONTEXT_REF_RE = /@(terminal|selection):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
+const CONTEXT_REF_KINDS = new Set<ComposerContextReferenceKind>(['selection', 'terminal'])
 
 function unquoteRefValue(raw: string) {
   const head = raw[0]
@@ -199,25 +206,40 @@ function unquoteRefValue(raw: string) {
   return (quoted ? raw.slice(1, -1) : raw).replace(/[,.;!?]+$/, '').trim()
 }
 
-function terminalLabelsFromDraft(draft: string) {
-  const labels: string[] = []
+function contextReferenceKey(kind: ComposerContextReferenceKind, label: string) {
+  return `${kind}:${label}`
+}
+
+function isComposerContextReferenceKind(kind: string): kind is ComposerContextReferenceKind {
+  return CONTEXT_REF_KINDS.has(kind as ComposerContextReferenceKind)
+}
+
+function contextReferencesFromDraft(draft: string) {
+  const refs: Array<{ kind: ComposerContextReferenceKind; label: string }> = []
   const seen = new Set<string>()
 
-  for (const match of draft.matchAll(TERMINAL_REF_RE)) {
-    const label = unquoteRefValue(match[1] || '')
+  for (const match of draft.matchAll(CONTEXT_REF_RE)) {
+    const kind = match[1] || ''
+    const label = unquoteRefValue(match[2] || '')
 
-    if (!label || seen.has(label)) {
+    if (!isComposerContextReferenceKind(kind) || !label) {
       continue
     }
 
-    seen.add(label)
-    labels.push(label)
+    const key = contextReferenceKey(kind, label)
+
+    if (seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    refs.push({ kind, label })
   }
 
-  return labels
+  return refs
 }
 
-export function setComposerTerminalSelection(label: string, text: string) {
+function setComposerContextReference(kind: ComposerContextReferenceKind, label: string, text: string) {
   const nextLabel = label.trim()
   const nextText = text.trim()
 
@@ -225,66 +247,114 @@ export function setComposerTerminalSelection(label: string, text: string) {
     return
   }
 
-  const current = $composerTerminalSelections.get()
+  const key = contextReferenceKey(kind, nextLabel)
+  const current = $composerContextReferences.get()
 
-  if (current[nextLabel] === nextText) {
+  if (current[key] === nextText) {
     return
   }
 
-  $composerTerminalSelections.set({
+  $composerContextReferences.set({
     ...current,
-    [nextLabel]: nextText
+    [key]: nextText
   })
 }
 
-export function reconcileComposerTerminalSelections(draft: string) {
-  const current = $composerTerminalSelections.get()
-  const labels = new Set(terminalLabelsFromDraft(draft))
+export function nextComposerContextReferenceLabel(kind: ComposerContextReferenceKind, baseLabel: string) {
+  const base = baseLabel.trim() || (kind === 'selection' ? '_selection' : 'selection')
+  const current = $composerContextReferences.get()
+
+  if (!current[contextReferenceKey(kind, base)]) {
+    return base
+  }
+
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = `${base}-${index}`
+
+    if (!current[contextReferenceKey(kind, candidate)]) {
+      return candidate
+    }
+  }
+
+  return `${base}-${Date.now()}`
+}
+
+export function setComposerTerminalSelection(label: string, text: string) {
+  setComposerContextReference('terminal', label, text)
+}
+
+export function setComposerSelectionReference(label: string, text: string) {
+  setComposerContextReference('selection', label, text)
+}
+
+export function composerContextReferencePreview(kind: string, label: string) {
+  if (!isComposerContextReferenceKind(kind)) {
+    return ''
+  }
+
+  return $composerContextReferences.get()[contextReferenceKey(kind, label.trim())] || ''
+}
+
+export function reconcileComposerContextReferences(draft: string) {
+  const current = $composerContextReferences.get()
+  const keys = new Set(contextReferencesFromDraft(draft).map(ref => contextReferenceKey(ref.kind, ref.label)))
   let changed = false
   const next: Record<string, string> = {}
 
-  for (const [label, text] of Object.entries(current)) {
-    if (!labels.has(label)) {
+  for (const [key, text] of Object.entries(current)) {
+    if (!keys.has(key)) {
       changed = true
 
       continue
     }
 
-    next[label] = text
+    next[key] = text
   }
 
   if (changed) {
-    $composerTerminalSelections.set(next)
+    $composerContextReferences.set(next)
   }
 }
 
-export function terminalContextBlocksFromDraft(draft: string) {
-  const labels = terminalLabelsFromDraft(draft)
+function contextBlock(kind: ComposerContextReferenceKind, label: string, text: string) {
+  if (kind === 'terminal') {
+    return `\`\`\`terminal\n${text}\n\`\`\``
+  }
 
-  if (labels.length === 0) {
+  return `Selected context (${label}):\n\`\`\`text\n${text}\n\`\`\``
+}
+
+export function composerContextBlocksFromDraft(draft: string) {
+  const refs = contextReferencesFromDraft(draft)
+
+  if (refs.length === 0) {
     return []
   }
 
-  const selections = $composerTerminalSelections.get()
+  const selections = $composerContextReferences.get()
 
-  return labels.flatMap(label => {
-    const text = selections[label]?.trim()
+  return refs.flatMap(({ kind, label }) => {
+    const text = selections[contextReferenceKey(kind, label)]?.trim()
 
     if (!text) {
       return []
     }
 
-    return `\`\`\`terminal\n${text}\n\`\`\``
+    return contextBlock(kind, label, text)
   })
 }
 
-export function clearComposerTerminalSelections() {
-  if (Object.keys($composerTerminalSelections.get()).length === 0) {
+export function clearComposerContextReferences() {
+  if (Object.keys($composerContextReferences.get()).length === 0) {
     return
   }
 
-  $composerTerminalSelections.set({})
+  $composerContextReferences.set({})
 }
+
+export const reconcileComposerTerminalSelections = reconcileComposerContextReferences
+export const terminalContextBlocksFromDraft = composerContextBlocksFromDraft
+export const clearComposerTerminalSelections = clearComposerContextReferences
 
 function upsertAttachment(attachments: ComposerAttachment[], attachment: ComposerAttachment) {
   const index = attachments.findIndex(item => item.id === attachment.id)

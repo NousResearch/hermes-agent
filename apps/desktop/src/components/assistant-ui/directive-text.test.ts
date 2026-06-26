@@ -36,4 +36,10 @@ describe('hermesDirectiveFormatter.parse', () => {
       { kind: 'text', text: ' the entry point' }
     ])
   })
+
+  it('parses generic selection references as chips', () => {
+    const segments = hermesDirectiveFormatter.parse('@selection:_selection')
+
+    expect(segments).toEqual([{ kind: 'mention', type: 'selection', label: '_selection', id: '_selection' }])
+  })
 })

@@ -6,6 +6,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -28,8 +29,10 @@ import { cn } from '@/lib/utils'
 import {
   $composerAttachments,
   clearComposerAttachments,
+  clearComposerContextReferences,
   clearSessionDraft,
   type ComposerAttachment,
+  composerContextReferencePreview,
   stashSessionDraft,
   takeSessionDraft
 } from '@/store/composer'
@@ -45,8 +48,8 @@ import {
   $composerPoppedOut,
   POPOUT_WIDTH_REM,
   readPopoutBounds,
-  setComposerPoppedOut,
-  setComposerPopoutPosition
+  setComposerPopoutPosition,
+  setComposerPoppedOut
 } from '@/store/composer-popout'
 import {
   $queuedPromptsBySession,
@@ -60,8 +63,8 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
-import { $previewStatusBySession } from '@/store/preview-status'
 import { notify } from '@/store/notifications'
+import { $previewStatusBySession } from '@/store/preview-status'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
@@ -124,6 +127,10 @@ const COMPOSER_SINGLE_LINE_MAX_PX = 36
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
 
+const REF_PREVIEW_MARGIN_PX = 12
+const REF_PREVIEW_MAX_WIDTH_PX = 520
+const REF_PREVIEW_MAX_CHARS = 6000
+
 const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
 /** Completion items can carry an `action` (set in use-slash-completions) that
@@ -161,6 +168,20 @@ interface QueueEditState {
   draft: string
   entryId: string
   sessionKey: string
+}
+
+interface RefPreviewState {
+  kind: string
+  label: string
+  left: number
+  maxWidth: number
+  placement: 'bottom' | 'top'
+  text: string
+  top: number
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max)
 }
 
 const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
@@ -301,6 +322,7 @@ export function ChatBar({
   const [tight, setTight] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
+  const [refPreview, setRefPreview] = useState<RefPreviewState | null>(null)
   const [focusRequestId, setFocusRequestId] = useState(0)
   const queueEditRef = useRef(queueEdit)
   queueEditRef.current = queueEdit
@@ -384,6 +406,61 @@ export function ChatBar({
     setFocusRequestId(id => id + 1)
   }, [])
 
+  const hideRefPreview = useCallback(() => {
+    setRefPreview(null)
+  }, [])
+
+  const updateRefPreview = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target
+
+    if (!(target instanceof Element)) {
+      hideRefPreview()
+
+      return
+    }
+
+    const chip = target.closest('[data-ref-kind][data-ref-id]') as HTMLElement | null
+
+    if (!chip || !event.currentTarget.contains(chip)) {
+      hideRefPreview()
+
+      return
+    }
+
+    const kind = chip.dataset.refKind || ''
+    const label = chip.dataset.refId || ''
+    const text = composerContextReferencePreview(kind, label).trim()
+
+    if (!text) {
+      hideRefPreview()
+
+      return
+    }
+
+    const rect = chip.getBoundingClientRect()
+    const maxWidth = Math.max(180, Math.min(REF_PREVIEW_MAX_WIDTH_PX, window.innerWidth - REF_PREVIEW_MARGIN_PX * 2))
+
+    const halfWidth = maxWidth / 2
+
+    const left = clamp(
+      rect.left + rect.width / 2,
+      REF_PREVIEW_MARGIN_PX + halfWidth,
+      window.innerWidth - REF_PREVIEW_MARGIN_PX - halfWidth
+    )
+
+    const placement: RefPreviewState['placement'] = rect.top > 180 ? 'top' : 'bottom'
+
+    setRefPreview({
+      kind,
+      label,
+      left,
+      maxWidth,
+      placement,
+      text,
+      top: placement === 'top' ? rect.top - 8 : rect.bottom + 8
+    })
+  }, [hideRefPreview])
+
   const appendExternalText = useCallback(
     (text: string, mode: ComposerInsertMode) => {
       const value = text.trim()
@@ -445,9 +522,8 @@ export function ChatBar({
   // to `$composerDraft` per keystroke any more — nobody outside the composer
   // subscribes to it (verified by grep), and the round-trip
   // `setText` ⇄ `subscribe` ⇄ `setText` was adding two useEffects to the per-
-  // keystroke critical path. `reconcileComposerTerminalSelections` only
-  // matters when the draft is submitted; we now call it from the submit
-  // path instead.
+  // keystroke critical path. Hidden context refs (`@terminal:` / `@selection:`)
+  // are looked up only when the draft is submitted.
   useEffect(() => {
     draftRef.current = draft
 
@@ -1702,7 +1778,14 @@ export function ChatBar({
     }
 
     void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
+      .then(accepted => {
+        if (accepted === false) {
+          restore()
+        } else {
+          clearComposerContextReferences()
+          clearSessionDraft(submittedScope)
+        }
+      })
       .catch(restore)
   }
 
@@ -1924,7 +2007,10 @@ export function ChatBar({
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
-        onBlur={() => window.setTimeout(closeTrigger, 80)}
+        onBlur={() => {
+          hideRefPreview()
+          window.setTimeout(closeTrigger, 80)
+        }}
         onCompositionEnd={event => {
           composingRef.current = false
 
@@ -1946,6 +2032,8 @@ export function ChatBar({
         onInput={handleEditorInput}
         onKeyDown={handleEditorKeyDown}
         onKeyUp={handleEditorKeyUp}
+        onMouseLeave={hideRefPreview}
+        onMouseMove={updateRefPreview}
         onMouseUp={refreshTrigger}
         onPaste={handlePaste}
         ref={editorRef}
@@ -1981,6 +2069,12 @@ export function ChatBar({
       </ComposerPrimitive.Input>
     </div>
   )
+
+  const refPreviewText = refPreview
+    ? refPreview.text.length > REF_PREVIEW_MAX_CHARS
+      ? `${refPreview.text.slice(0, REF_PREVIEW_MAX_CHARS).trimEnd()}\n…`
+      : refPreview.text
+    : ''
 
   return (
     <>
@@ -2165,6 +2259,27 @@ export function ChatBar({
           </div>
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+
+      {refPreview && (
+        <div
+          className="pointer-events-none fixed z-[60] rounded-xl border border-border/70 bg-popover/95 p-2.5 text-xs text-foreground shadow-2xl backdrop-blur-md"
+          data-slot="composer-ref-preview"
+          style={{
+            left: refPreview.left,
+            maxWidth: refPreview.maxWidth,
+            top: refPreview.top,
+            transform: refPreview.placement === 'top' ? 'translate(-50%, -100%)' : 'translate(-50%, 0)'
+          }}
+        >
+          <div className="mb-1 flex items-center gap-2 text-[0.68rem] font-medium uppercase tracking-wide text-muted-foreground/85">
+            <span>@{refPreview.kind}</span>
+            <span className="min-w-0 truncate normal-case tracking-normal text-foreground/85">{refPreview.label}</span>
+          </div>
+          <pre className="max-h-64 overflow-hidden whitespace-pre-wrap break-words font-mono text-[0.72rem] leading-5 text-muted-foreground">
+            {refPreviewText}
+          </pre>
+        </div>
+      )}
 
       <UrlDialog
         inputRef={urlInputRef}

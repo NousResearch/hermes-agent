@@ -251,6 +251,36 @@ def _make_fake_mautrix():
 # Platform & Config
 # ---------------------------------------------------------------------------
 
+class TestMatrixMaxMessageLength:
+    """MAX_MESSAGE_LENGTH is configurable via MATRIX_MAX_MESSAGE_LENGTH."""
+
+    def _reload_adapter(self):
+        import importlib
+        import plugins.platforms.matrix.adapter as adapter
+        return importlib.reload(adapter)
+
+    def test_default_is_4000(self, monkeypatch):
+        monkeypatch.delenv("MATRIX_MAX_MESSAGE_LENGTH", raising=False)
+        adapter = self._reload_adapter()
+        assert adapter.MAX_MESSAGE_LENGTH == 4000
+
+    def test_env_override_applied(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_MAX_MESSAGE_LENGTH", "16000")
+        adapter = self._reload_adapter()
+        assert adapter.MAX_MESSAGE_LENGTH == 16000
+
+    def test_invalid_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_MAX_MESSAGE_LENGTH", "not-a-number")
+        adapter = self._reload_adapter()
+        assert adapter.MAX_MESSAGE_LENGTH == 4000
+
+    def teardown_method(self):
+        # Restore the module to its unconfigured default for later tests.
+        import importlib
+        import plugins.platforms.matrix.adapter as adapter
+        importlib.reload(adapter)
+
+
 class TestMatrixConfigLoading:
     def test_apply_env_overrides_with_access_token(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_abc123")

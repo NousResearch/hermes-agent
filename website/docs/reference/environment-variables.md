@@ -434,6 +434,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATRIX_APPROVAL_TIMEOUT_SECONDS` | Timeout for Matrix reaction approval/model-picker prompts (default: `300`) |
 | `MATRIX_ALLOW_PUBLIC_ROOMS` | Allow Matrix room-creation tools to create public rooms (default: `false`) |
 | `MATRIX_MAX_MEDIA_BYTES` | Maximum Matrix media upload/download size in bytes (default: `104857600`) |
+| `MATRIX_MAX_MESSAGE_LENGTH` | Character limit before outbound Matrix messages are split into continuation chunks (default: `4000`). Raise it to keep wide Markdown tables in a single message. |
 | `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |
 | `MATRIX_RECOVERY_KEY_OUTPUT_FILE` | Optional one-time path for a generated Matrix recovery key. Created with mode `0600` and never overwritten. |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |

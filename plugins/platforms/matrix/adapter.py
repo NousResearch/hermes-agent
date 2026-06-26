@@ -337,8 +337,13 @@ class _MatrixModelPickerPrompt:
 
 
 # Matrix message size limit (4000 chars practical, spec has no hard limit
-# but clients render poorly above this).
-MAX_MESSAGE_LENGTH = 4000
+# but clients render poorly above this). Overridable via MATRIX_MAX_MESSAGE_LENGTH
+# for homeservers/clients that handle larger events (e.g. to keep wide Markdown
+# tables in a single message).
+try:
+    MAX_MESSAGE_LENGTH = int(os.getenv("MATRIX_MAX_MESSAGE_LENGTH", "4000"))
+except ValueError:
+    MAX_MESSAGE_LENGTH = 4000
 
 # Store directory for E2EE keys and sync state.
 # Uses get_hermes_home() so each profile gets its own Matrix store.
@@ -4391,7 +4396,7 @@ def register(ctx) -> None:
         allow_all_env="MATRIX_ALLOW_ALL_USERS",
         cron_deliver_env_var="MATRIX_HOME_ROOM",
         standalone_sender_fn=_standalone_send,
-        max_message_length=4000,
+        max_message_length=MAX_MESSAGE_LENGTH,
         emoji="🔐",
         allow_update_command=True,
     )

@@ -1,0 +1,7 @@
+name: web-360-search
+version: 1.0.0
+description: "360 Search (Haosou) — Chinese search engine. NOTE: no public developer API available."
+author: Hermes Community
+kind: backend
+provides_web_providers:
+  - 360-search

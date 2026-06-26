@@ -149,7 +149,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in _get_registered_backend_names():
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -168,12 +168,50 @@ def _get_backend() -> str:
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
+        # New free providers — ordered by composite quality score
+        # (see docs: multi-source search API ranking)
+        ("serper", _check_provider_available("serper")),
+        ("baidu", _check_provider_available("baidu")),
+        ("bocha", _check_provider_available("bocha")),
+        ("qiniu-baidu", _check_provider_available("qiniu-baidu")),
+        ("serpapi", _check_provider_available("serpapi")),
+        ("jina", _check_provider_available("jina")),
+        ("google-cse", _check_provider_available("google-cse")),
+        # Registry-only entries (no public API, always unavailable)
+        ("sogou", _check_provider_available("sogou")),
+        ("360-search", _check_provider_available("360-search")),
     )
     for backend, available in backend_candidates:
         if available:
             return backend
 
     return "firecrawl"  # default (backward compat)
+
+
+def _check_provider_available(provider_name: str) -> bool:
+    """Check whether a web search provider plugin is available.
+
+    Used by ``backend_candidates`` to probe providers dynamically.
+    Falls back to ``_is_backend_available`` for unified behaviour.
+    """
+    _ensure_web_plugins_loaded()
+    return _is_backend_available(provider_name)
+
+
+def _get_registered_backend_names() -> set[str]:
+    """Return all currently-registered web search backend names.
+
+    Dynamically sourced from the plugin registry so adding a new
+    provider plugin automatically extends the set — no hardcoded list.
+    Used for config value validation.
+    """
+    try:
+        _ensure_web_plugins_loaded()
+        from agent.web_search_registry import list_provider_names
+        return set(list_provider_names())
+    except Exception:
+        return set()
+
 
 
 def _get_search_backend() -> str:
@@ -240,6 +278,17 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+
+    # Generic probe for plugin-based backends — serper, baidu, bocha,
+    # qiniu-baidu, serpapi, jina, google-cse, sogou, 360-search, etc.
+    try:
+        from agent.web_search_registry import get_provider
+        provider = get_provider(backend)
+        if provider is not None:
+            return provider.is_available()
+    except Exception:
+        pass
+
     return False
 
 
@@ -1185,7 +1234,7 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in _get_registered_backend_names():
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)

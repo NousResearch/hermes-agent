@@ -1,0 +1,7 @@
+name: web-serper
+version: 1.0.0
+description: "Serper.dev — Google Search API. 2,500 free queries (no credit card). Requires SERPER_API_KEY from https://serper.dev."
+author: Hermes Community
+kind: backend
+provides_web_providers:
+  - serper

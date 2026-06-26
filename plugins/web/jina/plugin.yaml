@@ -1,0 +1,7 @@
+name: web-jina
+version: 1.0.0
+description: "Jina AI Search — full-page content extraction. 10M tokens free for new users. Requires JINA_API_KEY from https://jina.ai. NOTE: blocked by GFW in China."
+author: Hermes Community
+kind: backend
+provides_web_providers:
+  - jina

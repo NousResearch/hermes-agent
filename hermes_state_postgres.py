@@ -702,14 +702,134 @@ class _PostgresRow:
         return self._map.get(key, default)
 
 
-class _PostgresConnection:
-    """Adapter exposing the ``sqlite3.Connection`` surface SessionDB calls."""
+def _is_connection_broken_error(exc: BaseException) -> bool:
+    """True if ``exc`` looks like a dropped/broken PostgreSQL connection.
 
-    def __init__(self, conn: Any):
+    psycopg raises ``OperationalError`` / ``InterfaceError`` for a server-side
+    close, network drop, or admin terminate (SQLSTATE class 08, plus the
+    generic "connection is closed" / "consuming input failed" messages we see
+    in the wild when the server restarts under a long-lived gateway process).
+    We classify by SQLSTATE first (class 08, ``57P01`` admin shutdown,
+    ``57P02`` crash shutdown, ``57P03`` cannot connect now) and fall back to
+    a tight message-substring check so the heuristic still fires when the
+    driver does not expose ``sqlstate`` on a low-level transport failure.
+    """
+    sqlstate = getattr(exc, "sqlstate", None) or ""
+    if sqlstate.startswith("08") or sqlstate in ("57P01", "57P02", "57P03"):
+        return True
+    msg = str(exc).lower()
+    return (
+        "connection is closed" in msg
+        or "connection already closed" in msg
+        or "server closed the connection" in msg
+        or "consuming input failed" in msg
+        or "connection is bad" in msg
+        or "ssl connection has been closed" in msg
+        or "terminating connection" in msg
+    )
+
+
+class _PostgresConnection:
+    """Adapter exposing the ``sqlite3.Connection`` surface SessionDB calls.
+
+    The adapter holds the DSN so it can transparently reconnect when the
+    underlying psycopg connection has been closed by the server (idle
+    timeout, server restart, admin terminate, network drop). Without this,
+    a single broken connection cascades into every subsequent state write
+    failing for the lifetime of the host process, because SessionDB caches
+    one ``_PostgresConnection`` for its whole lifetime.
+
+    Reconnect strategy:
+      * Before yielding a cursor / committing / rolling back, check the
+        psycopg connection's ``closed`` flag and reopen if it is non-zero.
+      * On an ``OperationalError`` / ``InterfaceError`` that looks like a
+        dropped connection (see ``_is_connection_broken_error``), reopen
+        once and retry the call. Surfaces a single layered ``RuntimeError``
+        if the reconnect itself fails, so callers see the real cause.
+
+    The DSN may be None (legacy callers that wrap a pre-built connection
+    directly); in that case reconnect is disabled and the original behaviour
+    is preserved.
+    """
+
+    def __init__(self, conn: Any, dsn: Optional[str] = None):
         self._conn = conn
+        self._dsn = dsn
+
+    # ------------------------------------------------------------------
+    # Reconnect helpers
+    # ------------------------------------------------------------------
+
+    def _ensure_live(self) -> None:
+        """Reopen ``self._conn`` if it has been closed under us.
+
+        No-op when the connection is healthy or when no DSN is available
+        (legacy code-path).
+        """
+        if self._dsn is None:
+            return
+        if getattr(self._conn, "closed", 0):
+            self._reconnect()
+
+    def _reconnect(self) -> None:
+        """Replace ``self._conn`` with a fresh psycopg connection.
+
+        Raises ``RuntimeError`` (chained from the underlying psycopg error)
+        if the reconnect fails, so callers get a clear signal rather than a
+        bare driver exception bubbling out of an adapter method.
+        """
+        if self._dsn is None:
+            raise RuntimeError(
+                "PostgreSQL adapter has no DSN; cannot reconnect a closed "
+                "connection"
+            )
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "PostgreSQL state backend requires psycopg"
+            ) from exc
+        # Best-effort close of the stale handle so we don't leak server-side
+        # resources if it is half-open.
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+        try:
+            self._conn = psycopg.connect(self._dsn, autocommit=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"PostgreSQL reconnect failed: {exc}"
+            ) from exc
+
+    def _call_with_retry(self, op_name: str, fn):
+        """Run ``fn()`` with one transparent reconnect-and-retry.
+
+        ``fn`` is a zero-arg callable that performs the actual psycopg
+        operation. If it raises and the exception looks like a dropped
+        connection, we reconnect once and retry. Any other exception (or a
+        second drop in a row) propagates.
+        """
+        self._ensure_live()
+        try:
+            return fn()
+        except Exception as exc:
+            if not _is_connection_broken_error(exc):
+                raise
+            # Connection looked open but the server had already gone away,
+            # or the call itself surfaced the drop. Reconnect and retry once.
+            self._reconnect()
+            return fn()
+
+    # ------------------------------------------------------------------
+    # sqlite3.Connection-shaped surface
+    # ------------------------------------------------------------------
 
     def cursor(self):
-        return _PostgresCursor(self._conn.cursor(), conn=self)
+        return _PostgresCursor(
+            self._call_with_retry("cursor", lambda: self._conn.cursor()),
+            conn=self,
+        )
 
     def execute(self, sql: str, params: Any = ()) -> _PostgresCursor:
         return self.cursor().execute(sql, params)
@@ -718,17 +838,27 @@ class _PostgresConnection:
         return self.cursor().executescript(sql_script)
 
     def commit(self):
-        return self._conn.commit()
+        return self._call_with_retry("commit", lambda: self._conn.commit())
 
     def rollback(self):
-        return self._conn.rollback()
+        return self._call_with_retry("rollback", lambda: self._conn.rollback())
 
     def close(self):
-        return self._conn.close()
+        # Close is best-effort and never reconnects — the caller is shutting
+        # down. Swallow OperationalError on an already-dead handle.
+        try:
+            return self._conn.close()
+        except Exception:
+            return None
 
     @property
     def raw(self) -> Any:
-        """The underlying psycopg connection (for advisory-lock SQL etc.)."""
+        """The underlying psycopg connection (for advisory-lock SQL etc.).
+
+        Calls ``_ensure_live`` first so callers that bypass the adapter
+        (advisory-lock SQL, migration paths) also get a live connection.
+        """
+        self._ensure_live()
         return self._conn
 
 
@@ -736,7 +866,10 @@ def connect_postgres(database_url: str) -> _PostgresConnection:
     """Open a PostgreSQL connection wrapped in the SQLite-compatible adapter.
 
     The DSN is passed through unchanged, so the operator's connection string
-    fully determines TLS mode, host, port, and credentials.
+    fully determines TLS mode, host, port, and credentials. The DSN is also
+    retained on the adapter so it can transparently reconnect when the
+    underlying connection drops (server restart, idle timeout, admin
+    terminate).
     """
     try:
         import psycopg
@@ -745,7 +878,10 @@ def connect_postgres(database_url: str) -> _PostgresConnection:
             "PostgreSQL state backend requires psycopg; install the 'postgres' "
             "extra (pip install 'hermes-agent[postgres]')"
         ) from exc
-    return _PostgresConnection(psycopg.connect(database_url, autocommit=True))
+    return _PostgresConnection(
+        psycopg.connect(database_url, autocommit=True),
+        dsn=database_url,
+    )
 
 
 # ---------------------------------------------------------------------------

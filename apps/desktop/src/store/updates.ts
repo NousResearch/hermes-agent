@@ -611,6 +611,7 @@ export function startUpdatePoller(): void {
   }
 
   pollerStarted = true
+  void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
@@ -633,6 +634,7 @@ export function startUpdatePoller(): void {
   window.addEventListener('focus', onFocus)
   backgroundTimer = setInterval(
     () => {
+      void checkUpdates()
       void checkBackendUpdates()
     },
     30 * 60 * 1000
@@ -660,6 +662,7 @@ function onFocus() {
   }
 
   lastFocusAt = now
+  void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()
 }

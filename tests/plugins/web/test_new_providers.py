@@ -57,17 +57,17 @@ class TestSerperProvider:
 
     def test_search_http_error(self, monkeypatch):
         monkeypatch.setenv("SERPER_API_KEY", "bad-key")
-        import requests
-        with patch.object(requests, "post") as mock_post:
-            mock_post.side_effect = requests.HTTPError("403 Forbidden")
+        import httpx
+        with patch.object(httpx, "post") as mock_post:
+            mock_post.side_effect = httpx.HTTPStatusError("403 Forbidden", request=MagicMock(), response=MagicMock())
             from plugins.web.serper.provider import SerperWebSearchProvider
             result = SerperWebSearchProvider().search("test")
             assert result["success"] is False
 
     def test_search_success(self, monkeypatch):
         monkeypatch.setenv("SERPER_API_KEY", "good-key")
-        import requests
-        with patch.object(requests, "post") as mock_post:
+        import httpx
+        with patch.object(httpx, "post") as mock_post:
             mock_resp = MagicMock()
             mock_resp.json.return_value = {
                 "organic": [
@@ -145,3 +145,23 @@ class TestBackendCandidates:
         assert 'configured in {"parallel", "firecrawl"' not in source
         assert 'configured in {"exa", "parallel", "firecrawl"' not in source
         assert "configured in _get_registered_backend_names()" in source
+
+
+class TestPluginRegistration:
+    """All new __init__.py files must define register(ctx) for PluginManager."""
+
+    def test_all_init_files_have_register_function(self):
+        """Every new provider __init__.py must expose a register(ctx) callable."""
+        import importlib
+        from pathlib import Path
+        base = Path(__file__).parent.parent.parent / "plugins" / "web"
+        new_dirs = [
+            "serper", "baidu", "bocha", "qiniu-baidu", "serpapi",
+            "jina", "google-cse", "sogou", "_360_search",
+        ]
+        for d in new_dirs:
+            init_path = base / d / "__init__.py"
+            assert init_path.exists(), f"Missing __init__.py in {d}"
+            content = init_path.read_text()
+            assert "def register(ctx)" in content, f"Missing register(ctx) in {d}/__init__.py"
+            assert "register_web_search_provider" in content, f"Missing register_web_search_provider in {d}/__init__.py"

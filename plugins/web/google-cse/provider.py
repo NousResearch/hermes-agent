@@ -23,8 +23,11 @@ class GoogleCseWebSearchProvider(WebSearchProvider):
         return "Google CSE"
 
     def is_available(self) -> bool:
-        """Return True when GOOGLE_CSE_API_KEY is set."""
-        return bool(os.getenv("GOOGLE_CSE_API_KEY", "").strip())
+        """Return True when both GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX are set."""
+        return bool(
+            os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+            and os.getenv("GOOGLE_CSE_CX", "").strip()
+        )
 
     def supports_search(self) -> bool:
         return True
@@ -33,13 +36,13 @@ class GoogleCseWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        import requests
+        import httpx
         api_key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
         cx = os.getenv("GOOGLE_CSE_CX", "").strip()
         if not api_key or not cx:
             return {"success": False, "error": "GOOGLE_CSE_API_KEY or GOOGLE_CSE_CX not set."}
         try:
-            r = requests.get("https://customsearch.googleapis.com/customsearch/v1",
+            r = httpx.get("https://customsearch.googleapis.com/customsearch/v1",
                 params={"q": query, "num": min(limit, 10), "key": api_key, "cx": cx}, timeout=10)
             r.raise_for_status()
             data = r.json()
@@ -62,6 +65,11 @@ class GoogleCseWebSearchProvider(WebSearchProvider):
                     "key": "GOOGLE_CSE_API_KEY",
                     "prompt": "Google CSE API key",
                     "url": "https://developers.google.com/custom-search/v1/overview",
+                },
+                {
+                    "key": "GOOGLE_CSE_CX",
+                    "prompt": "Google Custom Search Engine ID (cx)",
+                    "url": "https://programmablesearchengine.google.com/",
                 },
             ],
         }

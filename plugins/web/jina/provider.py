@@ -33,13 +33,13 @@ class JinaWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        import requests
+        import httpx
         api_key = os.getenv("JINA_API_KEY", "").strip()
         if not api_key:
             return {"success": False, "error": "JINA_API_KEY not set. Get a key at https://jina.ai (10M free tokens for new users)."}
         try:
             import urllib.parse
-            r = requests.get(f"https://s.jina.ai/{urllib.parse.quote(query)}",
+            r = httpx.get(f"https://s.jina.ai/{urllib.parse.quote(query)}",
                 headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
                 timeout=15)
             r.raise_for_status()

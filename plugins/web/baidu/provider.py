@@ -33,12 +33,12 @@ class BaiduWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        import requests
+        import httpx
         api_key = os.getenv("BAIDU_API_KEY", "").strip()
         if not api_key:
             return {"success": False, "error": "BAIDU_API_KEY not set. Get a key at https://ai.baidu.com."}
         try:
-            r = requests.post("https://api.baidu.com/search/v1/websearch", params={"q": query, "topn": min(limit, 50)}, headers={"Authorization": f"Bearer {api_key}"}, timeout=10)
+            r = httpx.post("https://api.baidu.com/search/v1/websearch", params={"q": query, "topn": min(limit, 50)}, headers={"Authorization": f"Bearer {api_key}"}, timeout=10)
             r.raise_for_status()
             data = r.json()
             raw = data.get("results", [])[:limit]

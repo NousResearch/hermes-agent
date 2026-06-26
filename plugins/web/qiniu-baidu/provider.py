@@ -33,12 +33,12 @@ class QiniuBaiduWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        import requests
+        import httpx
         api_key = os.getenv("QINIU_API_KEY", "").strip()
         if not api_key:
             return {"success": False, "error": "QINIU_API_KEY not set. Get a key at https://qiniu.com/ai/models."}
         try:
-            r = requests.post("https://api.qnaigc.com/v1/search/web", json={"query": query, "max_results": min(limit, 50), "search_type": "web"}, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, timeout=10)
+            r = httpx.post("https://api.qnaigc.com/v1/search/web", json={"query": query, "max_results": min(limit, 50), "search_type": "web"}, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, timeout=10)
             r.raise_for_status()
             data = r.json()
             raw = list(((data or {}).get("data", []) or {}).get("results", []))[:limit]

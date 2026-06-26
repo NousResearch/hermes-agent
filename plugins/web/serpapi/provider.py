@@ -33,12 +33,12 @@ class SerpapiWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        import requests
+        import httpx
         api_key = os.getenv("SERPAPI_API_KEY", "").strip()
         if not api_key:
             return {"success": False, "error": "SERPAPI_API_KEY not set. Get a key at https://serpapi.com."}
         try:
-            r = requests.get("https://serpapi.com/search", params={"q": query, "num": min(limit, 100), "engine": "google", "api_key": api_key}, timeout=10)
+            r = httpx.get("https://serpapi.com/search", params={"q": query, "num": min(limit, 100), "engine": "google", "api_key": api_key}, timeout=10)
             r.raise_for_status()
             data = r.json()
             raw = data.get("organic_results", [])[:limit]

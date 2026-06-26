@@ -33,12 +33,12 @@ class BochaWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        import requests
+        import httpx
         api_key = os.getenv("BOCHA_API_KEY", "").strip()
         if not api_key:
             return {"success": False, "error": "BOCHA_API_KEY not set. Get a key at https://open.bochaai.com."}
         try:
-            r = requests.post("https://api.bochaai.com/v1/web-search", json={"query": query, "count": min(limit, 20), "summary": True}, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, timeout=10)
+            r = httpx.post("https://api.bochaai.com/v1/web-search", json={"query": query, "count": min(limit, 20), "summary": True}, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, timeout=10)
             r.raise_for_status()
             data = r.json()
             raw = list(((data or {}).get("webPages", []) or {}).get("value", []))[:limit]

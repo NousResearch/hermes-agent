@@ -663,7 +663,7 @@ def compress_context(
                     try:
                         new_title = agent._session_db.get_next_title_in_lineage(old_title)
                         agent._session_db.set_session_title(agent.session_id, new_title)
-                    except (ValueError, Exception) as e:
+                    except Exception as e:
                         logger.debug("Could not propagate title on compression: %s", e)
 
             # Shared post-write steps (both modes target agent.session_id, which

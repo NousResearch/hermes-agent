@@ -80,7 +80,7 @@ def check_packages():
             import nacl.secret
             nacl.secret.Aead(bytes(32))
             check("PyNaCl", True, f"v{ver}")
-        except (AttributeError, Exception):
+        except Exception:
             check("PyNaCl (Aead)", False, f"v{ver} — need >=1.5.0")
             ok = False
     except ImportError:

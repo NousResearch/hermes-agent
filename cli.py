@@ -6408,11 +6408,163 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  Toolsets:   {', '.join(self.enabled_toolsets) if self.enabled_toolsets else 'all'}")
         print(f"  Verbose:    {self.verbose}")
         print()
+        print("  -- Display --")
+        display = self.config.get("display", {})
+        print(f"  Personality:  {display.get('personality') or 'none'}")
+        print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
+        print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+        print(f"  Compact:      {'on' if self.compact else 'off'}")
+        print(f"  Tool progress: {self.tool_progress_mode}")
+        print()
+        print("  -- Compression --")
+        compression = self.config.get("compression", {})
+        comp_enabled = compression.get("enabled", True)
+        print(f"  Enabled:      {'yes' if comp_enabled else 'no'}")
+        if comp_enabled:
+            print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+            target = compression.get("target_ratio", 0.20)
+            print(f"  Target ratio: {target * 100:.0f}% of threshold preserved")
+            print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
+        print()
+        print("  -- Timezone --")
+        tz = self.config.get("timezone", "")
+        print(f"  Timezone:     {tz or '(server-local)'}")
+        # Auxiliary model overrides
+        auxiliary = self.config.get("auxiliary", {})
+        has_aux_overrides = False
+        for task_key in ("vision", "web_extract", "compression"):
+            task_cfg = auxiliary.get(task_key, {})
+            if task_cfg.get("provider", "auto") != "auto" or task_cfg.get("model", ""):
+                has_aux_overrides = True
+                break
+        if has_aux_overrides:
+            print()
+            print("  -- Auxiliary Models (overrides) --")
+            for label, task_key in [("Vision", "vision"), ("Web extract", "web_extract"), ("Compression", "compression")]:
+                task_cfg = auxiliary.get(task_key, {})
+                prov = task_cfg.get("provider", "auto")
+                mdl = task_cfg.get("model", "")
+                if prov != "auto" or mdl:
+                    parts = [f"provider={prov}"]
+                    if mdl:
+                        parts.append(f"model={mdl}")
+                    print(f"  {label:14s} {', '.join(parts)}")
+        print()
         print("  -- Session --")
         print(f"  Started:     {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"  Config File: {config_path} {config_status}")
         print()
+        print("  Tip: Use /config set <key.path> <value> to change settings")
+        print("       Use /config get <key.path> to read a single value")
+        print()
     
+    def _config_set_value(self, key_path: str, value: str) -> None:
+        """Set a config value from /config set <key> <value>.
+
+        Persists to disk and applies live where safe.  Keys that require
+        a restart are flagged so the user knows.
+        """
+        # Validate that the key path resolves to an existing config section
+        # or is a recognized leaf key.  Prevents silent orphan writes from
+        # typos like "disploy.bell" or "model.defualt".
+        parts = key_path.split(".")
+        cfg = self.config
+        for i, part in enumerate(parts[:-1]):
+            if not isinstance(cfg, dict) or part not in cfg:
+                _cprint(f"\033[1;31m  ✗ Unknown config section: {'.'.join(parts[:i + 1])}\033[0m")
+                _cprint(f"  Tip: Run /config to see available settings")
+                return
+            cfg = cfg[part]
+        # Final segment may not exist yet (user setting a new value), but the
+        # parent must be a dict.
+        if not isinstance(cfg, dict):
+            _cprint(f"\033[1;31m  ✗ {'.'.join(parts[:-1])} is not a section (cannot set sub-keys)\033[0m")
+            return
+
+        # Keys that can safely live-apply without restart
+        _LIVE_PREFIXES = ("display.", "compression.", "timezone")
+        # Everything else needs a restart (conservative)
+        _RESTART_PREFIXES = ("terminal.", "model.", "mcp_servers.",
+                             "browser.", "memory.", "delegation.", "approvals.")
+
+        needs_restart = any(key_path.startswith(p) for p in _RESTART_PREFIXES)
+        can_live = any(key_path.startswith(p) for p in _LIVE_PREFIXES)
+
+        # Coerce common string values to bool/int where appropriate
+        coerced = self._coerce_config_value(key_path, value)
+
+        if not save_config_value(key_path, coerced):
+            _cprint(f"\033[1;31m  ✗ Failed to save {key_path}\033[0m")
+            return
+
+        # Live-apply by mutating self.config in-memory
+        if can_live or not needs_restart:
+            target = self.config
+            for part in parts[:-1]:
+                target = target.setdefault(part, {})
+            target[parts[-1]] = coerced
+
+            # Propagate well-known keys to live agent attributes so the
+            # running session picks up the change immediately.
+            self._propagate_config_live(key_path, coerced)
+
+        if needs_restart:
+            _cprint(f"  ✓ Set {key_path} = {coerced}  \033[33m(requires restart)\033[0m")
+        else:
+            _cprint(f"  ✓ Set {key_path} = {coerced}")
+
+    def _propagate_config_live(self, key_path: str, value) -> None:
+        """Push an in-memory config change to live agent/session attributes."""
+        # Session-level display attributes — always propagate regardless of
+        # whether an agent is active (these are TUI display prefs, not agent
+        # runtime state).
+        if key_path == "display.show_reasoning":
+            self.show_reasoning = bool(value)
+        elif key_path == "display.bell_on_complete":
+            self.bell_on_complete = bool(value)
+        elif key_path == "display.compact":
+            self.compact = bool(value)
+        elif key_path == "display.tool_progress":
+            self.tool_progress_mode = "off" if value is False else str(value)
+
+    @staticmethod
+    def _coerce_config_value(key_path: str, value: str):
+        """Coerce a string value to bool/int/float where obvious."""
+        if value.lower() in ("true", "yes", "on"):
+            return True
+        if value.lower() in ("false", "no", "off"):
+            return False
+        # Integers
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        # Floats
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        return value
+
+    def _config_get_value(self, key_path: str) -> None:
+        """Display a single config value."""
+        parts = key_path.split(".")
+        cfg = self.config
+        for part in parts:
+            if isinstance(cfg, dict):
+                cfg = cfg.get(part)
+            else:
+                cfg = None
+                break
+        if cfg is None:
+            _cprint(f"  {key_path}: (not set)")
+        elif isinstance(cfg, dict):
+            _cprint(f"  {key_path}:")
+            for k, v in cfg.items():
+                _cprint(f"    {k}: {v}")
+        else:
+            _cprint(f"  {key_path}: {cfg}")
+
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
         """Return recent CLI sessions for in-chat browsing/resume affordances."""
         if not self._session_db:
@@ -8026,7 +8178,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "toolsets":
             self.show_toolsets()
         elif canonical == "config":
-            self.show_config()
+            # Parse subcommands: /config set <key> <value>, /config get <key>
+            rest = cmd_original.split(None, 1)
+            args_str = rest[1].strip() if len(rest) > 1 else ""
+            if args_str:
+                args_parts = args_str.split(None, 2)
+                subcmd = args_parts[0].lower()
+                if subcmd == "set" and len(args_parts) >= 3:
+                    self._config_set_value(args_parts[1], args_parts[2])
+                elif subcmd == "set":
+                    _cprint("  Usage: /config set <key.path> <value>")
+                    _cprint("  Example: /config set display.bell_on_complete true")
+                elif subcmd == "get" and len(args_parts) >= 2:
+                    self._config_get_value(args_parts[1])
+                elif subcmd == "get":
+                    _cprint("  Usage: /config get <key.path>")
+                else:
+                    _cprint(f"  Unknown /config subcommand: {subcmd}")
+                    _cprint("  Usage: /config [set <key> <value> | get <key>]")
+            else:
+                self.show_config()
         elif canonical == "redraw":
             # Manual recovery for terminal buffer drift from multiplexer
             # tab switches, subshell ``clear``, SSH window restores, etc.
@@ -8590,7 +8761,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # Expand the prefix to the full command name, preserving arguments.
                     # Guard against redispatching the same token to avoid infinite
                     # recursion when the expanded name still doesn't hit an exact branch
-                    # (e.g. /config with extra args that are not yet handled above).
+                    # (e.g. /config with subcommands handled above).
                     full_name = matches[0]
                     if full_name == typed_base:
                         # Already an exact token — no expansion possible; fall through

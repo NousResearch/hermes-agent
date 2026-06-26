@@ -81,7 +81,7 @@ class TestIgnoreUserConfigEnvGate:
         The built-in default ``model.default`` is empty string (no user override),
         and the user's ``agent.system_prompt`` is not seen.
         """
-        self._write_user_config(tmp_path, "anthropic/claude-sonnet-4.6")
+        self._write_user_config(tmp_path, "user-only/should-not-load")
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
 
         load_cli_config = self._reload_cli(monkeypatch, tmp_path)
@@ -93,7 +93,7 @@ class TestIgnoreUserConfigEnvGate:
         # User-set model.default MUST NOT leak through — either the built-in
         # default ("" or unset) or a project-level fallback, but never the
         # user's value
-        assert cfg["model"].get("default", "") != "anthropic/claude-sonnet-4.6"
+        assert cfg["model"].get("default", "") != "user-only/should-not-load"
 
     def test_flag_ignored_when_set_to_other_value(self, tmp_path, monkeypatch):
         """Only the literal value "1" activates the bypass, matching the yolo pattern."""

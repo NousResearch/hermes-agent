@@ -6,11 +6,13 @@ description: "Install and deploy Hermes Agent with Nix — from quick `nix run` 
 
 # Nix & NixOS Setup
 
-:::warning No longer explicitly supported
-Nix and NixOS are **no longer an explicitly supported install path** for Hermes Agent. The flake and NixOS module documented here may lag behind `main` and are maintained on a best-effort basis. For a supported setup, use the standard [installation](./installation.md) path (`curl | bash` installer, Docker, or Windows). This page is kept for users already running on Nix.
+:::warning Tier 2 platform
+Nix and NixOS are [Tier 2 platforms](./platform-support.md#tier-2). The flake and NixOS module documented here are maintained on a best-effort basis only. Commits to `main` may break these packages at any point in time.
+
+For a supported setup, use one of the standard [installation](./installation.md) paths - either Docker or an FHS environment.
 :::
 
-Hermes Agent ships a Nix flake, but it's a [Tier 2 platform](./platform-support.md#tier-2) and can break at any time.
+Hermes Agent ships a Nix flake & a NixOS module.
 
 | Level | Who it's for | What you get |
 |-------|-------------|--------------|

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { PetBubble } from '@/components/pet/pet-bubble'
 import { PetSprite } from '@/components/pet/pet-sprite'
-import { usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
+import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { Mail } from '@/lib/icons'
 import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
 import { overlayWindowSize } from '@/store/pet-overlay'
@@ -13,6 +13,10 @@ import { setAwaitingResponse, setBusy } from '@/store/session'
 const DEFAULT_FRAME_W = 192
 const DEFAULT_FRAME_H = 208
 const DEFAULT_SCALE = 0.33
+
+// Must match the root's paddingBottom — the sprite renders bottom-centered, this
+// many px above the window's bottom edge. Used to anchor the resize.
+const PET_PADDING_BOTTOM = 24
 
 // A sprite pixel counts as "solid" (interactive) at/above this alpha (0-255).
 // Low enough to catch anti-aliased edges, high enough that the faint halo around
@@ -63,6 +67,9 @@ export function PetOverlayApp() {
   const [unread, setUnread] = useState(false)
 
   const dragRef = useRef<DragState | null>(null)
+  // Last Alt+wheel anchor, consumed by the resize effect to zoom toward the
+  // cursor; null means a non-wheel scale change (slider) → anchor bottom-center.
+  const zoomAnchorRef = useRef<PetZoomAnchor | null>(null)
   const petRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const ignoreRef = useRef(true)
@@ -278,9 +285,10 @@ export function PetOverlayApp() {
 
   // Alt+wheel over the popped-out pet resizes it. The overlay has no gateway,
   // so paint the new scale locally for instant feedback, then ask the main
-  // renderer to persist it (it pushes the reconciled scale back). The window
-  // itself is grown to fit by the effect below.
-  const onScale = useCallback((next: number) => {
+  // renderer to persist it (it pushes the reconciled scale back). Stash the
+  // cursor anchor for the resize effect; the window itself is grown to fit there.
+  const onScale = useCallback((next: number, anchor: PetZoomAnchor) => {
+    zoomAnchorRef.current = anchor
     setPetInfo({ ...$petInfo.get(), scale: next })
     window.hermesDesktop?.petOverlay?.control({ scale: next, type: 'scale' })
   }, [])
@@ -289,10 +297,10 @@ export function PetOverlayApp() {
 
   // Grow/shrink the OS overlay window to fit the pet at its current scale so the
   // sprite is never cropped — covers both the wheel gesture here and a scale
-  // changed from the app's settings slider (pushed in as a state update). The
-  // pet renders bottom-center, so anchor the window's bottom-center while
-  // resizing (it stays put; only the transparent headroom changes). New bounds
-  // are persisted so the pet reopens at the right size.
+  // changed from the app's settings slider (pushed in as a state update). With a
+  // wheel anchor we zoom toward the cursor (keep the pixel under it fixed);
+  // otherwise we anchor the bottom-center (the pet's feet stay planted). New
+  // bounds are persisted so the pet reopens at the right size.
   useEffect(() => {
     if (!info.enabled || !info.spritesheetBase64) {
       return
@@ -308,14 +316,28 @@ export function PetOverlayApp() {
     const curH = window.outerHeight
 
     if (width === curW && height === curH) {
+      zoomAnchorRef.current = null
+
       return
     }
+
+    const anchor = zoomAnchorRef.current
+    zoomAnchorRef.current = null
+
+    // The sprite's bottom-center sits at (curW/2, curH - paddingBottom) and
+    // scales about that point. Solve for the new window origin that holds either
+    // the cursor pixel (wheel) or that bottom-center (slider) at a fixed spot.
+    const dx = anchor ? anchor.clientX - curW / 2 : 0
+    const dy = anchor ? anchor.clientY - (curH - PET_PADDING_BOTTOM) : 0
+    const ratio = anchor?.ratio ?? 1
+    const anchorX = anchor?.clientX ?? curW / 2
+    const anchorY = anchor?.clientY ?? curH - PET_PADDING_BOTTOM
 
     const bounds = {
       height,
       width,
-      x: Math.round(window.screenX + (curW - width) / 2),
-      y: Math.round(window.screenY + (curH - height))
+      x: Math.round(window.screenX + anchorX - dx * ratio - width / 2),
+      y: Math.round(window.screenY + anchorY - dy * ratio - (height - PET_PADDING_BOTTOM))
     }
 
     window.hermesDesktop?.petOverlay?.setBounds(bounds)
@@ -342,7 +364,7 @@ export function PetOverlayApp() {
         flexDirection: 'column',
         height: '100vh',
         justifyContent: 'flex-end',
-        paddingBottom: 24,
+        paddingBottom: PET_PADDING_BOTTOM,
         userSelect: 'none',
         width: '100vw'
       }}

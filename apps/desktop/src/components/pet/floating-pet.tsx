@@ -12,11 +12,14 @@ import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { PetSprite } from './pet-sprite'
-import { usePetZoomGesture } from './use-pet-zoom-gesture'
+import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
 
 // v2: positions are now top/left anchored (v1 stored bottom-anchored values,
 // which dragged inverted). Bumping the key discards stale v1 coordinates.
 const POSITION_KEY = 'hermes.desktop.pet-position.v2'
+
+// Stand-in pet size for the pre-load clamp (real size flows in with `info`).
+const NOMINAL_PET_PX = 96
 
 interface Point {
   x: number
@@ -42,11 +45,13 @@ function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
   )
 }
 
-function clampToViewport({ x, y }: Point): Point {
-  const maxX = Math.max(0, (window.innerWidth || 800) - 80)
-  const maxY = Math.max(0, (window.innerHeight || 600) - 80)
-
-  return { x: Math.min(Math.max(0, x), maxX), y: Math.min(Math.max(0, y), maxY) }
+// Keep a w×h box fully inside the viewport. Pre-pet-load callers pass a nominal
+// size; the live size flows in once `info` arrives.
+function clampPoint(x: number, y: number, w: number, h: number): Point {
+  return {
+    x: Math.min(Math.max(0, x), Math.max(0, (window.innerWidth || 800) - w)),
+    y: Math.min(Math.max(0, y), Math.max(0, (window.innerHeight || 600) - h))
+  }
 }
 
 // The sprite art faces left by default, so mirror it when the pet's center sits
@@ -63,7 +68,7 @@ function loadPosition(): Point {
       const parsed = JSON.parse(raw) as Point
 
       if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
-        return clampToViewport(parsed)
+        return clampPoint(parsed.x, parsed.y, NOMINAL_PET_PX, NOMINAL_PET_PX)
       }
     }
   } catch {
@@ -71,7 +76,7 @@ function loadPosition(): Point {
   }
 
   // Default: lower-left corner (top/left anchored).
-  return clampToViewport({ x: 24, y: (window.innerHeight || 600) - 220 })
+  return clampPoint(24, (window.innerHeight || 600) - 220, NOMINAL_PET_PX, NOMINAL_PET_PX)
 }
 
 /**
@@ -119,13 +124,7 @@ export function FloatingPet() {
 
   // Keep the *whole* pet on-screen at its current size, so growing it near an
   // edge can't leave the window cropping it. Shared by drag + the reclamp effect.
-  const clamp = useCallback(
-    ({ x, y }: Point): Point => ({
-      x: Math.min(Math.max(0, x), Math.max(0, (window.innerWidth || 800) - petW)),
-      y: Math.min(Math.max(0, y), Math.max(0, (window.innerHeight || 600) - petH))
-    }),
-    [petW, petH]
-  )
+  const clamp = useCallback(({ x, y }: Point): Point => clampPoint(x, y, petW, petH), [petW, petH])
 
   // Fetch pet.info on connect. Poll quickly while inactive so an in-app
   // `/pet <slug>` appears, then slowly while active so regenerated spritesheets
@@ -337,10 +336,27 @@ export function FloatingPet() {
     }
   }, [])
 
-  // Alt+wheel over the pet resizes it, persisting to `display.pet.scale` through
-  // the same path as the settings slider, so the two agree. Growing it re-runs
-  // the reclamp effect above (via `clamp`), so it never ends up cropped.
-  const onScale = useCallback((next: number) => setPetScale(requestGateway, next), [requestGateway])
+  // Alt+wheel over the pet resizes it (persisted via the same path as the
+  // settings slider). Zoom toward the cursor — shift the top-left so the pixel
+  // under the pointer stays put — so the pet grows in place instead of running
+  // off. The reclamp effect (via `clamp`) still guarantees it stays on-screen.
+  const onScale = useCallback(
+    (next: number, { clientX, clientY, ratio }: PetZoomAnchor) => {
+      setPetScale(requestGateway, next)
+      setPosition(prev => {
+        const at = clampPoint(
+          clientX - (clientX - prev.x) * ratio,
+          clientY - (clientY - prev.y) * ratio,
+          (info.frameW ?? 192) * next,
+          (info.frameH ?? 208) * next
+        )
+        persistString(POSITION_KEY, JSON.stringify(at))
+
+        return at
+      })
+    },
+    [requestGateway, info.frameW, info.frameH]
+  )
   usePetZoomGesture(containerRef, onScale, active && !overlayActive)
 
   // While popped out, the desktop overlay window owns the mascot — hide the

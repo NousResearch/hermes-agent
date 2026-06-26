@@ -191,6 +191,68 @@ def _is_nous_inference_route(provider: str, base_url: str) -> bool:
     )
 
 
+# Substrings that mark a 401/403 body as a genuine credential/permission
+# rejection rather than a proxy/WAF block. Kept deliberately broad: if any of
+# these show up we keep the existing "your API key was rejected" guidance.
+_AUTH_ERROR_MARKERS = (
+    "api key",
+    "api_key",
+    "apikey",
+    "authentication",
+    "authenticate",
+    "unauthorized",
+    "unauthenticated",
+    "permission",
+    "forbidden",
+    "not authorized",
+    "no access",
+    "have access",
+    "invalid token",
+    "expired",
+    "credential",
+    "x-api-key",
+    "bearer",
+)
+
+
+def _summarize_403_proxy_block(api_error: Any, status_code: Any) -> Optional[str]:
+    """Detect a non-standard HTTP 403 that is a proxy/WAF block rather than an
+    API-key/permission rejection, and return a short one-line snippet of its
+    body.
+
+    Some custom OpenAI-compatible relays sit behind a WAF that blocks the OpenAI
+    SDK's default ``User-Agent`` and answers with a short plain-text body such as
+    ``Your request was blocked.`` — no auth-shaped JSON. Reporting that as "your
+    API key was rejected" sends users down the wrong debugging path (see #53099).
+
+    Returns the cleaned snippet only when the response is confidently a non-auth
+    403; otherwise ``None`` so callers keep the existing key-rejection guidance.
+    We default to ``None`` whenever there's any doubt.
+    """
+    if status_code != 403:
+        return None
+    # A structured JSON error body is the standard auth/permission shape; leave
+    # those to the existing guidance.
+    body = getattr(api_error, "body", None)
+    if isinstance(body, (dict, list)):
+        return None
+    text = body if isinstance(body, str) else str(api_error)
+    if not text or not text.strip():
+        return None
+    lowered = text.lower()
+    # Anything that smells like a credential/permission failure → not our case.
+    if any(marker in lowered for marker in _AUTH_ERROR_MARKERS):
+        return None
+    # A JSON ``error`` envelope is auth-shaped too — only treat clearly
+    # plain-text bodies as proxy/WAF blocks.
+    if '"error"' in lowered or "'error'" in lowered:
+        return None
+    snippet = " ".join(text.split())
+    if len(snippet) > 200:
+        snippet = snippet[:200] + "…"
+    return snippet
+
+
 def _billing_or_entitlement_message(
     *,
     capability: str,
@@ -3398,6 +3460,19 @@ def run_conversation(
                                     agent._vprint(f"{agent.log_prefix}      ⚠️  Note: `{_model}` looks like an OpenRouter slug (`:free` suffix).", force=True)
                                     agent._vprint(f"{agent.log_prefix}         Nous Portal won't recognize that model name. Either switch to a", force=True)
                                     agent._vprint(f"{agent.log_prefix}         Nous catalog model, or run `/model openrouter:{_model}` to use OpenRouter.", force=True)
+                        elif _summarize_403_proxy_block(api_error, status_code) is not None:
+                            # Non-standard 403 whose body isn't auth-shaped — a
+                            # custom relay/WAF blocking the request (often the
+                            # OpenAI SDK User-Agent), not a key rejection (#53099).
+                            _block_body = _summarize_403_proxy_block(api_error, status_code)
+                            agent._vprint(f"{agent.log_prefix}   💡 The endpoint returned a non-standard HTTP 403 that doesn't look like an", force=True)
+                            agent._vprint(f"{agent.log_prefix}      API-key rejection — likely a proxy/WAF block: \"{_block_body}\"", force=True)
+                            agent._vprint(f"{agent.log_prefix}      Your key and model access may be fine. For a custom endpoint, try:", force=True)
+                            agent._vprint(f"{agent.log_prefix}      • Check the endpoint's proxy/WAF rules (some block the OpenAI SDK User-Agent).", force=True)
+                            agent._vprint(f"{agent.log_prefix}      • Override the request User-Agent via model.default_headers, e.g.:", force=True)
+                            agent._vprint(f"{agent.log_prefix}            model:", force=True)
+                            agent._vprint(f"{agent.log_prefix}              default_headers:", force=True)
+                            agent._vprint(f"{agent.log_prefix}                User-Agent: curl/8.7.1", force=True)
                         else:
                             agent._vprint(f"{agent.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                             agent._vprint(f"{agent.log_prefix}      • Is the key valid? Run: hermes setup", force=True)

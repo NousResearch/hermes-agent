@@ -4,10 +4,9 @@
  * Themes customise three orthogonal layers:
  *
  *   1. `palette`       — the 3-layer color triplet (background/midground/
- *                         foreground) + warm-glow + noise opacity. The
- *                         design-system cascade in `src/index.css` derives
- *                         every shadcn-compat token (card, muted, border,
- *                         primary, etc.) from this triplet via `color-mix()`.
+ *                         foreground). Legacy `warmGlow` / `noiseOpacity`
+ *                         fields remain for theme YAML compat but are unused
+ *                         by the lightweight shell.
  *   2. `typography`    — font families, base font size, line height,
  *                         letter spacing. An optional `fontUrl` is injected
  *                         as `<link rel="stylesheet">` so self-hosted and
@@ -33,10 +32,9 @@ export interface ThemePalette {
   /** Top-layer highlight. In LENS_0 this is white @ alpha 0 — invisible by
    *  default but still drives `--color-ring`-style accents. */
   foreground: ThemeLayer;
-  /** Warm vignette color for <Backdrop />, as an rgba() string. */
+  /** Legacy palette field — kept for theme YAML compat. */
   warmGlow: string;
-  /** Scalar multiplier (0–1.2) on the noise overlay. Lower for softer themes
-   *  like Mono and Rosé, higher for grittier themes like Cyberpunk. */
+  /** Legacy palette field — kept for theme YAML compat. */
   noiseOpacity: number;
 }
 
@@ -79,12 +77,10 @@ export interface ThemeLayout {
 export type ThemeLayoutVariant = "standard" | "cockpit" | "tiled";
 
 /** Named hero/background assets a theme can populate. Each value is
- *  emitted as a CSS var (`--theme-asset-<name>`). The default shell
- *  consumes `bg` in `<Backdrop />` when present; other slots are
- *  plugin-facing — a cockpit sidebar plugin reads `--theme-asset-hero`
- *  to render its hero render without coupling to the theme name. */
+ *  emitted as a CSS var (`--theme-asset-<name>`). Plugin slots and
+ *  shell chrome may consume these via CSS. */
 export interface ThemeAssets {
-  /** Full-viewport background image URL, injected under the noise layer. */
+  /** Full-viewport background image URL. */
   bg?: string;
   /** Hero render (Gundam, mascot, wallpaper) — for plugin sidebars/overlays. */
   hero?: string;
@@ -103,7 +99,7 @@ export interface ThemeAssets {
 
 /** Component-style override buckets. Each bucket's entries become CSS
  *  vars (`--component-<bucket>-<kebab-property>`) that shell components
- *  (Card, Backdrop, App header/footer, etc.) read. Values are plain CSS
+ *  (Card, App header/footer, etc.) read. Values are plain CSS
  *  strings — we don't parse them, so themes can use `clip-path`,
  *  `border-image`, `background`, `box-shadow`, and anything else CSS
  *  accepts. */

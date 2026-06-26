@@ -575,7 +575,7 @@ function AuxiliaryTasksModal({
   return (
     <div
       ref={modalRef}
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
@@ -779,7 +779,7 @@ function MoaModelsModal({
   if (!preset) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4">
       <Card className="max-h-[85vh] w-full max-w-2xl overflow-auto">
         <CardHeader>
           <CardTitle className="text-sm">Configure Mixture of Agents presets</CardTitle>

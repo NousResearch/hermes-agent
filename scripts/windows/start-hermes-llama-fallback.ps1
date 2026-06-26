@@ -3,6 +3,8 @@ param(
     [string]$GpuProfile = "rtx5060ti",
     [string]$ServerExe = "",
     [string]$ModelPath = "",
+    [string]$MmprojPath = "",
+    [string]$ModelAlias = "",
     [string]$HfRepo = "",
     [int]$Port = 8080,
     [int]$ContextSize = 0,
@@ -107,7 +109,7 @@ function Import-HermesLlamaEnv {
         $eq = $line.IndexOf('=')
         if ($eq -lt 1) { return }
         $key = $line.Substring(0, $eq).Trim()
-        if ($key -notin @('HERMES_LLAMA_MODEL_PATH', 'HERMES_LLAMA_GGUF_PATH', 'HERMES_LLAMA_SERVER_EXE')) { return }
+        if ($key -notin @('HERMES_LLAMA_MODEL_PATH', 'HERMES_LLAMA_GGUF_PATH', 'HERMES_LLAMA_MMPROJ_PATH', 'HERMES_LLAMA_SERVER_EXE', 'HERMES_LLAMA_ALIAS')) { return }
         if (-not [string]::IsNullOrWhiteSpace((Get-Item -Path "Env:$key" -ErrorAction SilentlyContinue).Value)) { return }
         $value = $line.Substring($eq + 1).Trim().Trim('"').Trim("'")
         if ($value) { Set-Item -Path "Env:$key" -Value $value }
@@ -118,6 +120,12 @@ Import-HermesLlamaEnv
 $resolved = Resolve-LlamaFallbackDefaults -ServerExe $ServerExe -ModelPath $ModelPath
 $ServerExe = $resolved.ServerExe
 $ModelPath = $resolved.ModelPath
+if (-not $MmprojPath) {
+    $MmprojPath = $env:HERMES_LLAMA_MMPROJ_PATH
+}
+if (-not $ModelAlias) {
+    $ModelAlias = $env:HERMES_LLAMA_ALIAS
+}
 if (-not (Test-Path -LiteralPath $ServerExe)) {
     throw "llama-server not found: $ServerExe"
 }
@@ -148,6 +156,14 @@ if ($HfRepo) {
     $serverArgs += @("--hf-repo", $HfRepo)
 } else {
     $serverArgs += @("--model", $ModelPath)
+}
+
+if ($MmprojPath -and (Test-Path -LiteralPath $MmprojPath)) {
+    $serverArgs += @("--mmproj", $MmprojPath, "--mmproj-offload")
+}
+
+if ($ModelAlias) {
+    $serverArgs += @("--alias", $ModelAlias)
 }
 
 $serverArgs += @(
@@ -229,6 +245,12 @@ while ((Get-Date) -lt $deadline) {
             Write-Output "hf_repo=$HfRepo"
         } else {
             Write-Output "model=$ModelPath"
+        }
+        if ($MmprojPath) {
+            Write-Output "mmproj=$MmprojPath"
+        }
+        if ($ModelAlias) {
+            Write-Output "alias=$ModelAlias"
         }
         Write-Output "kv_profile=$KvProfile cache_type_k=$($kv.K) cache_type_v=$($kv.V)"
         if ($turboQuantEnv.Count -gt 0) {

@@ -1,6 +1,8 @@
 param(
     [string]$ServerExe = "",
     [string]$ModelPath = "",
+    [string]$MmprojPath = "",
+    [string]$ModelAlias = "",
     [string]$HfRepo = "",
     [int]$Port = 8081,
     [int]$ContextSize = 65536,
@@ -21,6 +23,8 @@ $SharedScript = Join-Path $ScriptDir "start-hermes-llama-fallback.ps1"
     -GpuProfile "rtx5060ti" `
     -ServerExe $ServerExe `
     -ModelPath $ModelPath `
+    -MmprojPath $MmprojPath `
+    -ModelAlias $ModelAlias `
     -HfRepo $HfRepo `
     -Port $Port `
     -ContextSize $ContextSize `

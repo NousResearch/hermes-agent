@@ -40,8 +40,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
@@ -274,8 +276,22 @@ def _run_one_file(
     orphan onto PID 1. This outer timeout exists only to
     bound a pathologically slow or hung file as a whole.
     """
-    cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-    
+    # Give every per-file subprocess its OWN pytest basetemp. Without this,
+    # all ~20 concurrent pytest subprocesses share the default basetemp
+    # (/tmp/pytest-of-<user>/), and pytest's tmp_path retention policy
+    # (keep the last 3 ``pytest-N`` dirs, rmtree the rest) makes a STARTING
+    # subprocess delete a ``pytest-N`` directory that a RUNNING sibling is
+    # still using. The victim then fails mid-run with
+    # ``FileNotFoundError: ... '/tmp/pytest-of-runner/pytest-17'`` during the
+    # ``tmp_path`` fixture setup of an otherwise-unrelated test. Isolating
+    # basetemp per subprocess removes the shared-directory race entirely.
+    basetemp = Path(tempfile.mkdtemp(prefix="hermes_pt_"))
+    cmd = [
+        sys.executable, "-m", "pytest",
+        "--basetemp", str(basetemp),
+        str(file), *pytest_args,
+    ]
+
     subproc_start = time.monotonic()
     # launch the pytest process
     proc = subprocess.Popen(
@@ -337,6 +353,10 @@ def _run_one_file(
         rc = 0
     summary = _parse_pytest_summary(output)
     subproc_wall = time.monotonic() - subproc_start
+    # Reclaim the per-subprocess basetemp now that pytest has exited. The
+    # process tree was already SIGKILL'd above, so nothing is still writing
+    # here. ignore_errors so a stray busy file never fails the whole run.
+    shutil.rmtree(basetemp, ignore_errors=True)
     return file, rc, output, summary, subproc_wall
 
 

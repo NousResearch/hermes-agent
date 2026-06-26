@@ -702,7 +702,18 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            # Resolve user-configured model.default_headers so they can be
+            # merged into the Anthropic client at construction time (#9589).
+            _user_dh = None
+            try:
+                from agent.auxiliary_client import _apply_user_default_headers as _merge_dh
+                _user_dh = _merge_dh(None) or None
+            except Exception:
+                pass
+            agent._anthropic_client = build_anthropic_client(
+                effective_key, base_url, timeout=_provider_timeout,
+                user_default_headers=_user_dh,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}

@@ -630,6 +630,7 @@ def _build_anthropic_client_with_bearer_hook(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    user_default_headers: dict | None = None,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
 
@@ -694,6 +695,15 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    if user_default_headers:
+        existing = kwargs.get("default_headers") or {}
+        merged = dict(existing)
+        for key, value in user_default_headers.items():
+            if value is None:
+                continue
+            merged[str(key)] = str(value)
+        kwargs["default_headers"] = merged
+
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
@@ -703,6 +713,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    user_default_headers: dict | None = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -744,6 +755,7 @@ def build_anthropic_client(
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
             drop_context_1m_beta=drop_context_1m_beta,
+            user_default_headers=user_default_headers,
         )
 
     normalize_proxy_env_vars()
@@ -816,6 +828,17 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+    # Merge user-configured model.default_headers on top of provider/OAuth
+    # defaults.  User values take precedence so that gateway/WAF header
+    # overrides (#40033) work for Anthropic-mode providers too (#9589).
+    if user_default_headers:
+        existing = kwargs.get("default_headers") or {}
+        merged = dict(existing)
+        for key, value in user_default_headers.items():
+            if value is None:
+                continue
+            merged[str(key)] = str(value)
+        kwargs["default_headers"] = merged
 
     return _anthropic_sdk.Anthropic(**kwargs)
 

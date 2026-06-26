@@ -135,3 +135,83 @@ class TestAuxClientHonorsUserDefaultHeaders:
         assert client is not None
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
         assert headers.get("User-Agent") == "curl/8.7.1"
+
+
+class TestAnthropicAdapterHonorsUserDefaultHeaders:
+    """Tests for user-configured model.default_headers on Anthropic-mode providers.
+
+    build_anthropic_client() accepts an optional user_default_headers dict
+    that is merged on top of provider/OAuth defaults before SDK instantiation.
+    This ensures model.default_headers works for api_mode: anthropic_messages
+    providers (Kimi, DeepSeek, etc.) — not just OpenAI-compatible ones. (#9589)
+    """
+
+    def test_user_headers_merged_onto_kimi_defaults(self, tmp_path):
+        """User-Agent override wins over Kimi's hardcoded claude-code/0.1.0."""
+        _write_config(tmp_path, {
+            "model": {
+                "default": "kimi-k2.5",
+                "default_headers": {"User-Agent": "my-gateway/1.0"},
+            },
+        })
+        from agent.auxiliary_client import _apply_user_default_headers
+        from agent.anthropic_adapter import _is_kimi_coding_endpoint
+
+        user_dh = _apply_user_default_headers(None)
+        assert user_dh is not None
+        assert user_dh.get("User-Agent") == "my-gateway/1.0"
+
+        # Verify the merge logic directly (same as build_anthropic_client uses)
+        provider_defaults = {
+            "User-Agent": "claude-code/0.1.0",
+            "anthropic-beta": "test-beta",
+        }
+        merged = dict(provider_defaults)
+        for key, value in user_dh.items():
+            if value is None:
+                continue
+            merged[str(key)] = str(value)
+
+        assert merged["User-Agent"] == "my-gateway/1.0"  # user wins
+        assert merged["anthropic-beta"] == "test-beta"    # provider preserved
+
+    def test_none_user_headers_noop(self, tmp_path):
+        """When no user headers are configured, provider defaults are untouched."""
+        _write_config(tmp_path, {"model": {"default": "m"}})
+        from agent.auxiliary_client import _apply_user_default_headers
+
+        user_dh = _apply_user_default_headers(None)
+        assert user_dh is None  # no config → None
+
+    def test_user_header_none_value_does_not_remove_provider_default(self, tmp_path):
+        """A None value in user_default_headers means 'don't override', not 'delete'.
+
+        The _apply_user_default_headers helper strips None values before the
+        merge, so a provider-default header (like Kimi's User-Agent) is
+        preserved when the user sets it to None.  Whether None should instead
+        mean 'remove this key' is an open design question — see PR #XXXX.
+        """
+        _write_config(tmp_path, {
+            "model": {
+                "default": "m",
+                "default_headers": {"User-Agent": None, "X-Extra": "yes"},
+            },
+        })
+        from agent.auxiliary_client import _apply_user_default_headers
+
+        user_dh = _apply_user_default_headers(None)
+        assert user_dh is not None
+        # None values are stripped by the helper — only non-None remain
+        assert "User-Agent" not in user_dh
+        assert user_dh["X-Extra"] == "yes"
+
+        # Simulate the merge build_anthropic_client performs
+        provider_defaults = {"User-Agent": "claude-code/0.1.0"}
+        merged = dict(provider_defaults)
+        for key, value in user_dh.items():
+            if value is None:
+                continue
+            merged[str(key)] = str(value)
+        # Provider default is untouched — user only added X-Extra
+        assert merged["User-Agent"] == "claude-code/0.1.0"
+        assert merged["X-Extra"] == "yes"

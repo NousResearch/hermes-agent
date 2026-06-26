@@ -5965,7 +5965,7 @@ class TestAnthropicCredentialRefresh:
             new_client = MagicMock()
             mock_build.side_effect = [old_client, new_client]
             agent = AIAgent(
-                api_key="sk-ant-oat01-stale-token",
+                api_key="sk-ant...oken",
                 base_url="https://openrouter.ai/api/v1",
                 api_mode="anthropic_messages",
                 quiet_mode=True,
@@ -5974,22 +5974,23 @@ class TestAnthropicCredentialRefresh:
             )
 
         agent._anthropic_client = old_client
-        agent._anthropic_api_key = "sk-ant-oat01-stale-token"
+        agent._anthropic_api_key = "sk-ant...oken"
         agent._anthropic_base_url = "https://api.anthropic.com"
         agent.provider = "anthropic"
 
         with (
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat01-fresh-token"),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant...fresh"),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild,
         ):
             assert agent._try_refresh_anthropic_client_credentials() is True
 
         old_client.close.assert_called_once()
         rebuild.assert_called_once_with(
-            "sk-ant-oat01-fresh-token", "https://api.anthropic.com", timeout=None,
+            "sk-ant...fresh", "https://api.anthropic.com", timeout=None,
+            user_default_headers=None,
         )
         assert agent._anthropic_client is new_client
-        assert agent._anthropic_api_key == "sk-ant-oat01-fresh-token"
+        assert agent._anthropic_api_key == "sk-ant...fresh"
 
     def test_try_refresh_anthropic_client_credentials_returns_false_when_token_unchanged(self):
         with (

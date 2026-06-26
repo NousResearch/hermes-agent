@@ -1243,6 +1243,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._anthropic_base_url = fb_base_url
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
+                user_default_headers=getattr(agent, "_user_default_headers", None),
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
             agent.client = None

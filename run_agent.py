@@ -3976,6 +3976,7 @@ class AIAgent:
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                user_default_headers=getattr(self, "_user_default_headers", None),
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -4036,31 +4037,30 @@ class AIAgent:
         self._apply_user_default_headers()
 
     def _apply_user_default_headers(self) -> None:
-        """Merge user-configured request headers onto the OpenAI client.
+        """Merge user-configured request headers onto the current client.
 
         Reads ``model.default_headers`` from config.yaml and merges it onto
-        ``self._client_kwargs["default_headers"]``, with user values taking
-        precedence over provider- and SDK-supplied defaults.
+        the client's ``default_headers``, with user values taking precedence
+        over provider- and SDK-supplied defaults.
 
-        This exists for ``custom`` OpenAI-compatible endpoints sitting behind
-        a gateway/WAF that rejects the OpenAI Python SDK's identifying headers
-        (``User-Agent: OpenAI/Python ...``, ``X-Stainless-*``). Setting e.g.
-        ``model.default_headers: {User-Agent: curl/8.7.1}`` lets the request
-        reach such an upstream instead of failing with an opaque 4xx/502 even
-        though the same body works under ``curl``. (#40033)
+        For OpenAI-mode providers this mutates ``self._client_kwargs``.
+        For Anthropic-mode providers the merge happens at client
+        construction time via the ``user_default_headers`` parameter
+        passed to ``build_anthropic_client`` — this method stores the
+        resolved headers so callers can retrieve them.
 
-        Delegates the config read + merge to
-        ``agent.auxiliary_client._apply_user_default_headers`` so the main and
-        auxiliary clients can never drift on precedence or value handling.
-
-        No-op for Anthropic/Bedrock modes, which don't use the OpenAI client,
-        and when no overrides are configured.
+        No-op when no overrides are configured.
         """
-        if self.api_mode in ("anthropic_messages", "bedrock_converse"):
-            return
         from agent.auxiliary_client import (
             _apply_user_default_headers as _merge_user_headers,
         )
+        # Always resolve user headers so they are available after model
+        # switches (OpenAI → Anthropic) and during client rebuilds.
+        self._user_default_headers = _merge_user_headers(None) or None
+        if self.api_mode in ("anthropic_messages", "bedrock_converse"):
+            # For Anthropic-mode providers the merge happens at client
+            # construction time via the user_default_headers parameter.
+            return
         merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
         if merged:
             self._client_kwargs["default_headers"] = merged
@@ -4082,6 +4082,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                user_default_headers=getattr(self, "_user_default_headers", None),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -4159,6 +4160,7 @@ class AIAgent:
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
                 drop_context_1m_beta=_drop_1m,
+                user_default_headers=getattr(self, "_user_default_headers", None),
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):

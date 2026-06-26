@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import time
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -655,12 +656,15 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         return pricing
 
     alias_map = {
-        "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),
-        "completion": ("completion", "output", "output_cost_per_token", "completion_token_cost"),
+        "prompt": ("prompt", "input", "prompt_per_million", "input_cost_per_token", "prompt_token_cost"),
+        "completion": ("completion", "output", "completion_per_million", "output_cost_per_token", "completion_token_cost"),
         "request": ("request", "request_cost"),
-        "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
-        "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),
+        "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "input_cache_read_per_million", "cache_read_cost_per_token"),
+        "cache_write": ("cache_write", "cache_creation", "input_cache_write", "input_cache_write_per_million", "cache_write_cost_per_token"),
     }
+
+    _ONE_MILLION_D = Decimal("1000000")
+
     for mapping in _iter_nested_dicts(payload):
         normalized = {str(key).lower(): value for key, value in mapping.items()}
         if not any(any(alias in normalized for alias in aliases) for aliases in alias_map.values()):
@@ -668,8 +672,16 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         pricing: Dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
-                if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
+                if alias in normalized and not isinstance(normalized[alias], (dict, list)) and normalized[alias] not in {None, "", 0}:
+                    val = str(normalized[alias])
+                    # If the source key is _per_million, convert to per-token
+                    # (downstream _per_token_to_per_million will restore it)
+                    if alias.endswith("_per_million"):
+                        try:
+                            val = str(Decimal(val) / _ONE_MILLION_D)
+                        except Exception:
+                            pass
+                    pricing[target] = val
                     break
         if pricing:
             return pricing

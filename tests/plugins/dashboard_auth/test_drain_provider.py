@@ -78,6 +78,14 @@ class TestProvider:
         p = drain.DrainSecretProvider(secret=_strong_secret())
         assert p.supports_token is True
 
+    def test_is_non_interactive(self, drain):
+        # Declares it has no cookie-session flow, so list_session_providers()
+        # excludes it from the login page, /auth/login, and the verify/refresh
+        # loops — the interactive methods (start_login/refresh_session) are
+        # never reached and can't 500 the dashboard.
+        p = drain.DrainSecretProvider(secret=_strong_secret())
+        assert p.supports_session is False
+
     def test_verify_token_accepts_matching_secret(self, drain):
         s = _strong_secret()
         p = drain.DrainSecretProvider(secret=s, scope="drain")

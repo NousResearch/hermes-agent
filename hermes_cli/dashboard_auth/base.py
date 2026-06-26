@@ -171,6 +171,19 @@ class DashboardAuthProvider(ABC):
     # future machine-credential provider drops in without core changes.
     supports_token: bool = False
 
+    # When True, this provider participates in the interactive cookie-session
+    # flow — it can mint a session (``start_login``/``complete_login``), verify
+    # a session cookie (``verify_session``), and rotate one (``refresh_session``).
+    # The interactive surfaces (the login page, the ``/auth/login`` dispatch,
+    # and the gate's verify/refresh loops) consult ONLY ``supports_session``
+    # providers, so a purely non-interactive provider (e.g. the drain
+    # service credential) is never offered a login button, never dispatched a
+    # login, and never asked to verify/refresh a browser cookie. Defaults True
+    # so every existing OAuth/password provider is unaffected; a token-only
+    # credential sets it False. Symmetric counterpart to ``supports_token`` /
+    # ``list_token_providers``.
+    supports_session: bool = True
+
     @abstractmethod
     def start_login(self, *, redirect_uri: str) -> LoginStart: ...
 

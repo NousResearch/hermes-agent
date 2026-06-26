@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from hermes_cli.dashboard_auth import (
     get_provider,
     list_providers,
+    list_session_providers,
 )
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
@@ -149,7 +150,11 @@ async def login_page(request: Request) -> HTMLResponse:
 
 @router.get("/api/auth/providers", name="auth_providers")
 async def api_auth_providers() -> Any:
-    providers = list_providers()
+    # Login-page bootstrap: advertise only interactive (cookie-session)
+    # providers. A non-interactive service credential (e.g. drain) has no login
+    # flow and must not appear as a sign-in option. Logout still iterates
+    # list_providers() to best-effort revoke any minted session.
+    providers = list_session_providers()
     if not providers:
         # Q13: fail-closed when zero providers are registered.
         return JSONResponse(
@@ -182,6 +187,14 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         raise HTTPException(
             status_code=404,
             detail=f"Unknown provider: {provider!r}",
+        )
+    # A non-interactive provider (e.g. the drain service credential) has no
+    # login flow — start_login raises. Reject the dispatch with a 404 (same as
+    # an unknown provider) so a hand-typed ?provider=drain-secret can't 500.
+    if not getattr(p, "supports_session", True):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Provider does not support interactive login: {provider!r}",
         )
 
     try:

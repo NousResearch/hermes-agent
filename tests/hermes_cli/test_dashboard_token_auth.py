@@ -19,6 +19,8 @@ from hermes_cli.dashboard_auth import (
     Session,
     TokenPrincipal,
     clear_providers,
+    list_providers,
+    list_session_providers,
     list_token_providers,
     register_provider,
 )
@@ -155,6 +157,30 @@ def test_list_token_providers_filters_to_supports_token():
 def test_list_token_providers_empty_when_none_registered():
     register_provider(_OAuthOnly())
     assert list_token_providers() == []
+
+
+class _NonInteractiveProvider(_TokenProvider):
+    """A token-only credential — declares it has no interactive session."""
+
+    name = "svc-cred"
+    display_name = "Service Credential"
+    supports_session = False
+
+
+def test_oauth_provider_defaults_supports_session_true():
+    # Interactive providers participate in cookie sessions by default.
+    assert _OAuthOnly().supports_session is True
+
+
+def test_list_session_providers_excludes_non_interactive():
+    # A non-interactive (token-only) provider must NOT appear in the
+    # interactive-session set, so the login page / /auth/login / the gate's
+    # verify+refresh loops never offer it a login or ask it to refresh a cookie
+    # (it raises on start_login). Symmetric to list_token_providers.
+    register_provider(_OAuthOnly())
+    register_provider(_NonInteractiveProvider())
+    assert {p.name for p in list_providers()} == {"oauth-only", "svc-cred"}
+    assert [p.name for p in list_session_providers()] == ["oauth-only"]
 
 
 # --------------------------------------------------------------------------

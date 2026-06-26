@@ -301,6 +301,36 @@ def test_login_unknown_provider_returns_404(gated_app):
     assert r.status_code == 404
 
 
+def test_login_non_interactive_provider_returns_404_not_500(gated_app):
+    """A non-interactive (token-only) provider must NOT be dispatchable via
+    /auth/login. Regression: the drain service credential's ``start_login``
+    raises NotImplementedError; before the capability gate, hitting
+    ``?provider=drain-secret`` (a rendered login button) 500'd the dashboard.
+    It must now 404 (treated like a non-login provider), and the provider must
+    not appear in the /api/auth/providers login bootstrap.
+    """
+    import secrets
+
+    import plugins.dashboard_auth.drain as drain_plugin
+
+    register_provider(
+        drain_plugin.DrainSecretProvider(secret=secrets.token_urlsafe(48))
+    )
+
+    r = gated_app.get(
+        "/auth/login?provider=drain-secret&next=%2F", follow_redirects=False
+    )
+    assert r.status_code == 404, (
+        f"drain-secret login should 404, not 500: {r.status_code} {r.text}"
+    )
+
+    bootstrap = gated_app.get("/api/auth/providers")
+    assert bootstrap.status_code == 200
+    names = {p["name"] for p in bootstrap.json()["providers"]}
+    assert "drain-secret" not in names
+    assert "stub" in names
+
+
 def test_callback_without_pkce_cookie_returns_400(gated_app):
     # No prior /auth/login → no PKCE cookie.
     r = gated_app.get(

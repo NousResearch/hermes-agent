@@ -143,6 +143,13 @@ class DrainSecretProvider(DashboardAuthProvider):
     name = "drain-secret"
     display_name = "Drain Control (service credential)"
     supports_token = True
+    # Service credential only — no login, cookie, session, or refresh. The
+    # interactive surfaces (login page, /auth/login, the gate's verify/refresh
+    # loops) consult only list_session_providers(), so this provider is never
+    # offered a login button, dispatched a login, or asked to verify/refresh a
+    # browser cookie. Without this, start_login/refresh_session would be reached
+    # and 500 the dashboard.
+    supports_session = False
 
     def __init__(self, *, secret: str, scope: str = "drain") -> None:
         # Defence in depth: construction also enforces the entropy bar, so a

@@ -3881,8 +3881,8 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
+        if pid is not None and _graceful_restart_via_sigusr1(pid, drain_timeout):
+            print("✓ Gateway exited gracefully — launchd will relaunch shortly")
             return
         if pid is not None:
             # Announce the drain BEFORE waiting on it. This wait can run for

@@ -10,6 +10,8 @@ Uses python-telegram-bot library for:
 import asyncio
 import dataclasses
 import inspect
+import random
+import time
 import json
 import logging
 import os
@@ -426,6 +428,11 @@ class TelegramAdapter(BasePlatformAdapter):
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
+    # Bot-to-bot loop protection (Telegram Bot API 10.0+)
+    _BOT_PAIR_WINDOW_S = 60
+    _BOT_PAIR_MAX_EVENTS = 20
+    _BOT_PAIR_COOLDOWN_S = 60
+
     # Telegram's edit_message applies MarkdownV2 formatting only on the
     # finalize=True path.  Without this flag, stream_consumer._send_or_edit
     # short-circuits when the raw text is unchanged between the last streamed
@@ -512,6 +519,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
+        # Bot-to-bot loop protection state
+        self._allow_bots: str = ""
+        self._bot_pair_events: dict[tuple[int, int], list[float]] = {}
+        self._bot_pair_cooldown: dict[tuple[int, int], float] = {}
+        self._recent_msg_ids: set[int] = set()
         # Buffer rapid text messages so Telegram client-side splits of long
         # messages are aggregated into a single MessageEvent.  Lower defaults
         # (0.3s / 1.0s instead of 0.6s / 2.0s) let short replies stream
@@ -6281,6 +6293,53 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_group_chat(message):
             return True
 
+        # ── Bot-to-bot loop protection ──────────────────────────────
+        from_user = getattr(message, "from_user", None)
+        if from_user and getattr(from_user, "is_bot", False):
+            bot_id = getattr(self._bot, "id", None)
+            if bot_id and from_user.id != bot_id:
+                if not self._allow_bots:
+                    self._allow_bots = os.getenv(
+                        "TELEGRAM_ALLOW_BOTS", "none"
+                    ).lower().strip()
+
+                if self._allow_bots == "none":
+                    return False
+
+                now = time.time()
+                pair = (from_user.id, bot_id)
+
+                # ① Dedup: skip already-processed message IDs
+                mid = getattr(message, "message_id", None)
+                if mid is not None:
+                    if mid in self._recent_msg_ids:
+                        return False
+                    self._recent_msg_ids.add(mid)
+                    if len(self._recent_msg_ids) > 1000:
+                        self._recent_msg_ids.clear()
+
+                # ② Cooldown check
+                if pair in self._bot_pair_cooldown:
+                    if now < self._bot_pair_cooldown[pair]:
+                        return False
+                    del self._bot_pair_cooldown[pair]
+
+                # ③ Sliding window: enforce max events per pair
+                evts = self._bot_pair_events.get(pair, [])
+                evts = [t for t in evts if now - t < self._BOT_PAIR_WINDOW_S]
+                if len(evts) >= self._BOT_PAIR_MAX_EVENTS:
+                    self._bot_pair_cooldown[pair] = now + self._BOT_PAIR_COOLDOWN_S
+                    return False
+                evts.append(now)
+                self._bot_pair_events[pair] = evts
+
+                # ④ In "mentions" mode, require explicit @mention
+                if self._allow_bots == "mentions":
+                    if not self._message_mentions_bot(message):
+                        return False
+                # "all" mode falls through to existing processing
+
+        # ── Existing group message logic follows unchanged ───────────
         thread_id = getattr(message, "message_thread_id", None)
         allowed_topics = self._telegram_allowed_topics()
         if allowed_topics:

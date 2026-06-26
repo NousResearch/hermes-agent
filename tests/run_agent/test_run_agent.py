@@ -5597,6 +5597,27 @@ class TestSafeWriter:
         writer = _SafeWriter(inner)
         writer.flush()  # should not raise
 
+    def test_fileno_catches_oserror_returns_default(self):
+        """fileno() on a detached/broken stream raises OSError/ValueError
+        (e.g. pytest's captured stdout, a closed pipe). Like write/flush/
+        isatty it must be guarded — libraries that call sys.stdout.fileno()
+        (subprocess, isatty probes) would otherwise crash the turn. Falls
+        back to fd 1 (stdout)."""
+        from run_agent import _SafeWriter
+        from unittest.mock import MagicMock
+        inner = MagicMock()
+        inner.fileno.side_effect = ValueError("I/O operation on closed file")
+        writer = _SafeWriter(inner)
+        assert writer.fileno() == 1  # should not raise
+
+    def test_fileno_delegates_when_healthy(self):
+        from run_agent import _SafeWriter
+        from unittest.mock import MagicMock
+        inner = MagicMock()
+        inner.fileno.return_value = 7
+        writer = _SafeWriter(inner)
+        assert writer.fileno() == 7
+
     def test_print_survives_broken_stdout(self, monkeypatch):
         """print() through _SafeWriter doesn't crash on broken pipe."""
         import sys

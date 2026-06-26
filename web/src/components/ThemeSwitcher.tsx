@@ -121,7 +121,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
             aria-label={sheetTitle}
             className={cn(
               "min-w-[240px] max-h-[70dvh] overflow-y-auto",
-              "border border-current/20 bg-background-base/95 backdrop-blur-sm",
+              "border border-current/20 bg-background-base/95",
               "shadow-[0_12px_32px_-8px_rgba(0,0,0,0.6)]",
               dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
             )}

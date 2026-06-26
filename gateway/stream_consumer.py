@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
+from gateway.platforms.base import retry_after_seconds_from_error
 from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
@@ -931,9 +932,11 @@ class GatewayStreamConsumer:
         last_successful_chunk = ""
         sent_any_chunk = False
         for chunk in chunks:
-            # Try sending with one retry on flood-control errors.
+            # Try sending with flood-control-aware retry.  Telegram tells us the
+            # exact wait time ("Retry in N seconds"); honoring it avoids the
+            # partial-overflow path stopping after only the first chunk.
             result = None
-            for attempt in range(2):
+            for attempt in range(3):
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=chunk,
@@ -941,13 +944,20 @@ class GatewayStreamConsumer:
                 )
                 if result.success:
                     break
-                if attempt == 0 and self._is_flood_error(result):
-                    logger.debug(
-                        "Flood control on fallback send, retrying in 3s"
+                if attempt < 2 and self._is_flood_error(result):
+                    wait = (
+                        getattr(result, "retry_after", None)
+                        or retry_after_seconds_from_error(getattr(result, "error", "") or "")
+                        or 3.0
                     )
-                    await asyncio.sleep(3.0)
+                    wait = float(wait) + 0.5
+                    logger.warning(
+                        "Flood control on fallback send, retrying in %.1fs",
+                        wait,
+                    )
+                    await asyncio.sleep(wait)
                 else:
-                    break  # non-flood error or second attempt failed
+                    break  # non-flood error or final attempt failed
 
             if not result or not result.success:
                 if sent_any_chunk:

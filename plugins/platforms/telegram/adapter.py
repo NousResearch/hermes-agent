@@ -72,6 +72,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     classify_send_error,
+    retry_after_seconds_from_error,
     cache_image_from_bytes,
     cache_audio_from_bytes,
     cache_video_from_bytes,
@@ -1413,15 +1414,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
-            # Extract server-requested retry_after for flood control so the
-            # base retry layer honors Telegram's backoff instead of its own
-            # short exponential schedule.
-            _retry_after = getattr(exc, "retry_after", None)
-            if _retry_after is None:
-                import re as _re
-                _m = _re.search(r"retry\s+(?:in\s+)?(\d+)", err_str, _re.IGNORECASE)
-                if _m:
-                    _retry_after = float(_m.group(1))
             logger.warning(
                 "[%s] sendRichMessage transient failure (no legacy resend): %s",
                 self.name, exc,
@@ -1430,7 +1422,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 success=False,
                 error=str(exc),
                 retryable=(is_connect_timeout or not is_timeout),
-                retry_after=_retry_after,
+                error_kind=classify_send_error(exc),
+                retry_after=retry_after_seconds_from_error(exc),
             )
 
         message_id = None
@@ -1525,6 +1518,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 success=False,
                 error=str(exc),
                 retryable=(is_connect_timeout or not is_timeout),
+                error_kind=classify_send_error(exc),
+                retry_after=retry_after_seconds_from_error(exc),
             )
         # Telegram won't echo rich content for messages that predate the bot's
         # first rich send, so mirror the fresh-send index here too: a streamed
@@ -3034,6 +3029,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 error=str(e),
                 retryable=(is_connect_timeout or is_pool_timeout or not is_timeout),
                 error_kind=error_kind,
+                retry_after=retry_after_seconds_from_error(e),
             )
 
     async def send_or_update_status(

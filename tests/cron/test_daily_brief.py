@@ -13,6 +13,7 @@ Covers (per master plan §026-D acceptance criteria, 5+ tests):
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -158,6 +159,44 @@ def test_run_daily_brief_weekday_happy_path():
     assert invoke_captured["slack_channel"] == "D0000ABCD"
     # The block-kit payload was forwarded verbatim.
     assert captured["payload"]["blocks"] == payload["blocks"]
+
+
+# ---------------------------------------------------------------------------
+# _invoke_daily_default — the REAL default invoker (regression for the
+# DailyHandlerConfig kwarg mismatch). Every other test injects ``invoke_daily``
+# and so never exercises this path, which is exactly how the bug shipped.
+# ---------------------------------------------------------------------------
+
+
+def test_invoke_daily_default_constructs_valid_config(monkeypatch):
+    """The cron's default invoker must call ``build_daily_brief`` with a config
+    the dataclass actually accepts.
+
+    Regression: it previously built ``DailyHandlerConfig(writeback_enabled=True,
+    slack_channel=...)`` — neither field exists on the dataclass — so the cron
+    path raised ``TypeError`` the instant it fired (the ``/daily`` slash command
+    uses a different path and was unaffected). Writeback (026-B) is not wired
+    into ``build_daily_brief``, so the default invoker must not pass unsupported
+    kwargs.
+    """
+    import plugins.slash.daily as daily_mod
+
+    captured: dict = {}
+
+    async def _fake_build(config=None):
+        captured["config"] = config
+        return _fake_payload()
+
+    monkeypatch.setattr(daily_mod, "build_daily_brief", _fake_build)
+
+    payload = asyncio.run(db._invoke_daily_default(slack_channel="D0000ABCD"))
+
+    assert payload["blocks"], "default invoker should return the brief payload"
+    # A config the dataclass accepts (or None) — never one built from
+    # unsupported kwargs.
+    assert captured["config"] is None or isinstance(
+        captured["config"], daily_mod.DailyHandlerConfig
+    )
 
 
 def test_run_daily_brief_weekend_skips_without_slack_call():

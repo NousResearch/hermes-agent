@@ -215,19 +215,20 @@ async def _invoke_daily_default(
 ) -> dict[str, Any]:
     """Default ``/daily`` invocation — calls 026-A's ``build_daily_brief``.
 
-    We pass ``writeback_enabled=True`` so the AgentDecision triple lands
-    in Atlas. ``slack_channel`` flows into the URN so the eventual
-    reaction harvest (026-B) reads back the right message.
+    ``slack_channel`` is part of the injected-invoker contract (the cron
+    resolves the target channel and the post-step delivers there). It is
+    accepted but not forwarded to ``build_daily_brief``: that builder takes a
+    ``DailyHandlerConfig`` whose only fields are test seams (atlas_ask,
+    today_fetcher, orchestrator_base_url, httpx_module). Writeback of the
+    AgentDecision triple (026-B) is not yet wired into the builder, so passing
+    ``writeback_enabled``/``slack_channel`` here raised ``TypeError`` and broke
+    the cron path entirely. Use the real defaults until 026-B lands.
     """
     # Lazy import: keeps test surface free of the daily plugin until the
     # cron job is actually invoked.
-    from plugins.slash.daily import build_daily_brief, DailyHandlerConfig
+    from plugins.slash.daily import build_daily_brief
 
-    cfg = DailyHandlerConfig(
-        writeback_enabled=True,
-        slack_channel=slack_channel,
-    )
-    return await build_daily_brief(cfg)
+    return await build_daily_brief()
 
 
 # ---------------------------------------------------------------------------

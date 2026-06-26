@@ -2827,6 +2827,41 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "api_mode": None,
         }
 
+    # For custom:* providers, resolve directly from config to avoid
+    # issues with the runtime provider system falling through to the
+    # parent agent's base_url instead of the custom provider's configured
+    # base_url. Fixes #53064.
+    if configured_provider.startswith("custom:"):
+        from hermes_cli.runtime_provider import _get_named_custom_provider, _detect_api_mode_for_url, _getenv
+
+        custom_conf = _get_named_custom_provider(configured_provider)
+        if custom_conf:
+            base_url = (custom_conf.get("base_url") or "").rstrip("/")
+            if base_url:
+                # Resolve API key: inline key > key_env > env var > none
+                api_key = str(custom_conf.get("api_key", "") or "").strip()
+                if not api_key:
+                    key_env = str(custom_conf.get("key_env", "") or "").strip()
+                    if key_env:
+                        api_key = _getenv(key_env, "").strip()
+                if not api_key:
+                    # If the parent has a key for a matching host, inherit it
+                    # rather than forcing a hard error — matches the pattern
+                    # used by the base_url branch above.
+                    api_key = None  # Will be inherited from parent in _build_child_agent
+
+                api_mode = custom_conf.get("api_mode") if isinstance(custom_conf.get("api_mode"), str) else None
+                if not api_mode:
+                    api_mode = _detect_api_mode_for_url(base_url) or "chat_completions"
+
+                return {
+                    "model": configured_model or custom_conf.get("model") or None,
+                    "provider": configured_provider,
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "api_mode": api_mode,
+                }
+
     # Provider is configured — resolve full credentials
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider

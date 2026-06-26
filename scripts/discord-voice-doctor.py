@@ -19,12 +19,31 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-ENV_FILE = HERMES_HOME / ".env"
+from hermes_constants import get_config_path, get_env_path, get_hermes_home
+
+# Profile-aware path resolution: get_hermes_home() honors the active profile
+# and the HERMES_HOME override, instead of recomposing ~/.hermes by hand (which
+# silently ignores named profiles).
+HERMES_HOME = get_hermes_home()
+ENV_FILE = get_env_path()
+CONFIG_PATH = get_config_path()
 
 OK = "\033[92m\u2713\033[0m"
 FAIL = "\033[91m\u2717\033[0m"
 WARN = "\033[93m!\033[0m"
+
+
+def _install_hint(brew_pkg: str, apt_pkg: str) -> str:
+    """OS-appropriate install suggestion.
+
+    On macOS, surface only the brew command (project convention: don't suggest
+    apt on macOS). On Linux, surface apt. Elsewhere, show both.
+    """
+    if sys.platform == "darwin":
+        return f"brew install {brew_pkg}"
+    if sys.platform.startswith("linux"):
+        return f"apt install {apt_pkg}"
+    return f"brew install {brew_pkg} (macOS) / apt install {apt_pkg} (Linux)"
 
 # Track whether discord.py is available for later sections
 _discord_available = False
@@ -151,7 +170,7 @@ def check_system_tools():
             if opus_loaded:
                 check("Opus codec", True)
             else:
-                check("Opus codec", False, "brew install opus / apt install libopus0")
+                check("Opus codec", False, _install_hint("opus", "libopus0"))
                 ok = False
         except Exception as e:
             check("Opus codec", False, str(e))
@@ -164,7 +183,7 @@ def check_system_tools():
     if ffmpeg_path:
         check("ffmpeg", True, ffmpeg_path)
     else:
-        check("ffmpeg", False, "brew install ffmpeg / apt install ffmpeg")
+        check("ffmpeg", False, _install_hint("ffmpeg", "ffmpeg"))
         ok = False
 
     return ok
@@ -238,7 +257,7 @@ def check_config(groq_key, eleven_key):
     """Check hermes config.yaml."""
     section("Configuration")
 
-    config_path = HERMES_HOME / "config.yaml"
+    config_path = CONFIG_PATH
     if config_path.exists():
         try:
             import yaml

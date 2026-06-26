@@ -237,6 +237,56 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
+def _is_qwen3_thinking_model(model: Optional[str]) -> bool:
+    """True for Qwen3 family models with built-in thinking mode (e.g. Qwen3-8B,
+    Qwen3.5-14B, Qwen3.6-27B, Qwen3-Coder-Plus).  On vLLM these models always
+    enter thinking mode unless ``chat_template_kwargs`` is set."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare.startswith("qwen3")
+
+
+def _is_glm_thinking_model(model: Optional[str]) -> bool:
+    """True for GLM-4/4.5 models with built-in thinking mode (e.g. glm-4.5-air,
+    glm4.5-chat).  On vLLM these models always enter thinking mode unless the
+    ``thinking`` flag is set to False."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare.startswith("glm-4") or bare.startswith("glm4")
+
+
+def _get_aux_thinking_disable_kwargs(model: Optional[str], provider: str) -> Optional[Dict[str, Any]]:
+    """Return request kwargs to disable thinking for a model on a custom endpoint.
+
+    Auxiliary tasks (title generation, compression, web extraction, etc.) do not
+    need thinking capability — a reasoning model would waste tokens on internal
+    thought instead of producing actual output, resulting in empty ``content``.
+
+    Only applies to ``custom`` provider endpoints (i.e. self-hosted deployments
+    like vLLM) where Hermes has direct control over request parameters.  For
+    OpenRouter and other aggregator backends, thinking is managed via the
+    ``reasoning_config`` mechanism in the main agent transport.
+
+    Returns a dict of kwargs to merge into ``chat.completions.create()``, or
+    ``None`` when no disable is needed.
+
+    Adding a new model/family:
+      1. Identify the disable parameter against your endpoint (e.g. with curl).
+      2. Add an ``_is_*_thinking_model()`` predicate here.
+      3. Add a branch below that returns the model-specific kwargs.
+    """
+    if provider not in {"custom", "auto"}:
+        return None
+    if not model:
+        return None
+
+    if _is_qwen3_thinking_model(model):
+        # vLLM: top-level chat_template_kwargs for Qwen3
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+    if _is_glm_thinking_model(model):
+        # vLLM: top-level thinking boolean for GLM-4/4.5
+        return {"thinking": False}
+    return None
+
+
 # Context window enforced by ChatGPT's Codex OAuth backend for gpt-5.5.
 # The raw OpenAI API and OpenRouter expose 1.05M for the same slug, but the
 # Codex backend hard-caps at 272K (verified live: a ~330K-token request to
@@ -5421,6 +5471,16 @@ def _build_call_kwargs(
         merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
     if merged_extra:
         kwargs["extra_body"] = merged_extra
+
+    # Disable thinking/reasoning for models that enter thinking mode by
+    # default on self-hosted deployments (vLLM, SGLang, etc.).  Auxiliary
+    # tasks do not need thinking capability — a reasoning model would waste
+    # tokens on internal thought instead of producing actual output, and
+    # may return null content.
+    _thinking_kwargs = _get_aux_thinking_disable_kwargs(model, provider)
+    if _thinking_kwargs:
+        for key, value in _thinking_kwargs.items():
+            kwargs.setdefault(key, value)
 
     return kwargs
 

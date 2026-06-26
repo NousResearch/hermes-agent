@@ -87,7 +87,10 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        title = (response.choices[0].message.content or "").strip()
+        msg = response.choices[0].message
+        # Prefer content; fall back to reasoning field for models that
+        # output thinking despite disable attempts (e.g. Qwen3 in vLLM).
+        title = (msg.content or getattr(msg, "reasoning", None) or "").strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
         if title.lower().startswith("title:"):

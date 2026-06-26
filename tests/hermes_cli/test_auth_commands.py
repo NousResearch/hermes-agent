@@ -6,10 +6,13 @@ import base64
 import json
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import yaml
+
+import hermes_cli.auth as auth_mod
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -493,6 +496,92 @@ def test_codex_auth_status_reports_pool_only_rate_limit(tmp_path, monkeypatch):
     assert status["logged_in"] is True
     assert status["rate_limited"] is True
     assert status["error_code"] == "codex_rate_limited"
+
+
+def test_format_quota_status_not_rate_limited_returns_empty():
+    from hermes_cli.auth import format_quota_status
+
+    assert format_quota_status({"logged_in": True}) == ""
+    assert format_quota_status({"rate_limited": False}) == ""
+    assert format_quota_status(None) == ""
+
+
+def test_format_quota_status_without_reset_omits_retry_hint():
+    from hermes_cli.auth import format_quota_status
+
+    assert format_quota_status({"rate_limited": True, "reset_at": None}) == "quota exhausted"
+    # Non-positive / non-numeric reset times degrade to the bare summary.
+    assert format_quota_status({"rate_limited": True, "reset_at": 0}) == "quota exhausted"
+    assert format_quota_status({"rate_limited": True, "reset_at": "nope"}) == "quota exhausted"
+
+
+def test_format_quota_status_accepts_seconds_and_milliseconds():
+    from hermes_cli.auth import format_quota_status
+
+    future_s = time.time() + 3600
+    sec = format_quota_status({"rate_limited": True, "reset_at": future_s})
+    ms = format_quota_status({"rate_limited": True, "reset_at": future_s * 1000.0})
+    assert sec.startswith("quota exhausted (retry after ")
+    # Milliseconds must be normalised to seconds (mirrors _parse_reset_at),
+    # not silently dropped to the bare summary.
+    assert ms.startswith("quota exhausted (retry after ")
+
+
+def test_auth_status_reports_codex_quota_exhausted(tmp_path, monkeypatch, capsys):
+    """`hermes auth status openai-codex` must surface quota exhaustion.
+
+    Regression: it printed a bare ``logged in`` even when every codex
+    credential was frozen in a quota cooldown, contradicting
+    ``hermes auth list`` (the only truthful surface).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store(exhausted=True))
+
+    from hermes_cli.auth_commands import auth_status_command
+
+    auth_status_command(SimpleNamespace(provider="openai-codex"))
+
+    out = capsys.readouterr().out
+    assert "logged in" in out
+    assert "quota exhausted" in out
+    # last_error_reset_at is now + 3600 → retry hint expected.
+    assert "retry after" in out
+    # The provider error must be surfaced alongside the quota line.
+    assert "usage limit" in out.lower()
+
+
+def test_auth_status_non_codex_provider_has_no_quota_warning(monkeypatch, capsys):
+    """A non-codex provider whose status lacks ``rate_limited`` must not show
+    a spurious codex-style ``quota exhausted`` line (format_quota_status is
+    applied to every provider in auth_status_command)."""
+    monkeypatch.setattr(
+        auth_mod,
+        "get_auth_status",
+        lambda provider=None: {"logged_in": True, "auth_type": "oauth"},
+        raising=False,
+    )
+
+    from hermes_cli.auth_commands import auth_status_command
+
+    auth_status_command(SimpleNamespace(provider="spotify"))
+
+    out = capsys.readouterr().out
+    assert "spotify: logged in" in out
+    assert "quota exhausted" not in out
+
+
+def test_auth_status_healthy_codex_has_no_quota_warning(tmp_path, monkeypatch, capsys):
+    """A usable codex credential must NOT show a spurious exhaustion warning."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store(exhausted=False))
+
+    from hermes_cli.auth_commands import auth_status_command
+
+    auth_status_command(SimpleNamespace(provider="openai-codex"))
+
+    out = capsys.readouterr().out
+    assert "logged in" in out
+    assert "quota exhausted" not in out
 
 
 def test_codex_runtime_pool_only_rate_limit_is_not_missing_auth(tmp_path, monkeypatch):

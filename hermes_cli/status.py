@@ -11,7 +11,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from hermes_cli.auth import AuthError, resolve_provider
+from hermes_cli.auth import AuthError, format_quota_status, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
@@ -250,17 +250,27 @@ def show_status(args):
         print(f"    Error:      {nous_error}")
 
     codex_logged_in = bool(codex_status.get("logged_in"))
-    print(
-        f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
-        f"{'logged in' if codex_logged_in else 'not logged in (run: hermes model)'}"
-    )
+    codex_quota = format_quota_status(codex_status)
+    if codex_quota:
+        # Logged in but every codex credential is frozen in a quota cooldown.
+        # Surface it as a warning so `hermes status` agrees with `hermes auth list`
+        # instead of showing a clean "logged in".
+        print(
+            f"  {'OpenAI Codex':<12}  {color('⚠', Colors.YELLOW)} "
+            f"logged in — {codex_quota}"
+        )
+    else:
+        print(
+            f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
+            f"{'logged in' if codex_logged_in else 'not logged in (run: hermes model)'}"
+        )
     codex_auth_file = codex_status.get("auth_store")
     if codex_auth_file:
         print(f"    Auth file:  {codex_auth_file}")
     codex_last_refresh = _format_iso_timestamp(codex_status.get("last_refresh"))
     if codex_status.get("last_refresh"):
         print(f"    Refreshed:  {codex_last_refresh}")
-    if codex_status.get("error") and not codex_logged_in:
+    if codex_status.get("error") and (not codex_logged_in or codex_quota):
         print(f"    Error:      {codex_status.get('error')}")
 
     qwen_logged_in = bool(qwen_status.get("logged_in"))

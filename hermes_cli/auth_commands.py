@@ -497,7 +497,16 @@ def auth_status_command(args) -> None:
             print(f"{provider}: logged out")
         return
 
-    print(f"{provider}: logged in")
+    quota = auth_mod.format_quota_status(status)
+    if quota:
+        # Logged in, but the provider reports a quota cooldown (codex: every
+        # credential frozen).  Surface it so `auth status` agrees with `auth list`.
+        print(f"{provider}: logged in — {quota}")
+        error = status.get("error")
+        if error:
+            print(f"  error: {error}")
+    else:
+        print(f"{provider}: logged in")
     for key in ("auth_type", "client_id", "redirect_uri", "scope", "expires_at", "api_base_url"):
         value = status.get(key)
         if value:

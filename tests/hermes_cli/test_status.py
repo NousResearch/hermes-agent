@@ -351,3 +351,85 @@ class TestShowStatusXaiOAuth:
 
         assert "xAI OAuth" in out
         assert "not logged in (run: hermes auth add xai-oauth)" in out
+
+
+class TestShowStatusCodexQuota:
+    """Codex row must surface pool exhaustion, not just 'logged in'.
+
+    Regression: ``get_codex_auth_status`` already returns ``rate_limited`` +
+    ``reset_at`` when every codex credential is frozen in a quota cooldown,
+    but ``status.py`` only read ``logged_in`` and printed a clean
+    ``✓ logged in`` — hiding the exhaustion that ``hermes auth list`` shows.
+    """
+
+    def test_rate_limited_codex_shows_quota_exhausted_with_reset(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        import time
+
+        import hermes_cli.auth as auth_mod
+
+        status_mod = _base_xai_mocks(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            auth_mod,
+            "get_xai_oauth_auth_status",
+            lambda: {},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            auth_mod,
+            "get_codex_auth_status",
+            lambda: {
+                "logged_in": True,
+                "rate_limited": True,
+                "error_code": "codex_rate_limited",
+                "error": "The usage limit has been reached",
+                "reset_at": time.time() + 3600,
+                "auth_store": str(tmp_path / "auth.json"),
+                "source": "pool:codex@example.com",
+            },
+            raising=False,
+        )
+
+        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        out = capsys.readouterr().out
+
+        assert "OpenAI Codex" in out
+        # The exhaustion must be surfaced, not hidden behind a clean check.
+        assert "quota exhausted" in out
+        # reset_at present → a retry hint must be shown.
+        assert "retry after" in out
+
+    def test_rate_limited_without_reset_still_shows_exhausted(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        import hermes_cli.auth as auth_mod
+
+        status_mod = _base_xai_mocks(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            auth_mod,
+            "get_xai_oauth_auth_status",
+            lambda: {},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            auth_mod,
+            "get_codex_auth_status",
+            lambda: {
+                "logged_in": True,
+                "rate_limited": True,
+                "error_code": "codex_rate_limited",
+                "error": "Codex provider quota exhausted",
+                "reset_at": None,
+                "source": "pool:codex@example.com",
+            },
+            raising=False,
+        )
+
+        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        out = capsys.readouterr().out
+
+        assert "OpenAI Codex" in out
+        assert "quota exhausted" in out
+        # No reset_at → no retry hint should be fabricated.
+        assert "retry after" not in out

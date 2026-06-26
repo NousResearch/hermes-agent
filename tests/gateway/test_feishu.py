@@ -4944,3 +4944,51 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestOutboundPayloadRouting(unittest.TestCase):
+    """Tests for FeishuAdapter._build_outbound_payload routing decisions.
+
+    Regression: tables used to force the entire message into msg_type=text,
+    stripping every other markdown feature (bold, headings, code, links).
+    They should now flow through the post pipeline alongside everything else.
+    """
+
+    def _adapter(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        return FeishuAdapter(PlatformConfig())
+
+    def test_plain_text_uses_text_msg_type(self):
+        adapter = self._adapter()
+        msg_type, payload = adapter._build_outbound_payload("hello world, no markdown")
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload), {"text": "hello world, no markdown"})
+
+    def test_plain_markdown_uses_post_msg_type(self):
+        adapter = self._adapter()
+        msg_type, _ = adapter._build_outbound_payload("**bold** and a [link](https://x.test)")
+        self.assertEqual(msg_type, "post")
+
+    def test_markdown_table_alone_uses_post_msg_type(self):
+        """Regression: a bare table previously force-downgraded to text."""
+        adapter = self._adapter()
+        content = "| a | b |\n|---|---|\n| 1 | 2 |"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "post")
+        # Payload should be a post body, not the {"text": ...} envelope.
+        body = json.loads(payload)
+        self.assertIn("zh_cn", body)
+        self.assertIn("content", body["zh_cn"])
+
+    def test_markdown_table_with_surrounding_content_keeps_post(self):
+        """Composite reply (heading + table + code + links) must stay as post."""
+        adapter = self._adapter()
+        content = (
+            "## Heading\n\n"
+            "**bold** and a [link](https://x.test).\n\n"
+            "| code | name | ytd |\n|---|---|---|\n| 600522 | foo | 23.5 |\n\n"
+            "```python\nprint('hi')\n```\n"
+        )
+        msg_type, _ = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "post")

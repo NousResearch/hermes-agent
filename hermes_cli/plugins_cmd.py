@@ -268,10 +268,22 @@ def _read_manifest(plugin_dir: Path) -> dict:
         import yaml
 
         with open(manifest_file, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            manifest = yaml.safe_load(f)
     except Exception as e:
         logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
         return {}
+    if manifest is None:
+        return {}
+    if not isinstance(manifest, dict):
+        # A plugin.yaml whose top level is a list/scalar (malformed) would
+        # otherwise propagate a non-dict into callers that do manifest.get(...),
+        # raising AttributeError mid-scan and aborting plugin discovery.
+        logger.warning(
+            "Failed to read plugin.yaml in %s: top-level YAML must be a mapping",
+            plugin_dir,
+        )
+        return {}
+    return manifest
 
 
 def _copy_example_files(plugin_dir: Path, console) -> None:

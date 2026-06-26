@@ -3964,17 +3964,26 @@ def parallel_search_sources(
 def unified_search(query: str, sources: List[SkillSource],
                    source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
     """Search all sources (in parallel) and merge results."""
+    # A provider filter (nvidia/openai/...) narrows the merged set AFTER the
+    # search, so the index must hand back its full candidate pool — not just its
+    # default top-50 — or matching provider skills ranked below position 50 are
+    # truncated away before the filter ever sees them. Mirror ``do_browse``,
+    # which already passes a generous ``hermes-index`` limit for exactly this
+    # reason. The final ``deduped[:limit]`` still bounds user-visible rows.
+    _is_provider = source_filter.strip().lower() in _PROVIDER_FILTER_VALUES
+    per_source_limits = {"hermes-index": 1_000_000} if _is_provider else None
     all_results, _, _ = parallel_search_sources(
         sources,
         query=query,
         source_filter=source_filter,
+        per_source_limits=per_source_limits,
         overall_timeout=30,
     )
 
     # A provider filter (nvidia/openai/...) is applied here, on the merged set,
     # because it targets the per-tap ``extra.provider`` label rather than a real
     # source id (the runtime index stores every GitHub tap as source="github").
-    if source_filter.strip().lower() in _PROVIDER_FILTER_VALUES:
+    if _is_provider:
         all_results = _filter_results_by_provider(all_results, source_filter)
 
     # Deduplicate by identifier, preferring higher trust levels.

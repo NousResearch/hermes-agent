@@ -1757,6 +1757,44 @@ class TestProviderFilter:
         results = unified_search("cuda", [src], source_filter="nvidia", limit=25)
         assert [r.identifier for r in results] == ["NVIDIA/skills/cuda"]
 
+    def test_unified_search_provider_filter_survives_per_source_limit(self):
+        # Real HermesIndexSource (not a MagicMock that returns a fixed list
+        # regardless of `limit`): the provider's matching skills sit past the
+        # default top-50, so a search path that lets the index truncate to 50
+        # before applying the provider filter returns nothing. 55 non-NVIDIA
+        # matches first, then 5 NVIDIA matches at index positions 55-59 — all
+        # match "cuda" only in their description (same relevance score), so the
+        # stable index-order tiebreaker keeps the NVIDIA entries outside the
+        # first 50 ranked rows.
+        from tools.skills_hub import HermesIndexSource
+
+        skills = [
+            {"name": f"thing-{i}", "description": "mentions cuda toolkit",
+             "source": "clawhub", "identifier": f"clawhub/thing-{i}", "tags": []}
+            for i in range(55)
+        ]
+        for i in range(5):
+            skills.append({
+                "name": f"gpu-helper-{i}",
+                "description": "mentions cuda toolkit",
+                "source": "github",
+                "identifier": f"NVIDIA/skills/skills/gpu-helper-{i}",
+                "tags": [],
+                "extra": {"provider": "NVIDIA"},
+            })
+
+        src = HermesIndexSource(auth=GitHubAuth())
+        src._index = {"skills": skills}
+        src._loaded = True
+
+        with patch.object(HermesIndexSource, "is_available",
+                          property(lambda self: True)):
+            results = unified_search("cuda", [src], source_filter="nvidia",
+                                     limit=25)
+
+        ids = {r.identifier for r in results}
+        assert ids == {f"NVIDIA/skills/skills/gpu-helper-{i}" for i in range(5)}
+
 
 # ---------------------------------------------------------------------------
 # append_audit_log

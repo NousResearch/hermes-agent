@@ -216,8 +216,47 @@ def test_scoped_session_ids_is_union_of_placed_sessions():
 
     tree = pt.build_tree([project], [owned, auto, homeless], [], resolve, hydrate=True)
 
-    assert set(tree["scoped_session_ids"]) == {owned["id"], auto["id"]}
-    assert homeless["id"] not in tree["scoped_session_ids"]
+    # All three sessions must be scoped — including the cwd-less one, which now
+    # lives under the synthetic "no project" bucket.
+    assert set(tree["scoped_session_ids"]) == {owned["id"], auto["id"], homeless["id"]}
+
+
+def test_no_project_bucket_collects_cwd_less_sessions():
+    """Sessions with no cwd and no git root are grouped under a synthetic 'no
+    project' project so they stay visible in the project-oriented sidebar."""
+    owned = _session("/repo", branch="main")
+    rootless = _session(None)
+    also_rootless = _session(None)
+    resolve = _resolver({"/repo": ("/repo", "/repo")})
+
+    tree = pt.build_tree([], [owned, rootless, also_rootless], [], resolve, hydrate=True)
+    projects = tree["projects"]
+
+    no_project = next((p for p in projects if p.get("isNoProject")), None)
+    assert no_project is not None, "Expected a 'no project' bucket in the tree"
+    assert no_project["isNoProject"] is True
+    # The path must be a non-null synthetic value so existing frontend code
+    # (which keys preview maps on node.path) works without changes.
+    assert no_project.get("path") is not None
+    assert no_project["sessionCount"] == 2
+    # Both rootless session ids must be in the scoped set.
+    assert rootless["id"] in tree["scoped_session_ids"]
+    assert also_rootless["id"] in tree["scoped_session_ids"]
+    # The owned session must NOT appear under the no-project bucket.
+    no_project_ids = {s["id"] for repo in no_project["repos"] for g in repo["groups"] for s in g["sessions"]}
+    assert owned["id"] not in no_project_ids
+
+
+def test_no_project_bucket_excludes_sessions_with_a_repo_root():
+    """A session with a valid git repo root (even without cwd context) goes to
+    its own auto project, not the 'no project' bucket."""
+    resolve = _resolver({"/repo": ("/repo", "/repo")})
+    with_root = _session("/repo", repo_root="/repo")
+
+    tree = pt.build_tree([], [with_root], [], resolve, hydrate=True)
+    no_projects = [p for p in tree["projects"] if p.get("isNoProject")]
+
+    assert len(no_projects) == 0
 
 
 def test_overview_drops_session_rows_but_keeps_counts_and_previews():

@@ -40,6 +40,8 @@ Resolve = Callable[[str], Optional[dict]]
 _KANBAN_DIR_RE = re.compile(r"^(.*[/\\]\.worktrees)[/\\]t_[0-9a-f]+[/\\]?$")
 _TRUNK_BRANCHES = {"main", "master", "trunk", "develop"}
 DEFAULT_BRANCH_LABEL = "main"
+NO_PROJECT_ID = "__no_project__"
+NO_PROJECT_LABEL = "No workspace"
 
 
 def _branch_lane_id(repo_root: str, branch: str = "") -> str:
@@ -406,6 +408,7 @@ def _project_node(
     color: Any = None,
     icon: Any = None,
     is_auto: bool = False,
+    is_no_project: bool = False,
 ) -> dict:
     return {
         "id": pid,
@@ -414,6 +417,7 @@ def _project_node(
         "color": color,
         "icon": icon,
         "isAuto": is_auto,
+        "isNoProject": is_no_project,
         "sessionCount": session_count,
         "lastActive": last_active,
         "repos": repos,
@@ -522,6 +526,50 @@ def build_tree(
                 last_active=_last_active(repo_sessions),
                 preview_sessions=_previews(repo_sessions),
                 is_auto=True,
+            )
+        )
+
+    # Tier 2.5: the "No workspace" bucket — sessions with no cwd and no git repo
+    # root have no filesystem anchor and can't be grouped under any real project.
+    # Collect them into a single synthetic project so they remain visible and
+    # addressable (scoped) in the project-oriented sidebar view.
+    placed_session_ids: set[str] = {
+        s["id"] for repo_sessions in by_repo.values() for s in repo_sessions if s.get("id")
+    }
+    no_project_sessions = [
+        s for s in unowned if s.get("id") and s["id"] not in placed_session_ids
+    ]
+
+    if no_project_sessions:
+        scoped_ids.extend(s["id"] for s in no_project_sessions if s.get("id"))
+        organized = sorted(no_project_sessions, key=_session_time, reverse=True)
+        no_project_repo = {
+            "id": NO_PROJECT_ID,
+            "label": NO_PROJECT_LABEL,
+            "path": None,
+            "groups": [
+                {
+                    "id": f"{NO_PROJECT_ID}::sessions",
+                    "label": NO_PROJECT_LABEL,
+                    "path": None,
+                    "isMain": True,
+                    "isKanban": False,
+                    "sessions": organized if hydrate else [],
+                }
+            ],
+            "sessionCount": len(organized),
+        }
+        result.append(
+            _project_node(
+                pid=NO_PROJECT_ID,
+                label=NO_PROJECT_LABEL,
+                path=NO_PROJECT_ID,
+                repos=[no_project_repo],
+                session_count=len(organized),
+                last_active=_last_active(organized),
+                preview_sessions=_previews(organized),
+                is_auto=True,
+                is_no_project=True,
             )
         )
 

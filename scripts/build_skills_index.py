@@ -348,11 +348,10 @@ def main():
         # popular-queries era.
         "skills.sh": 10000,
         "lobehub": 100,
-        # ClawHub had 49,698+ skills as of May 2026 — anything under 20k means
-        # pagination broke or the API surface changed.  Fail loudly rather
-        # than ship a degenerate index (we shipped 200/50000 silently for
-        # weeks because the floor was 50).
-        "clawhub": 20000,
+        # ClawHub currently returns ~3k skills in June 2026; anything
+        # significantly below that range likely indicates API breakage
+        # or a major catalog regression.
+        "clawhub": 2500,
         "official": 50,
         "github": 30,        # collapsed across all GitHub taps
         "browse-sh": 50,

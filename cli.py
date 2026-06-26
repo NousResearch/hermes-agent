@@ -1832,8 +1832,45 @@ def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
         return _ACCENT_ANSI_DEFAULT if bold else "\033[38;2;184;134;11m"
 
 
+def _response_body_raw_color() -> str:
+    """Return the authored skin color for assistant response body text.
+
+    This deliberately bypasses SkinConfig.get_color() because cli.py installs a
+    light-mode remap hook there. That hook is correct for transparent chrome on
+    a light terminal, but response prose should not get pinned to the cached
+    remapped near-black value after a light -> dark terminal/cmux switch.
+    """
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        skin = get_active_skin()
+        return skin.colors.get("banner_text", "#FFF8DC")
+    except Exception:
+        return "#FFF8DC"
+
+
+def _raw_hex_to_ansi(hex_color: str) -> str:
+    """Convert a raw hex color to ANSI without light-mode remapping."""
+    try:
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+        return f"\033[38;2;{r};{g};{b}m"
+    except (ValueError, IndexError):
+        return "\033[38;2;255;248;220m"
+
+
+def _response_body_style() -> str:
+    """Return the Rich style for assistant response body text."""
+    return _response_body_raw_color()
+
+
+def _response_body_ansi() -> str:
+    """Return the ANSI prefix for streamed assistant response body text."""
+    return _raw_hex_to_ansi(_response_body_raw_color())
+
+
 # ────────────────────────────────────────────────────────────────────────
-# Light/dark terminal mode detection.
+
 #
 # Mirrors ui-tui/src/theme.ts detectLightMode().  Used to decide whether
 # to remap "near-white" skin colors (e.g. #FFF8DC banner_text, #B8860B
@@ -5177,19 +5214,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "⚕ Hermes")
-                _text_hex = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
                 label = "⚕ Hermes"
-                _text_hex = "#FFF8DC"
-            # Build a true-color ANSI escape for the response text color
-            # so streamed content matches the Rich Panel appearance.
-            try:
-                _r = int(_text_hex[1:3], 16)
-                _g = int(_text_hex[3:5], 16)
-                _b = int(_text_hex[5:7], 16)
-                self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
-            except (ValueError, IndexError):
-                self._stream_text_ansi = ""
+            self._stream_text_ansi = _response_body_ansi()
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime('%H:%M')}"
             w = self._scrollback_box_width()
@@ -11669,11 +11696,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     _skin = get_active_skin()
                     label = _skin.get_branding("response_label", "⚕ Hermes")
                     _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
-                    _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
                 except Exception:
                     label = "⚕ Hermes"
                     _resp_color = _maybe_remap_for_light_mode("#CD7F32")
-                    _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
+                _resp_text = _response_body_style()
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response

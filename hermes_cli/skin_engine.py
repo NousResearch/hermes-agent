@@ -854,6 +854,16 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     except Exception:
         return {}
 
+    def _raw_color(key: str, fallback: str = "") -> str:
+        """Read a skin color without the CLI light-mode remap hook.
+
+        Some prompt_toolkit styles paint an explicit background (status bar,
+        completion menu, voice bar). Those foreground/background pairs are
+        authored together; remapping only the foreground for a terminal-level
+        light background can make text invisible on the style's own background.
+        """
+        return skin.colors.get(key, fallback)
+
     # Input/prompt: leave unset by default so the typed text inherits
     # the terminal's foreground color (readable in both light and dark
     # color schemes).  Skins can opt into a colored prompt by setting
@@ -866,19 +876,34 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     label = skin.get_color("ui_label", title)
     warn = skin.get_color("ui_warn", "#FF8C00")
     error = skin.get_color("ui_error", "#FF6B6B")
-    status_bg = skin.get_color("status_bar_bg", "#1a1a2e")
-    status_text = skin.get_color("status_bar_text", text)
-    status_strong = skin.get_color("status_bar_strong", title)
-    status_dim = skin.get_color("status_bar_dim", dim)
-    status_good = skin.get_color("status_bar_good", skin.get_color("ui_ok", "#8FBC8F"))
-    status_warn = skin.get_color("status_bar_warn", warn)
-    status_bad = skin.get_color("status_bar_bad", skin.get_color("banner_accent", warn))
-    status_critical = skin.get_color("status_bar_critical", error)
-    voice_bg = skin.get_color("voice_status_bg", status_bg)
-    menu_bg = skin.get_color("completion_menu_bg", "#1a1a2e")
-    menu_current_bg = skin.get_color("completion_menu_current_bg", "#333355")
-    menu_meta_bg = skin.get_color("completion_menu_meta_bg", menu_bg)
-    menu_meta_current_bg = skin.get_color("completion_menu_meta_current_bg", menu_current_bg)
+
+    # Explicit-background prompt_toolkit chrome must use raw authored color
+    # pairs. SkinConfig.get_color may be monkey-patched by cli.py to remap
+    # near-white foregrounds to dark values for light terminal backgrounds;
+    # that is correct for transparent terminal text but wrong for widgets that
+    # draw their own dark/light background.
+    raw_title = _raw_color("banner_title", "#FFD700")
+    raw_text = _raw_color("banner_text", "#FFF8DC")
+    raw_dim = _raw_color("banner_dim", "#555555")
+    raw_label = _raw_color("ui_label", raw_title)
+    raw_warn = _raw_color("ui_warn", "#FF8C00")
+    raw_error = _raw_color("ui_error", "#FF6B6B")
+    raw_ok = _raw_color("ui_ok", "#8FBC8F")
+    raw_accent = _raw_color("banner_accent", raw_warn)
+
+    status_bg = _raw_color("status_bar_bg", "#1a1a2e")
+    status_text = _raw_color("status_bar_text", raw_text)
+    status_strong = _raw_color("status_bar_strong", raw_title)
+    status_dim = _raw_color("status_bar_dim", raw_dim)
+    status_good = _raw_color("status_bar_good", raw_ok)
+    status_warn = _raw_color("status_bar_warn", raw_warn)
+    status_bad = _raw_color("status_bar_bad", raw_accent)
+    status_critical = _raw_color("status_bar_critical", raw_error)
+    voice_bg = _raw_color("voice_status_bg", status_bg)
+    menu_bg = _raw_color("completion_menu_bg", "#1a1a2e")
+    menu_current_bg = _raw_color("completion_menu_current_bg", "#333355")
+    menu_meta_bg = _raw_color("completion_menu_meta_bg", menu_bg)
+    menu_meta_current_bg = _raw_color("completion_menu_meta_current_bg", menu_current_bg)
 
     return {
         # Typed input always uses terminal default fg/bg so it's
@@ -899,11 +924,11 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "status-bar-critical": f"bg:{status_bg} {status_critical} bold",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
-        "completion-menu": f"bg:{menu_bg} {text}",
-        "completion-menu.completion": f"bg:{menu_bg} {text}",
-        "completion-menu.completion.current": f"bg:{menu_current_bg} {title}",
-        "completion-menu.meta.completion": f"bg:{menu_meta_bg} {dim}",
-        "completion-menu.meta.completion.current": f"bg:{menu_meta_current_bg} {label}",
+        "completion-menu": f"bg:{menu_bg} {raw_text}",
+        "completion-menu.completion": f"bg:{menu_bg} {raw_text}",
+        "completion-menu.completion.current": f"bg:{menu_current_bg} {raw_title}",
+        "completion-menu.meta.completion": f"bg:{menu_meta_bg} {raw_dim}",
+        "completion-menu.meta.completion.current": f"bg:{menu_meta_current_bg} {raw_label}",
         "clarify-border": input_rule,
         "clarify-title": f"{title} bold",
         "clarify-question": f"{text} bold",
@@ -921,6 +946,6 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "approval-cmd": f"{dim} italic",
         "approval-choice": dim,
         "approval-selected": f"{title} bold",
-        "voice-status": f"bg:{voice_bg} {label}",
-        "voice-status-recording": f"bg:{voice_bg} {error} bold",
+        "voice-status": f"bg:{voice_bg} {raw_label}",
+        "voice-status-recording": f"bg:{voice_bg} {raw_error} bold",
     }

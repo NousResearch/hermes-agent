@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI, _rich_text_from_ansi
+from cli import HermesCLI, _rich_text_from_ansi, _maybe_remap_for_light_mode
 from hermes_cli.skin_engine import get_active_skin, set_active_skin
 
 
@@ -86,6 +86,27 @@ class TestCliSkinPromptIntegration:
         assert style_dict["input-rule"] == skin.get_color("input_rule")
         assert style_dict["prompt-working"] == f"{skin.get_color('banner_dim')} italic"
         assert style_dict["approval-title"] == f"{skin.get_color('ui_warn')} bold"
+
+    def test_explicit_background_tui_styles_use_raw_skin_pairs_when_light_remapped(self):
+        cli = _make_cli_stub()
+        cli._tui_style_base.update({
+            "completion-menu": "bg:#1a1a2e #FFF8DC",
+            "completion-menu.completion": "bg:#1a1a2e #FFF8DC",
+            "completion-menu.completion.current": "bg:#333355 #FFD700",
+            "completion-menu.meta.completion": "bg:#1a1a2e #888888",
+            "completion-menu.meta.completion.current": "bg:#333355 #FFBF00",
+            "status-bar": "bg:#1a1a2e #C0C0C0",
+        })
+
+        set_active_skin("default")
+        with patch("cli._LIGHT_MODE_CACHE", True):
+            assert _maybe_remap_for_light_mode("#FFF8DC") == "#1A1A1A"
+            style_dict = cli._build_tui_style_dict()
+
+        assert style_dict["completion-menu"] == "bg:#1a1a2e #FFF8DC"
+        assert style_dict["completion-menu.completion"] == "bg:#1a1a2e #FFF8DC"
+        assert style_dict["completion-menu.completion.current"] == "bg:#333355 #FFD700"
+        assert style_dict["status-bar"] == "bg:#1a1a2e #FFF8DC"
 
     def test_apply_tui_skin_style_updates_running_app(self):
         cli = _make_cli_stub()

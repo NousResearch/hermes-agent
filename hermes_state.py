@@ -403,7 +403,11 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
 
     Runs the same first-statement (``PRAGMA journal_mode``) that trips the
     malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
-    ``sessions`` read.
+    ``sessions`` read, and finally a rolled-back ``messages`` write so that
+    FTS5 index corruption — which leaves base-table reads and
+    ``integrity_check`` passing while every ``INSERT INTO messages`` fails
+    through the FTS triggers — is reported as unhealthy rather than slipping
+    past as a false "ok" (#50502).
     """
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     try:
@@ -413,6 +417,36 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         if problems:
             return "; ".join(problems[:3])
         conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+
+        # FTS write probe: drive a row through the messages_fts* triggers in a
+        # transaction that is always rolled back, so a corrupt FTS index that
+        # rejects writes is caught even though reads look healthy. The probe is
+        # best-effort — if the messages/sessions tables don't exist yet (brand
+        # new file mid-init) the OperationalError is treated as "not yet a
+        # populated DB", not corruption.
+        probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+                (probe_session_id, "_health_probe", time.time()),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp) "
+                "VALUES (?, ?, ?, ?)",
+                (probe_session_id, "user", "_fts_health_probe", time.time()),
+            )
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError as exc:
+            # Missing tables / FTS disabled — not the corruption class we probe.
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            msg = str(exc).lower()
+            if "no such table" in msg or "no such column" in msg:
+                return None
+            return str(exc)
         return None
     except sqlite3.DatabaseError as exc:
         return str(exc)
@@ -421,16 +455,23 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
 
 
 def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:
-    """Repair a state.db whose ``sqlite_master`` schema is malformed.
+    """Repair a state.db whose ``sqlite_master`` schema is malformed or whose
+    FTS indexes reject writes.
 
-    Handles the "duplicate object definition" / malformed-schema class where
-    even ``PRAGMA`` statements fail. Tries least-destructive recovery first
-    and escalates:
+    Handles two corruption classes: the "duplicate object definition" /
+    malformed-schema class where even ``PRAGMA`` statements fail, and the FTS
+    write-corruption class (#50502) where base tables read fine and
+    ``integrity_check`` passes but writes fail through the ``messages_fts*``
+    triggers. Tries least-destructive recovery first and escalates:
 
-      1. **De-duplicate** ``sqlite_master`` (keep the lowest rowid per
+      1. **Rebuild FTS indexes in place** via the FTS5 ``'rebuild'`` command,
+         which rewrites the internal b-tree segments from the canonical
+         ``messages`` rows without dropping or recreating anything. Fixes the
+         FTS write-corruption class while preserving the schema intact.
+      2. **De-duplicate** ``sqlite_master`` (keep the lowest rowid per
          ``type``/``name``). Fixes the canonical "table X already exists"
          case and PRESERVES the existing FTS index intact.
-      2. **Drop the FTS schema** (every ``messages_fts*`` object) + ``VACUUM``.
+      3. **Drop the FTS schema** (every ``messages_fts*`` object) + ``VACUUM``.
          The next ``SessionDB()`` open rebuilds the FTS indexes from the
          canonical ``messages`` table.
 
@@ -452,9 +493,42 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         report["error"] = f"{db_path} does not exist"
         return report
 
+    if _db_opens_cleanly(db_path) is None:
+        report["repaired"] = True
+        report["strategy"] = "already_healthy"
+        return report
+
     if backup:
         bpath = _backup_db_file(db_path)
         report["backup_path"] = str(bpath) if bpath else None
+
+    # ── Strategy 0: rebuild FTS indexes in place (FTS write-corruption) ──
+    # The FTS5 'rebuild' command rewrites the internal index from the canonical
+    # content table. This is the recommended, least-destructive recovery for a
+    # corrupt FTS index that rejects message writes while reads still succeed.
+    try:
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            for table_name in ("messages_fts", "messages_fts_trigram"):
+                try:
+                    conn.execute(
+                        f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')"
+                    )
+                except sqlite3.OperationalError:
+                    # Table absent (FTS disabled / trigram off) — skip it.
+                    continue
+        finally:
+            conn.close()
+        if _db_opens_cleanly(db_path) is None:
+            report["repaired"] = True
+            report["strategy"] = "rebuild_fts"
+            logger.warning(
+                "state.db FTS indexes rebuilt in place (schema preserved): %s",
+                db_path,
+            )
+            return report
+    except sqlite3.DatabaseError as exc:
+        logger.warning("state.db FTS in-place rebuild pass failed: %s", exc)
 
     # ── Strategy 1: de-duplicate sqlite_master (keeps FTS index) ──
     try:

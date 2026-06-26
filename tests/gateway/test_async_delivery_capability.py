@@ -18,6 +18,7 @@ not snapshots of a current value.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -141,6 +142,22 @@ class TestAdapterCapabilityFlag:
         finally:
             clear_session_vars(tokens)
 
+    def test_cron_session_binds_no_async_delivery(self):
+        """Cron jobs are detached scheduler runs with no completion-queue
+        re-entry path, so they must opt out of background delivery promises.
+        """
+        tokens = set_session_vars(
+            platform="",
+            chat_id="",
+            chat_name="",
+            async_delivery=False,
+        )
+        try:
+            assert async_delivery_supported() is False
+            assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+        finally:
+            clear_session_vars(tokens)
+
 
 # ---------------------------------------------------------------------------
 # terminal_tool: refuses to register a watcher on unsupported sessions
@@ -209,3 +226,72 @@ class TestTerminalNotifyGate:
         assert not d.get("notify_unsupported")
         # No platform bound -> no gateway watcher, but completion_queue still fires.
         assert len(process_registry.pending_watchers) == 0
+
+
+class TestDelegateTaskBackgroundGate:
+    def test_cron_context_falls_back_to_sync(self, monkeypatch):
+        """Cron jobs must not dispatch detached background subagents because
+        no cron drain re-enters async-delegation completions after the turn.
+        """
+        import tools.delegate_tool as dt
+
+        parent = pytest.importorskip("unittest.mock").MagicMock()
+        parent._delegate_depth = 0
+        parent.session_id = "cron-session"
+        parent._interrupt_requested = False
+        parent._active_children = []
+        parent._active_children_lock = None
+
+        creds = {
+            "model": "m",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": None,
+            "args": None,
+        }
+
+        monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+        monkeypatch.setattr(
+            dt,
+            "_build_child_agent",
+            lambda **kw: SimpleNamespace(
+                _delegate_saved_tool_names=[],
+                _delegate_role="leaf",
+            ),
+        )
+        monkeypatch.setattr(
+            dt,
+            "_run_single_child",
+            lambda task_index, goal, **kw: {
+                "task_index": task_index,
+                "status": "completed",
+                "summary": f"done: {goal}",
+                "api_calls": 1,
+                "duration_seconds": 0.1,
+                "model": "m",
+                "exit_reason": "completed",
+            },
+        )
+
+        tokens = set_session_vars(
+            platform="",
+            chat_id="",
+            chat_name="",
+            async_delivery=False,
+        )
+        try:
+            out = json.loads(
+                dt.delegate_task(
+                    tasks=[{"goal": "a"}, {"goal": "b"}],
+                    background=True,
+                    parent_agent=parent,
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert out["results"][0]["summary"] == "done: a"
+        assert out["results"][1]["summary"] == "done: b"
+        assert "SYNCHRONOUSLY" in out["note"]

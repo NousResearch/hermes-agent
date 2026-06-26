@@ -23,6 +23,7 @@ from typing import Any
 
 from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -439,6 +440,7 @@ class CopilotACPClient:
                 bufsize=1,
                 cwd=self._acp_cwd,
                 env=_build_subprocess_env(),
+                creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as exc:
             raise RuntimeError(

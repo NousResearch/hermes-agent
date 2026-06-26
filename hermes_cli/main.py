@@ -260,6 +260,7 @@ import stat
 import subprocess
 from pathlib import Path
 from typing import Optional
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
@@ -4637,6 +4638,7 @@ def _run_with_idle_timeout(
             errors="replace",
             bufsize=1,
             env=env,
+            creationflags=windows_hide_flags(),
         )
     except OSError as exc:
         # E.g. npm not on PATH between the which() check and now.
@@ -11392,7 +11394,7 @@ def cmd_dashboard(args):
         # re-executing the dashboard for a non-default profile.  Use
         # subprocess.Popen + sys.exit() on Windows to avoid the crash.
         if sys.platform == "win32":
-            proc = subprocess.Popen(reexec_argv, env=env)
+            proc = subprocess.Popen(reexec_argv, env=env, creationflags=windows_hide_flags())
             sys.exit(proc.wait())
         else:
             os.execvpe(sys.executable, reexec_argv, env)

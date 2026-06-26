@@ -90,3 +90,8 @@ def _ensure_utf8():
 
 
 _ensure_utf8()
+
+# On Windows, suppress console-window flashes from every subprocess call.
+# Must run at import time before any tool or gateway code spawns children.
+from hermes_cli._subprocess_compat import install_windows_no_console_patch
+install_windows_no_console_patch()

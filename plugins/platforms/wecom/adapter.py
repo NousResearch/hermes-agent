@@ -107,20 +107,32 @@ DEDUP_MAX_SIZE = 1000
 STREAM_EXPIRED_ERRCODE = 846608  # >6 min without update — stream is dead
 STREAM_NOT_SUBSCRIBED_ERRCODE = 846609  # ws connection lost the subscription
 MAX_STREAM_CONTENT_LENGTH = 20480  # WeCom server-enforced byte limit per frame
-# Throttle window for intermediate stream frames (seconds).
-# If the previous frame was sent less than this duration ago, the current
-# intermediate frame is dropped.  Cumulative text guarantees no info loss.
-# NOTE: This is a time-based throttle, NOT true in-flight backpressure.
-# Our fire-and-forget path has no ack signal, so we cannot replicate the
-# official SDK's replyStreamNonBlocking (which skips when an ack is pending).
-# 200ms is a pragmatic middle ground: fast enough for smooth streaming UX,
-# slow enough to prevent frame pile-up under load.
-STREAM_FRAME_SKIP_WINDOW = 0.2  # 200ms
 # Per-turn cap on intermediate frames.  WeCom SDK has an internal 100-frame
 # per-reqId queue limit; we cap at 85 (matching openclaw plugin) to guarantee
 # room for the finalize frame.  Once hit, all further intermediate frames are
 # silently dropped — finalize still sends unconditionally.
 MAX_INTERMEDIATE_FRAMES = 85
+
+# ── Block-streaming parameters (aligned with the official wecom-openclaw-plugin) ──
+# The official plugin (wecom-openclaw-plugin/src/webhook/helpers.ts) coalesces
+# incoming LLM tokens into sentence-aligned blocks before sending each frame,
+# rather than echoing every char-delta.  This produces ~1 frame per natural
+# sentence boundary instead of one per 60-char delta, which means:
+#   - frame cadence drops from "every 200ms" to "every 0.5-2s typical",
+#   - the 5s ack timeout almost never fires (frames are spaced wider apart),
+#   - and the user sees content land in complete thought-units rather than
+#     mid-sentence cursors moving every tick.
+#
+# Values copied verbatim from the official plugin so we match its behaviour
+# in WeCom's rate-limit budget (≈30 frames/min/chat).
+BLOCK_STREAM_MIN_CHARS = 120        # Don't emit a frame below this size (unless forced)
+BLOCK_STREAM_MAX_CHARS = 360        # Force a break above this size
+BLOCK_STREAM_IDLE_FLUSH = 0.25      # 250ms — flush partial buffer if no new tokens
+
+# Sentence terminators recognised by the block chunker.  Includes the most
+# common Chinese full-stop / exclamation / question forms; matches the
+# official plugin's "sentence" break preference for the WeCom channel.
+_SENTENCE_TERMINATORS = ".!?。!?"
 
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
@@ -210,6 +222,125 @@ class ReplyQueue:
         self.pending_ack: Optional[ReplyFrame] = None
 
 
+class _BlockChunker:
+    """Coalesce streaming text into sentence-aligned blocks.
+
+    The consumer feeds us **cumulative** text (every frame is the full
+    response-so-far). We track the high-water mark and only emit when one
+    of these conditions holds for the *new* tail:
+
+    * new content is at least ``BLOCK_STREAM_MIN_CHARS`` AND ends on a
+      safe break (sentence terminator or blank-line paragraph boundary);
+    * new content has grown to ``BLOCK_STREAM_MAX_CHARS`` (hard cap —
+      force a break);
+    * ``force=True`` is passed (finalize, segment break, idle timer).
+
+    Returns the **cumulative text up to the emit point**, matching the
+    semantics of WeCom's stream protocol where every frame carries the
+    full content and the client renders the diff. This is consistent
+    with the official wecom-openclaw-plugin's flow: each ``deliver``
+    callback there carries the new block, and the plugin sends the
+    accumulated text via ``sendWeComReply`` under the same streamId.
+    """
+
+    __slots__ = (
+        "_cumulative",
+        "_min_chars",
+        "_max_chars",
+        "_terminators",
+        "_emitted_len",
+    )
+
+    def __init__(
+        self,
+        *,
+        min_chars: int = BLOCK_STREAM_MIN_CHARS,
+        max_chars: int = BLOCK_STREAM_MAX_CHARS,
+        terminators: str = _SENTENCE_TERMINATORS,
+    ) -> None:
+        self._cumulative: str = ""
+        self._min_chars = min_chars
+        self._max_chars = max_chars
+        self._terminators = terminators
+        # Length of the prefix that has already been signalled as ready to
+        # emit at least once. We compare new growth against this watermark.
+        self._emitted_len = 0
+
+    def update(self, cumulative_text: str) -> None:
+        """Replace the high-water mark with a fresh cumulative snapshot."""
+        # Only grow — the consumer never shrinks its accumulator, but defensive
+        # against accidental resets so we don't lose ground.
+        if len(cumulative_text) > len(self._cumulative):
+            self._cumulative = cumulative_text
+
+    def has_pending(self) -> bool:
+        """True when there is buffered content past the last emit point."""
+        return len(self._cumulative) > self._emitted_len
+
+    def drain(self, *, force: bool = False) -> Optional[str]:
+        """Decide whether to emit a frame, return the cumulative text if so.
+
+        Returns ``None`` when the chunker wants to keep buffering, or a
+        cumulative string (full content up to the chosen break) when a
+        frame is ready to go on the wire.
+        """
+        if not self.has_pending():
+            return None
+
+        new_len = len(self._cumulative) - self._emitted_len
+        # Hard cap — force a break even mid-sentence.
+        if new_len >= self._max_chars:
+            self._emitted_len = len(self._cumulative)
+            return self._cumulative
+
+        if force:
+            # Finalize / segment-break / idle-timer path: emit everything we
+            # have. Empty/whitespace-only tails are still allowed to pass —
+            # the caller (send_stream_frame) handles empty-text finalize.
+            self._emitted_len = len(self._cumulative)
+            return self._cumulative
+
+        if new_len < self._min_chars:
+            return None
+
+        # Look for a safe break inside the new tail. We scan backwards from
+        # the end of cumulative — the rightmost terminator that leaves a
+        # block of at least ``min_chars`` becomes the break point.
+        # Sentence terminators must be followed by whitespace / end-of-text
+        # so we don't split inside e.g. "v1.2" or "192.168.1.1".
+        new_tail_start = self._emitted_len
+        for idx in range(len(self._cumulative) - 1, new_tail_start - 1, -1):
+            ch = self._cumulative[idx]
+            if ch not in self._terminators:
+                continue
+            # Tail-end terminator is always safe.
+            if idx == len(self._cumulative) - 1:
+                next_ok = True
+            else:
+                next_ch = self._cumulative[idx + 1]
+                next_ok = next_ch.isspace() or next_ch in self._terminators
+            if not next_ok:
+                continue
+            break_at = idx + 1
+            if break_at - new_tail_start < self._min_chars:
+                # Sentence is too short; keep scanning leftward looking for a
+                # later terminator that satisfies min_chars.  Once we fall
+                # below min_chars we know no further matches will satisfy it
+                # either (we're moving left, blocks shrink).
+                break
+            self._emitted_len = break_at
+            return self._cumulative[:break_at]
+
+        # Also accept paragraph boundary ("\n\n") inside the new tail.
+        para_idx = self._cumulative.rfind("\n\n", new_tail_start)
+        if para_idx >= 0 and (para_idx + 2 - new_tail_start) >= self._min_chars:
+            break_at = para_idx + 2
+            self._emitted_len = break_at
+            return self._cumulative[:break_at]
+
+        return None
+
+
 class StreamTurn:
     """Per-turn stream state to avoid global state conflicts.
 
@@ -228,11 +359,19 @@ class StreamTurn:
         # Track the last content that was ACTUALLY sent to WeCom (not skipped).
         # Used by finalize to detect duplicate content and avoid silent ack drops.
         self.last_sent_content: str = ""
-        # Throttle state for intermediate frames.
-        # Time-based: skip frames arriving within STREAM_FRAME_SKIP_WINDOW.
-        # Count-based: cap at MAX_INTERMEDIATE_FRAMES per turn.
+        # Per-turn intermediate-frame counter (count-based cap at
+        # MAX_INTERMEDIATE_FRAMES to leave room for the finalize frame).
         self._last_frame_sent_at: float = 0.0
         self._intermediate_frames_sent: int = 0
+        # Block-stream chunker — coalesces consumer's cumulative cursor into
+        # sentence-aligned blocks before each frame goes on the wire. See
+        # ``_BlockChunker`` for the algorithm; lazily created on first append
+        # so per-turn cost is paid only for turns that actually stream.
+        self.chunker: Optional["_BlockChunker"] = None
+        # Idle flush handle — set when a partial buffer is waiting on the
+        # 250ms idle timer.  Cleared when the timer fires, when a force-flush
+        # happens, or on cleanup.
+        self.idle_flush_handle: Optional[asyncio.TimerHandle] = None
 
 
 class WeComAdapter(BasePlatformAdapter):
@@ -956,11 +1095,16 @@ class WeComAdapter(BasePlatformAdapter):
                 {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": normalized}, "body": body}
             )
         except Exception as e:
-            # Send failed — clear pending and reject future
+            # Send failed — clear pending and reject future. The future has
+            # no awaiter on the send-failure branch (we re-raise immediately),
+            # so cancel it instead of setting an exception that would otherwise
+            # be logged as "Future exception was never retrieved".
             if queue.pending_ack is frame:
                 queue.pending_ack = None
+                if not self._reply_queues.get(normalized) or queue.pending_ack is None:
+                    self._reply_queues.pop(normalized, None)
             if not future.done():
-                future.set_exception(e)
+                future.cancel()
             raise
 
         # For final frames: await the ack (blocking)
@@ -969,14 +1113,38 @@ class WeComAdapter(BasePlatformAdapter):
                 response = await asyncio.wait_for(future, timeout=self._REPLY_ACK_TIMEOUT)
                 return response
             except asyncio.TimeoutError:
-                # Final frame ack timeout is a FAILURE — aligned with official SDK.
-                # The server might still render the content, but we can't confirm.
-                # Upper layer should fall back to proactive send() if possible.
+                # Final-frame ack timeout: WeCom received the frame (we wrote
+                # the bytes successfully — _send_json above did not raise) but
+                # the ack didn't return within the window.  In practice the
+                # server has already rendered the message to the client; the
+                # ack is delayed for unrelated reasons (server-side queue lag,
+                # WS jitter, concurrent reply on the same WS).
+                #
+                # The official wecom-openclaw-plugin treats this case as an
+                # error and surfaces it to its caller, which then *does not*
+                # resend.  Hermes' prior behaviour — raising RuntimeError so
+                # the upper layer falls back to a normal markdown send —
+                # produced duplicate messages whenever WeCom *had* rendered
+                # the streamed frame (see docs/rca-wecom-stream-final-ack-
+                # timeout-duplicate.md).
+                #
+                # Aligning with the official plugin: log a warning and
+                # synthesise a success-shaped response so the caller treats
+                # the message as delivered.  The thinking-bubble is already
+                # closed on the client side by the finish=true frame; if WeCom
+                # never queued it (rare), the user sees no answer — same
+                # outcome as the official plugin.
                 logger.warning(
-                    "[%s] Final frame ack timeout (req_id=%s) — treating as failure",
+                    "[%s] Final frame ack timeout (req_id=%s) — treating as "
+                    "delivered (matches official wecom-openclaw-plugin "
+                    "behaviour). No fallback send.",
                     self.name, normalized,
                 )
-                raise RuntimeError(f"Final frame ack timeout (req_id={normalized})")
+                return {
+                    "errcode": 0,
+                    "errmsg": "ack_timeout_assumed_delivered",
+                    "ack_pending": True,
+                }
             finally:
                 if queue.pending_ack is frame:
                     queue.pending_ack = None
@@ -1548,7 +1716,116 @@ class WeComAdapter(BasePlatformAdapter):
     def _cleanup_stream_turn(self, chat_id: str, req_id: str) -> None:
         """Clean up a StreamTurn after finalization or error."""
         key = f"{chat_id}:{req_id}"
-        self._stream_turns.pop(key, None)
+        turn = self._stream_turns.pop(key, None)
+        if turn is not None:
+            self._cancel_idle_flush(turn)
+
+    def _cancel_idle_flush(self, turn: StreamTurn) -> None:
+        """Cancel a pending idle-flush timer on the turn (no-op if unarmed)."""
+        handle = turn.idle_flush_handle
+        if handle is not None:
+            try:
+                handle.cancel()
+            except Exception:
+                pass
+            turn.idle_flush_handle = None
+
+    def _arm_idle_flush(
+        self,
+        turn: StreamTurn,
+        *,
+        turn_id: Optional[str],
+    ) -> None:
+        """Arm the 250ms idle-flush timer so a partial buffer still ships.
+
+        When the LLM pauses (model thinking, network slow), the chunker's
+        ``min_chars`` gate would hold a half-sentence forever.  The official
+        plugin's ``blockStreamingCoalesce.idleMs = 250`` solves this by
+        flushing whatever is buffered after 250ms of silence.
+
+        The timer is per-turn and idempotent — re-arming while one is
+        pending no-ops; a new timer is only scheduled after the previous
+        one has fired or been cancelled.
+        """
+        if turn.idle_flush_handle is not None:
+            return  # already armed
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # not inside a loop (defensive — should never happen here)
+        handle = loop.call_later(
+            BLOCK_STREAM_IDLE_FLUSH,
+            self._on_idle_flush_fire,
+            turn,
+            turn_id,
+        )
+        turn.idle_flush_handle = handle
+
+    def _on_idle_flush_fire(
+        self,
+        turn: StreamTurn,
+        turn_id: Optional[str],
+    ) -> None:
+        """Loop callback — dispatch an async flush task without blocking."""
+        turn.idle_flush_handle = None
+        if turn.finalized or turn.expired:
+            return
+        if turn.chunker is None or not turn.chunker.has_pending():
+            return
+        # Schedule on the running loop; swallow scheduling errors so a stale
+        # timer firing during shutdown can never bubble up.
+        try:
+            asyncio.ensure_future(self._idle_flush_send(turn, turn_id))
+        except RuntimeError:
+            pass
+
+    async def _idle_flush_send(
+        self,
+        turn: StreamTurn,
+        turn_id: Optional[str],
+    ) -> None:
+        """Drain the chunker's pending tail and send one intermediate frame.
+
+        Called from the idle-flush timer when the consumer hasn't pushed a
+        fresh cumulative snapshot for ``BLOCK_STREAM_IDLE_FLUSH`` seconds.
+        Force-drains the chunker (force=True) so even a sub-min_chars tail
+        reaches the user.
+        """
+        if turn.finalized or turn.expired:
+            return
+        if turn._intermediate_frames_sent >= MAX_INTERMEDIATE_FRAMES:
+            return
+        chunker = turn.chunker
+        if chunker is None or not chunker.has_pending():
+            return
+        drained = chunker.drain(force=True)
+        if drained is None or not drained:
+            return
+        try:
+            await self._send_stream_reply(
+                turn.req_id,
+                turn.stream_id,
+                drained,
+                finish=False,
+            )
+        except WeComStreamExpiredError:
+            turn.expired = True
+            if turn_id:
+                turn_key = f"{turn.chat_id}:{turn_id}"
+                self._stream_turns.pop(turn_key, None)
+            else:
+                self._cleanup_stream_turn(turn.chat_id, turn.req_id)
+            self._stream_expired_chats.add(turn.chat_id)
+            return
+        except Exception as exc:
+            logger.debug(
+                "[%s] idle-flush send failed (chat=%s, turn=%s): %s",
+                self.name, turn.chat_id, turn.stream_id, exc,
+            )
+            return
+        turn._last_frame_sent_at = time.monotonic()
+        turn._intermediate_frames_sent += 1
+        turn.last_sent_content = drained
 
     def _find_active_turn_for_chat(self, chat_id: str) -> Optional[StreamTurn]:
         """Find the most recent active (non-finalized) turn for a chat."""
@@ -2566,6 +2843,17 @@ class WeComAdapter(BasePlatformAdapter):
 
             # Send the frame
             if finalize:
+                # Force-drain any buffered tail through the chunker so the
+                # final frame carries the latest content — this is what the
+                # official plugin does in `finishThinkingStream`.  The
+                # chunker call also cancels the idle-flush timer.
+                self._cancel_idle_flush(turn)
+                if turn.chunker is not None:
+                    turn.chunker.update(text)
+                    drained = turn.chunker.drain(force=True)
+                    if drained is not None:
+                        text = drained
+
                 # WeCom may silently drop (no ack) a final frame whose content
                 # is identical to the preceding intermediate frame — it treats
                 # the frame as a duplicate despite the finish flag change.
@@ -2589,33 +2877,49 @@ class WeComAdapter(BasePlatformAdapter):
                 else:
                     self._cleanup_stream_turn(chat, turn.req_id)
             else:
-                # Throttle: skip this intermediate frame if either:
-                # 1) The previous frame was dispatched within the skip window, or
-                # 2) The per-turn frame cap has been reached.
-                # Cumulative text means the next frame (or finalize) will carry
-                # the full content — nothing is lost.
-                now = time.monotonic()
-                skip = False
-                if turn._intermediate_frames_sent >= MAX_INTERMEDIATE_FRAMES:
-                    skip = True
-                elif turn._last_frame_sent_at and (now - turn._last_frame_sent_at) < STREAM_FRAME_SKIP_WINDOW:
-                    skip = True
+                # Block-streaming gate (aligned with wecom-openclaw-plugin):
+                # the consumer hands us a *cumulative* text snapshot every
+                # tick.  Feed it to the chunker and only put a frame on the
+                # wire when a complete sentence-aligned block is ready.
+                # Otherwise schedule a 250ms idle flush so partial buffers
+                # don't sit forever when the LLM slows down.
+                if turn.chunker is None:
+                    turn.chunker = _BlockChunker()
+                turn.chunker.update(text)
 
-                if skip:
-                    # Still update accumulated_text so finalize has the latest.
+                if turn._intermediate_frames_sent >= MAX_INTERMEDIATE_FRAMES:
+                    # Frame cap reached — drop intermediates, keep accumulating.
+                    # The finalize path will drain whatever is left.
                     turn.accumulated_text = text
                     return True
+
+                drained = turn.chunker.drain(force=False)
+                if drained is None:
+                    # Not enough content for a block yet.  Make sure the
+                    # idle-flush timer is armed so a partial buffer still
+                    # reaches the user when the LLM pauses.
+                    self._arm_idle_flush(turn, turn_id=turn_id)
+                    turn.accumulated_text = text
+                    return True
+
+                # We have a block — cancel any pending idle flush, send the
+                # frame, then re-arm only if there's still pending content
+                # in the chunker (i.e., another block partway grown).
+                self._cancel_idle_flush(turn)
 
                 await self._send_stream_reply(
                     turn.req_id,
                     turn.stream_id,
-                    text,
+                    drained,
                     finish=False,
                 )
                 turn._last_frame_sent_at = time.monotonic()
                 turn._intermediate_frames_sent += 1
                 turn.accumulated_text = text
-                turn.last_sent_content = text
+                turn.last_sent_content = drained
+
+                if turn.chunker.has_pending():
+                    self._arm_idle_flush(turn, turn_id=turn_id)
 
             return True
 
@@ -2626,6 +2930,7 @@ class WeComAdapter(BasePlatformAdapter):
             )
             # Mark this specific turn as expired and clean it up
             if 'turn' in locals():
+                self._cancel_idle_flush(turn)
                 turn.expired = True
                 if turn_id:
                     turn_key = f"{chat}:{turn_id}"
@@ -2644,6 +2949,7 @@ class WeComAdapter(BasePlatformAdapter):
             )
             # Clean up this turn on error
             if 'turn' in locals():
+                self._cancel_idle_flush(turn)
                 if turn_id:
                     turn_key = f"{chat}:{turn_id}"
                     self._stream_turns.pop(turn_key, None)

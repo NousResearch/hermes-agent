@@ -11,7 +11,7 @@ class TestPerTurnStreamIsolation:
     @pytest.mark.asyncio
     async def test_multiple_users_concurrent_streaming(self):
         """Multiple users (different chats) streaming concurrently don't interfere."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         try:
@@ -64,7 +64,7 @@ class TestPerTurnStreamIsolation:
     @pytest.mark.asyncio
     async def test_concurrent_turns_same_chat_isolated(self):
         """Two concurrent consumers in same chat maintain independent streams."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         try:
@@ -106,7 +106,7 @@ class TestPerTurnStreamIsolation:
     @pytest.mark.asyncio
     async def test_one_user_expired_others_unaffected(self):
         """User A hits stream expired; Users B and C continue normally."""
-        from gateway.platforms.wecom import STREAM_EXPIRED_ERRCODE, WeComAdapter
+        from plugins.platforms.wecom.adapter import STREAM_EXPIRED_ERRCODE, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         try:
@@ -155,7 +155,7 @@ class TestPerTurnStreamIsolation:
     @pytest.mark.asyncio
     async def test_one_turn_expired_other_continues(self):
         """When one turn hits stream expired, other concurrent turns can continue."""
-        from gateway.platforms.wecom import STREAM_EXPIRED_ERRCODE, WeComAdapter
+        from plugins.platforms.wecom.adapter import STREAM_EXPIRED_ERRCODE, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         try:
@@ -193,7 +193,7 @@ class TestPerTurnStreamIsolation:
     @pytest.mark.asyncio
     async def test_expired_chat_blocks_new_turn_creation(self):
         """After one turn expired, new turn creation is blocked."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         try:

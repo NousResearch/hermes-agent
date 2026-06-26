@@ -654,7 +654,7 @@ class TestSend:
         """Regression: force_proactive_send=True must use APP_CMD_SEND to avoid
         consuming the req_id that the post-approval stream needs. Passive reply
         on the same req_id causes WeCom to render the stream seed as empty bubble."""
-        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+        from plugins.platforms.wecom.adapter import APP_CMD_SEND, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         # Simulate a cached req_id from the user's /approve message
@@ -687,7 +687,7 @@ class TestSend:
         """is_approval_prompt alone (without force_proactive_send) must still use
         passive reply. The initial approval *request* prompt needs passive reply
         because groups cannot use APP_CMD_SEND."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["group-chat"] = "req-user-msg"
@@ -712,7 +712,7 @@ class TestSend:
         """send() should NOT force proactive when a stream is active —
         that's too broad and breaks group delivery. Only explicit
         force_proactive_send metadata triggers proactive mode."""
-        from gateway.platforms.wecom import WeComAdapter, StreamTurn
+        from plugins.platforms.wecom.adapter import WeComAdapter, StreamTurn
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-123"] = "req-latest"
@@ -737,7 +737,7 @@ class TestSend:
         """Regression: force_proactive_send must NOT use APP_CMD_SEND in group chats.
         WeCom AI Bots cannot initiate APP_CMD_SEND in groups — only passive reply
         (APP_CMD_RESPONSE) bound to a req_id works."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["group-chat"] = "req-approve"
@@ -764,7 +764,7 @@ class TestSend:
     async def test_group_send_fails_early_without_req_id(self):
         """Group chats with no cached req_id must fail with a clear error
         instead of attempting APP_CMD_SEND (which WeCom will reject)."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         # No req_id cached for this group
@@ -1172,24 +1172,24 @@ class TestWeComNativeStreamingCapability:
     """SUPPORTS_NATIVE_STREAMING + supports_native_streaming() probe."""
 
     def test_class_attribute_declares_native_streaming(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         assert WeComAdapter.SUPPORTS_NATIVE_STREAMING is True
 
     def test_supports_native_streaming_returns_true_for_dm(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         assert adapter.supports_native_streaming(chat_type="dm") is True
 
     def test_supports_native_streaming_returns_true_for_group(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         assert adapter.supports_native_streaming(chat_type="group") is True
 
     def test_max_stream_content_length_is_20480(self):
-        from gateway.platforms.wecom import (
+        from plugins.platforms.wecom.adapter import (
             MAX_STREAM_CONTENT_LENGTH, WeComAdapter,
         )
 
@@ -1197,7 +1197,7 @@ class TestWeComNativeStreamingCapability:
         assert WeComAdapter.MAX_STREAM_CONTENT_LENGTH == 20480
 
     def test_stream_expired_errcode_constant(self):
-        from gateway.platforms.wecom import STREAM_EXPIRED_ERRCODE
+        from plugins.platforms.wecom.adapter import STREAM_EXPIRED_ERRCODE
 
         assert STREAM_EXPIRED_ERRCODE == 846608
 
@@ -1208,7 +1208,7 @@ class TestResolveStreamReqId:
     """`_resolve_stream_req_id` precedence: reply_to → cached chat → None."""
 
     def test_prefers_explicit_reply_to(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._reply_req_ids["msg-123"] = "explicit-req"
@@ -1217,7 +1217,7 @@ class TestResolveStreamReqId:
         assert adapter._resolve_stream_req_id("chat-1", "msg-123") == "explicit-req"
 
     def test_falls_back_to_cached_chat_req_id(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "cached-req"
@@ -1225,14 +1225,14 @@ class TestResolveStreamReqId:
         assert adapter._resolve_stream_req_id("chat-1", reply_to=None) == "cached-req"
 
     def test_returns_none_when_no_anchor(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         assert adapter._resolve_stream_req_id("unknown-chat", None) is None
 
     def test_quoted_reply_to_falls_through_to_chat_cache(self):
         """``quote:msg-id`` (quote-context marker) is not a real reply anchor."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "cached-req"
@@ -1271,8 +1271,12 @@ class TestSendStreamFrame:
         """First frame for a chat sends <think></think> seed.
 
         Bypasses ack tracking so both seed and content are sent in same call.
+        Uses a payload above ``BLOCK_STREAM_MIN_CHARS`` ending on a sentence
+        boundary so the block chunker emits immediately (otherwise the
+        chunker buffers waiting for either ``min_chars`` + a safe break or
+        the 250ms idle flush).
         """
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter, BLOCK_STREAM_MIN_CHARS
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1280,7 +1284,10 @@ class TestSendStreamFrame:
         # Mock _send_reply_queued to bypass ack tracking
         self._mock_send_json_with_immediate_ack(adapter)
 
-        ok = await adapter.send_stream_frame("hello", chat_id="chat-1")
+        # Build a sentence-terminated payload above min_chars.
+        payload = ("hello world. " * 12).strip()
+        assert len(payload) >= BLOCK_STREAM_MIN_CHARS
+        ok = await adapter.send_stream_frame(payload, chat_id="chat-1")
 
         assert ok is True
         # seed + content = 2 frames
@@ -1291,13 +1298,18 @@ class TestSendStreamFrame:
         assert seed_frame["body"]["stream"]["finish"] is False
 
         content_frame = adapter._sent_frames[1]
-        assert content_frame["body"]["stream"]["content"] == "hello"
+        assert content_frame["body"]["stream"]["content"] == payload
         assert content_frame["body"]["stream"]["finish"] is False
 
     @pytest.mark.asyncio
     async def test_first_and_second_call_share_stream_id(self):
-        """Successive frames use the same stream_id."""
-        from gateway.platforms.wecom import WeComAdapter, STREAM_FRAME_SKIP_WINDOW
+        """Successive frames use the same stream_id.
+
+        Both frames carry sentence-terminated payloads above min_chars so the
+        block chunker emits each one — the test is about stream_id continuity
+        across frames, not about chunker thresholds.
+        """
+        from plugins.platforms.wecom.adapter import WeComAdapter, BLOCK_STREAM_MIN_CHARS
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1305,12 +1317,14 @@ class TestSendStreamFrame:
         # Immediate ack so all frames are sent (no pending-skip)
         self._mock_send_json_with_immediate_ack(adapter)
 
-        await adapter.send_stream_frame("alpha", chat_id="chat-1")
-        # Wait past the skip window so the second frame is not dropped by throttle.
-        await asyncio.sleep(STREAM_FRAME_SKIP_WINDOW + 0.01)
-        await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
+        first = ("alpha sentence. " * 10).strip()
+        second = first + " " + ("beta sentence. " * 10).strip()
+        assert len(first) >= BLOCK_STREAM_MIN_CHARS
+        assert len(second) - len(first) >= BLOCK_STREAM_MIN_CHARS
+        await adapter.send_stream_frame(first, chat_id="chat-1")
+        await adapter.send_stream_frame(second, chat_id="chat-1")
 
-        # seed + alpha + alpha beta = 3 frames
+        # seed + first + second = 3 frames
         assert len(adapter._sent_frames) == 3
         ids = [frame["body"]["stream"]["id"] for frame in adapter._sent_frames]
         assert ids[0] == ids[1] == ids[2]
@@ -1324,7 +1338,7 @@ class TestSendStreamFrame:
         returned yet, the next intermediate frame is skipped (returns success
         but doesn't actually send). This prevents errcode 6000 version conflict.
         """
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1346,7 +1360,7 @@ class TestSendStreamFrame:
     @pytest.mark.asyncio
     async def test_intermediate_frame_cap_drops_excess(self):
         """After MAX_INTERMEDIATE_FRAMES, further intermediate frames are dropped."""
-        from gateway.platforms.wecom import WeComAdapter, MAX_INTERMEDIATE_FRAMES
+        from plugins.platforms.wecom.adapter import WeComAdapter, MAX_INTERMEDIATE_FRAMES
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1381,7 +1395,7 @@ class TestSendStreamFrame:
     @pytest.mark.asyncio
     async def test_finalize_sends_finish_true_and_resets_state(self):
         """Finalize frame waits for pending ack, sends finish=true, cleans up turn."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1421,7 +1435,7 @@ class TestSendStreamFrameFailures:
 
     @pytest.mark.asyncio
     async def test_returns_false_when_no_req_id_available(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         # No reply_to, nothing in _last_chat_req_ids.
@@ -1434,7 +1448,7 @@ class TestSendStreamFrameFailures:
 
     @pytest.mark.asyncio
     async def test_returns_false_when_chat_id_missing_on_first_call(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._send_reply_request = AsyncMock()
@@ -1447,7 +1461,7 @@ class TestSendStreamFrameFailures:
     @pytest.mark.asyncio
     async def test_846608_marks_chat_expired_and_returns_false(self):
         """846608 on finalize frame marks the chat expired and returns False."""
-        from gateway.platforms.wecom import (
+        from plugins.platforms.wecom.adapter import (
             STREAM_EXPIRED_ERRCODE, WeComAdapter,
         )
 
@@ -1479,7 +1493,7 @@ class TestSendStreamFrameFailures:
     async def test_subsequent_call_to_expired_chat_short_circuits(self):
         """Once a chat is in ``_stream_expired_chats``, send_stream_frame
         bails immediately for new turns without touching the WS."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._stream_expired_chats.add("chat-1")
@@ -1499,7 +1513,7 @@ class TestSendStreamFrameFailures:
     @pytest.mark.asyncio
     async def test_inbound_message_clears_expired_marker(self):
         """A fresh inbound req_id must resurrect the stream channel."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._stream_expired_chats.add("chat-1")
@@ -1510,7 +1524,7 @@ class TestSendStreamFrameFailures:
 
     @pytest.mark.asyncio
     async def test_generic_transport_error_resets_state(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1520,7 +1534,7 @@ class TestSendStreamFrameFailures:
 
     @pytest.mark.asyncio
     async def test_generic_transport_error_resets_state(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1546,7 +1560,7 @@ class TestSendTypingTriggersThinking:
     @pytest.mark.asyncio
     async def test_send_typing_is_noop(self):
         """send_typing must not open any stream — the consumer seed frame does."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1562,7 +1576,7 @@ class TestSendTypingTriggersThinking:
     @pytest.mark.asyncio
     async def test_send_typing_does_not_raise(self):
         """send_typing must never raise regardless of state."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         await adapter.send_typing("chat-1")
@@ -1574,13 +1588,13 @@ class TestStreamContentTruncation:
     """Bytes (not codepoints) are truncated to MAX_STREAM_CONTENT_LENGTH."""
 
     def test_ascii_below_limit_passes_through(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         out = WeComAdapter._truncate_stream_content("hello", 1000)
         assert out == "hello"
 
     def test_ascii_above_limit_is_byte_capped(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         big = "x" * 30000
         out = WeComAdapter._truncate_stream_content(big, 20480)
@@ -1588,7 +1602,7 @@ class TestStreamContentTruncation:
 
     def test_multibyte_truncation_does_not_split_codepoints(self):
         """A 3-byte CJK char must not be sliced mid-byte and emit garbage."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         # Each "你" is 3 UTF-8 bytes.  Limit at 5 bytes — must keep one
         # full char and drop the half-cut second char rather than emit ï¿½.
@@ -1614,7 +1628,7 @@ class TestSendClosesActiveStream:
     async def test_send_finalizes_active_stream_opened_by_consumer(self):
         """When the stream consumer opened a stream and then send() delivers
         the response (e.g. fallback path), send() must close the stream."""
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1640,7 +1654,7 @@ class TestSendClosesActiveStream:
 
     @pytest.mark.asyncio
     async def test_send_ignores_stream_for_different_chat(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-2"] = "req-2"
@@ -1657,7 +1671,7 @@ class TestSendClosesActiveStream:
 
     @pytest.mark.asyncio
     async def test_send_falls_through_when_stream_expired(self):
-        from gateway.platforms.wecom import STREAM_EXPIRED_ERRCODE, WeComAdapter
+        from plugins.platforms.wecom.adapter import STREAM_EXPIRED_ERRCODE, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1678,3 +1692,247 @@ class TestSendClosesActiveStream:
         assert adapter._active_stream_id is None
         assert "chat-1" in adapter._stream_expired_chats
 
+
+
+class TestBlockChunker:
+    """Unit tests for the sentence-aligned block chunker.
+
+    The chunker buffers cumulative text and only emits when a sentence
+    boundary lands above ``min_chars``, or when a hard ``max_chars`` cap is
+    reached, or when the caller forces a drain (finalize / idle flush).
+    """
+
+    def test_emits_nothing_below_min_chars(self):
+        from plugins.platforms.wecom.adapter import _BlockChunker
+
+        chunker = _BlockChunker(min_chars=120, max_chars=360)
+        chunker.update("Hello world.")
+        assert chunker.drain(force=False) is None
+        # State is preserved across drain attempts.
+        assert chunker.has_pending() is True
+
+    def test_emits_on_sentence_boundary_above_min_chars(self):
+        from plugins.platforms.wecom.adapter import _BlockChunker
+
+        chunker = _BlockChunker(min_chars=20, max_chars=360)
+        chunker.update("This is sentence one. This is two.")
+        out = chunker.drain(force=False)
+        assert out is not None
+        # Cumulative — full content up to the break point.
+        assert out.endswith(".")
+        # Nothing pending after a clean emit.
+        assert chunker.has_pending() is False
+
+    def test_emits_on_paragraph_boundary(self):
+        from plugins.platforms.wecom.adapter import _BlockChunker
+
+        chunker = _BlockChunker(min_chars=20, max_chars=360)
+        text = "Part one of the answer text here\n\nPart two of the answer"
+        chunker.update(text)
+        out = chunker.drain(force=False)
+        assert out is not None
+        assert out.endswith("\n\n")
+        assert chunker.has_pending() is True  # part two still buffered
+
+    def test_hard_cap_forces_break_mid_sentence(self):
+        from plugins.platforms.wecom.adapter import _BlockChunker
+
+        chunker = _BlockChunker(min_chars=20, max_chars=50)
+        # Single run-on sentence with no terminators in the first 50 chars.
+        text = "a" * 80
+        chunker.update(text)
+        out = chunker.drain(force=False)
+        assert out is not None
+        # Hard cap fires — entire cumulative is emitted (the chunker doesn't
+        # split mid-buffer; it leaves the next slice to the next update).
+        assert out == text
+
+    def test_force_emits_remaining_buffer(self):
+        from plugins.platforms.wecom.adapter import _BlockChunker
+
+        chunker = _BlockChunker(min_chars=120, max_chars=360)
+        chunker.update("Tiny tail")
+        out = chunker.drain(force=True)
+        assert out == "Tiny tail"
+        assert chunker.has_pending() is False
+
+    def test_no_pending_after_complete_drain(self):
+        from plugins.platforms.wecom.adapter import _BlockChunker
+
+        chunker = _BlockChunker(min_chars=10, max_chars=360)
+        chunker.update("hello there world.")
+        assert chunker.drain(force=False) == "hello there world."
+        assert chunker.drain(force=True) is None  # nothing to emit
+
+    def test_does_not_break_on_decimal_or_ip_address(self):
+        """Sentence break requires whitespace after terminator — '1.2' must not split."""
+        from plugins.platforms.wecom.adapter import _BlockChunker
+
+        chunker = _BlockChunker(min_chars=10, max_chars=360)
+        chunker.update("version 1.2.3 is out and not yet released")
+        # No safe sentence terminator → wait.
+        assert chunker.drain(force=False) is None
+
+    def test_cumulative_update_does_not_shrink(self):
+        from plugins.platforms.wecom.adapter import _BlockChunker
+
+        chunker = _BlockChunker()
+        chunker.update("long initial cumulative content " * 5)
+        before = chunker._cumulative
+        chunker.update("short")  # caller bug — must not shrink high-water mark
+        assert chunker._cumulative == before
+
+
+class TestBlockStreamingFrameFlow:
+    """Integration: send_stream_frame uses the chunker to gate intermediate frames."""
+
+    def _mock_send_json_with_immediate_ack(self, adapter):
+        from plugins.platforms.wecom.adapter import APP_CMD_RESPONSE
+        sent_frames = []
+
+        async def mock_send(reply_req_id, body, **kwargs):
+            is_final = kwargs.get("is_final", False)
+            sent_frames.append({
+                "req_id": reply_req_id,
+                "body": body,
+                "is_final": is_final,
+            })
+            return {"errcode": 0, "errmsg": "ok"}
+
+        adapter._send_reply_queued = AsyncMock(side_effect=mock_send)
+        adapter._sent_frames = sent_frames
+
+    @pytest.mark.asyncio
+    async def test_short_text_buffered_no_frame_sent(self):
+        """A few tokens below min_chars do not produce an intermediate frame."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._ws = MagicMock(closed=False)
+        self._mock_send_json_with_immediate_ack(adapter)
+
+        ok = await adapter.send_stream_frame("Hello.", chat_id="chat-1")
+        assert ok is True
+        # Only the seed frame was sent — the 6-char body is below min_chars.
+        assert len(adapter._sent_frames) == 1
+        assert adapter._sent_frames[0]["body"]["stream"]["content"] == "<think></think>"
+
+    @pytest.mark.asyncio
+    async def test_finalize_force_drains_buffered_tail(self):
+        """Finalize emits whatever the chunker has, even sub-min_chars."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._ws = MagicMock(closed=False)
+        self._mock_send_json_with_immediate_ack(adapter)
+
+        # 1: buffer small text (no intermediate frame sent — only seed).
+        await adapter.send_stream_frame("Short.", chat_id="chat-1")
+        # 2: finalize with the same tiny tail — force-drains the chunker.
+        ok = await adapter.send_stream_frame(
+            "Short.", chat_id="chat-1", finalize=True,
+        )
+        assert ok is True
+        # seed + finalize = 2 frames.
+        assert len(adapter._sent_frames) == 2
+        final_frame = adapter._sent_frames[-1]
+        assert final_frame["body"]["stream"]["finish"] is True
+        # Content survives the force-drain.
+        assert final_frame["body"]["stream"]["content"].startswith("Short.")
+
+    @pytest.mark.asyncio
+    async def test_idle_flush_emits_partial_buffer(self):
+        """A buffered sub-min tail still ships after the idle-flush timer fires."""
+        from plugins.platforms.wecom.adapter import WeComAdapter, BLOCK_STREAM_IDLE_FLUSH
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._ws = MagicMock(closed=False)
+        self._mock_send_json_with_immediate_ack(adapter)
+
+        await adapter.send_stream_frame("Half a thought", chat_id="chat-1")
+        # Wait past the idle window so the timer fires and drains.
+        await asyncio.sleep(BLOCK_STREAM_IDLE_FLUSH + 0.1)
+        # seed + idle-flushed partial = 2 frames.
+        assert len(adapter._sent_frames) == 2
+        flushed = adapter._sent_frames[-1]
+        assert flushed["body"]["stream"]["content"] == "Half a thought"
+        assert flushed["body"]["stream"]["finish"] is False
+
+    @pytest.mark.asyncio
+    async def test_block_emits_on_sentence_boundary(self):
+        """Cumulative text crossing a sentence boundary triggers an immediate frame."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._ws = MagicMock(closed=False)
+        self._mock_send_json_with_immediate_ack(adapter)
+
+        # Build cumulative text that ends on a sentence boundary above min_chars.
+        text = "This is a complete first sentence with enough text. " * 4
+        await adapter.send_stream_frame(text, chat_id="chat-1")
+        # seed + sentence block = 2 frames.
+        assert len(adapter._sent_frames) == 2
+        block = adapter._sent_frames[-1]
+        # The chunker breaks immediately after the rightmost safe sentence
+        # terminator — i.e., right after the last ".", stripping the trailing
+        # space that the caller's cumulative blob included.
+        assert block["body"]["stream"]["content"] == text.rstrip()
+        assert block["body"]["stream"]["finish"] is False
+
+
+class TestFinalFrameAckTimeoutSemantics:
+    """Regression: final-frame ack timeout must not raise / trigger fallback.
+
+    See docs/rca-wecom-stream-final-ack-timeout-duplicate.md — when WeCom's
+    ack returns past the 5s window but the frame *was* delivered, raising
+    causes the upper layer to fall back to a normal markdown send and the
+    user sees the same content twice.  The fix: treat ack timeout as
+    success-with-uncertainty and let the caller mark the turn delivered.
+    """
+
+    @pytest.mark.asyncio
+    async def test_final_frame_ack_timeout_returns_success(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock(closed=False)
+        adapter._REPLY_ACK_TIMEOUT = 0.05  # snappy for the test
+        # _send_json succeeds but no ack ever arrives.
+        adapter._send_json = AsyncMock()
+
+        response = await adapter._send_reply_queued(
+            "req-1",
+            {"msgtype": "stream", "stream": {"id": "stream_x", "content": "final", "finish": True}},
+            is_final=True,
+        )
+
+        # Aligned-with-official semantics: success-shaped response with the
+        # ack_pending flag set so callers can log / observe but no exception.
+        assert response.get("errcode") == 0
+        assert response.get("ack_pending") is True
+        assert "ack_timeout" in response.get("errmsg", "")
+
+    @pytest.mark.asyncio
+    async def test_final_frame_send_failure_still_raises(self):
+        """Genuine send failures (network/serialization) must still propagate.
+
+        The ack-timeout relaxation only covers the case where the bytes went
+        out but the ack didn't return. If ``_send_json`` itself raises, the
+        upstream caller still needs to see the error.
+        """
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock(closed=False)
+        adapter._send_json = AsyncMock(side_effect=RuntimeError("ws closed"))
+
+        with pytest.raises(RuntimeError, match="ws closed"):
+            await adapter._send_reply_queued(
+                "req-1",
+                {"msgtype": "stream", "stream": {"id": "stream_x", "content": "x", "finish": True}},
+                is_final=True,
+            )

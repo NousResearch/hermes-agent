@@ -1013,15 +1013,15 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
 
     client = getattr(parent_agent, "client", None)
     if client is not None:
-        live_raw = getattr(client, "base_url", "")
-        if isinstance(live_raw, str):
-            live_url = _normalized_runtime_url(live_raw)
-            if (
-                live_url
-                and live_url != surface_url
-                and live_url.startswith(("http://", "https://"))
-            ):
-                return live_url
+        # OpenAI SDK exposes ``base_url`` as an ``httpx.URL``, not ``str`` —
+        # coerce so the comparison works regardless of the client's type.
+        live_url = _normalized_runtime_url(getattr(client, "base_url", ""))
+        if (
+            live_url
+            and live_url != surface_url
+            and live_url.startswith(("http://", "https://"))
+        ):
+            return live_url
 
     return fallback_base_url or None
 

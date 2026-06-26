@@ -7,21 +7,33 @@ import { useI18n } from '@/i18n'
 import { readDesktopDir, setDesktopFsRemotePicker } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
 
+// Backends can be POSIX (/usr/…) or Windows (C:\Users\…). Treat both separators
+// so navigation works against a Windows gateway — otherwise `..` runs
+// lastIndexOf('/') === -1 on a backslash path and slices off one character.
+function detectSep(path: string): '/' | '\\' {
+  return path.includes('\\') && !path.startsWith('/') ? '\\' : '/'
+}
+
 function clean(path: string) {
-  return path.replace(/\/+$/, '') || '/'
+  const stripped = path.replace(/[/\\]+$/, '')
+  return stripped || detectSep(path)
 }
 
 function parentDir(path: string) {
   const value = clean(path)
-  if (value === '/') {
-    return '/'
+  const idx = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'))
+  if (idx < 0) {
+    return value // bare drive ("C:") — nowhere higher to go
   }
-  const parent = value.slice(0, value.lastIndexOf('/'))
-  return parent || '/'
+  if (idx === 0) {
+    return '/' // POSIX root child, e.g. "/etc" -> "/"
+  }
+  const parent = value.slice(0, idx)
+  return /^[a-zA-Z]:$/.test(parent) ? `${parent}\\` : parent // keep "C:\" navigable
 }
 
 function pathName(path: string) {
-  return path.split('/').filter(Boolean).pop() || path
+  return path.split(/[/\\]/).filter(Boolean).pop() || path
 }
 
 interface PendingSelection {
@@ -90,13 +102,15 @@ export function RemoteFolderPicker() {
   }, [currentPath, pending])
 
   const crumbs = useMemo(() => {
-    const parts = clean(currentPath).split('/').filter(Boolean)
-    const out = [{ label: '/', path: '/' }]
+    const value = clean(currentPath)
+    const win = detectSep(value) === '\\'
+    const parts = value.split(/[/\\]/).filter(Boolean)
+    const out: Array<{ label: string; path: string }> = win ? [] : [{ label: '/', path: '/' }]
     let acc = ''
-    for (const part of parts) {
-      acc += `/${part}`
-      out.push({ label: part, path: acc })
-    }
+    parts.forEach((part, index) => {
+      acc = index === 0 ? (win ? part : `/${part}`) : `${acc}${win ? '\\' : '/'}${part}`
+      out.push({ label: part, path: win && index === 0 ? `${part}\\` : acc })
+    })
     return out
   }, [currentPath])
 
@@ -109,14 +123,14 @@ export function RemoteFolderPicker() {
 
   return (
     <Dialog onOpenChange={open => !open && close()} open={Boolean(pending)}>
-      <DialogContent className="max-w-lg gap-0 overflow-hidden p-0">
-        <div className="border-b border-border/70 px-4 py-3">
+      <DialogContent className="flex h-[min(34rem,85dvh)] max-w-lg flex-col gap-0 overflow-hidden p-0">
+        <div className="shrink-0 border-b border-border/70 px-4 py-3">
           <DialogTitle className="text-sm">{pending?.title || r.remotePickerTitle}</DialogTitle>
           <DialogDescription className="mt-1 text-xs">{r.remotePickerDescription}</DialogDescription>
         </div>
 
-        <div className="flex min-h-[22rem] flex-col">
-          <div className="flex flex-wrap items-center gap-1 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground">
             {crumbs.map((crumb, index) => (
               <button
                 className={cn('rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground', index === crumbs.length - 1 && 'text-foreground')}
@@ -130,7 +144,11 @@ export function RemoteFolderPicker() {
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            <FolderRow disabled={currentPath === '/'} name=".." onClick={() => setCurrentPath(parentDir(currentPath))} />
+            <FolderRow
+              disabled={parentDir(currentPath) === clean(currentPath)}
+              name=".."
+              onClick={() => setCurrentPath(parentDir(currentPath))}
+            />
             {loading ? (
               <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
                 <Codicon name="loading" size="0.8rem" spinning />
@@ -146,7 +164,7 @@ export function RemoteFolderPicker() {
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-2 border-t border-border/70 px-4 py-3">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border/70 px-4 py-3">
           <div className="min-w-0 truncate text-xs text-muted-foreground">{currentPath}</div>
           <div className="flex shrink-0 items-center gap-2">
             <Button onClick={() => close()} size="sm" variant="ghost">

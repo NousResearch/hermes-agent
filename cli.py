@@ -7419,6 +7419,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "api_key": self.api_key,
             "base_url": self.base_url,
             "api_mode": self.api_mode,
+            "_credential_pool": getattr(self, "_credential_pool", None),
         }
         self.model = result.new_model
         self.provider = result.target_provider
@@ -7434,6 +7435,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+        _result_pool = getattr(result, "credential_pool", None)
+        if result.provider_changed or _result_pool is not None:
+            self._credential_pool = _result_pool
 
         if self.agent is not None:
             try:
@@ -7444,6 +7448,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     base_url=result.base_url,
                     api_mode=result.api_mode,
                 )
+                if result.provider_changed or _result_pool is not None:
+                    self.agent._credential_pool = _result_pool
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client.
                 # Roll the CLI's own staged fields back too and abort the rest
@@ -7725,6 +7731,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "api_key": self.api_key,
             "base_url": self.base_url,
             "api_mode": self.api_mode,
+            "_credential_pool": getattr(self, "_credential_pool", None),
         }
         self.model = result.new_model
         self.provider = result.target_provider
@@ -7740,6 +7747,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+        _result_pool = getattr(result, "credential_pool", None)
+        if result.provider_changed or _result_pool is not None:
+            self._credential_pool = _result_pool
 
         # Apply to running agent (in-place swap)
         if self.agent is not None:
@@ -7751,6 +7761,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     base_url=result.base_url,
                     api_mode=result.api_mode,
                 )
+                if result.provider_changed or _result_pool is not None:
+                    self.agent._credential_pool = _result_pool
             except Exception as exc:
                 # Agent rolled itself back; roll the CLI back too and abort so a
                 # failed switch is a no-op rather than a dead session (#50163).

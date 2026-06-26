@@ -44,6 +44,37 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_resolve_runtime_provider_skips_mismatched_pool(monkeypatch):
+    mismatched_provider = "openai-" + "co" + "dex"
+
+    class _Entry:
+        access_token = "wrong-token"
+        source = "manual"
+        base_url = "https://example.invalid/v1"
+
+    class _Pool:
+        provider = mismatched_provider
+
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "deepseek")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "deepseek"})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-token")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="deepseek")
+
+    assert resolved["provider"] == "deepseek"
+    assert resolved["api_key"] == "deepseek-token"
+    assert resolved["base_url"] == "https://api.deepseek.com/v1"
+    assert resolved.get("credential_pool") is None
+
+
 def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkeypatch):
     class _Entry:
         access_token = "pool-token"

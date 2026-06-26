@@ -89,6 +89,29 @@ def test_switch_initializes_missing_fallback_attrs():
     assert agent._fallback_model is None
 
 
+def test_switch_to_new_provider_clears_mismatched_pool():
+    agent = _make_agent([])
+    old_pool = MagicMock()
+    old_pool.provider = "openai-" + "co" + "dex"
+    agent._credential_pool = old_pool
+
+    with (
+        patch.object(agent, "_create_openai_client", return_value=MagicMock()),
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+    ):
+        agent.switch_model(
+            new_model="deepseek-chat",
+            new_provider="deepseek",
+            api_key="deepseek-token",
+            base_url="https://api.deepseek.com/v1",
+            api_mode="chat_completions",
+        )
+
+    assert agent.provider == "deepseek"
+    assert agent.base_url == "https://api.deepseek.com/v1"
+    assert agent._credential_pool is None
+
+
 def test_switch_within_same_provider_preserves_chain():
     chain = [{"provider": "openrouter", "model": "x-ai/grok-4"}]
     agent = _make_agent(chain)

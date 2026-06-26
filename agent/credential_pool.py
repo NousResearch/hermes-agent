@@ -444,6 +444,31 @@ def get_pool_strategy(provider: str) -> str:
     return STRATEGY_FILL_FIRST
 
 
+def credential_pool_matches_provider(
+    pool_or_provider: Any,
+    provider: Optional[str],
+    *,
+    base_url: Optional[str] = None,
+) -> bool:
+    raw_pool_provider = getattr(pool_or_provider, "provider", None)
+    if raw_pool_provider is None:
+        raw_pool_provider = pool_or_provider if isinstance(pool_or_provider, str) else provider
+    pool_provider = raw_pool_provider or ""
+    pool_provider = str(pool_provider).strip().lower()
+    provider_norm = str(provider or "").strip().lower()
+    if not pool_provider or not provider_norm:
+        return False
+    if pool_provider == provider_norm:
+        return True
+    if provider_norm == "custom" and pool_provider.startswith(CUSTOM_POOL_PREFIX):
+        try:
+            matched_pool = get_custom_provider_pool_key(base_url or "")
+        except Exception:
+            matched_pool = None
+        return str(matched_pool or "").strip().lower() == pool_provider
+    return False
+
+
 DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 1
 
 

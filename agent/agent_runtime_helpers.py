@@ -1494,6 +1494,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_anthropic_base_url",
             "_is_anthropic_oauth",
             "_config_context_length",
+            "_credential_pool",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
@@ -1522,6 +1523,20 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent._transport_cache.clear()
         if api_key:
             agent.api_key = api_key
+
+        existing_pool = getattr(agent, "_credential_pool", None)
+        if existing_pool is not None:
+            try:
+                from agent.credential_pool import credential_pool_matches_provider
+
+                if not credential_pool_matches_provider(
+                    existing_pool,
+                    agent.provider,
+                    base_url=agent.base_url,
+                ):
+                    agent._credential_pool = None
+            except Exception:
+                agent._credential_pool = None
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":

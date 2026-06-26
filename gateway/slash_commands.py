@@ -1273,6 +1273,9 @@ class GatewaySlashCommandsMixin:
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
                                 )
+                                _result_pool = getattr(result, "credential_pool", None)
+                                if result.provider_changed or _result_pool is not None:
+                                    cached_entry[0]._credential_pool = _result_pool
                             except Exception as exc:
                                 # The in-place swap rolled the agent back to the
                                 # OLD working model/client and re-raised.  Abort
@@ -1501,6 +1504,9 @@ class GatewaySlashCommandsMixin:
                         base_url=result.base_url,
                         api_mode=result.api_mode,
                     )
+                    _result_pool = getattr(result, "credential_pool", None)
+                    if result.provider_changed or _result_pool is not None:
+                        cached_entry[0]._credential_pool = _result_pool
                 except Exception as exc:
                     # In-place swap rolled the agent back to the OLD working
                     # model/client and re-raised.  Abort the commit: skip DB

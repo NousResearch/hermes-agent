@@ -6,6 +6,7 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
+import re
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
@@ -51,7 +52,7 @@ def _title_language() -> str:
 def generate_title(
     user_message: str,
     assistant_response: str,
-    timeout: Optional[float] = None,
+    timeout: float = 30.0,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
 ) -> Optional[str]:
@@ -87,15 +88,36 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        content = response.choices[0].message.content or ""
-        # Strip thinking/reasoning blocks that think-enabled models
-        # (MiniMax M2.7, DeepSeek, etc.) emit even for simple prompts like
-        # title generation. Without this the raw <think>...</think> XML
-        # leaks into session titles. Reuses the canonical scrubber so all
-        # tag variants (unterminated blocks, orphan closes, mixed case)
-        # are handled, not just a single literal <think> pair.
-        from agent.agent_runtime_helpers import strip_think_blocks
-        title = strip_think_blocks(None, content).strip()
+        msg = response.choices[0].message
+        title = (msg.content or "").strip()
+        # Some reasoning models (e.g. mimo-v2-pro) emit their answer into the
+        # reasoning field instead of content when the token budget is tight,
+        # leaving content empty -> a silently untitled session. Fall back to
+        # extracting a title candidate from the reasoning text.
+        if not title:
+            reasoning = getattr(msg, "reasoning", None) or getattr(
+                msg, "reasoning_content", None
+            )
+            if reasoning:
+                # The model often lists quoted candidates
+                # (e.g. - "Weather Inquiry" - "Sunny Day Forecast"); the last
+                # quoted candidate is usually its pick.
+                quoted = re.findall(r'"([^"]{3,80})"', reasoning)
+                if quoted:
+                    title = quoted[-1]
+                else:
+                    # Fall back to the last title-like line (short, no trailing
+                    # sentence punctuation), stripped of markdown bullets.
+                    lines = [
+                        l.strip().lstrip("-*\u2022").strip()
+                        for l in reasoning.strip().split("\n")
+                        if l.strip()
+                    ]
+                    candidates = [
+                        l for l in lines
+                        if 3 <= len(l) <= 80 and not l.endswith((".", ",", ":"))
+                    ]
+                    title = candidates[-1] if candidates else (lines[-1] if lines else "")
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
         if title.lower().startswith("title:"):

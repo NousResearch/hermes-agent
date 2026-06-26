@@ -1,5 +1,6 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -22,6 +23,38 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("help me fix this import", "Sure, let me check...")
             assert title == "Debugging Python Import Errors"
+
+    def test_reasoning_fallback_when_content_empty_quoted(self):
+        """Reasoning models (e.g. mimo-v2-pro) sometimes emit the title into
+        the reasoning field with empty content, yielding a silently untitled
+        session. We must recover a candidate from reasoning. (#13211)"""
+        msg = SimpleNamespace(
+            content="",
+            reasoning='I could call this - "Weather Inquiry" - "Sunny Day Forecast"',
+        )
+        mock_response = SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("what's the weather", "It's sunny today.")
+        assert title == "Sunny Day Forecast"
+
+    def test_reasoning_fallback_when_content_empty_lines(self):
+        """No quoted candidates -> last title-like line is used."""
+        msg = SimpleNamespace(
+            content="",
+            reasoning="Let me think about a good title.\n- Docker Setup Guide",
+        )
+        mock_response = SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("how do I set up docker", "First install...")
+        assert title == "Docker Setup Guide"
+
+    def test_reasoning_fallback_not_used_when_content_present(self):
+        """When content is non-empty it wins; reasoning is ignored."""
+        msg = SimpleNamespace(content="Real Title", reasoning='"Ignored Candidate"')
+        mock_response = SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("q", "a")
+        assert title == "Real Title"
 
     def test_default_prompt_matches_user_language(self):
         mock_response = MagicMock()

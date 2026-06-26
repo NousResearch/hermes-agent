@@ -56,6 +56,10 @@ _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational",
     "non_conversational_history",
 })
+_DISCORD_THREADED_RUN_PREFIX_RE = re.compile(
+    r"^\s*(?:discord\s+thread|threaded\s+run|thread|new\s+thread|start\s+thread)\s*:\s*(?P<text>\S[\s\S]*)$",
+    re.IGNORECASE,
+)
 # Upgrade-bridge fallback only. The primary mechanism is the persisted
 # non-conversational message-ID set populated from explicitly marked sends
 # (metadata["non_conversational"]). These regexes exist solely to recognize
@@ -4611,6 +4615,82 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return None
 
+    def _discord_threaded_runs_config(self) -> dict:
+        raw = self.config.extra.get("threaded_runs")
+        return raw if isinstance(raw, dict) else {}
+
+    def _discord_threaded_runs_enabled(self) -> bool:
+        raw = os.getenv("DISCORD_THREADED_RUNS_ENABLED")
+        if raw is None:
+            raw = self._discord_threaded_runs_config().get("enabled", False)
+        return str(raw).strip().lower() in {"true", "1", "yes", "on"}
+
+    def _discord_threaded_run_prefixes_enabled(self) -> bool:
+        if not self._discord_threaded_runs_enabled():
+            return False
+        raw = os.getenv("DISCORD_THREADED_RUN_PREFIXES")
+        if raw is None:
+            raw = self._discord_threaded_runs_config().get("explicit_prefixes", True)
+        return str(raw).strip().lower() not in {"false", "0", "no", "off"}
+
+    def _parse_discord_threaded_run(self, text: str) -> Optional[str]:
+        if not self._discord_threaded_run_prefixes_enabled():
+            return None
+        match = _DISCORD_THREADED_RUN_PREFIX_RE.match(text or "")
+        if not match:
+            return None
+        return match.group("text").strip()
+
+    def _discord_auto_thread_profile_channels(self) -> set[str]:
+        raw = os.getenv("DISCORD_AUTO_THREAD_PROFILE_CHANNELS")
+        if raw is None:
+            raw = self._discord_threaded_runs_config().get("auto_thread_profile_channels", [])
+        if isinstance(raw, bool):
+            return {"*"} if raw else set()
+        if isinstance(raw, (list, tuple, set)):
+            values = [str(v).strip() for v in raw]
+        else:
+            text = str(raw or "").strip()
+            if text.lower() in {"", "false", "0", "no", "off", "none"}:
+                return set()
+            if text.lower() in {"true", "1", "yes", "on", "*"}:
+                return {"*"}
+            values = [part.strip() for part in text.split(",")]
+        return {value for value in values if value}
+
+    def _should_auto_thread_profile_channel(
+        self,
+        *,
+        channel_ids: set[str],
+        text: str,
+        is_thread: bool,
+        is_dm: bool,
+    ) -> bool:
+        if not self._discord_threaded_runs_enabled():
+            return False
+        if is_thread or is_dm:
+            return False
+        if not (text or "").strip() or (text or "").lstrip().startswith("/"):
+            return False
+        no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
+        no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
+        if "*" in no_thread_channels or bool(channel_ids & no_thread_channels):
+            return False
+        profile_channels = self._discord_auto_thread_profile_channels()
+        return "*" in profile_channels or bool(channel_ids & profile_channels)
+
+    async def _create_discord_threaded_run_from_message(
+        self,
+        message: 'DiscordMessage',
+        task_text: str,
+    ) -> Optional[Any]:
+        original_content = message.content
+        try:
+            message.content = task_text
+            return await self._auto_create_thread(message)
+        finally:
+            message.content = original_content
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,
@@ -5216,6 +5296,7 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        channel_ids = set()
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -5266,11 +5347,41 @@ class DiscordAdapter(BasePlatformAdapter):
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
                     return
+
+        discord_threaded_run_text = self._parse_discord_threaded_run(normalized_content)
+        if discord_threaded_run_text and is_thread:
+            normalized_content = discord_threaded_run_text
+        profile_channel_threaded_run_text = (
+            normalized_content
+            if self._should_auto_thread_profile_channel(
+                channel_ids=channel_ids,
+                text=normalized_content,
+                is_thread=is_thread,
+                is_dm=isinstance(message.channel, discord.DMChannel),
+            )
+            else None
+        )
+
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
+        if (
+            (discord_threaded_run_text or profile_channel_threaded_run_text)
+            and not is_thread
+            and not isinstance(message.channel, discord.DMChannel)
+        ):
+            threaded_run_text = discord_threaded_run_text or profile_channel_threaded_run_text or ""
+            thread = await self._create_discord_threaded_run_from_message(message, threaded_run_text)
+            if thread:
+                parent_channel_id = str(message.channel.id)
+                is_thread = True
+                thread_id = str(thread.id)
+                auto_threaded_channel = thread
+                normalized_content = threaded_run_text
+                self._threads.mark(thread_id)
+
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
@@ -7035,9 +7146,13 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
 
     Env vars take precedence over YAML — every assignment is guarded by
     ``not os.getenv(...)`` so explicit env vars survive a config.yaml
-    update.  Returns ``None`` because no extras are seeded into
-    ``PlatformConfig.extra`` directly (everything flows through env).
+    update.  Returns selected non-env settings for ``PlatformConfig.extra``.
     """
+    seeded_extra = {}
+    threaded_runs = discord_cfg.get("threaded_runs")
+    if isinstance(threaded_runs, dict):
+        seeded_extra["threaded_runs"] = dict(threaded_runs)
+
     if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
@@ -7117,7 +7232,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
         _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
         os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
-    return None  # all settings flow through env; nothing to merge into extras
+    return seeded_extra or None
 
 
 def _is_connected(config) -> bool:

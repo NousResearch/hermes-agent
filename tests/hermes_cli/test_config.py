@@ -1079,6 +1079,14 @@ class TestDiscordChannelPromptsConfig:
         assert raw["discord"]["channel_prompts"] == {}
 
 
+class TestDiscordThreadedRunsConfig:
+    def test_default_config_disables_threaded_runs(self):
+        threaded_runs = DEFAULT_CONFIG["discord"]["threaded_runs"]
+        assert threaded_runs["enabled"] is False
+        assert threaded_runs["explicit_prefixes"] is True
+        assert threaded_runs["auto_thread_profile_channels"] == []
+
+
 class TestUserMessagePreviewConfig:
     def test_default_config_preview_line_counts(self):
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]

@@ -16,6 +16,7 @@ from tests.e2e.conftest import (
     get_response_text,
     make_discord_message,
     make_fake_dm_channel,
+    make_fake_text_channel,
     make_fake_thread,
 )
 
@@ -102,6 +103,123 @@ class TestAutoThreadingPreservesCommand:
         await dispatch(discord_adapter, msg)
 
         msg.create_thread.assert_awaited_once()
+        response = get_response_text(discord_adapter)
+        assert response is not None
+        assert "/new" in response
+
+
+class TestDiscordThreadedRuns:
+    async def test_thread_prefix_creates_discord_thread_and_dispatches_inside_it(
+        self, discord_adapter, bot_user, monkeypatch
+    ):
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+        discord_adapter.config.extra["threaded_runs"] = {
+            "enabled": True,
+            "explicit_prefixes": True,
+            "auto_thread_profile_channels": [],
+        }
+        fake_thread = make_fake_thread(thread_id=90002, name="investigate")
+        discord_adapter._text_batch_delay_seconds = 0
+        discord_adapter.handle_message = AsyncMock()
+        msg = make_discord_message(
+            content=f"<@{BOT_USER_ID}> thread: investigate Market Weather routing",
+            mentions=[bot_user],
+        )
+        msg.create_thread = AsyncMock(return_value=fake_thread)
+
+        await discord_adapter._handle_message(msg)
+
+        msg.create_thread.assert_awaited_once()
+        create_kwargs = msg.create_thread.await_args.kwargs
+        assert create_kwargs["name"] == "investigate Market Weather routing"
+        discord_adapter.handle_message.assert_awaited_once()
+        event = discord_adapter.handle_message.await_args.args[0]
+        assert event.text == "investigate Market Weather routing"
+        assert event.source.chat_type == "thread"
+        assert event.source.chat_id == "90002"
+        assert event.source.thread_id == "90002"
+
+    async def test_thread_prefix_remains_inline_when_threaded_runs_disabled(
+        self, discord_adapter, bot_user, monkeypatch
+    ):
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+        discord_adapter.config.extra["threaded_runs"] = {
+            "enabled": False,
+            "explicit_prefixes": True,
+            "auto_thread_profile_channels": [],
+        }
+        discord_adapter._text_batch_delay_seconds = 0
+        discord_adapter.handle_message = AsyncMock()
+        msg = make_discord_message(
+            content=f"<@{BOT_USER_ID}> thread: handle this inline",
+            mentions=[bot_user],
+        )
+
+        await discord_adapter._handle_message(msg)
+
+        msg.create_thread.assert_not_awaited()
+        discord_adapter.handle_message.assert_awaited_once()
+        event = discord_adapter.handle_message.await_args.args[0]
+        assert event.text == "thread: handle this inline"
+        assert event.source.chat_type == "group"
+        assert event.source.thread_id is None
+
+    async def test_profile_channel_message_auto_threads_when_configured(
+        self, discord_adapter, bot_user, monkeypatch
+    ):
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+        profile_channel = make_fake_text_channel(
+            channel_id=123456789012345678,
+            name="agent-lobby",
+        )
+        discord_adapter.config.extra["threaded_runs"] = {
+            "enabled": True,
+            "explicit_prefixes": True,
+            "auto_thread_profile_channels": ["123456789012345678"],
+        }
+        fake_thread = make_fake_thread(thread_id=90003, name="review latest", parent=profile_channel)
+        discord_adapter._text_batch_delay_seconds = 0
+        discord_adapter.handle_message = AsyncMock()
+        msg = make_discord_message(
+            content=f"<@{BOT_USER_ID}> review latest wake",
+            channel=profile_channel,
+            mentions=[bot_user],
+        )
+        msg.create_thread = AsyncMock(return_value=fake_thread)
+
+        await discord_adapter._handle_message(msg)
+
+        msg.create_thread.assert_awaited_once()
+        discord_adapter.handle_message.assert_awaited_once()
+        event = discord_adapter.handle_message.await_args.args[0]
+        assert event.text == "review latest wake"
+        assert event.source.chat_type == "thread"
+        assert event.source.chat_id == "90003"
+        assert event.source.thread_id == "90003"
+        assert event.source.parent_chat_id == "123456789012345678"
+
+    async def test_profile_channel_slash_command_stays_inline(
+        self, discord_adapter, bot_user, monkeypatch
+    ):
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+        profile_channel = make_fake_text_channel(
+            channel_id=123456789012345678,
+            name="agent-lobby",
+        )
+        discord_adapter.config.extra["threaded_runs"] = {
+            "enabled": True,
+            "explicit_prefixes": True,
+            "auto_thread_profile_channels": ["123456789012345678"],
+        }
+        msg = make_discord_message(
+            content=f"<@{BOT_USER_ID}> /help",
+            channel=profile_channel,
+            mentions=[bot_user],
+        )
+
+        await dispatch(discord_adapter, msg)
+
+        msg.create_thread.assert_not_awaited()
         response = get_response_text(discord_adapter)
         assert response is not None
         assert "/new" in response

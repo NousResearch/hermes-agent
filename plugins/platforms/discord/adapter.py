@@ -800,6 +800,25 @@ class DiscordAdapter(BasePlatformAdapter):
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
 
+    def is_alive(self) -> bool:
+        """Treat a finished bot task / closed client as a dead connection."""
+        if not getattr(self, "_running", False):
+            return False
+
+        bot_task = getattr(self, "_bot_task", None)
+        if bot_task is not None and bot_task.done() and not getattr(self, "_disconnecting", False):
+            return False
+
+        client = getattr(self, "_client", None)
+        if client is None:
+            return False
+        try:
+            if self._ready_event.is_set() and client.is_closed():
+                return False
+        except Exception:
+            return False
+        return True
+
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
 

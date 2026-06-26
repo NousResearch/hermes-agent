@@ -21,6 +21,7 @@ class StubAdapter(BasePlatformAdapter):
         succeed=True,
         fatal_error=None,
         fatal_retryable=True,
+        alive=True,
     ):
         super().__init__(PlatformConfig(enabled=True, token="test"), platform)
         self._succeed = succeed
@@ -29,6 +30,7 @@ class StubAdapter(BasePlatformAdapter):
         # Records the is_reconnect value of every connect() call so tests can
         # assert that the watcher distinguishes reconnect from cold boot (#46621).
         self.connect_calls: list[bool] = []
+        self._alive = alive
 
     async def connect(self, *, is_reconnect: bool = False):
         self.connect_calls.append(is_reconnect)
@@ -49,6 +51,9 @@ class StubAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
 
+    def is_alive(self):
+        return self._alive
+
 
 def _make_runner():
     """Create a minimal GatewayRunner via object.__new__ to skip __init__."""
@@ -62,6 +67,7 @@ def _make_runner():
     runner._exit_with_failure = False
     runner._exit_cleanly = False
     runner._failed_platforms = {}
+    runner._platform_liveness_failures = {}
     runner.adapters = {}
     runner.delivery_router = MagicMock()
     runner._running_agents = {}
@@ -481,10 +487,97 @@ class TestPlatformReconnectWatcher:
 
             await run_one_iteration()
 
-        # Paused platform stays queued and was never touched
+
+class TestPlatformLivenessWatchdog:
+    @pytest.mark.asyncio
+    async def test_watchdog_routes_dead_adapter_through_fatal_handler(self):
+        runner = _make_runner()
+        runner.config = GatewayConfig.from_dict(
+            {
+                "platforms": {"telegram": {"enabled": True, "token": "test"}},
+                "liveness_watchdog": {"enabled": True, "interval": 1, "failure_threshold": 2},
+            }
+        )
+        adapter = StubAdapter(alive=False)
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        runner.delivery_router.adapters = runner.adapters
+        runner._handle_adapter_fatal_error = AsyncMock(side_effect=runner._handle_adapter_fatal_error)
+
+        real_sleep = asyncio.sleep
+
+        async def run_two_ticks():
+            runner._running = True
+            call_count = 0
+
+            async def fake_sleep(_n):
+                nonlocal call_count
+                call_count += 1
+                if call_count > 2:
+                    runner._running = False
+                await real_sleep(0)
+
+            with patch("asyncio.sleep", side_effect=fake_sleep):
+                await runner._platform_liveness_watchdog()
+
+        await run_two_ticks()
+
+        runner._handle_adapter_fatal_error.assert_awaited_once()
+        assert adapter.fatal_error_code == "gateway_liveness_failed"
         assert Platform.TELEGRAM in runner._failed_platforms
-        assert runner._failed_platforms[Platform.TELEGRAM]["paused"] is True
-        mock_create.assert_not_called()
+        assert Platform.TELEGRAM not in runner.adapters
+
+    @pytest.mark.asyncio
+    async def test_watchdog_clears_consecutive_failure_counter_after_recovery(self):
+        runner = _make_runner()
+        runner.config = GatewayConfig.from_dict(
+            {
+                "platforms": {"telegram": {"enabled": True, "token": "test"}},
+                "liveness_watchdog": {"enabled": True, "interval": 1, "failure_threshold": 2},
+            }
+        )
+        adapter = StubAdapter(alive=False)
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        real_sleep = asyncio.sleep
+
+        async def run_three_ticks():
+            runner._running = True
+            call_count = 0
+
+            async def fake_sleep(_n):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 2:
+                    adapter._alive = True
+                if call_count > 3:
+                    runner._running = False
+                await real_sleep(0)
+
+            with patch("asyncio.sleep", side_effect=fake_sleep):
+                await runner._platform_liveness_watchdog()
+
+        await run_three_ticks()
+
+        assert runner._platform_liveness_failures == {}
+        assert Platform.TELEGRAM in runner.adapters
+        assert Platform.TELEGRAM not in runner._failed_platforms
+
+    def test_gateway_config_parses_liveness_watchdog(self):
+        cfg = GatewayConfig.from_dict(
+            {
+                "gateway": {
+                    "liveness_watchdog": {
+                        "enabled": False,
+                        "interval": 45,
+                        "failure_threshold": 3,
+                    }
+                }
+            }
+        )
+
+        assert cfg.liveness_watchdog.enabled is False
+        assert cfg.liveness_watchdog.interval == 45
+        assert cfg.liveness_watchdog.failure_threshold == 3
 
     @pytest.mark.asyncio
     async def test_reconnect_skips_when_not_time_yet(self):

@@ -2683,6 +2683,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
+        self._platform_liveness_failures: Dict[Platform, int] = {}
 
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
@@ -6216,6 +6217,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ", ".join(p.value for p in self._failed_platforms),
             )
         asyncio.create_task(self._platform_reconnect_watcher())
+        asyncio.create_task(self._platform_liveness_watchdog())
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the
@@ -6852,6 +6854,72 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    async def _platform_liveness_watchdog(self) -> None:
+        """Periodically check live adapters and requeue unhealthy ones."""
+        cfg = getattr(self.config, "liveness_watchdog", None)
+        if cfg is None or not getattr(cfg, "enabled", True):
+            return
+
+        interval = max(float(getattr(cfg, "interval", 120.0) or 120.0), 1.0)
+        failure_threshold = max(int(getattr(cfg, "failure_threshold", 2) or 2), 1)
+
+        while self._running:
+            await asyncio.sleep(interval)
+            if not self._running:
+                return
+
+            for platform, adapter in list(self.adapters.items()):
+                if not self._running:
+                    return
+                if self._failed_platforms.get(platform):
+                    self._platform_liveness_failures.pop(platform, None)
+                    continue
+                if getattr(adapter, "has_fatal_error", False):
+                    self._platform_liveness_failures.pop(platform, None)
+                    continue
+
+                try:
+                    alive = bool(adapter.is_alive())
+                except Exception as exc:
+                    alive = False
+                    logger.warning(
+                        "Liveness check for %s raised %s; treating adapter as unhealthy",
+                        platform.value,
+                        exc,
+                        exc_info=True,
+                    )
+
+                if alive:
+                    self._platform_liveness_failures.pop(platform, None)
+                    continue
+
+                failures = self._platform_liveness_failures.get(platform, 0) + 1
+                self._platform_liveness_failures[platform] = failures
+                if failures < failure_threshold:
+                    logger.warning(
+                        "Liveness watchdog: %s unhealthy (%d/%d consecutive failures)",
+                        platform.value,
+                        failures,
+                        failure_threshold,
+                    )
+                    continue
+
+                self._platform_liveness_failures.pop(platform, None)
+                message = (
+                    "Gateway liveness watchdog detected an unresponsive adapter"
+                )
+                logger.error(
+                    "Liveness watchdog: %s failed %d consecutive health checks; queuing reconnect",
+                    platform.value,
+                    failures,
+                )
+                adapter._set_fatal_error(
+                    "gateway_liveness_failed",
+                    message,
+                    retryable=True,
+                )
+                await self._handle_adapter_fatal_error(adapter)
 
     async def stop(
         self,

@@ -452,6 +452,34 @@ class StreamingConfig:
         )
 
 
+@dataclass
+class LivenessWatchdogConfig:
+    """Gateway-level adapter liveness watchdog settings."""
+
+    enabled: bool = True
+    interval: float = 120.0
+    failure_threshold: int = 2
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "interval": self.interval,
+            "failure_threshold": self.failure_threshold,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "LivenessWatchdogConfig":
+        if not data:
+            return cls()
+        interval = max(_coerce_float(data.get("interval"), 120.0), 1.0)
+        failure_threshold = max(_coerce_int(data.get("failure_threshold"), 2), 1)
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), True),
+            interval=interval,
+            failure_threshold=failure_threshold,
+        )
+
+
 # -----------------------------------------------------------------------------
 # Built-in platform connection checkers
 # -----------------------------------------------------------------------------
@@ -545,6 +573,7 @@ class GatewayConfig:
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
+    liveness_watchdog: LivenessWatchdogConfig = field(default_factory=LivenessWatchdogConfig)
 
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
@@ -656,6 +685,7 @@ class GatewayConfig:
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "liveness_watchdog": self.liveness_watchdog.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
     
@@ -705,6 +735,11 @@ class GatewayConfig:
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
             multiplex_profiles = nested_gateway.get("multiplex_profiles")
+        liveness_watchdog_data = data.get("liveness_watchdog")
+        if not isinstance(liveness_watchdog_data, dict):
+            liveness_watchdog_data = nested_gateway.get("liveness_watchdog")
+        if not isinstance(liveness_watchdog_data, dict):
+            liveness_watchdog_data = {}
         if "max_concurrent_sessions" in data:
             max_concurrent_raw = data.get("max_concurrent_sessions")
             max_concurrent_key = "max_concurrent_sessions"
@@ -745,6 +780,7 @@ class GatewayConfig:
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            liveness_watchdog=LivenessWatchdogConfig.from_dict(liveness_watchdog_data),
             session_store_max_age_days=session_store_max_age_days,
         )
 
@@ -856,6 +892,8 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
 
             gateway_section = yaml_cfg.get("gateway")
+            if isinstance(gateway_section, dict):
+                gw_data["gateway"] = gateway_section
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
                 gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
 

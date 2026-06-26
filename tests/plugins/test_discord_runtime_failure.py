@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -57,3 +57,25 @@ async def test_discord_bot_task_done_ignored_during_intentional_disconnect():
 
     assert adapter.has_fatal_error is False
     adapter._notify_fatal_error.assert_not_awaited()
+
+
+def test_discord_is_alive_false_when_bot_task_dies_after_ready():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="token"))
+    adapter._running = True
+    adapter._ready_event.set()
+    done_task = MagicMock()
+    done_task.done.return_value = True
+    adapter._bot_task = done_task
+    adapter._client = type("Client", (), {"is_closed": lambda self: False})()
+
+    assert adapter.is_alive() is False
+
+
+def test_discord_is_alive_false_when_ready_client_is_closed():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="token"))
+    adapter._running = True
+    adapter._ready_event.set()
+    adapter._bot_task = None
+    adapter._client = type("Client", (), {"is_closed": lambda self: True})()
+
+    assert adapter.is_alive() is False

@@ -2575,6 +2575,15 @@ class BasePlatformAdapter(ABC):
     def is_connected(self) -> bool:
         """Check if adapter is currently connected."""
         return self._running
+
+    def is_alive(self) -> bool:
+        """Return True when the adapter still appears healthy.
+
+        Default implementation is intentionally conservative: if an adapter has
+        marked itself running, the gateway treats it as alive unless the
+        adapter opts into a deeper check.
+        """
+        return self.is_connected()
     
     def set_message_handler(self, handler: MessageHandler) -> None:
         """

@@ -75,6 +75,9 @@ def build_torben_gtm_radar_adapter(
             "scanned_count": radar.get("scanned_count", 0),
             "selected_count": 0,
             "suppressed_duplicate_count": max(0, len(findings) - len(unseen)),
+            "llm_judge": radar.get("llm_judge") if isinstance(radar.get("llm_judge"), dict) else {},
+            "quality_gate": radar.get("quality_gate") if isinstance(radar.get("quality_gate"), dict) else {},
+            "cron_audit": radar.get("cron_audit") if isinstance(radar.get("cron_audit"), dict) else {},
             "public_actions_taken": 0,
             "external_mutations": 0,
         }
@@ -104,6 +107,9 @@ def build_torben_gtm_radar_adapter(
         "findings": selected,
         "actions": [action.to_dict() for action in actions],
         "text": text,
+        "llm_judge": radar.get("llm_judge") if isinstance(radar.get("llm_judge"), dict) else {},
+        "quality_gate": radar.get("quality_gate") if isinstance(radar.get("quality_gate"), dict) else {},
+        "cron_audit": radar.get("cron_audit") if isinstance(radar.get("cron_audit"), dict) else {},
         "public_actions_taken": 0,
         "external_mutations": 0,
         "delivery": {
@@ -127,6 +133,9 @@ def render_torben_gtm_radar_text(
 ) -> str:
     finding_rows = list(findings)
     action_rows = list(actions)
+    audit = radar.get("cron_audit") if isinstance(radar.get("cron_audit"), dict) else {}
+    judge = radar.get("llm_judge") if isinstance(radar.get("llm_judge"), dict) else {}
+    judge_line = _judge_line(audit=audit, judge=judge)
     lines = [
         f"Torben / GTM Radar / {now:%Y-%m-%d %H:%M UTC}",
         "",
@@ -134,6 +143,7 @@ def render_torben_gtm_radar_text(
             f"Magnus reviewed {int(radar.get('scanned_count') or 0)} source item(s) "
             f"and found {len(finding_rows)} signal(s) worth acting on."
         ),
+        judge_line,
         x_algorithm_brief_line(),
         "Nothing has been posted, replied to, scheduled, or sent.",
         "",
@@ -220,6 +230,10 @@ def _stage_action(
             "thesis": finding.get("thesis"),
             "angle": finding.get("angle"),
             "image_direction": finding.get("image_direction"),
+            "llm_judged": bool(finding.get("llm_judged")),
+            "llm_score": finding.get("llm_score"),
+            "llm_reason": finding.get("llm_reason"),
+            "quality_gate": finding.get("quality_gate") if isinstance(finding.get("quality_gate"), dict) else {},
             "article_creation_contract": ARTICLE_CREATION_CONTRACT,
             "x_algorithm_signal_lens": x_algorithm_signal_lens(),
             "reply_actions": ["draft", "source", "hold"],
@@ -257,6 +271,10 @@ def _preview_action(*, finding: dict[str, Any], rank: int, now: datetime) -> Act
             "source_url": url,
             "content_route": finding.get("content_route"),
             "pillar": finding.get("pillar"),
+            "llm_judged": bool(finding.get("llm_judged")),
+            "llm_score": finding.get("llm_score"),
+            "llm_reason": finding.get("llm_reason"),
+            "quality_gate": finding.get("quality_gate") if isinstance(finding.get("quality_gate"), dict) else {},
             "article_creation_contract": ARTICLE_CREATION_CONTRACT,
             "x_algorithm_signal_lens": x_algorithm_signal_lens(),
             "reply_actions": ["draft", "source", "hold"],
@@ -272,6 +290,16 @@ def _finding_key(finding: dict[str, Any]) -> str:
         if value:
             return value
     return "finding:" + _normalize(str(finding.get("title") or "untitled"))
+
+
+def _judge_line(*, audit: dict[str, Any], judge: dict[str, Any]) -> str:
+    llm_invoked = bool(audit.get("llm_invoked") if audit else judge.get("invoked"))
+    model = str(audit.get("model") or judge.get("model") or "unknown").strip() or "unknown"
+    x_search = bool(audit.get("x_search_used") if audit else judge.get("x_search_used"))
+    status = str(judge.get("status") or ("accepted" if llm_invoked else "not_invoked"))
+    if llm_invoked:
+        return f"LLM judge: Grok ran ({model}); x_search_used={str(x_search).lower()}; status={status}."
+    return "LLM judge: not invoked; treat this as deterministic fallback, not final GTM signal."
 
 
 def _load_state(path: Path) -> dict[str, Any]:

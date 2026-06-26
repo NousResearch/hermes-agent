@@ -64,7 +64,20 @@ def run_gtm_engagement_radar(
     state_file = Path(state_path)
     topics = select_engagement_topics(radar, max_topics=max_topics)
     if not topics:
-        return _silent_payload(now=now, reason="no GTM topics available")
+        payload = _silent_payload(now=now, reason="no GTM topics available")
+        payload.update(
+            _audit_fields(
+                discovery={},
+                topic_count=0,
+                opportunity_count=0,
+                selected_count=0,
+                wake_agent=False,
+                wake_reason="no_gtm_topics_available",
+                llm_invoked=False,
+            )
+        )
+        payload.update({"topic_count": 0, "opportunity_count": 0, "selected_count": 0})
+        return payload
 
     discover_fn = discover or discover_x_response_opportunities
     discovery = discover_fn(topics=topics, max_opportunities=max_opportunities, now=now)
@@ -83,9 +96,21 @@ def run_gtm_engagement_radar(
             {
                 "topic_count": len(topics),
                 "opportunity_count": len(opportunities),
+                "selected_count": 0,
                 "suppressed_duplicate_count": len(opportunities),
                 "discovery": _safe_discovery_meta(discovery),
             }
+        )
+        payload.update(
+            _audit_fields(
+                discovery=discovery,
+                topic_count=len(topics),
+                opportunity_count=len(opportunities),
+                selected_count=0,
+                wake_agent=False,
+                wake_reason="no_new_response_opportunities",
+                llm_invoked=True,
+            )
         )
         return payload
 
@@ -118,6 +143,17 @@ def run_gtm_engagement_radar(
         "public_actions_taken": 0,
         "external_mutations": 0,
     }
+    payload.update(
+        _audit_fields(
+            discovery=discovery,
+            topic_count=len(topics),
+            opportunity_count=len(opportunities),
+            selected_count=len(fresh[:max_opportunities]),
+            wake_agent=True,
+            wake_reason="llm_judged_reply_opportunities_selected",
+            llm_invoked=True,
+        )
+    )
     if mark_delivered and stage_actions:
         _mark_delivered(state_file, state, fresh[:max_opportunities], now=now)
     return payload
@@ -191,6 +227,7 @@ def discover_x_response_opportunities(
     generated["provider"] = str(creds.get("provider") or "xai")
     generated["model"] = selected_model
     generated["x_search_enabled"] = True
+    generated["x_search_used"] = True
     generated["generated_at"] = _iso(now)
     generated["citations"] = _extract_citations(response_payload)
     return generated
@@ -207,6 +244,7 @@ def render_gtm_engagement_text(
         f"Torben / GTM Response Radar / {now:%Y-%m-%d %H:%M UTC}",
         "",
         f"Grok/X reviewed {topic_count} GTM topic(s) and found {len(opportunities)} reply opportunity(s).",
+        "LLM judge: Grok ran with x_search; all public writes remain approval-gated.",
         x_algorithm_brief_line(),
         "Nothing has been posted, replied to publicly, scheduled, or sent.",
         "",
@@ -323,7 +361,7 @@ def _normalize_opportunities(
             reply_angle=reply_angle,
             draft_reply=draft_reply,
             score=score,
-            risk_notes=[_clean_line(note, 160) for note in raw.get("risk_notes") or [] if str(note).strip()],
+            risk_notes=_normalize_risk_notes(raw.get("risk_notes")),
             source_topic=source_topic or str(topic.get("title") or ""),
             source_url=source_url,
         )
@@ -366,6 +404,9 @@ def _stage_response_action(
             "risk_notes": opportunity.risk_notes,
             "source_topic": opportunity.source_topic,
             "source_url": opportunity.source_url,
+            "llm_judged": True,
+            "llm_score": opportunity.score,
+            "llm_reason": opportunity.why_reply,
             "x_algorithm_signal_lens": x_algorithm_signal_lens(),
             "publishing_blocked_until": "separate_explicit_public_reply_approval",
             "public_actions_taken": 0,
@@ -391,8 +432,22 @@ def _preview_response_action(*, opportunity: GTMResponseOpportunity, rank: int, 
             "source": "torben_gtm_engagement_radar",
             "draft_reply": opportunity.draft_reply,
             "post_url": opportunity.post_url,
+            "author_handle": opportunity.author_handle,
+            "author_name": opportunity.author_name,
+            "post_summary": opportunity.post_summary,
+            "why_reply": opportunity.why_reply,
+            "reply_angle": opportunity.reply_angle,
+            "score": opportunity.score,
+            "risk_notes": opportunity.risk_notes,
+            "source_topic": opportunity.source_topic,
+            "source_url": opportunity.source_url,
+            "llm_judged": True,
+            "llm_score": opportunity.score,
+            "llm_reason": opportunity.why_reply,
             "x_algorithm_signal_lens": x_algorithm_signal_lens(),
             "publishing_blocked_until": "separate_explicit_public_reply_approval",
+            "public_actions_taken": 0,
+            "external_mutations": 0,
         },
     )
 
@@ -445,9 +500,25 @@ def _safe_discovery_meta(discovery: Any) -> dict[str, Any]:
         "provider": discovery.get("provider"),
         "model": discovery.get("model"),
         "x_search_enabled": bool(discovery.get("x_search_enabled")),
+        "x_search_used": bool(discovery.get("x_search_used", discovery.get("x_search_enabled"))),
         "generated_at": discovery.get("generated_at"),
         "citations": copy.deepcopy(discovery.get("citations") or [])[:10],
     }
+
+
+def _normalize_risk_notes(value: Any) -> list[str]:
+    if isinstance(value, str):
+        rows = [value]
+    elif isinstance(value, list):
+        rows = value
+    else:
+        rows = []
+    notes: list[str] = []
+    for note in rows:
+        cleaned = _clean_line(note, 160)
+        if cleaned:
+            notes.append(cleaned)
+    return notes[:3]
 
 
 def _silent_payload(*, now: datetime, reason: str) -> dict[str, Any]:
@@ -459,6 +530,49 @@ def _silent_payload(*, now: datetime, reason: str) -> dict[str, Any]:
         "text": "",
         "public_actions_taken": 0,
         "external_mutations": 0,
+    }
+
+
+def _audit_fields(
+    *,
+    discovery: Any,
+    topic_count: int,
+    opportunity_count: int,
+    selected_count: int,
+    wake_agent: bool,
+    wake_reason: str,
+    llm_invoked: bool,
+) -> dict[str, Any]:
+    meta = _safe_discovery_meta(discovery)
+    model = str(meta.get("model") or os.getenv("TORBEN_GTM_ENGAGEMENT_MODEL") or DEFAULT_MODEL).strip()
+    x_search_used = bool(meta.get("x_search_used")) if llm_invoked else False
+    status = "accepted" if selected_count > 0 else ("no_new_opportunities" if llm_invoked else "not_invoked")
+    return {
+        "llm_judge": {
+            "enabled": True,
+            "required": True,
+            "invoked": bool(llm_invoked),
+            "provider": meta.get("provider") or ("xai-oauth" if llm_invoked else None),
+            "model": model,
+            "x_search_requested": bool(topic_count > 0),
+            "x_search_used": x_search_used,
+            "candidate_count": int(opportunity_count),
+            "decision_count": int(opportunity_count),
+            "accepted_count": int(selected_count),
+            "rejected_count": max(0, int(opportunity_count) - int(selected_count)),
+            "status": status,
+            "public_actions_taken": 0,
+            "external_mutations": 0,
+        },
+        "cron_audit": {
+            "llm_invoked": bool(llm_invoked),
+            "model": model,
+            "x_search_used": x_search_used,
+            "why_wake_agent": bool(wake_agent),
+            "wake_reason": wake_reason,
+            "public_actions_taken": 0,
+            "external_mutations": 0,
+        },
     }
 
 

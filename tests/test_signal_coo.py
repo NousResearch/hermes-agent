@@ -1906,6 +1906,25 @@ def test_gtm_radar_adapter_stages_signal_actions_and_dedupes(tmp_path):
     radar = {
         "generated_at": "2026-06-25T11:45:00Z",
         "scanned_count": 283,
+        "llm_judge": {
+            "invoked": True,
+            "status": "accepted",
+            "model": "grok-test",
+            "x_search_used": True,
+        },
+        "quality_gate": {
+            "passed_count": 2,
+            "rejected_count": 0,
+        },
+        "cron_audit": {
+            "llm_invoked": True,
+            "model": "grok-test",
+            "x_search_used": True,
+            "public_actions_taken": 0,
+            "external_mutations": 0,
+            "why_wake_agent": True,
+            "wake_reason": "llm_judged_findings_selected",
+        },
         "findings": [
             {
                 "id": "gtm-1",
@@ -1919,6 +1938,10 @@ def test_gtm_radar_adapter_stages_signal_actions_and_dedupes(tmp_path):
                 "thesis": "AI security is becoming a runtime control-plane problem.",
                 "angle": "write from knowledge poisoning to observability and rollback",
                 "image_direction": "control-plane diagram",
+                "llm_judged": True,
+                "llm_score": 91,
+                "llm_reason": "Specific source-backed article candidate.",
+                "quality_gate": {"passed": True},
             },
             {
                 "id": "gtm-2",
@@ -1949,9 +1972,12 @@ def test_gtm_radar_adapter_stages_signal_actions_and_dedupes(tmp_path):
     assert first["wakeAgent"] is True
     assert first["selected_count"] == 2
     assert "Torben / GTM Radar" in first["text"]
+    assert "LLM judge: Grok ran (grok-test); x_search_used=true; status=accepted." in first["text"]
     assert "X algorithm lens" in first["text"]
+    assert "repo snapshot 0bfc279" in first["text"]
     assert "Reply draft 1, source 1, hold 1" in first["text"]
     assert "Nothing has been posted" in first["text"]
+    assert first["cron_audit"]["llm_invoked"] is True
     assert second["wakeAgent"] is False
     assert second["text"] == ""
     actions = ledger.load()
@@ -1959,7 +1985,12 @@ def test_gtm_radar_adapter_stages_signal_actions_and_dedupes(tmp_path):
     assert actions[0].executor_state["mutation_status"] == "draft_only"
     assert actions[0].executor_state["source_url"] == "https://arxiv.org/abs/2606.24402"
     assert actions[0].executor_state["reply_aliases"] == ["draft 1", "source 1", "hold 1"]
-    assert actions[0].executor_state["x_algorithm_signal_lens"]["source"]["url"] == "https://github.com/xai-org/x-algorithm"
+    assert actions[0].executor_state["llm_judged"] is True
+    assert actions[0].executor_state["llm_score"] == 91
+    lens_source = actions[0].executor_state["x_algorithm_signal_lens"]["source"]
+    assert lens_source["url"] == "https://github.com/xai-org/x-algorithm"
+    assert lens_source["commit"] == "0bfc2795d308f90032544322747caacd535f75ae"
+    assert actions[0].executor_state["x_algorithm_signal_lens"]["schema_version"] == 2
 
 
 def test_gtm_radar_reply_alias_resolves_to_recent_ranked_action(tmp_path):

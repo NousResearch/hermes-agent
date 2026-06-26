@@ -53,6 +53,7 @@ def test_engagement_radar_stages_draft_only_reply_opportunities_and_dedupes(tmp_
             "provider": "xai-oauth",
             "model": "grok-4.3",
             "x_search_enabled": True,
+            "x_search_used": True,
             "opportunities": [
                 {
                     "post_url": "https://x.com/example/status/1",
@@ -63,7 +64,7 @@ def test_engagement_radar_stages_draft_only_reply_opportunities_and_dedupes(tmp_
                     "reply_angle": "Bring provenance, evals, rollback, and source trust into the thread.",
                     "draft_reply": "The useful version is not 'never use RAG agents.' It is: prove source provenance, score retrieval drift, and make rollback boring.",
                     "score": 88,
-                    "risk_notes": ["Avoid sounding like a vendor pitch."],
+                    "risk_notes": "Avoid sounding like a vendor pitch.",
                     "source_topic": topics[0]["title"],
                     "source_url": topics[0]["source_url"],
                 },
@@ -100,16 +101,97 @@ def test_engagement_radar_stages_draft_only_reply_opportunities_and_dedupes(tmp_
     assert first["selected_count"] == 1
     assert first["public_actions_taken"] == 0
     assert first["external_mutations"] == 0
+    assert first["llm_judge"]["invoked"] is True
+    assert first["llm_judge"]["model"] == "grok-4.3"
+    assert first["llm_judge"]["x_search_used"] is True
+    assert first["cron_audit"]["llm_invoked"] is True
+    assert first["cron_audit"]["wake_reason"] == "llm_judged_reply_opportunities_selected"
     assert "Torben / GTM Response Radar" in first["text"]
+    assert "LLM judge: Grok ran with x_search" in first["text"]
     assert "X algorithm lens" in first["text"]
+    assert "repo snapshot 0bfc279" in first["text"]
     assert "Nothing has been posted" in first["text"]
     assert "draft_only" == first["actions"][0]["executor_state"]["mutation_status"]
     assert first["actions"][0]["executor_state"]["publishing_blocked_until"] == "separate_explicit_public_reply_approval"
     assert first["actions"][0]["executor_state"]["post_url"] == "https://x.com/example/status/1"
-    assert first["actions"][0]["executor_state"]["x_algorithm_signal_lens"]["source"]["url"] == "https://github.com/xai-org/x-algorithm"
+    assert first["actions"][0]["executor_state"]["llm_judged"] is True
+    assert first["actions"][0]["executor_state"]["llm_score"] == 88
+    assert first["actions"][0]["executor_state"]["risk_notes"] == ["Avoid sounding like a vendor pitch."]
+    lens_source = first["actions"][0]["executor_state"]["x_algorithm_signal_lens"]["source"]
+    assert lens_source["url"] == "https://github.com/xai-org/x-algorithm"
+    assert lens_source["commit"] == "0bfc2795d308f90032544322747caacd535f75ae"
+    assert first["actions"][0]["executor_state"]["x_algorithm_signal_lens"]["schema_version"] == 2
     assert second["wakeAgent"] is False
     assert second["reason"] == "no new response opportunities"
+    assert second["selected_count"] == 0
     assert second["text"] == ""
+    assert second["llm_judge"]["invoked"] is True
+    assert second["llm_judge"]["status"] == "no_new_opportunities"
+    assert second["llm_judge"]["x_search_used"] is True
+    assert second["cron_audit"]["llm_invoked"] is True
+    assert second["cron_audit"]["why_wake_agent"] is False
+    assert second["cron_audit"]["wake_reason"] == "no_new_response_opportunities"
+
+
+def test_engagement_radar_no_topics_has_explicit_non_llm_audit(tmp_path: Path) -> None:
+    payload = run_gtm_engagement_radar(
+        {"findings": []},
+        ledger=ActionLedger(tmp_path / "actions.json"),
+        state_path=tmp_path / "engagement-state.json",
+        now=datetime(2026, 6, 25, 17, 0, tzinfo=timezone.utc),
+        discover=lambda **_: {"opportunities": []},
+    )
+
+    assert payload["wakeAgent"] is False
+    assert payload["reason"] == "no GTM topics available"
+    assert payload["selected_count"] == 0
+    assert payload["llm_judge"]["invoked"] is False
+    assert payload["llm_judge"]["status"] == "not_invoked"
+    assert payload["llm_judge"]["x_search_requested"] is False
+    assert payload["cron_audit"]["llm_invoked"] is False
+    assert payload["cron_audit"]["wake_reason"] == "no_gtm_topics_available"
+
+
+def test_engagement_radar_preview_actions_preserve_llm_and_safety_metadata(tmp_path: Path) -> None:
+    def fake_discover(*, topics, max_opportunities, now):
+        return {
+            "provider": "xai-oauth",
+            "model": "grok-4.3",
+            "x_search_enabled": True,
+            "x_search_used": True,
+            "opportunities": [
+                {
+                    "post_url": "https://x.com/example/status/3",
+                    "author_handle": "researcher",
+                    "post_summary": "A technical post about retrieval poisoning.",
+                    "why_reply": "Eric can add a concrete control.",
+                    "reply_angle": "Name source provenance as the fix.",
+                    "draft_reply": "Treat the retrieved source like code: signed, versioned, reviewed.",
+                    "score": 77,
+                    "risk_notes": "Low risk; technical thread.",
+                    "source_topic": topics[0]["title"],
+                    "source_url": topics[0]["source_url"],
+                }
+            ],
+        }
+
+    payload = run_gtm_engagement_radar(
+        _radar_payload(),
+        ledger=ActionLedger(tmp_path / "actions.json"),
+        state_path=tmp_path / "engagement-state.json",
+        now=datetime(2026, 6, 25, 17, 0, tzinfo=timezone.utc),
+        discover=fake_discover,
+        stage_actions=False,
+        mark_delivered=False,
+    )
+
+    state = payload["actions"][0]["executor_state"]
+    assert state["mutation_status"] == "preview_only"
+    assert state["llm_judged"] is True
+    assert state["llm_score"] == 77
+    assert state["risk_notes"] == ["Low risk; technical thread."]
+    assert state["public_actions_taken"] == 0
+    assert state["external_mutations"] == 0
 
 
 def test_discover_x_response_opportunities_calls_grok_with_x_search_and_lens(monkeypatch) -> None:
@@ -198,5 +280,6 @@ def test_discover_x_response_opportunities_calls_grok_with_x_search_and_lens(mon
     assert "Do not claim exact private X ranking weights" in prompt
     assert result["provider"] == "xai-oauth"
     assert result["x_search_enabled"] is True
+    assert result["x_search_used"] is True
     assert result["citations"] == [{"url": "https://x.com/example/status/1", "title": "Example post"}]
     assert result["opportunities"][0]["post_url"] == "https://x.com/example/status/1"

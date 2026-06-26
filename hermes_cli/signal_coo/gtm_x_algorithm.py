@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 from typing import Any
 
 
 X_ALGORITHM_SOURCE_URL = "https://github.com/xai-org/x-algorithm"
+X_ALGORITHM_LENS_PATH = Path(__file__).with_name("x_algorithm_lens.json")
 
-X_ALGORITHM_SIGNAL_LENS: dict[str, Any] = {
+FALLBACK_X_ALGORITHM_SIGNAL_LENS: dict[str, Any] = {
     "schema_version": 1,
     "source": {
         "name": "xai-org/x-algorithm",
@@ -59,12 +62,31 @@ X_ALGORITHM_SIGNAL_LENS: dict[str, Any] = {
 }
 
 
+def _load_x_algorithm_lens() -> dict[str, Any]:
+    try:
+        payload = json.loads(X_ALGORITHM_LENS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return copy.deepcopy(FALLBACK_X_ALGORITHM_SIGNAL_LENS)
+    if not isinstance(payload, dict):
+        return copy.deepcopy(FALLBACK_X_ALGORITHM_SIGNAL_LENS)
+    source = payload.get("source")
+    if not isinstance(source, dict) or str(source.get("url") or "") != X_ALGORITHM_SOURCE_URL:
+        return copy.deepcopy(FALLBACK_X_ALGORITHM_SIGNAL_LENS)
+    return payload
+
+
+X_ALGORITHM_SIGNAL_LENS: dict[str, Any] = _load_x_algorithm_lens()
+
+
 def x_algorithm_signal_lens() -> dict[str, Any]:
     return copy.deepcopy(X_ALGORITHM_SIGNAL_LENS)
 
 
 def x_algorithm_brief_line() -> str:
+    source = X_ALGORITHM_SIGNAL_LENS.get("source") if isinstance(X_ALGORITHM_SIGNAL_LENS, dict) else {}
+    commit = str(source.get("commit") or "").strip() if isinstance(source, dict) else ""
+    provenance = f" repo snapshot {commit[:7]}" if commit else ""
     return (
-        "X algorithm lens: pressure-test hooks for reply, repost/quote, profile-click, "
+        f"X algorithm lens{provenance}: pressure-test hooks for reply, repost/quote, profile-click, "
         "dwell, and follow intent; avoid not-interested, block, mute, or report signals."
     )

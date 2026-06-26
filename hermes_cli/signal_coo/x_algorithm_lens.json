@@ -1,0 +1,117 @@
+{
+  "schema_version": 2,
+  "source": {
+    "name": "xai-org/x-algorithm",
+    "url": "https://github.com/xai-org/x-algorithm",
+    "type": "public_repository",
+    "commit": "0bfc2795d308f90032544322747caacd535f75ae",
+    "commit_date": "2026-05-15T21:54:59Z",
+    "artifact_mode": "commit_hashed_distilled_lens",
+    "source_files": [
+      "README.md",
+      "home-mixer/scorers/weighted_scorer.rs",
+      "home-mixer/scorers/phoenix_scorer.rs",
+      "home-mixer/selectors/top_k_score_selector.rs",
+      "home-mixer/filters/previously_seen_posts_filter.rs",
+      "grox/classifiers/content/reply_ranking.py"
+    ],
+    "caveat": "Use as public ranking-system evidence and a content pressure-test, not as a guarantee of private production weights."
+  },
+  "ranking_frame": {
+    "retrieval": [
+      "in-network candidates from followed accounts",
+      "out-of-network candidates from ML retrieval over the global corpus"
+    ],
+    "query_context": [
+      "engagement history",
+      "following and social graph context",
+      "served and previously seen history",
+      "muted or blocked context"
+    ],
+    "ranking": "Phoenix/Grok predicts engagement probabilities for candidate posts; a weighted scorer combines predicted actions into a final score.",
+    "selection": "Candidates are sorted by score and a top-K selector chooses the highest-ranked items.",
+    "filtering": "Pre- and post-scoring filters remove duplicates, already-seen items, self posts, muted or blocked contexts, ineligible posts, and final visibility failures."
+  },
+  "positive_signals": [
+    "favorite",
+    "reply",
+    "repost",
+    "quote",
+    "share",
+    "share_via_dm",
+    "share_via_copy_link",
+    "click",
+    "profile_click",
+    "dwell",
+    "continuous_dwell_time",
+    "follow_author",
+    "video_view",
+    "photo_expand"
+  ],
+  "negative_signals": [
+    "not_interested",
+    "block_author",
+    "mute_author",
+    "report"
+  ],
+  "pressure_tests": [
+    "Does the opener create a concrete reason to reply, not just nod?",
+    "Would someone repost or quote this because it gives them a useful stance?",
+    "Does the post create enough curiosity for profile clicks without becoming clickbait?",
+    "Does the body reward dwell with a real idea, source, or operator move?",
+    "Does the framing avoid rage bait, vague AI hype, low-trust claims, or other negative feedback triggers?",
+    "Does the reply add enough context to rank as useful conversation instead of a low-effort reaction?",
+    "Does the content avoid repeating a served idea so it does not feel like duplicate feed material?"
+  ],
+  "content_rules": [
+    "Open with the operator problem, not the source title.",
+    "Make the practical move explicit enough that a reader can use it today.",
+    "Use sources to support the argument, not as the argument itself.",
+    "Prefer specific disagreement or decision framing over generic advice.",
+    "Write replies that add context, controls, or a sharper frame rather than empty agreement.",
+    "Do not manufacture engagement bait; optimize for useful responses and trust.",
+    "Avoid claims that depend on private X ranking weights; use this only as a public pressure-test lens."
+  ],
+  "learned_evidence": [
+    {
+      "path": "README.md",
+      "signals": [
+        "For You combines in-network and out-of-network retrieval.",
+        "Phoenix/Grok ranking predicts multiple engagement probabilities.",
+        "Filtering removes duplicates, old posts, self posts, blocked or muted contexts, and previously seen material."
+      ]
+    },
+    {
+      "path": "home-mixer/scorers/weighted_scorer.rs",
+      "signals": [
+        "The weighted score includes favorite, reply, repost, photo expand, click, profile click, video quality view, share, dwell, quote, continuous dwell time, follow author, and negative-feedback predictions.",
+        "Negative feedback terms include not interested, block author, mute author, and report."
+      ]
+    },
+    {
+      "path": "home-mixer/scorers/phoenix_scorer.rs",
+      "signals": [
+        "Phoenix scorer requests model predictions for candidates using user scoring sequence context.",
+        "Ranking uses a home timeline product surface and model cluster selection."
+      ]
+    },
+    {
+      "path": "home-mixer/selectors/top_k_score_selector.rs",
+      "signals": [
+        "Selection is score-based top-K after ranking."
+      ]
+    },
+    {
+      "path": "home-mixer/filters/previously_seen_posts_filter.rs",
+      "signals": [
+        "Previously seen and bloom-filtered related post IDs are removed before serving."
+      ]
+    },
+    {
+      "path": "grox/classifiers/content/reply_ranking.py",
+      "signals": [
+        "Reply ranking uses a Grok/VLM scorer and structured score/reason output."
+      ]
+    }
+  ]
+}

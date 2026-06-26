@@ -50,6 +50,8 @@ def run_git(cwd: str, *args: str) -> str:
             ["git", "-C", cwd, *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_GIT_TIMEOUT,
             check=False,
             stdin=subprocess.DEVNULL,

@@ -12151,6 +12151,16 @@ def mount_spa(application: FastAPI):
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
                 f"</script>"
             )
+        cleanup_script = (
+            "<script>"
+            "(function(){"
+            "if('serviceWorker'in navigator){navigator.serviceWorker.getRegistrations()"
+            ".then(function(rs){return Promise.all(rs.map(function(r){return r.unregister()}))})"
+            ".catch(function(){})}"
+            "if('caches'in window){caches.keys().then(function(ks){return Promise.all(ks.map(function(k){return caches.delete(k)}))}).catch(function(){})}"
+            "})();"
+            "</script>"
+        )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
             # browser fetches them through the same proxy prefix.
@@ -12160,7 +12170,7 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
-        html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
+        html = html.replace("</head>", f"{cleanup_script}{bootstrap_script}</head>", 1)
         return HTMLResponse(
             html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
@@ -12173,6 +12183,25 @@ def mount_spa(application: FastAPI):
     # (the MC Pages app), not the Hermes backend. Intercept CSS asset
     # requests BEFORE the StaticFiles mount and rewrite the absolute paths
     # when a prefix is in play.
+    async def service_worker_cleanup():
+        body = (
+            "self.addEventListener('install',function(e){self.skipWaiting()});"
+            "self.addEventListener('activate',function(e){"
+            "e.waitUntil((async function(){"
+            "try{var ks=await caches.keys();await Promise.all(ks.map(function(k){return caches.delete(k)}))}catch(e){}"
+            "try{await self.registration.unregister()}catch(e){}"
+            "try{var cs=await self.clients.matchAll({type:'window'});cs.forEach(function(c){c.navigate(c.url)})}catch(e){}"
+            "})())});"
+        )
+        return Response(
+            content=body,
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
+
+    application.add_api_route("/sw.js", service_worker_cleanup, methods=["GET"])
+    application.add_api_route("/service-worker.js", service_worker_cleanup, methods=["GET"])
+
     @application.get("/assets/{filename}.css")
     async def serve_css(filename: str, request: Request):
         css_path = WEB_DIST / "assets" / f"{filename}.css"

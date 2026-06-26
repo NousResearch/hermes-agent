@@ -323,6 +323,16 @@ export interface SessionCreateResponse {
 export interface SessionInfo {
   archived?: boolean
   cwd?: null | string
+  /** Git branch checked out in {@link cwd} when the session started/resumed.
+   *  The sidebar groups main-checkout sessions by this so feature-branch work
+   *  doesn't collapse under a single directory-named "main" row. Null for
+   *  non-git workspaces and sessions created before branch capture landed. */
+  git_branch?: null | string
+  /** Git repo root that owns {@link cwd} — the authoritative project key,
+   *  resolved server-side at cwd-set (and backfilled for history). The sidebar
+   *  groups by this instead of probing git in the GUI. Null for non-git
+   *  workspaces and not-yet-backfilled rows. */
+  git_repo_root?: null | string
   ended_at: null | number
   id: string
   /** Original root id of a compression chain, when this entry is a projected
@@ -335,6 +345,8 @@ export interface SessionInfo {
   message_count: number
   model: null | string
   output_tokens: number
+  /** Parent conversation when this row is a /branch fork. */
+  parent_session_id?: null | string
   preview: null | string
   source: null | string
   started_at: number
@@ -533,6 +545,35 @@ export interface ProfileSetupCommand {
   command: string
 }
 
+// ── Projects ───────────────────────────────────────────────────────────────
+// A first-class, per-profile, human-named workspace spanning one or more
+// folders. Mirrors hermes_cli/projects_db.Project.to_dict().
+export interface ProjectFolder {
+  path: string
+  label: null | string
+  is_primary: boolean
+  added_at: number
+}
+
+export interface ProjectInfo {
+  id: string
+  slug: string
+  name: string
+  description: null | string
+  icon: null | string
+  color: null | string
+  board_slug: null | string
+  primary_path: null | string
+  archived: boolean
+  created_at: number
+  folders: ProjectFolder[]
+}
+
+export interface ProjectsPayload {
+  projects: ProjectInfo[]
+  active_id: null | string
+}
+
 export interface ProfileSoul {
   content: string
   exists: boolean
@@ -723,6 +764,30 @@ export interface AuxiliaryTaskAssignment {
 export interface AuxiliaryModelsResponse {
   main: { model: string; provider: string }
   tasks: AuxiliaryTaskAssignment[]
+}
+
+export interface MoaModelSlot {
+  provider: string
+  model: string
+}
+
+export interface MoaConfigResponse {
+  default_preset: string
+  active_preset: string
+  presets: Record<string, {
+    aggregator: MoaModelSlot
+    aggregator_temperature: number
+    enabled: boolean
+    max_tokens: number
+    reference_models: MoaModelSlot[]
+    reference_temperature: number
+  }>
+  aggregator: MoaModelSlot
+  aggregator_temperature: number
+  enabled: boolean
+  max_tokens: number
+  reference_models: MoaModelSlot[]
+  reference_temperature: number
 }
 
 export interface ModelAssignmentRequest {

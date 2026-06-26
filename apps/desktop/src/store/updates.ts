@@ -455,6 +455,25 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
 }
 
+function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionStatus>>): void {
+  const current = $backendUpdateApply.get()
+  const log = status.lines
+    .filter(line => line.trim().length > 0)
+    .map(line => ({ at: Date.now(), message: line, stage: current.stage }))
+    .slice(-50)
+  const latest = log.at(-1)?.message
+
+  if (log.length === 0 && !latest) {
+    return
+  }
+
+  $backendUpdateApply.set({
+    ...current,
+    log,
+    message: latest ?? current.message
+  })
+}
+
 export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: translateNow('updates.applyStatus.preparing') })
@@ -477,6 +496,7 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       await new Promise(resolve => globalThis.setTimeout(resolve, 1500))
       try {
         last = await getActionStatus(started.name, 200)
+        ingestBackendActionStatus(last)
       } catch {
         // The dashboard restarts mid-update, dropping this connection — expected, not a failure.
         $backendUpdateApply.set({
@@ -531,7 +551,9 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
     applying: !terminal,
     stage: payload.stage,
     message: payload.message,
-    percent: payload.percent,
+    // Streamed log lines carry percent: null; keep the last milestone percent
+    // (10/60/…) instead of resetting the bar to indeterminate on every line.
+    percent: payload.percent ?? current.percent,
     error: payload.error,
     // 'manual' carries the command to run in its message field.
     command: payload.stage === 'manual' ? payload.message : current.command,
@@ -558,7 +580,6 @@ export function startUpdatePoller(): void {
   }
 
   pollerStarted = true
-  void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
@@ -578,7 +599,6 @@ export function startUpdatePoller(): void {
 
   window.addEventListener('focus', onFocus)
   backgroundTimer = setInterval(() => {
-    void checkUpdates()
     void checkBackendUpdates()
   }, 30 * 60 * 1000)
 }
@@ -604,7 +624,6 @@ function onFocus() {
   }
 
   lastFocusAt = now
-  void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()
 }

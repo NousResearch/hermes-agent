@@ -47,6 +47,8 @@ hermes-agent/
 │   │                     #   yuanbao, webhook, api_server, ...). See ADDING_A_PLATFORM.md.
 │   │                     #   weixin_qr_session.py — web-based QR onboarding session manager
 │   │                     #   (mirrors Telegram onboarding pattern in web_server.py).
+│   │                     #   Weixin connection issues? See .github/instructions/weixin-channel-diagnostics.instructions.md
+│   │                     #   or run the /weixin-reconnect skill (.github/skills/weixin-reconnect/SKILL.md).
 │   └── builtin_hooks/    # Extension point for always-registered gateway hooks (none shipped)
 ├── plugins/              # Plugin system (see "Plugins" section below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)

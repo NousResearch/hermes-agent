@@ -105,6 +105,11 @@ platforms:
     extra:
       dm_policy: "open"        # "open" | "allowlist" | "disabled"
       group_policy: "disabled" # "open" | "allowlist" | "disabled"
+      # Pin the iLink API base URL here so a stale WEIXIN_BASE_URL in data/.env
+      # (e.g. the wrong https://ilinkai.wechat.com) cannot override it.
+      # The adapter resolution order is: extra.base_url → WEIXIN_BASE_URL env →
+      # ILINK_BASE_URL constant. This pin wins.
+      base_url: "https://ilinkai.weixin.qq.com"
 
   # Uncomment to enable WeCom (企业微信) corporate AI bot. The wizard returns
   # bot_id + secret which must be pasted into .extra below.

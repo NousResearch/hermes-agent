@@ -693,6 +693,16 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        # Monotonic timestamp of the most recent Socket Mode handler (re)start,
+        # used to grant a grace window for the first ping/pong after connect.
+        self._socket_handler_started_monotonic: Optional[float] = None
+        # Reconnect when no ping/pong has arrived for this many multiples of the
+        # client's ping_interval. Slack pings roughly every ping_interval seconds
+        # even on an idle socket, so prolonged silence means a wedged transport.
+        self._socket_ping_stale_factor = 4
+        # Allow at least this long after (re)connect before treating a missing
+        # first ping/pong as evidence of a wedged transport.
+        self._socket_first_ping_grace_s = 60.0
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -706,6 +716,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         task = asyncio.create_task(self._handler.start_async())
         self._socket_mode_task = task
+        self._socket_handler_started_monotonic = time.monotonic()
         task.add_done_callback(self._on_socket_mode_task_done)
 
     async def _stop_socket_mode_handler(self) -> None:
@@ -766,6 +777,37 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return None
 
+    def _socket_ping_pong_stale(self) -> bool:
+        """True when the Socket Mode transport shows no recent ping/pong.
+
+        slack_sdk's Socket Mode client records ``last_ping_pong_time`` whenever
+        Slack's periodic ping arrives (roughly every ``ping_interval`` seconds,
+        even on an otherwise idle connection). When the underlying aiohttp
+        session is closed, the client gets stuck retrying ("Session is closed")
+        while ``is_connected()`` can still report healthy — so ping/pong
+        staleness is the reliable signal that the socket is wedged and the
+        handler must be rebuilt. Guards against non-numeric attributes so a
+        mocked/partial client never triggers a spurious reconnect.
+        """
+        client = getattr(self._handler, "client", None)
+        if client is None:
+            return False
+        ping_interval = getattr(client, "ping_interval", None)
+        if not isinstance(ping_interval, (int, float)) or ping_interval <= 0:
+            return False
+        last = getattr(client, "last_ping_pong_time", None)
+        if last is None:
+            # No ping yet. Healthy right after (re)connect; only suspicious once
+            # the grace window elapses without ever seeing the first ping/pong.
+            started = self._socket_handler_started_monotonic
+            if started is None:
+                return False
+            grace = max(self._socket_first_ping_grace_s, ping_interval * 2)
+            return (time.monotonic() - started) > grace
+        if not isinstance(last, (int, float)):
+            return False
+        return (time.time() - last) > (ping_interval * self._socket_ping_stale_factor)
+
     async def _restart_socket_mode(self, reason: str) -> None:
         """Reconnect Socket Mode without rebuilding adapter state."""
         if not self._running:
@@ -810,6 +852,11 @@ class SlackAdapter(BasePlatformAdapter):
                 connected = await self._socket_transport_connected()
                 if connected is False:
                     await self._restart_socket_mode("transport disconnected")
+                elif self._socket_ping_pong_stale():
+                    # is_connected() can lie when the aiohttp session is closed
+                    # but the client keeps retrying; ping/pong staleness catches
+                    # that wedged-zombie case that the bool check above misses.
+                    await self._restart_socket_mode("ping/pong stale")
             except asyncio.CancelledError:
                 raise
             except Exception:  # pragma: no cover - defensive logging

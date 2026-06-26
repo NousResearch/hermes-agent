@@ -74,6 +74,19 @@ display:
   show_reasoning: false
 
 # =============================================================================
+# Dashboard Auth
+# Upstream 0.17+ requires auth for non-loopback binds (--insecure is a no-op).
+# The dashboard binds 0.0.0.0 inside the container for Docker port forwarding,
+# so basic_auth is required. Change the password by generating a new hash:
+#   docker exec hermes-web python3 -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('your-password'))"
+# Then replace the password_hash below and restart hermes-web.
+# =============================================================================
+dashboard:
+  basic_auth:
+    username: admin
+    password_hash: "scrypt$16384$8$1$QJMs7wfRIelUP6tXKnzgTg==$d4nrKch8xCpKe5pV5hGK5S+CnJrLLF8idO56e58Tlhw="
+
+# =============================================================================
 # Gateway Platforms
 # =============================================================================
 platforms:

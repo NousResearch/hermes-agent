@@ -1,7 +1,7 @@
 """``hermes telemetry`` subcommand parser.
 
 Telemetry control and inspection. ``preview`` shows the per-run summary events that
-would be produced for the aggregate plane; there is no uploader, so it terminates as a
+would be produced for aggregate metrics; there is no uploader, so it terminates as a
 local view.
 
 The handler is injected to avoid importing ``main`` (mirrors the insights subcommand).
@@ -18,14 +18,14 @@ def build_telemetry_parser(subparsers, *, cmd_telemetry: Callable) -> None:
         "telemetry",
         help="Inspect local telemetry and export it",
         description=(
-            "Local-first telemetry. The local plane records observability on this "
-            "machine. The aggregate plane is opt-in (set telemetry.consent_state via "
-            "`hermes config set`); it has no uploader and is shown only via `preview`."
+            "Local-first telemetry. Local telemetry records observability on this "
+            "machine. Aggregate metrics are opt-in (set telemetry.consent_state via "
+            "`hermes config set`); they have no uploader and are shown only via `preview`."
         ),
     )
     sub = p.add_subparsers(dest="telemetry_action")
 
-    sub.add_parser("status", help="Show telemetry planes, consent state, and local data volume")
+    sub.add_parser("status", help="Show telemetry settings, consent state, and local data volume")
 
     prev = sub.add_parser(
         "preview",

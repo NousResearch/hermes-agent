@@ -62,7 +62,7 @@ def test_preview_shows_real_values(home, capsys):
 
 def test_status_reflects_consent_set_via_config(home, capsys):
     # Opting in is a plain config write now (no `enable` verb). status should
-    # reflect consent_state=aggregate as the aggregate plane being on.
+    # reflect consent_state=aggregate as aggregate metrics being on.
     from hermes_cli.config import load_config, save_config
     cfg = load_config()
     cfg.setdefault("telemetry", {})["consent_state"] = "aggregate"
@@ -70,17 +70,17 @@ def test_status_reflects_consent_set_via_config(home, capsys):
     _run("status")
     out = capsys.readouterr().out
     assert "consent_state=aggregate" in out
-    assert "Aggregate plane: on" in out
+    assert "Aggregate metrics: on" in out
 
 
 def test_status_shows_optin_hint_when_unknown(home, capsys):
     _run("status")
     out = capsys.readouterr().out
-    assert "Aggregate plane: off" in out
+    assert "Aggregate metrics: off" in out
     assert "config set telemetry.consent_state aggregate" in out
 
 
-def test_allow_aggregate_false_keeps_plane_off_in_status(home, capsys):
+def test_allow_aggregate_false_keeps_metrics_off_in_status(home, capsys):
     # Even with consent opted in, a managed allow_aggregate:false wins.
     from hermes_cli.config import load_config, save_config
     cfg = load_config()
@@ -90,5 +90,5 @@ def test_allow_aggregate_false_keeps_plane_off_in_status(home, capsys):
     save_config(cfg)
     _run("status")
     out = capsys.readouterr().out
-    assert "Aggregate plane: off" in out
+    assert "Aggregate metrics: off" in out
     assert "allow_aggregate is false" in out

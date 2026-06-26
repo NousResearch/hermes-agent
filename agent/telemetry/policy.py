@@ -1,10 +1,10 @@
-"""Telemetry consent posture and the aggregate-plane gate.
+"""Telemetry consent posture and the aggregate-metrics gate.
 
 Consent is a single config field, ``telemetry.consent_state``:
 
   * "unknown" — no choice recorded; never uploads (the default).
-  * "local"   — declined the aggregate plane; local plane only.
-  * "aggregate" — opted in to the aggregate plane.
+  * "local"   — declined aggregate metrics; local telemetry only.
+  * "aggregate" — opted in to aggregate metrics.
 
 The config file is the source of truth: set ``telemetry.consent_state`` with
 ``hermes config set`` (or a managed-scope pin). Callers that gate behavior read
@@ -15,7 +15,7 @@ consult.
 ``allow_aggregate`` is the hard gate. An administrator pins
 ``telemetry.allow_aggregate: false`` through the managed-scope layer
 (``/etc/hermes/config.yaml``), which takes precedence over the user's config; when
-it is false, the aggregate plane is off regardless of ``consent_state``.
+it is false, aggregate metrics are off regardless of ``consent_state``.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def ensure_install_id(config: Dict[str, Any]) -> str:
 
 
 def may_upload_aggregate(config: Dict[str, Any]) -> bool:
-    """Whether the aggregate plane may upload — the gate a future uploader consults.
+    """Whether aggregate metrics may upload — the gate a future uploader consults.
 
     True only when the admin hard gate allows it AND the user has opted in via
     ``telemetry.consent_state``.

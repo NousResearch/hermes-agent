@@ -1417,13 +1417,13 @@ display:
 # =============================================================================
 # Telemetry & Observability
 # =============================================================================
-# Three planes with a hard wall between them:
+# Three settings, isolated from each other:
 #   local        — full-fidelity observability you own. Default ON.
 #   aggregate    — opt-in metadata to Nous (no uploader ships yet). Default OFF.
 #   trajectories — content trajectories for training. Separate consent (later).
 #
-# The local plane records real values (actual models, providers, tool names) —
-# your own data, on your machine. The aggregate plane is opt-in and has no
+# Local telemetry records real values (actual models, providers, tool names) —
+# your own data, on your machine. Aggregate metrics are opt-in and have no
 # uploader today; if one ships it would summarize at that egress boundary.
 #
 # Enterprise locking: any telemetry.* key can be pinned by an administrator via
@@ -1431,16 +1431,16 @@ display:
 # value. To hard-forbid egress on a locked-down deployment, pin
 # `telemetry.allow_aggregate: false` there.
 # telemetry:
-#   # Local plane: event log + SQLite index in state.db. Never leaves your
-#   # machine unless you export it or opt into the aggregate plane.
+#   # Local telemetry: event log + SQLite index in state.db. Never leaves your
+#   # machine unless you export it or opt into aggregate metrics.
 #   local: true
-#   # Hard gate for the aggregate plane. When false, the aggregate plane is off
+#   # Hard gate for aggregate metrics. When false, aggregate metrics are off
 #   # regardless of consent_state. Pin false via managed scope to forbid egress.
 #   allow_aggregate: true
-#   # Aggregate-plane consent (the opt-in). No uploader ships yet.
+#   # Aggregate-metrics consent (the opt-in). No uploader ships yet.
 #   #   unknown (no choice — never uploads) | local (declined) | aggregate (opted in)
 #   consent_state: unknown
-#   # Stable install id (aggregate plane only). Empty = mint on first use;
+#   # Stable install id (aggregate metrics only). Empty = mint on first use;
 #   # clear it to rotate.
 #   install_id: ""
 #   # Local event-log retention before rotation (days).

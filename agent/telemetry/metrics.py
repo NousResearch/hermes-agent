@@ -51,7 +51,7 @@ def workflow_summary(
     *,
     conn: Optional[sqlite3.Connection] = None,
 ) -> Dict[str, Any]:
-    """Run-level counters + duration percentiles (local plane, exact)."""
+    """Run-level counters + duration percentiles (local telemetry, exact)."""
     with _cursor(conn, db_path) as c:
         where = _since_clause(since_ns)
         total = c.execute(f"SELECT COUNT(*) n FROM tel_runs{where}").fetchone()["n"]

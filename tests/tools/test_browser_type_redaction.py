@@ -1,4 +1,10 @@
-"""Regression tests for browser_type display redaction."""
+"""Regression tests for browser_type display redaction.
+
+Typed text is passed through the same secret-pattern redactor used for logs:
+recognizable credentials (API keys, tokens) are masked in display-facing
+output, while normal typed text is left intact.  The raw value is always sent
+to the browser backend regardless.
+"""
 
 import json
 from unittest.mock import patch
@@ -6,42 +12,63 @@ from unittest.mock import patch
 from tools.browser_tool import browser_type
 
 
-def test_browser_type_never_echoes_raw_typed_text(monkeypatch):
+def test_browser_type_redacts_api_key_in_output(monkeypatch):
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    typed_text = "my_secret_password_123"
+    monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+    secret = "sk-proj-ABCD1234567890EFGH"
 
     with patch(
         "tools.browser_tool._run_browser_command",
         return_value={"success": True},
     ) as mock_run:
-        result = json.loads(browser_type("@password", typed_text, task_id="redaction-test"))
+        result = json.loads(browser_type("@apikey", secret, task_id="redaction-test"))
 
     assert result["success"] is True
-    assert result["typed"] == "[redacted typed text]"
-    assert typed_text not in json.dumps(result)
+    assert secret not in json.dumps(result)
+    assert result["typed"].startswith("sk-pro")
+    # Raw secret still typed into the page.
     mock_run.assert_called_once()
-    assert mock_run.call_args.args[2] == ["@password", typed_text]
+    assert mock_run.call_args.args[2] == ["@apikey", secret]
 
 
-def test_browser_type_failure_never_echoes_raw_typed_text(monkeypatch):
+def test_browser_type_keeps_normal_text_in_output(monkeypatch):
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    typed_text = "my_secret_password_123"
+    monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+    text = "hello world search query"
+
+    with patch(
+        "tools.browser_tool._run_browser_command",
+        return_value={"success": True},
+    ) as mock_run:
+        result = json.loads(browser_type("@search", text, task_id="redaction-test"))
+
+    assert result["success"] is True
+    assert result["typed"] == text
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[2] == ["@search", text]
+
+
+def test_browser_type_failure_redacts_api_key_in_error(monkeypatch):
+    monkeypatch.delenv("CAMOFOX_URL", raising=False)
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+    secret = "sk-proj-ABCD1234567890EFGH"
 
     with patch(
         "tools.browser_tool._run_browser_command",
         return_value={
             "success": False,
-            "error": f"backend failed while typing {typed_text}",
-            "fallback_warning": f"chrome fallback also saw {typed_text}",
+            "error": f"backend failed while typing {secret}",
+            "fallback_warning": f"chrome fallback also saw {secret}",
         },
     ) as mock_run:
-        raw_result = browser_type("@password", typed_text, task_id="redaction-test")
+        raw_result = browser_type("@apikey", secret, task_id="redaction-test")
         result = json.loads(raw_result)
 
     assert result["success"] is False
-    assert typed_text not in raw_result
-    assert "[redacted typed text]" in raw_result
+    assert secret not in raw_result
+    assert "sk-pro" in raw_result
     mock_run.assert_called_once()
-    assert mock_run.call_args.args[2] == ["@password", typed_text]
+    assert mock_run.call_args.args[2] == ["@apikey", secret]

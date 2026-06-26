@@ -87,20 +87,34 @@ class TestBuildToolPreview:
         result = build_tool_preview("read_file", {"path": "./package.json", "offset": 1, "limit": 5})
         assert result == "package.json L1-5"
 
-    def test_browser_type_preview_never_echoes_typed_text(self):
-        typed_text = "my_secret_password_123"
-        result = build_tool_preview("browser_type", {"ref": "@e3", "text": typed_text})
+    def test_browser_type_preview_redacts_api_key(self):
+        secret = "sk-proj-ABCD1234567890EFGH"
+        result = build_tool_preview("browser_type", {"ref": "@e3", "text": secret})
         assert result is not None
-        assert typed_text not in result
-        assert "redacted typed text" in result
+        assert secret not in result
+        assert "sk-pro" in result and "..." in result
 
-    def test_browser_type_display_args_never_echo_typed_text(self):
-        typed_text = "normal-looking-but-sensitive"
+    def test_browser_type_preview_keeps_normal_text(self):
+        text = "hello world search query"
+        result = build_tool_preview("browser_type", {"ref": "@e3", "text": text})
+        assert result is not None
+        assert text in result
+
+    def test_browser_type_display_args_redact_api_key(self):
+        secret = "ghp_ABCDEFGHIJ1234567890"
         safe_args = redact_tool_args_for_display(
-            "browser_type", {"ref": "@e3", "text": typed_text}
+            "browser_type", {"ref": "@e3", "text": secret}
         )
-        assert safe_args == {"ref": "@e3", "text": "[redacted typed text]"}
-        assert typed_text not in str(safe_args)
+        assert secret not in str(safe_args)
+        assert safe_args["ref"] == "@e3"
+        assert safe_args["text"].startswith("ghp_AB")
+
+    def test_browser_type_display_args_keep_normal_text(self):
+        text = "my_normal_password_123"
+        safe_args = redact_tool_args_for_display(
+            "browser_type", {"ref": "@e3", "text": text}
+        )
+        assert safe_args == {"ref": "@e3", "text": text}
 
     def test_unknown_tool_with_fallback_key(self):
         """Unknown tool but with a recognized fallback key should still preview."""
@@ -258,17 +272,28 @@ class TestCuteToolMessagePreviewLength:
         )
         assert "2x: Review PR A | Review PR B" in line
 
-    def test_browser_type_cute_message_never_echoes_typed_text(self):
-        typed_text = "my_secret_password_123"
+    def test_browser_type_cute_message_redacts_api_key(self):
+        secret = "sk-proj-ABCD1234567890EFGH"
         line = get_cute_tool_message(
             "browser_type",
-            {"ref": "@password", "text": typed_text},
+            {"ref": "@password", "text": secret},
             0.1,
-            result='{"success": true, "typed": "[redacted typed text]"}',
+            result='{"success": true, "typed": "sk-pro...EFGH"}',
         )
 
-        assert typed_text not in line
-        assert "redacted typed text" in line
+        assert secret not in line
+        assert "sk-pro" in line
+
+    def test_browser_type_cute_message_keeps_normal_text(self):
+        text = "hello world"
+        line = get_cute_tool_message(
+            "browser_type",
+            {"ref": "@search", "text": text},
+            0.1,
+            result='{"success": true, "typed": "hello world"}',
+        )
+
+        assert text in line
 
 
 class TestEditDiffPreview:

@@ -38,7 +38,7 @@
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
 // exiting. Logs go to stderr; Python supervises restart.
 //
-// Requires spectrum-ts 3.x — pinned exactly in package.json because the SDK
+// Requires spectrum-ts 7.x — pinned exactly in package.json because the SDK
 // ships breaking majors; see README "Upgrading spectrum-ts".
 //
 // Env vars (required):

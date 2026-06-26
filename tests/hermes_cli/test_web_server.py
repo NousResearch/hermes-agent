@@ -3079,7 +3079,7 @@ class TestNewEndpoints:
         resp = self.client.get("/api/profiles/coder/setup-command")
 
         assert resp.status_code == 200
-        assert resp.json()["command"] == "coder setup"
+        assert resp.json()["command"] == "hermes -p coder setup"
 
     def test_profile_setup_command_uses_hermes_for_default_profile(self):
         from hermes_constants import get_hermes_home

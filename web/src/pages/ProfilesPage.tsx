@@ -713,7 +713,20 @@ export default function ProfilesPage() {
       await navigator.clipboard.writeText(cmd);
       showToast(`${t.profiles.commandCopied}: ${cmd}`, "success");
     } catch {
-      showToast(`${t.profiles.copyFailed}: ${cmd}`, "error");
+      // Fallback for HTTP (non-secure) contexts where Clipboard API is blocked
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = cmd;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        showToast(`${t.profiles.commandCopied}: ${cmd}`, "success");
+      } catch {
+        showToast(`${t.profiles.copyFailed}: ${cmd}`, "error");
+      }
     }
   };
 

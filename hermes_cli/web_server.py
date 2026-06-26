@@ -9971,7 +9971,7 @@ def _resolve_profile_dir(name: str) -> Path:
 def _profile_setup_command(name: str) -> str:
     """Return the shell command used to configure a profile in the CLI."""
     _resolve_profile_dir(name)
-    return "hermes setup" if name == "default" else f"{name} setup"
+    return "hermes setup" if name == "default" else f"hermes -p {name} setup"
 
 
 def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:

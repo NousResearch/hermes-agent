@@ -10,7 +10,7 @@ import pytest
 def test_core_reasoning_efforts_are_official_gpt55_modes_only():
     from hermes_constants import VALID_REASONING_EFFORTS
 
-    assert VALID_REASONING_EFFORTS == ("low", "medium", "high", "extra_high", "max")
+    assert VALID_REASONING_EFFORTS == ("minimal", "low", "medium", "high", "extra_high", "max")
 
 
 @pytest.mark.parametrize(
@@ -25,7 +25,7 @@ def test_core_reasoning_efforts_are_official_gpt55_modes_only():
         ("extra-high", "extra_high"),
         ("xhigh", "extra_high"),
         ("max", "max"),
-        ("minimal", "low"),
+        ("minimal", "minimal"),
     ],
 )
 def test_parse_reasoning_effort_normalizes_aliases_to_canonical_values(raw, expected):
@@ -49,7 +49,7 @@ def test_parse_reasoning_effort_none_remains_disable_alias_not_effort_level():
         ("extra_high", "Extra High"),
         ("xhigh", "Extra High"),
         ("extra high", "Extra High"),
-        ("minimal", "Low"),
+        ("minimal", "Minimal"),
     ],
 )
 def test_reasoning_effort_display_labels_canonical_modes(raw, label):

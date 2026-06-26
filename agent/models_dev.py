@@ -730,8 +730,8 @@ def get_supported_reasoning_efforts(provider: str, model_id: str) -> list[str]:
     slug = (provider or "").strip().lower()
     mid = (model_id or "").strip().lower()
 
-    # Anthropic Claude 3 Opus
-    if slug == "anthropic" and "opus" in mid:
+    # Anthropic Claude 3 Opus or Fable 5
+    if slug == "anthropic" and ("opus" in mid or ("fable" in mid and "5" in mid)):
         return ["low", "medium", "high", "extra_high", "max"]
     # Anthropic Sonnet 4.6
     if slug == "anthropic" and "sonnet" in mid and ("4.6" in mid or "4-6" in mid):
@@ -746,7 +746,12 @@ def get_supported_reasoning_efforts(provider: str, model_id: str) -> list[str]:
 
     # Google Gemini
     if slug == "gemini" or "gemini" in mid:
-        return ["low", "high", "extra_high"]
+        if "flash" in mid and "3.5" in mid:
+            return ["minimal", "low", "medium", "high"]
+        elif "pro" in mid and "3.1" in mid:
+            return ["low", "medium", "high"]
+        else:
+            return ["low", "medium", "high"]
 
     # Default fallback (OpenAI/Copilot standard)
     return ["low", "medium", "high"]

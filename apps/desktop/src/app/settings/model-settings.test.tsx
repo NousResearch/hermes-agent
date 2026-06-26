@@ -103,12 +103,12 @@ describe('ModelSettings', () => {
     const triggers = await screen.findAllByRole('combobox')
     fireEvent.click(triggers[2])
 
+    expect((await screen.findAllByText('Minimal')).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('Low')).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('Medium')).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('High')).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('Extra High')).length).toBeGreaterThan(0)
-    expect(screen.queryByText('Minimal')).toBeNull()
-    expect(screen.queryByText('Max')).toBeNull()
+    expect((await screen.findAllByText('Max')).length).toBeGreaterThan(0)
     expect(screen.queryByText('Reasoning off')).toBeNull()
   })
 

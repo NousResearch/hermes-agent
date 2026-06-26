@@ -19,6 +19,7 @@ import { $activeSessionId, setCurrentFastMode, setCurrentReasoningEffort } from 
 // Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
 // by the Thinking toggle, not the radio.
 const EFFORT_OPTIONS = [
+  { value: 'minimal', labelKey: 'minimal' },
   { value: 'low', labelKey: 'low' },
   { value: 'medium', labelKey: 'medium' },
   { value: 'high', labelKey: 'high' },

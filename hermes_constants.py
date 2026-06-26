@@ -548,12 +548,12 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
         env["HOME"] = home
 
 
-VALID_REASONING_EFFORTS = ("low", "medium", "high", "extra_high", "max")
+VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "extra_high", "max")
 
 _REASONING_EFFORT_ALIASES = {
+    "minimal": "minimal",
+    "minimum": "minimal",
     "low": "low",
-    "minimal": "low",
-    "minimum": "low",
     "medium": "medium",
     "med": "medium",
     "high": "high",
@@ -568,6 +568,7 @@ _REASONING_EFFORT_ALIASES = {
 }
 
 _REASONING_EFFORT_LABELS = {
+    "minimal": "Minimal",
     "low": "Low",
     "medium": "Medium",
     "high": "High",

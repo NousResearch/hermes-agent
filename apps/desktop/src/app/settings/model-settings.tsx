@@ -31,7 +31,7 @@ import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
 // Hermes' official GPT-5.5/Codex reasoning levels
 // (hermes_constants.VALID_REASONING_EFFORTS). Legacy aliases normalize for
 // existing configs, but only canonical provider-accepted choices are displayed.
-const EFFORT_VALUES = ['low', 'medium', 'high', 'extra_high'] as const
+const EFFORT_VALUES = ['minimal', 'low', 'medium', 'high', 'extra_high', 'max'] as const
 type EffortValue = (typeof EFFORT_VALUES)[number]
 
 // agent.service_tier stores "fast"/"priority"/"on" for fast; anything else is
@@ -43,8 +43,8 @@ const normalizeEffortValue = (raw: unknown): EffortValue => {
   const value = String(raw ?? '').trim().toLowerCase()
   if (!value) return 'medium'
   const squashed = value.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim()
-  if (value === 'minimal' || squashed === 'minimum') return 'low'
-  if (['xhigh', 'x high', 'extra high', 'max', 'maximum'].includes(squashed)) return 'extra_high'
+  if (squashed === 'minimum') return 'minimal'
+  if (['xhigh', 'x high', 'extra high', 'maximum'].includes(squashed)) return 'extra_high'
   return (EFFORT_VALUES as readonly string[]).includes(value) ? (value as EffortValue) : 'medium'
 }
 

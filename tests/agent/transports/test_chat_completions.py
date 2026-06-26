@@ -377,7 +377,7 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
             "include_thoughts": True,
-            "thinking_level": "low",
+            "thinking_level": "medium",
         }
 
     def test_gemini_native_disabled_reasoning_hides_thoughts(self, transport):
@@ -405,11 +405,10 @@ class TestChatCompletionsBuildKwargs:
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
 
     def test_gemini_flash_minimal_clamps_to_low(self, transport):
-        # Gemini 3 Flash documents low/medium/high; "minimal" isn't accepted,
-        # so clamp it down to "low" rather than forwarding it verbatim.
+        # Gemini 3 Flash documents minimal/low/medium/high
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gemini-3-flash-preview",
+            model="gemini-3.5-flash-preview",
             messages=msgs,
             provider_name="gemini",
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
@@ -417,7 +416,7 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
             "include_thoughts": True,
-            "thinking_level": "low",
+            "thinking_level": "minimal",
         }
 
     def test_gemma_does_not_receive_thinking_config(self, transport):

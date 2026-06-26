@@ -1430,6 +1430,7 @@ export interface Translations {
       thinking: string
       fast: string
       effort: string
+      minimal: string
       low: string
       medium: string
       high: string

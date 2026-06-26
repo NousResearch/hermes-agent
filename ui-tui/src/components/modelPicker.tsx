@@ -134,8 +134,17 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
     if ((stage === 'provider' || stage === 'model') && filter.trim()) {
+      // Preserve the selected provider across filter clear (same fix as
+      // Enter→key/model and Ctrl+D transitions above).
+      const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+      if (fullProviderIdx >= 0) {
+        setProviderIdx(fullProviderIdx)
+      } else if (stage === 'provider') {
+        setProviderIdx(0)
+      }
+
       setFilter('')
-      setProviderIdx(stage === 'provider' ? 0 : providerIdx)
       setModelIdx(0)
 
       return

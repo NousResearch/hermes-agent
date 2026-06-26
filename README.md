@@ -121,6 +121,18 @@ templates/config.pi2-rag.yaml
 
 Existing configs are not overwritten.
 
+## Robotics applications
+
+This fork can be used as a lightweight robot edge agent: it coordinates high-level tasks, talks to MQTT/HTTP/serial/ROS bridge layers, summarizes robot state, and connects a remote/LAN AI model to the robot controller. Keep hard real-time motor control, obstacle reflexes, and emergency-stop enforcement in an MCU or ROS controller.
+
+Recommended split:
+
+```text
+Cloud/LAN LLM or operator UI -> Hermes Agent IoT -> MQTT/HTTP/serial bridge -> MCU/ROS controller -> robot body
+```
+
+See `ROBOTICS.md` for recommended robot architectures, MQTT topic conventions, safety limits, watchdog tasks, and next implementation steps.
+
 ## MQTT IoT tools
 
 The native and rag profiles include lightweight MQTT support for embedded sensors and actuators through the `mqtt` toolset. Configure a broker with:

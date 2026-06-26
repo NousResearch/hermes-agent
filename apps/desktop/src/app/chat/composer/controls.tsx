@@ -9,6 +9,7 @@ import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 
 import type { ConversationStatus } from './hooks/use-voice-conversation'
+import { ModelPill } from './model-pill'
 import type { ChatBarState, VoiceStatus } from './types'
 
 export const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-md'
@@ -42,6 +43,7 @@ export function ComposerControls({
   busyAction,
   canSteer,
   canSubmit,
+  compactModelPill = false,
   conversation,
   disabled,
   hasComposerPayload,
@@ -54,6 +56,7 @@ export function ComposerControls({
   busyAction: 'queue' | 'stop'
   canSteer: boolean
   canSubmit: boolean
+  compactModelPill?: boolean
   conversation: ConversationProps
   disabled: boolean
   hasComposerPayload: boolean
@@ -66,6 +69,7 @@ export function ComposerControls({
   const c = t.composer
   const steerCombo = formatCombo('mod+enter')
   const steerLabel = `${c.steer} (${steerCombo})`
+
   const steerTip = (
     <span className="inline-flex items-center gap-1.5">
       {c.steer}
@@ -81,8 +85,10 @@ export function ComposerControls({
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
-      <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
-      {canSteer && (
+      <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+      {/* While the agent runs and the user is typing, steer takes over the mic's
+          slot rather than crowding the row with an extra button. */}
+      {canSteer ? (
         <Tip label={steerTip}>
           <Button
             aria-label={steerLabel}
@@ -93,9 +99,11 @@ export function ComposerControls({
             type="button"
             variant="ghost"
           >
-            <SteeringWheel size={16} />
+            <SteeringWheel size={14} />
           </Button>
         </Tip>
+      ) : (
+        <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       )}
       {showVoicePrimary ? (
         <Tip label={c.startVoice}>
@@ -110,7 +118,7 @@ export function ComposerControls({
             size="icon"
             type="button"
           >
-            <AudioLines size={17} />
+            <AudioLines size={15} />
           </Button>
         </Tip>
       ) : (
@@ -123,12 +131,12 @@ export function ComposerControls({
           >
             {busy ? (
               busyAction === 'queue' ? (
-                <Layers3 size={16} />
+                <Layers3 size={14} />
               ) : (
-                <span className="block size-3 rounded-[0.1875rem] bg-current" />
+                <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
               )
             ) : (
-              <Codicon name="arrow-up" size="1rem" />
+              <Codicon name="arrow-up" size="0.875rem" />
             )}
           </Button>
         </Tip>
@@ -287,11 +295,11 @@ function DictationButton({
         variant="ghost"
       >
         {status === 'recording' ? (
-          <Square className="fill-current" size={12} />
+          <Square className="fill-current" size={11} />
         ) : status === 'transcribing' ? (
-          <Loader2 className="animate-spin" size={16} />
+          <Loader2 className="animate-spin" size={14} />
         ) : (
-          <Codicon name="mic" size="1rem" />
+          <Codicon name="mic" size="0.875rem" />
         )}
       </Button>
     </Tip>

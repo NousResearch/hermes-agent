@@ -2260,17 +2260,34 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
-    cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
-    )
+    # Per-job ``allow_silent`` (default True) controls whether the
+    # [SILENT] suppression instruction is included. Briefing/report
+    # jobs that should always deliver set allow_silent=False so the
+    # agent never suppresses output (#53230).
+    allow_silent = job.get("allow_silent", True)
+    if allow_silent:
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the user — do NOT use send_message or try to deliver "
+            "the output yourself. Just produce your report/output as your "
+            "final response and the system handles the rest. "
+            "SILENT: If there is genuinely nothing new to report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more.]\n\n"
+        )
+    else:
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the user — do NOT use send_message or try to deliver "
+            "the output yourself. Just produce your report/output as your "
+            "final response and the system handles the rest. "
+            "This job requires delivery every run — do NOT suppress output. "
+            "Always produce a concise report even when there is nothing "
+            "notable to report.]\n\n"
+        )
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")
@@ -3415,6 +3432,33 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             raise
         finally:
             reset_secret_scope(_scope_token)
+
+        # Deliver the final response to the origin/target chat.
+        # If the agent responded with [SILENT], skip delivery (but
+        # output is already saved above).  Failed jobs always deliver.
+        deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+        # Treat whitespace-only final responses the same as empty
+        # responses: do not deliver a blank message, and let the
+        # empty-response guard below mark the run as a soft failure.
+        should_deliver = bool(deliver_content.strip())
+        # Cron silence suppression — see _is_cron_silence_response.  Replaces the
+        # old `SILENT_MARKER in ...upper()` substring check, which both leaked
+        # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
+        # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
+        # #46917).  Keeps the intentional bracketed-prefix / trailing-line
+        # tolerance the cron contract relies on.
+        # Per-job ``allow_silent`` (default True) controls whether silence
+        # suppression is active.  Briefing/report jobs with allow_silent=False
+        # always deliver (#53230).
+        if should_deliver and success and _is_cron_silence_response(deliver_content):
+            if job.get("allow_silent", True):
+                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                should_deliver = False
+            else:
+                logger.info(
+                    "Job '%s': agent returned %s but allow_silent=False — delivering anyway",
+                    job["id"], SILENT_MARKER,
+                )
 
         # Everything from here through delivery runs with the agent still live
         # (deferred teardown). Wrap it ALL in a try/finally so that if any step

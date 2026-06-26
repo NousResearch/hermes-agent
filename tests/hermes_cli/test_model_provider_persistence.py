@@ -207,6 +207,51 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("base_url") == "https://packy.example.com/v1"
         assert model.get("api_mode") == "codex_responses"
 
+    def test_named_custom_provider_with_builtin_slug_persists_custom_prefix(
+        self, config_home, monkeypatch
+    ):
+        """providers.<builtin-slug> must persist as a named custom provider."""
+        import yaml
+
+        from hermes_cli.main import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  minimax-cn:\n"
+            "    name: MiniMax CN Proxy\n"
+            "    api: https://mimimax.cn/v1\n"
+            "    key_env: MINIMAX_CN_PROXY_KEY\n"
+            "    transport: chat_completions\n"
+            "    model: MiniMax-M3\n"
+            "    default_model: MiniMax-M3\n"
+        )
+        monkeypatch.setenv("MINIMAX_CN_PROXY_KEY", "proxy-secret")
+
+        provider_info = {
+            "name": "MiniMax CN Proxy",
+            "base_url": "https://mimimax.cn/v1",
+            "api_key": "",
+            "key_env": "MINIMAX_CN_PROXY_KEY",
+            "model": "MiniMax-M3",
+            "api_mode": "chat_completions",
+            "provider_key": "minimax-cn",
+        }
+
+        with patch("hermes_cli.auth._save_model_choice"), \
+             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("hermes_cli.models.fetch_api_models", return_value=["MiniMax-M3"]), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=OSError("no tty in test")), \
+             patch("builtins.input", return_value="1"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "custom:minimax-cn"
+        assert "base_url" not in model
+        assert "api_key" not in model
+
     def test_copilot_acp_provider_saved_when_selected(self, config_home):
         """_model_flow_copilot_acp should persist provider/base_url/model together."""
         from hermes_cli.main import _model_flow_copilot_acp
@@ -555,4 +600,3 @@ class TestZaiEndpointPicker:
             _select_zai_endpoint(custom_url)
 
         assert captured["default"] == expected_default
-

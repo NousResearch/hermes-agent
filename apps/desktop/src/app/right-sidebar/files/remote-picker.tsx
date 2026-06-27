@@ -13,10 +13,13 @@ function clean(path: string) {
 
 function parentDir(path: string) {
   const value = clean(path)
+
   if (value === '/') {
     return '/'
   }
+
   const parent = value.slice(0, value.lastIndexOf('/'))
+
   return parent || '/'
 }
 
@@ -48,6 +51,7 @@ export function RemoteFolderPicker() {
           setPending({ defaultPath, resolve, title: options?.title || r.remotePickerTitle })
         })
     })
+
     return () => setDesktopFsRemotePicker(null)
   }, [r.remotePickerTitle])
 
@@ -65,12 +69,17 @@ export function RemoteFolderPicker() {
         if (!active) {
           return
         }
+
         if (result.error) {
           setError(result.error)
           setEntries([])
+
           return
         }
-        setEntries(result.entries.filter(entry => entry.isDirectory).map(entry => ({ name: entry.name, path: entry.path })))
+
+        setEntries(
+          result.entries.filter(entry => entry.isDirectory).map(entry => ({ name: entry.name, path: entry.path }))
+        )
       })
       .catch(err => {
         if (active) {
@@ -93,10 +102,12 @@ export function RemoteFolderPicker() {
     const parts = clean(currentPath).split('/').filter(Boolean)
     const out = [{ label: '/', path: '/' }]
     let acc = ''
+
     for (const part of parts) {
       acc += `/${part}`
       out.push({ label: part, path: acc })
     }
+
     return out
   }, [currentPath])
 
@@ -119,7 +130,10 @@ export function RemoteFolderPicker() {
           <div className="flex flex-wrap items-center gap-1 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground">
             {crumbs.map((crumb, index) => (
               <button
-                className={cn('rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground', index === crumbs.length - 1 && 'text-foreground')}
+                className={cn(
+                  'rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground',
+                  index === crumbs.length - 1 && 'text-foreground'
+                )}
                 key={crumb.path}
                 onClick={() => setCurrentPath(crumb.path)}
                 type="button"
@@ -130,7 +144,11 @@ export function RemoteFolderPicker() {
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            <FolderRow disabled={currentPath === '/'} name=".." onClick={() => setCurrentPath(parentDir(currentPath))} />
+            <FolderRow
+              disabled={currentPath === '/'}
+              name=".."
+              onClick={() => setCurrentPath(parentDir(currentPath))}
+            />
             {loading ? (
               <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
                 <Codicon name="loading" size="0.8rem" spinning />
@@ -141,7 +159,9 @@ export function RemoteFolderPicker() {
             ) : entries.length === 0 ? (
               <div className="px-2 py-3 text-xs text-muted-foreground">{r.emptyBody}</div>
             ) : (
-              entries.map(entry => <FolderRow key={entry.path} name={pathName(entry.path)} onClick={() => setCurrentPath(entry.path)} />)
+              entries.map(entry => (
+                <FolderRow key={entry.path} name={pathName(entry.path)} onClick={() => setCurrentPath(entry.path)} />
+              ))
             )}
           </div>
         </div>

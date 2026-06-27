@@ -76,6 +76,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
+  "/api/model/moa",
   "/api/model/options",
 ];
 
@@ -472,6 +473,13 @@ export const api = {
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
   getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
   getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
+  getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
+  saveMoaModels: (body: MoaConfigResponse) =>
+    fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   setModelAssignment: (body: ModelAssignmentRequest) =>
     fetchJSON<ModelAssignmentResponse>("/api/model/set", {
       method: "POST",
@@ -2059,6 +2067,30 @@ export interface AuxiliaryTaskAssignment {
 export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[];
   main: { provider: string; model: string };
+}
+
+export interface MoaModelSlot {
+  provider: string;
+  model: string;
+}
+
+export interface MoaConfigResponse {
+  default_preset: string;
+  active_preset: string;
+  presets: Record<string, {
+    reference_models: MoaModelSlot[];
+    aggregator: MoaModelSlot;
+    reference_temperature: number;
+    aggregator_temperature: number;
+    max_tokens: number;
+    enabled: boolean;
+  }>;
+  reference_models: MoaModelSlot[];
+  aggregator: MoaModelSlot;
+  reference_temperature: number;
+  aggregator_temperature: number;
+  max_tokens: number;
+  enabled: boolean;
 }
 
 export interface ModelAssignmentRequest {

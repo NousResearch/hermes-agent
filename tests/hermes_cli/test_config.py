@@ -62,6 +62,30 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == "custom soul"
 
+    def test_upgrades_legacy_template_soul_md(self, tmp_path):
+        # Older installers seeded a comment-only scaffold that shadowed the
+        # runtime default. A SOUL.md still matching that scaffold carries no
+        # user persona and should be upgraded in place to DEFAULT_SOUL_MD.
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD, _LEGACY_TEMPLATE_SOULS
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(_LEGACY_TEMPLATE_SOULS[0] + "\n", encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
+
+    def test_preserves_legacy_template_with_user_persona(self, tmp_path):
+        # If the user typed a persona alongside the scaffold, the content no
+        # longer matches the known empty template — leave it untouched.
+        from hermes_cli.default_soul import _LEGACY_TEMPLATE_SOULS
+
+        mixed = _LEGACY_TEMPLATE_SOULS[0] + "\nYou are a helpful pirate."
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(mixed, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == mixed
+
 
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):
@@ -329,6 +353,55 @@ class TestSaveEnvValueSecure:
 
         env_mode = env_path.stat().st_mode & 0o777
         assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
+
+    def test_save_env_value_quotes_values_containing_hash(self, tmp_path):
+        """Regression test for #30355."""
+        from dotenv import dotenv_values
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("ANTHROPIC_TOKEN", None)
+            token = "sk-ant-oat01-abc#xyz#more"
+            save_env_value("ANTHROPIC_TOKEN", token)
+
+            content = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert f'ANTHROPIC_TOKEN="{token}"' in content
+
+            parsed = dotenv_values(str(tmp_path / ".env"))
+            assert parsed["ANTHROPIC_TOKEN"] == token
+            assert load_env()["ANTHROPIC_TOKEN"] == token
+
+    def test_save_env_value_hash_value_round_trips_quotes_and_backslashes(self, tmp_path):
+        from dotenv import dotenv_values
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("ANTHROPIC_TOKEN", None)
+            token = 'abc"def\\ghi#jkl'
+            save_env_value("ANTHROPIC_TOKEN", token)
+
+            content = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert 'ANTHROPIC_TOKEN="abc\\"def\\\\ghi#jkl"' in content
+
+            parsed = dotenv_values(str(tmp_path / ".env"))
+            assert parsed["ANTHROPIC_TOKEN"] == token
+            assert load_env()["ANTHROPIC_TOKEN"] == token
+
+    def test_save_env_value_updates_hash_value_with_quotes(self, tmp_path):
+        from dotenv import dotenv_values
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("ANTHROPIC_TOKEN", None)
+            save_env_value("ANTHROPIC_TOKEN", "old-token")
+
+            token = 'abc"def\\ghi#jkl'
+            save_env_value("ANTHROPIC_TOKEN", token)
+
+            content = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert content.count("ANTHROPIC_TOKEN=") == 1
+            assert 'ANTHROPIC_TOKEN="abc\\"def\\\\ghi#jkl"' in content
+
+            parsed = dotenv_values(str(tmp_path / ".env"))
+            assert parsed["ANTHROPIC_TOKEN"] == token
+            assert load_env()["ANTHROPIC_TOKEN"] == token
 
 
 class TestRemoveEnvValue:
@@ -989,7 +1062,7 @@ class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
 
-    def test_migrate_adds_discord_channel_prompts_default(self, tmp_path):
+    def test_migrate_does_not_expand_discord_channel_prompts_default(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump({"_config_version": 17, "discord": {"auto_thread": True}}),
@@ -1003,7 +1076,50 @@ class TestDiscordChannelPromptsConfig:
         from hermes_cli.config import DEFAULT_CONFIG
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["discord"]["auto_thread"] is True
-        assert raw["discord"]["channel_prompts"] == {}
+        # channel_prompts is a DEFAULT_CONFIG value that should NOT be expanded
+        # into the user's file — read_raw_config() preserves only what the user
+        # explicitly wrote (fixes #40821: config migration expanding defaults).
+        assert "channel_prompts" not in raw.get("discord", {})
+
+    def test_migrate_preserves_custom_providers_and_no_defaults_dump(self, tmp_path):
+        """Migration must not expand config.yaml to a defaults dump (#40821).
+
+        Before the fix, migrations used load_config() which deep-merges
+        DEFAULT_CONFIG, then save_config() wrote the full ~13KB expanded
+        result — destroying comments and structure. Using read_raw_config()
+        keeps the file small and preserves only the user's actual config.
+        """
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "_config_version": 3,
+                "model": {"default": "test-model", "provider": "openrouter"},
+                "custom_providers": [
+                    {"name": "local-llm", "base_url": "http://localhost:8080/v1",
+                     "models": {"test": {}}}
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        # custom_providers migrated to providers dict (by design, v11->v12)
+        assert "custom_providers" not in raw
+        assert "providers" in raw
+        assert "local-llm" in raw["providers"]
+        assert raw["providers"]["local-llm"]["api"] == "http://localhost:8080/v1"
+
+        # File must NOT be a defaults dump — assert specific DEFAULT_CONFIG
+        # top-level keys are absent (they should only appear via load_config's
+        # deep-merge, not be written to the user's file by migration).
+        for default_key in ("tts", "compression", "security", "whatsapp", "bedrock"):
+            assert default_key not in raw, (
+                f"{default_key} should not be in migrated config file — "
+                f"migration should use read_raw_config() to avoid defaults dump"
+            )
 
 
 class TestUserMessagePreviewConfig:

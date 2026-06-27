@@ -288,8 +288,53 @@ def _find_bash() -> str:
     )
 
 
-# Backward compat — process_registry.py imports this name
-_find_shell = _find_bash
+# POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``
+# invocation spawn_local uses. $SHELL values outside this set (fish, csh/tcsh,
+# nushell, elvish, xonsh, …) would error on that syntax, so _find_shell falls
+# back to bash for them rather than honouring $SHELL. (#42203)
+_SPAWN_COMPATIBLE_SHELLS = frozenset({"bash", "zsh", "sh", "dash", "ksh", "mksh"})
+
+
+def _find_shell() -> str:
+    """Find the user's login shell for background process spawning.
+
+    Unlike ``_find_bash`` (which always returns a bash binary for callers
+    that explicitly need bash), this function prefers the user's configured
+    ``$SHELL`` on POSIX so that ``spawn_local`` uses the shell the user
+    actually logs in with.
+
+    On macOS Catalina+ the default login shell is zsh, but
+    ``shutil.which("bash")`` still finds the system ``/bin/bash`` (GNU bash
+    3.2).  When bash 3.2 is invoked with ``-l`` (login) and stdin is
+    ``/dev/null``, it sources ``~/.bash_profile`` which on many macOS setups
+    contains ``exec /bin/zsh -l``.  That ``exec`` replaces bash with zsh but
+    drops the ``-c`` argument, so the background command never runs — the
+    subprocess exits 0 with no output and no side effects.
+
+    Preferring ``$SHELL`` (when it is a POSIX-``sh``-family shell) avoids this
+    because zsh/bash/sh/dash/ksh handle ``-lic`` correctly even with
+    redirected stdin.
+
+    Only POSIX-sh-family shells are honoured: ``spawn_local`` invokes the
+    shell as ``[shell, "-lic", "set +m; <cmd>"]``, and that ``-lic`` bundle +
+    ``set +m`` job-control syntax is NOT understood by fish, csh/tcsh,
+    nushell, elvish, xonsh, etc.  Returning such a ``$SHELL`` would trade the
+    bash-3.2 swallow for a parse error on every background command, so for any
+    non-allowlisted shell we fall back to ``_find_bash`` (the prior behaviour).
+
+    On Windows, ``$SHELL`` is typically bash (Git Bash), so behaviour is
+    unchanged — we fall through to ``_find_bash``.
+    """
+    if not _IS_WINDOWS:
+        user_shell = os.environ.get("SHELL")
+        if (
+            user_shell
+            and os.path.isfile(user_shell)
+            and os.access(user_shell, os.X_OK)
+            and Path(user_shell).name in _SPAWN_COMPATIBLE_SHELLS
+        ):
+            return user_shell
+    return _find_bash()
 
 
 # Standard PATH entries for environments with minimal PATH.
@@ -686,7 +731,7 @@ class LocalEnvironment(BaseEnvironment):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            start_new_session=True,
             cwd=_popen_cwd,
             **_popen_kwargs,
         )

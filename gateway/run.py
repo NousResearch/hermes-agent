@@ -5410,11 +5410,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
         shell_cmd = (
-            f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
+            "pid="
+            f"{current_pid}; "
+            "original_cmd=\"\"; "
+            "original_cmd=$(ps -p \"$pid\" -o command= 2>/dev/null); "
+            "wait_for_pid() { "
+            "  local pid=$1 "
+            "  local attempts=$2 "
+            "  local delay=$3 "
+            "  local i=0 "
+            "  while kill -0 \"$pid\" 2>/dev/null; do "
+            "    i=$((i + 1)); "
+            "    if [ \"$i\" -ge \"$attempts\" ]; then "
+            "      return 1; "
+            "    fi; "
+            "    sleep \"$delay\"; "
+            "  done; "
+            "  return 0; "
+            "}; "
+            "if ! wait_for_pid \"$pid\" 150 0.2; then "
+            "  if [ -n \"$original_cmd\" ]; then "
+            "    current_cmd=$(ps -p \"$pid\" -o command= 2>/dev/null); "
+            "    if [ \"$current_cmd\" = \"$original_cmd\" ]; then "
+            "      kill -TERM \"$pid\" 2>/dev/null || true; "
+            "      for _ in 1 2 3 4 5 6 7 8 9 10; do "
+            "        sleep 0.2; "
+            "        if ! kill -0 \"$pid\" 2>/dev/null; then "
+            "          break; "
+            "        fi; "
+            "      done; "
+            "      if kill -0 \"$pid\" 2>/dev/null; then "
+            "        kill -KILL \"$pid\" 2>/dev/null || true; "
+            "      fi; "
+            "    fi; "
+            "  fi; "
+            "fi; "
             f"{cmd} gateway restart"
         )
+
         # Same marker scrub as the Windows watcher above: this watcher runs
-        # `hermes gateway restart` from outside the gateway, but it inherits
         # _HERMES_GATEWAY=1 from us, and the CLI's self-restart loop guard
         # refuses to run when that marker is set — silently (DEVNULL), so the
         # gateway stops and never comes back.

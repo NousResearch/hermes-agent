@@ -1521,6 +1521,14 @@ function findGitBash() {
     return findOnPath('bash')
   }
 
+  const envBash = (process.env.HERMES_GIT_BASH_PATH || '').trim()
+  if (envBash) {
+    const normalized = path.normalize(envBash.replace(/^['\"]|['\"]$/g, ''))
+    if (fileExists(normalized)) {
+      return normalized
+    }
+  }
+
   // install.ps1 drops PortableGit at %LOCALAPPDATA%\hermes\git\... — checked
   // first so users who installed via install.ps1 are detected before we
   // start probing system-wide locations.

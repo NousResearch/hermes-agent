@@ -26,8 +26,11 @@ env:
 jobs:
   # Build, test, and optionally push the amd64 image.
   build-amd64:
-    # Only run on the upstream repository, not on forks
-    if: github.repository == 'NousResearch/hermes-agent'
+    # Skip PR builds from forks: GITHUB_TOKEN for fork PRs lacks `packages: write`,
+    # so the cache-to step (write to ghcr.io) fails with "installation not allowed
+    # to Write organization package". Upstream PRs run the full pipeline; forks
+    # get gate-level coverage from ci.yml + lint.yml + typecheck.yml + tests.yml.
+    if: github.event_name != 'pull_request' || github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -146,7 +149,11 @@ jobs:
   # Build, test, and optionally push the arm64 image.
   # ---------------------------------------------------------------------------
   build-arm64:
-    if: github.repository == 'NousResearch/hermes-agent'
+    # Skip PR builds from forks: GITHUB_TOKEN for fork PRs lacks `packages: write`,
+    # so the cache-to step (write to ghcr.io) fails with "installation not allowed
+    # to Write organization package". Upstream PRs run the full pipeline; forks
+    # get gate-level coverage from ci.yml + lint.yml + typecheck.yml + tests.yml.
+    if: github.event_name != 'pull_request' || github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     outputs:

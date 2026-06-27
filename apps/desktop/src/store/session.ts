@@ -9,6 +9,46 @@ import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 
+const SESSION_NUMBER_RE = /^#(\d+)\b/
+
+function sessionSortActivity(session: SessionInfo): number {
+  return session.last_active || session.started_at || 0
+}
+
+export function sessionTitleNumber(session: SessionInfo): number | null {
+  const title = session.title?.trim() || ''
+  const match = SESSION_NUMBER_RE.exec(title)
+
+  if (!match) {
+    return null
+  }
+
+  const parsed = Number.parseInt(match[1], 10)
+
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+export function sortSessionsByNumber(sessions: SessionInfo[]): SessionInfo[] {
+  return [...sessions].sort((a, b) => {
+    const an = sessionTitleNumber(a)
+    const bn = sessionTitleNumber(b)
+
+    if (an !== null && bn !== null && an !== bn) {
+      return an - bn
+    }
+
+    if (an !== null && bn === null) {
+      return -1
+    }
+
+    if (an === null && bn !== null) {
+      return 1
+    }
+
+    return sessionSortActivity(b) - sessionSortActivity(a)
+  })
+}
+
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
 // The composer's model/effort/fast is sticky UI state, NOT the profile default

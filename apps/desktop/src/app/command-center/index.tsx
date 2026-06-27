@@ -14,7 +14,7 @@ import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $sessions, sessionPinId } from '@/store/session'
+import { $sessions, sessionPinId, sortSessionsByNumber } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -128,12 +128,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const debouncedQuery = useDebouncedValue(query.trim(), 180)
 
   const filteredSessions = useMemo(() => {
-    const sorted = [...sessions].sort((a, b) => {
-      const left = a.last_active || a.started_at || 0
-      const right = b.last_active || b.started_at || 0
-
-      return right - left
-    })
+    const sorted = sortSessionsByNumber(sessions)
 
     const needle = debouncedQuery.toLowerCase()
 

@@ -110,7 +110,8 @@ import {
   $sessionsTotal,
   $workingSessionIds,
   sessionPinId,
-  setCurrentCwd
+  setCurrentCwd,
+  sortSessionsByNumber
 } from '@/store/session'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
@@ -476,13 +477,9 @@ export function ChatSidebar({
     [sessions, showAllProfiles, profileScope]
   )
 
-  // Agent session order is pinned to creation time (started_at), NOT activity —
-  // a new message must never float a session to the top. Position only changes
-  // for a brand-new session or an explicit manual drag (agentOrderIds).
-  const sortedSessions = useMemo(
-    () => [...visibleSessions].sort((a, b) => (b.started_at || 0) - (a.started_at || 0)),
-    [visibleSessions]
-  )
+  // Keep #number-prefixed HQ sessions in stable numeric order. Unnumbered
+  // sessions retain the shared recency fallback used by other session pickers.
+  const sortedSessions = useMemo(() => sortSessionsByNumber(visibleSessions), [visibleSessions])
 
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
 

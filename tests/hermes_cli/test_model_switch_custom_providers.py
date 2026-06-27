@@ -337,6 +337,54 @@ def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
 
 
 
+def test_switch_model_suppresses_custom_provider_discover_models_false_warning(monkeypatch):
+    """When discovery is disabled, declared custom-provider models should not
+    warn just because the endpoint's live /models response omits an alias."""
+    validation_with_warning = {
+        "accepted": True,
+        "persist": True,
+        "recognized": False,
+        "message": (
+            "Note: `gpt-5.5` was not found in this custom endpoint's model listing "
+            "(https://gateway.example.com/v1/models). It may still work if the "
+            "server supports hidden or aliased models."
+        ),
+    }
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "sk-test",
+            "base_url": "https://gateway.example.com/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: validation_with_warning)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="gpt-5.5",
+        current_provider="custom:gateway",
+        current_model="gpt-5.4",
+        current_base_url="https://gateway.example.com/v1",
+        current_api_key="sk-test",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "gateway",
+                "base_url": "https://gateway.example.com/v1",
+                "discover_models": False,
+                "model": "gpt-5.5",
+                "models": {"gpt-5.5": {"context_length": 400000}},
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.new_model == "gpt-5.5"
+    assert result.warning_message == ""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # #9210: group custom_providers by (base_url, api_key) in /model picker
 # ─────────────────────────────────────────────────────────────────────────────

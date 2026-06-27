@@ -1230,6 +1230,40 @@ def switch_model(
             "message": f"Could not validate `{new_model}`: {e}",
         }
 
+    # If model discovery is disabled for a custom provider, trust any model
+    # explicitly declared in config and suppress live /models mismatch notes.
+    # Some gateways intentionally expose only a subset of routable aliases.
+    if custom_providers and isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            entry_name = entry.get("name", "")
+            entry_slug = f"custom:{entry_name}" if entry_name else ""
+            entry_url = entry.get("base_url", "")
+            if entry.get("discover_models", True) is not False:
+                continue
+            if entry_slug != target_provider and entry_url != base_url:
+                continue
+
+            entry_models = entry.get("models", {})
+            declared = new_model == entry.get("model", "")
+            if isinstance(entry_models, dict):
+                declared = declared or new_model in entry_models
+            elif isinstance(entry_models, list):
+                declared = declared or new_model in entry_models or any(
+                    isinstance(m, dict) and m.get("name") == new_model
+                    for m in entry_models
+                )
+
+            if declared:
+                validation = {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+                break
+
     # Override rejection if model is in the user's saved provider config.
     # API /v1/models may not list cloud/aliased models even though the server supports them.
     if not validation.get("accepted"):

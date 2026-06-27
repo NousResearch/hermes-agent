@@ -49,11 +49,15 @@ _FIRE_COOLDOWN_SECONDS = 2.0
 
 _DEFAULTS: Dict[str, Any] = {
     "enabled": False,
+    "surface": "auto",
     "provider": "openwakeword",
     "phrase": "hey jarvis",
     "sensitivity": 0.5,
     "start_new_session": True,
 }
+
+# Surfaces that can host the listener. "auto" means whichever one is running.
+SURFACES = ("cli", "tui", "gui")
 
 
 def load_wake_word_config() -> Dict[str, Any]:
@@ -89,6 +93,20 @@ def wake_phrase(cfg: Optional[Dict[str, Any]] = None) -> str:
     """Human-facing wake phrase label (purely cosmetic; engine keys detection)."""
     cfg = cfg if cfg is not None else load_wake_word_config()
     return str(_get(cfg, "phrase")) or "hey jarvis"
+
+
+def wake_surface_enabled(surface: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """Should ``surface`` (``cli`` / ``tui`` / ``gui``) host the listener?
+
+    True when the wake word is enabled and the configured ``surface`` is either
+    ``auto`` or this exact surface — the single gate every surface consults so
+    only one place owns the wake word and the new session it opens.
+    """
+    cfg = cfg if cfg is not None else load_wake_word_config()
+    if not cfg.get("enabled"):
+        return False
+    want = str(_get(cfg, "surface")).strip().lower() or "auto"
+    return want == "auto" or want == surface.strip().lower()
 
 
 # ---------------------------------------------------------------------------

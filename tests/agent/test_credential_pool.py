@@ -3045,3 +3045,46 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
     tokens = auth_payload["providers"]["openai-codex"].get("tokens", {})
     assert tokens.get("access_token") == "old-access-token"
     assert tokens.get("refresh_token") == "old-refresh-token"
+
+
+def test_copilot_pool_priority_normalization_honors_token_source_precedence():
+    from agent.credential_pool import PooledCredential, _normalize_pool_priorities
+
+    entries = [
+        PooledCredential(
+            provider="copilot",
+            id="gh-cli",
+            label="gh cli",
+            auth_type="api_key",
+            priority=0,
+            source="gh_cli",
+            access_token="gho_old",
+        ),
+        PooledCredential(
+            provider="copilot",
+            id="copilot-env",
+            label="copilot env",
+            auth_type="api_key",
+            priority=1,
+            source="env:COPILOT_GITHUB_TOKEN",
+            access_token="gho_new",
+        ),
+        PooledCredential(
+            provider="copilot",
+            id="manual",
+            label="manual",
+            auth_type="api_key",
+            priority=2,
+            source="manual",
+            access_token="gho_manual",
+        ),
+    ]
+
+    assert _normalize_pool_priorities("copilot", entries) is True
+
+    priorities = {entry.id: entry.priority for entry in entries}
+    # Manual entries keep precedence over auto-seeded singleton sources.
+    assert priorities["manual"] == 0
+    # Among auto-seeded Copilot sources, match resolve_copilot_token precedence.
+    assert priorities["copilot-env"] == 1
+    assert priorities["gh-cli"] == 2

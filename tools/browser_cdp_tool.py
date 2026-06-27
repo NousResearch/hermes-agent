@@ -522,7 +522,7 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
 }
 
 
-def _browser_cdp_check() -> bool:
+def _browser_cdp_check() -> bool | tuple[bool, str]:
     """Availability check for browser_cdp.
 
     The tool is only offered when the Python side can actually reach a CDP
@@ -549,7 +549,9 @@ def _browser_cdp_check() -> bool:
         return False
     if not check_browser_requirements():
         return False
-    return bool(_get_cdp_override())
+    if not _get_cdp_override():
+        return False, "CDP endpoint not configured"
+    return True
 
 
 registry.register(

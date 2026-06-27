@@ -673,6 +673,43 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "npm install -g agent-browser && agent-browser install" in out
 
 
+def test_run_doctor_prints_specific_unavailable_toolset_reason(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: (
+            [],
+            [
+                {
+                    "name": "browser-cdp",
+                    "env_vars": [],
+                    "tools": ["browser_cdp"],
+                    "reason": "CDP endpoint not configured",
+                }
+            ],
+        ),
+        TOOLSET_REQUIREMENTS={"browser-cdp": {"name": "browser-cdp"}},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "browser-cdp" in out
+    assert "CDP endpoint not configured" in out
+    assert "browser-cdp (system dependency not met)" not in out
+
+
 def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

@@ -21,7 +21,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -119,26 +119,53 @@ class ToolEntry:
 # ---------------------------------------------------------------------------
 
 _CHECK_FN_TTL_SECONDS = 30.0
-_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_check_fn_cache: Dict[Callable, tuple[float, bool, Optional[str]]] = {}
 _check_fn_cache_lock = threading.Lock()
 
 
-def _check_fn_cached(fn: Callable) -> bool:
-    """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
+def _normalize_check_result(value: Any) -> tuple[bool, Optional[str]]:
+    """Normalize a check_fn return value to ``(available, reason)``.
+
+    Historically check functions returned plain booleans.  Some toolsets need
+    to distinguish unavailable states (for example, missing system dependency
+    vs. missing user configuration), so checks may also return
+    ``(False, "human readable reason")`` or
+    ``{"available": False, "reason": "..."}``.
+    """
+    reason = None
+    if isinstance(value, tuple):
+        available = bool(value[0]) if value else False
+        if not available and len(value) > 1 and value[1]:
+            reason = str(value[1])
+        return available, reason
+    if isinstance(value, dict) and "available" in value:
+        available = bool(value.get("available"))
+        detail = value.get("reason") or value.get("message")
+        if not available and detail:
+            reason = str(detail)
+        return available, reason
+    return bool(value), None
+
+
+def _check_fn_cached(fn: Callable) -> tuple[bool, Optional[str]]:
+    """Return normalized ``fn()`` result, TTL-cached across calls.
+
+    Exceptions are swallowed as unavailable without a specific reason.
+    """
     now = time.monotonic()
     with _check_fn_cache_lock:
         cached = _check_fn_cache.get(fn)
         if cached is not None:
-            ts, value = cached
+            ts, available, reason = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
-                return value
+                return available, reason
     try:
-        value = bool(fn())
+        available, reason = _normalize_check_result(fn())
     except Exception:
-        value = False
+        available, reason = False, None
     with _check_fn_cache_lock:
-        _check_fn_cache[fn] = (now, value)
-    return value
+        _check_fn_cache[fn] = (now, available, reason)
+    return available, reason
 
 
 def invalidate_check_fn_cache() -> None:
@@ -181,13 +208,20 @@ class ToolRegistry:
 
     def _evaluate_toolset_check(self, toolset: str, check: Callable | None) -> bool:
         """Run a toolset check, treating missing or failing checks as unavailable/available."""
+        available, _reason = self._evaluate_toolset_check_detail(toolset, check)
+        return available
+
+    def _evaluate_toolset_check_detail(
+        self, toolset: str, check: Callable | None
+    ) -> tuple[bool, Optional[str]]:
+        """Run a toolset check and return availability plus optional reason."""
         if not check:
-            return True
+            return True, None
         try:
-            return bool(check())
+            return _normalize_check_result(check())
         except Exception:
             logger.debug("Toolset %s check raised; marking unavailable", toolset)
-            return False
+            return False, None
 
     def get_entry(self, name: str) -> Optional[ToolEntry]:
         """Return a registered tool entry by name, or None."""
@@ -357,7 +391,8 @@ class ToolRegistry:
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
-                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                    available, _reason = _check_fn_cached(entry.check_fn)
+                    check_results[entry.check_fn] = available
                 if not check_results[entry.check_fn]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
@@ -529,14 +564,20 @@ class ToolRegistry:
             if ts in seen:
                 continue
             seen.add(ts)
-            if self._evaluate_toolset_check(ts, toolset_checks.get(ts)):
+            is_available, reason = self._evaluate_toolset_check_detail(
+                ts, toolset_checks.get(ts)
+            )
+            if is_available:
                 available.append(ts)
             else:
-                unavailable.append({
+                item = {
                     "name": ts,
                     "env_vars": entry.requires_env,
                     "tools": [e.name for e in entries if e.toolset == ts],
-                })
+                }
+                if reason:
+                    item["reason"] = reason
+                unavailable.append(item)
         return available, unavailable
 
 

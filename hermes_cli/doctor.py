@@ -2155,9 +2155,12 @@ def run_doctor(args):
         
         for item in unavailable:
             env_vars = item.get("missing_vars") or item.get("env_vars") or []
+            reason = item.get("reason")
             if env_vars:
                 vars_str = ", ".join(env_vars)
                 check_warn(item["name"], f"(missing {vars_str})")
+            elif reason:
+                check_warn(item["name"], f"({reason})")
             else:
                 check_warn(item["name"], "(system dependency not met)")
 

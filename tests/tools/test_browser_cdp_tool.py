@@ -201,6 +201,22 @@ def test_websockets_missing_returns_error(monkeypatch):
     assert "websockets" in result["error"].lower()
 
 
+def test_check_distinguishes_missing_cdp_endpoint_from_system_dependency(monkeypatch):
+    import sys
+    import types
+
+    fake_browser_tool = types.SimpleNamespace(
+        check_browser_requirements=lambda: True,
+        _get_cdp_override=lambda: "",
+    )
+    monkeypatch.setitem(sys.modules, "tools.browser_tool", fake_browser_tool)
+
+    assert browser_cdp_tool._browser_cdp_check() == (
+        False,
+        "CDP endpoint not configured",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Happy-path: browser-level call
 # ---------------------------------------------------------------------------
@@ -385,7 +401,10 @@ def test_check_fn_false_when_no_cdp_url(monkeypatch):
 
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
     monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-    assert browser_cdp_tool._browser_cdp_check() is False
+    assert browser_cdp_tool._browser_cdp_check() == (
+        False,
+        "CDP endpoint not configured",
+    )
 
 
 def test_check_fn_true_when_cdp_url_set(monkeypatch):

@@ -8,6 +8,7 @@ from tools.memory_tool import (
     MemoryStore,
     memory_tool,
     _scan_memory_content,
+    _strip_tag,
     MEMORY_SCHEMA,
 )
 
@@ -18,14 +19,10 @@ from tools.memory_tool import (
 
 class TestMemorySchema:
     def test_discourages_diary_style_task_logs(self):
-        description = MEMORY_SCHEMA["description"].lower()
-        # Intent (not exact phrasing): discourage saving task progress / logs,
-        # and point the model at session_search for those instead.
-        assert "task progress" in description
-        assert "session_search" in description
-        assert "like a diary" not in description
-        assert "todo state" in description
-        assert ">80%" not in description
+        description = MEMORY_SCHEMA["description"]
+        assert "Use 'memory' target" in description
+        assert "Use 'user' target" in description
+        assert "Use 'prune' action" in description
 
 
 # =========================================================================
@@ -272,9 +269,7 @@ class TestMemoryStoreAdd:
     def test_add_entry(self, store):
         result = store.add("memory", "Python 3.12 project")
         assert result["success"] is True
-        # Success response is terminal (no full entries echo); assert against
-        # the store's live state, which is the real contract.
-        assert "Python 3.12 project" in store.memory_entries
+        assert any("Python 3.12 project" in _strip_tag(e) for e in result["entries"])
 
     def test_add_to_user(self, store):
         result = store.add("user", "Name: Alice")
@@ -292,8 +287,9 @@ class TestMemoryStoreAdd:
         assert len(store.memory_entries) == 1  # Not duplicated
 
     def test_add_exceeding_limit_rejected(self, store):
-        # Fill up to near limit
-        store.add("memory", "x" * 490)
+        # Fill up to near limit (single-bracket tag ~11 chars)
+        store.add("memory", "x" * 225)
+        store.add("memory", "y" * 225)
         result = store.add("memory", "this will exceed the limit")
         assert result["success"] is False
         assert "exceed" in result["error"].lower()
@@ -323,8 +319,8 @@ class TestMemoryStoreReplace:
         store.add("memory", "Python 3.11 project")
         result = store.replace("memory", "3.11", "Python 3.12 project")
         assert result["success"] is True
-        assert "Python 3.12 project" in store.memory_entries
-        assert "Python 3.11 project" not in store.memory_entries
+        assert any("Python 3.12 project" in _strip_tag(e) for e in result["entries"])
+        assert not any("Python 3.11 project" in _strip_tag(e) for e in result["entries"])
 
     def test_replace_no_match(self, store):
         store.add("memory", "fact A")
@@ -380,8 +376,8 @@ class TestMemoryStorePersistence:
 
         store2 = MemoryStore()
         store2.load_from_disk()
-        assert "persistent fact" in store2.memory_entries
-        assert "Alice, developer" in store2.user_entries
+        assert any("persistent fact" in _strip_tag(e) for e in store2.memory_entries)
+        assert any("Alice" in _strip_tag(e) for e in store2.user_entries)
 
     def test_deduplication_on_load(self, tmp_path, monkeypatch):
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)

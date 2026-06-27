@@ -928,6 +928,37 @@ class TestFindHermesMd:
         (repo / ".git").mkdir()
         assert _find_hermes_md(repo) is None
 
+    def test_returns_none_when_resolve_raises(self, tmp_path):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with patch.object(Path, "resolve", side_effect=OSError("permission denied")):
+            assert _find_hermes_md(tmp_path) is None
+
+    def test_skips_inaccessible_candidates(self, tmp_path):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        (repo / ".hermes.md").write_text("root rules")
+        sub = repo / "src" / "nested"
+        sub.mkdir(parents=True)
+        blocked_candidates = {
+            repo / "src" / ".hermes.md",
+            repo / "src" / "HERMES.md",
+        }
+        original_is_file = Path.is_file
+
+        def patched_is_file(self):
+            if self in blocked_candidates:
+                raise PermissionError("permission denied")
+            return original_is_file(self)
+
+        with patch.object(Path, "is_file", patched_is_file):
+            assert _find_hermes_md(sub) == repo / ".hermes.md"
+
 
 class TestFindGitRoot:
     def test_finds_git_dir(self, tmp_path):
@@ -953,6 +984,33 @@ class TestFindGitRoot:
         # If result is not None, it must actually contain .git
         if result is not None:
             assert (result / ".git").exists()
+
+    def test_returns_none_when_resolve_raises(self, tmp_path):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with patch.object(Path, "resolve", side_effect=OSError("permission denied")):
+            assert _find_git_root(tmp_path) is None
+
+    def test_skips_inaccessible_git_checks(self, tmp_path):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        sub = repo / "src" / "nested"
+        sub.mkdir(parents=True)
+        blocked_git = repo / "src" / ".git"
+        original_exists = Path.exists
+
+        def patched_exists(self):
+            if self == blocked_git:
+                raise PermissionError("permission denied")
+            return original_exists(self)
+
+        with patch.object(Path, "exists", patched_exists):
+            assert _find_git_root(sub) == repo
 
 
 class TestStripYamlFrontmatter:

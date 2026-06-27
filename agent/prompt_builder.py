@@ -68,10 +68,20 @@ def _find_git_root(start: Path) -> Optional[Path]:
     Returns the directory containing ``.git``, or ``None`` if we hit the
     filesystem root without finding one.
     """
-    current = start.resolve()
+    try:
+        current = start.resolve()
+    except OSError as e:
+        logger.debug("Could not resolve %s: %s", start, e)
+        return None
+
     for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
-            return parent
+        git_dir = parent / ".git"
+        try:
+            if git_dir.exists():
+                return parent
+        except OSError as e:
+            logger.debug("Could not check %s for .git: %s", git_dir, e)
+            continue
     return None
 
 
@@ -86,13 +96,21 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     ``None`` if nothing is found.
     """
     stop_at = _find_git_root(cwd)
-    current = cwd.resolve()
+    try:
+        current = cwd.resolve()
+    except OSError as e:
+        logger.debug("Could not resolve %s: %s", cwd, e)
+        return None
 
     for directory in [current, *current.parents]:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
-            if candidate.is_file():
-                return candidate
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError as e:
+                logger.debug("Could not check %s: %s", candidate, e)
+                continue
         # Stop walking at the git root (or filesystem root).
         if stop_at and directory == stop_at:
             break

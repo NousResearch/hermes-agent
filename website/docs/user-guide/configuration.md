@@ -579,14 +579,14 @@ For details on declaring config settings in your own skills, see [Creating Skill
 
 ### Guard on agent-created skill writes
 
-When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:
+When the agent uses `skill_manage` to create, edit, patch, or write files to a skill, Hermes scans the new/updated content for dangerous patterns before it lands. The scanner is **on by default**: unlike an ephemeral `terminal()` call, a skill is persisted to disk, survives restarts, and is reloaded into the agent's context every session — so a prompt-injected agent could otherwise plant a malicious skill with no review.
 
 ```yaml
 skills:
-  guard_agent_created: true   # default: false
+  guard_agent_created: true   # default: true
 ```
 
-When on, any flagged `skill_manage` write surfaces as an approval prompt with the scanner's rationale. Accepted writes land; denied writes return an explanatory error to the agent.
+The classifier is unchanged: `safe` and `caution` verdicts pass (so skills that merely reference `~/.ssh` or similar are not blocked), and only a `dangerous` verdict (e.g. reading a secret env var, exfil via `curl $TOKEN`) **blocks** — the write is rolled back. A narrow companion check also blocks a string-literal dynamic import of a code-execution/network module (e.g. `importlib.import_module("subprocess")`), the one maneuver that slips past the literal keyword regex; dynamic imports by variable, and benign modules, are left alone. The matched patterns are deliberately **not** echoed back to the agent, so a misbehaving agent cannot iterate against a detection report until a payload slips through; full detail is logged for you. Reading the flag fails **closed** — a corrupt or unreadable config keeps the guard on. External hub installs (trusted/community sources) are always scanned regardless of this setting. Disable explicitly with `hermes config set skills.guard_agent_created false`.
 
 ### Write approval for skill writes
 

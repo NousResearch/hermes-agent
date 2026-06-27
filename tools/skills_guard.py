@@ -53,10 +53,13 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    # Agent-created: "ask" on dangerous surfaces as an error to the agent,
-    # which can retry without the flagged content. This gate only runs when
-    # skills.guard_agent_created is enabled (off by default) — see
-    # tools/skill_manager_tool.py::_guard_agent_created_enabled.
+    # Agent-created: "ask" on dangerous (critical) surfaces; caution (high)
+    # still passes so legitimate skills that merely reference ~/.ssh etc. are
+    # not blocked. The caller (skill_manager_tool.py::_security_scan_skill)
+    # treats the "ask" verdict as a block + rollback, but returns a GENERIC
+    # error — it does NOT echo the matched patterns back, so a misbehaving
+    # agent gets no detection report to iterate against. This gate runs by
+    # default — see tools/skill_manager_tool.py::_guard_agent_created_enabled.
     "agent-created": ("allow",  "allow",   "ask"),
 }
 

@@ -442,7 +442,7 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 ```yaml
 skills:
-  guard_agent_created: true   # 默认：false
+  guard_agent_created: true   # 默认：true
 ```
 
 开启后，任何被标记的 `skill_manage` 写入都会以审批提示的形式出现，并附带扫描器的理由。接受的写入落地；拒绝的写入向 agent 返回解释性错误。

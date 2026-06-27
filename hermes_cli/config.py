@@ -2130,17 +2130,28 @@ DEFAULT_CONFIG = {
         "inline_shell": False,
         # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
         "inline_shell_timeout": 10,
-        # Run the keyword/pattern security scanner on skills the agent
-        # writes via skill_manage (create/edit/patch).  Off by default
-        # because the agent can already execute the same code paths via
-        # terminal() with no gate, so the scan adds friction (blocks
-        # skills that mention risky keywords in prose) without meaningful
-        # security.  Turn on if you want the belt-and-suspenders — a
-        # dangerous verdict will then surface as a tool error to the
-        # agent, which can retry with the flagged content removed.
+        # Run the security scanner on skills the agent writes via
+        # skill_manage (create/edit/patch/write_file).  On by default.
+        #
+        # Unlike an ephemeral terminal() call, a skill is *persistent*: it
+        # is written to the user's disk, survives restarts/session swaps,
+        # and is reloaded into the agent's context on every run.  A
+        # prompt-injected agent could otherwise persist a malicious skill
+        # to disk with no review.  The classifier is unchanged — "safe" and
+        # "caution" verdicts pass (so a skill that merely references ~/.ssh
+        # is not blocked); only a "dangerous" (critical) verdict blocks and
+        # the write is rolled back.  A narrow companion check additionally
+        # blocks a string-literal dynamic import of a code-exec/network
+        # module (e.g. importlib.import_module("subprocess")) — the one
+        # maneuver that slips past the literal keyword regex.  On a block the
+        # agent gets a GENERIC error: the matched patterns are NOT echoed
+        # back, so it cannot iterate against a detection report to slip a
+        # payload through.  Reading this flag fails *closed* — a
+        # corrupt/unreadable config keeps the guard on.  Disable explicitly
+        # with `hermes config set skills.guard_agent_created false`.
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
-        "guard_agent_created": False,
+        "guard_agent_created": True,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
         # background self-improvement review fork.

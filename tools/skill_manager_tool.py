@@ -32,6 +32,7 @@ Directory layout for user skills:
             └── SKILL.md
 """
 
+import ast
 import json
 import logging
 import os
@@ -48,7 +49,7 @@ from hermes_cli.config import cfg_get
 logger = logging.getLogger(__name__)
 
 # Import security scanner — external hub installs always get scanned;
-# agent-created skills only get scanned when skills.guard_agent_created is on.
+# agent-created skills are scanned by default (skills.guard_agent_created).
 try:
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
     _GUARD_AVAILABLE = True
@@ -56,49 +57,155 @@ except ImportError:
     _GUARD_AVAILABLE = False
 
 
-def _guard_agent_created_enabled() -> bool:
-    """Read skills.guard_agent_created from config (default False).
+# Generic message returned to the agent on a block. Intentionally free of
+# pattern names / findings: echoing the detection report back is exactly what
+# lets a (possibly prompt-injected) agent iterate until a payload slips
+# through. Full detail is logged for the operator instead.
+_SCAN_BLOCKED_MESSAGE = (
+    "Security scan blocked this skill: its content was flagged as potentially "
+    "unsafe and was not saved. If you believe this is a false positive, ask the "
+    "user to review it (full detail is in the Hermes logs)."
+)
 
-    Off by default because the agent can already execute the same code
-    paths via terminal() with no gate, so the scan adds friction without
-    meaningful security.  Users who want belt-and-suspenders can turn it
-    on via `hermes config set skills.guard_agent_created true`.
+
+def _guard_agent_created_enabled() -> bool:
+    """Read skills.guard_agent_created from config (default True).
+
+    On by default: a skill is *persistent* — written to disk, surviving
+    restarts, and reloaded into the agent's context every session — unlike an
+    ephemeral terminal() call, so a prompt-injected agent could otherwise plant
+    a malicious skill with no review.  Fails *closed*: if the config can't be
+    read the guard stays on, so a corrupt/unreadable config never silently
+    disables the scan.  Disable explicitly with
+    `hermes config set skills.guard_agent_created false`.
     """
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
         return is_truthy_value(
             cfg_get(cfg, "skills", "guard_agent_created"),
-            default=False,
+            default=True,
         )
     except Exception:
-        return False
+        # Fail closed — keep the guard on when config is unreadable.
+        return True
+
+
+# Modules whose *string-literal dynamic import* is a strong code-execution /
+# network-egress signal. The keyword scanner only matches literal call sites
+# (e.g. `subprocess.run(`), so `importlib.import_module("subprocess")` slips
+# past it. We block only this exact maneuver — a string-literal
+# importlib.import_module()/__import__() of one of these modules. A normal
+# `import subprocess` is already covered by the keyword scan, and a dynamic
+# import by *variable* is left untouched (rare in real skills), so this is
+# imperceptible to legitimate skill authoring.
+_DYNAMIC_IMPORT_BLOCKLIST = frozenset({
+    "subprocess", "os", "socket", "ctypes", "pty",
+})
+
+_AST_SKIP_DIRS = {"__pycache__", ".venv", "venv", "node_modules"}
+
+
+def _fold_str_literal(node: ast.AST) -> Optional[str]:
+    """Fold a string literal, or a `+` concat of string literals, to its value.
+
+    Returns the string for ``ast.Constant("x")`` and ``"a" + "b"``; ``None``
+    for anything non-constant (a variable, an f-string, a call, …). Folding
+    concats closes the ``"sub" + "process"`` obfuscation variant.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _fold_str_literal(node.left)
+        right = _fold_str_literal(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _scan_dynamic_import_evasion(skill_dir: Path) -> Optional[str]:
+    """Detect a string-literal dynamic import of a blocklisted module.
+
+    Narrow companion to the keyword scanner: catches the
+    ``importlib.import_module("subprocess")`` / ``__import__("subprocess")``
+    evasion that the static regex (which only sees literal ``subprocess.run(``)
+    cannot. Returns the offending module name if found, else ``None``. Never
+    raises — unreadable files and parse errors are skipped.
+    """
+    try:
+        py_files = [
+            p for p in skill_dir.rglob("*.py")
+            if not (set(p.parent.parts) & _AST_SKIP_DIRS)
+        ]
+    except OSError:
+        return None
+    for py in py_files:
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, SyntaxError, ValueError, RecursionError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            f = node.func
+            is_import_module = isinstance(f, ast.Attribute) and f.attr == "import_module"
+            is_dunder_import = isinstance(f, ast.Name) and f.id == "__import__"
+            if not (is_import_module or is_dunder_import):
+                continue
+            mod = _fold_str_literal(node.args[0])
+            if mod and mod.split(".")[0] in _DYNAMIC_IMPORT_BLOCKLIST:
+                return mod
+    return None
 
 
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
-    """Scan a skill directory after write. Returns error string if blocked, else None.
+    """Scan a skill directory after write. Returns a generic error string if
+    blocked (caller rolls the write back), else None.
 
-    No-op when skills.guard_agent_created is disabled (the default).
+    Runs by default (skills.guard_agent_created). Two layers:
+
+    1. Keyword/pattern scan (skills_guard) under the unchanged ``agent-created``
+       policy: ``safe``/``caution`` pass; only a ``dangerous`` (critical)
+       verdict blocks. Fails *closed* — a scanner crash blocks.
+    2. A narrow dynamic-import check that closes the
+       ``importlib.import_module("subprocess")`` evasion of layer 1's literal
+       regex. Imperceptible to legitimate skills.
+
+    The returned error never enumerates the matched patterns; see
+    ``_SCAN_BLOCKED_MESSAGE``.
     """
-    if not _GUARD_AVAILABLE:
-        return None
     if not _guard_agent_created_enabled():
         return None
-    try:
-        result = scan_skill(skill_dir, source="agent-created")
-        allowed, reason = should_allow_install(result)
-        if allowed is False:
-            report = format_scan_report(result)
-            return f"Security scan blocked this skill ({reason}):\n{report}"
-        if allowed is None:
-            # "ask" verdict — for agent-created skills this means dangerous
-            # findings were detected.  Surface as an error so the agent can
-            # retry with the flagged content removed.
-            report = format_scan_report(result)
-            logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
-            return f"Security scan blocked this skill ({reason}):\n{report}"
-    except Exception as e:
-        logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
+
+    # Layer 1 — keyword/pattern scan (unchanged classifier).
+    if _GUARD_AVAILABLE:
+        try:
+            result = scan_skill(skill_dir, source="agent-created")
+            allowed, reason = should_allow_install(result)
+            # `allowed` is True (pass), False (block), or None ("ask" verdict —
+            # treated as a block for agent-created writes). Block on anything but
+            # a clean pass; log the full report, but hand the agent only a
+            # generic error so it gets no detection report to iterate against.
+            if allowed is not True:
+                logger.warning(
+                    "Agent-created skill blocked (%s):\n%s",
+                    reason, format_scan_report(result),
+                )
+                return _SCAN_BLOCKED_MESSAGE
+        except Exception as e:
+            # Fail closed: a scanner error must not let the skill through.
+            logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
+            return _SCAN_BLOCKED_MESSAGE
+
+    # Layer 2 — narrow dynamic-import evasion check.
+    evaded = _scan_dynamic_import_evasion(skill_dir)
+    if evaded is not None:
+        logger.warning(
+            "Agent-created skill blocked: string-literal dynamic import of %r "
+            "evades the keyword scan", evaded,
+        )
+        return _SCAN_BLOCKED_MESSAGE
+
     return None
 
 import yaml

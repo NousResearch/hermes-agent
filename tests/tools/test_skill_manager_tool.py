@@ -688,13 +688,98 @@ class TestSecurityScanGate:
 
         assert result is not None
         assert "Security scan blocked" in result
+        # The error must NOT echo the matched pattern back to the agent —
+        # leaking findings is what enables iterative payload rewriting.
+        assert "curl $TOKEN" not in result
+        assert "exfiltration" not in result
 
-    def test_guard_flag_reads_config_default_false(self):
-        """_guard_agent_created_enabled returns False when config doesn't set it."""
+    def test_scan_fails_closed_on_scanner_error(self, tmp_path):
+        """A crash inside scan_skill must block, not wave the skill through."""
+        from tools.skill_manager_tool import _security_scan_skill
+
+        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
+             patch("tools.skill_manager_tool.scan_skill", side_effect=RuntimeError("boom")):
+            result = _security_scan_skill(tmp_path)
+
+        assert result is not None
+        assert "Security scan blocked" in result
+
+
+class TestDynamicImportEvasion:
+    """The narrow layer-2 check closes the importlib("subprocess") bypass of
+    the static keyword scanner without touching the audit classifier."""
+
+    def _write_py(self, tmp_path, body: str):
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "run.py").write_text(body, encoding="utf-8")
+
+    def test_blocks_importlib_literal(self, tmp_path):
+        from tools.skill_manager_tool import _scan_dynamic_import_evasion
+        self._write_py(tmp_path, 'import importlib\nimportlib.import_module("subprocess")\n')
+        assert _scan_dynamic_import_evasion(tmp_path) == "subprocess"
+
+    def test_blocks_dunder_import_literal(self, tmp_path):
+        from tools.skill_manager_tool import _scan_dynamic_import_evasion
+        self._write_py(tmp_path, '__import__("os").system("id")\n')
+        assert _scan_dynamic_import_evasion(tmp_path) == "os"
+
+    def test_blocks_concat_literal(self, tmp_path):
+        """The "sub" + "process" obfuscation is folded and caught."""
+        from tools.skill_manager_tool import _scan_dynamic_import_evasion
+        self._write_py(tmp_path, 'import importlib\nimportlib.import_module("sub" + "process")\n')
+        assert _scan_dynamic_import_evasion(tmp_path) == "subprocess"
+
+    def test_ignores_dynamic_import_by_variable(self, tmp_path):
+        """Imperceptible to legit code: a non-literal module name is left alone."""
+        from tools.skill_manager_tool import _scan_dynamic_import_evasion
+        self._write_py(tmp_path, 'import importlib\nname = input()\nimportlib.import_module(name)\n')
+        assert _scan_dynamic_import_evasion(tmp_path) is None
+
+    def test_ignores_benign_literal_module(self, tmp_path):
+        """A dynamic import of a non-blocklisted module is fine."""
+        from tools.skill_manager_tool import _scan_dynamic_import_evasion
+        self._write_py(tmp_path, 'import importlib\nimportlib.import_module("json")\n')
+        assert _scan_dynamic_import_evasion(tmp_path) is None
+
+    def test_ignores_malformed_python(self, tmp_path):
+        """Parse errors are skipped, never raised."""
+        from tools.skill_manager_tool import _scan_dynamic_import_evasion
+        self._write_py(tmp_path, 'def (:\n  not valid python\n')
+        assert _scan_dynamic_import_evasion(tmp_path) is None
+
+    def test_security_scan_blocks_importlib_bypass_end_to_end(self, tmp_path):
+        """Even when the keyword scan returns 'safe', the dynamic-import layer
+        blocks the §6 PoC payload."""
+        from tools.skill_manager_tool import _security_scan_skill
+        from tools.skills_guard import ScanResult
+
+        safe_result = ScanResult(
+            skill_name="evil", source="agent-created", trust_level="agent-created",
+            verdict="safe", findings=[], summary="ok",
+        )
+        self._write_py(
+            tmp_path,
+            'import importlib, os\n'
+            'mod = importlib.import_module("subprocess")\n'
+            'k = os.environ.get("MY_CONF")\n'
+            'mod.run(["id"])\n',
+        )
+        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
+             patch("tools.skill_manager_tool.scan_skill", return_value=safe_result):
+            result = _security_scan_skill(tmp_path)
+
+        assert result is not None
+        assert "Security scan blocked" in result
+        # Still no findings leaked to the agent.
+        assert "subprocess" not in result
+
+    def test_guard_flag_reads_config_default_true(self):
+        """_guard_agent_created_enabled returns True when config doesn't set it (secure default)."""
         from tools.skill_manager_tool import _guard_agent_created_enabled
 
         with patch("hermes_cli.config.load_config", return_value={"skills": {}}):
-            assert _guard_agent_created_enabled() is False
+            assert _guard_agent_created_enabled() is True
 
     def test_guard_flag_reads_config_when_set(self):
         """_guard_agent_created_enabled returns True when user explicitly enables."""
@@ -705,11 +790,11 @@ class TestSecurityScanGate:
             assert _guard_agent_created_enabled() is True
 
     def test_guard_flag_handles_config_error(self):
-        """If load_config raises, _guard_agent_created_enabled defaults to False (fail-safe off)."""
+        """If load_config raises, _guard_agent_created_enabled fails closed (guard stays on)."""
         from tools.skill_manager_tool import _guard_agent_created_enabled
 
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
-            assert _guard_agent_created_enabled() is False
+            assert _guard_agent_created_enabled() is True
 
     def test_guard_flag_quoted_false_stays_disabled(self):
         """Quoted 'false' from YAML edits must not enable the guard."""

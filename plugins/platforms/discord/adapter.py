@@ -3549,6 +3549,11 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_insights(interaction: discord.Interaction, days: int = 7):
             await self._run_simple_slash(interaction, f"/insights {days}")
 
+        @tree.command(name="learn", description="Learn a reusable skill from anything you describe")
+        @discord.app_commands.describe(what="What to learn from (dirs, URLs, this chat, notes)")
+        async def slash_learn(interaction: discord.Interaction, what: str = ""):
+            await self._run_simple_slash(interaction, f"/learn {what}".strip())
+
         @tree.command(name="reload-mcp", description="Reload MCP servers from config")
         async def slash_reload_mcp(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-mcp")

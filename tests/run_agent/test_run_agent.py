@@ -55,6 +55,37 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_direct_provider_ignores_stale_local_base_url():
+    """Direct providers should not reuse stale localhost gateway URLs.
+
+    Regression for Nous -> DeepSeek migration: model.base_url still pointed at a
+    stale local LiteLLM-style gateway route, so the direct DeepSeek provider
+    sent deepseek-v4-pro to the wrong upstream and failed with a Z.AI Unknown Model.
+    """
+    routed = SimpleNamespace(api_key="dummy", base_url="https://api.deepseek.com/v1")
+
+    with (
+        patch("agent.agent_init.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("agent.agent_init.check_toolset_requirements", return_value={}),
+        patch("agent.auxiliary_client.resolve_provider_client", return_value=(routed, "deepseek-v4-pro")) as resolve,
+        patch("run_agent.OpenAI") as openai_cls,
+    ):
+        AIAgent(
+            api_key="dummy",
+            base_url="http://localhost:8081/v1",
+            provider="deepseek",
+            model="deepseek/deepseek-v4-pro",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    resolve.assert_any_call("deepseek", model="deepseek-v4-pro", raw_codex=True)
+    _, kwargs = openai_cls.call_args
+    assert kwargs["base_url"] == "https://api.deepseek.com/v1"
+    assert kwargs["api_key"] == "dummy"
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""

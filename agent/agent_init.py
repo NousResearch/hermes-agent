@@ -377,6 +377,35 @@ def init_agent(
     except Exception:
         pass
 
+    # If a direct API-key provider is selected, a leftover local custom base URL
+    # from a previous gateway/subscription route must not override the provider
+    # registry endpoint.  This bit the Nous -> DeepSeek migration: config kept
+    # model.base_url=http://localhost:8081/v1, so Hermes sent DeepSeek's model
+    # slug to the stale local LiteLLM/Z.AI route and failed with "Unknown Model".
+    # Clear the local override and let resolve_provider_client() pick the
+    # provider's canonical endpoint (e.g. https://api.deepseek.com/v1).
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        _base_host = urlparse(agent.base_url or "").hostname or ""
+        if (
+            agent.provider in PROVIDER_REGISTRY
+            and agent.provider not in {"custom", "openrouter"}
+            and _base_host in {"localhost", "127.0.0.1", "::1"}
+        ):
+            logger.warning(
+                "Ignoring local model.base_url %s for direct provider %s; "
+                "using provider registry endpoint instead",
+                agent.base_url,
+                agent.provider,
+            )
+            agent.base_url = ""
+            agent.api_key = ""
+            base_url = ""
+            api_key = ""
+    except Exception:
+        logger.debug("Provider localhost base_url guard skipped", exc_info=True)
+
     # GPT-5.x models usually require the Responses API path, but some
     # providers have exceptions (for example Copilot's gpt-5-mini still
     # uses chat completions). Also auto-upgrade for direct OpenAI URLs

@@ -123,16 +123,34 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     When ``certifi`` is installed, use its Mozilla CA bundle to guarantee
     verification. Otherwise fall back to aiohttp's default (which honors
     ``SSL_CERT_FILE`` env var via ``trust_env=True``).
+
+    Note: In aiohttp 3.13+, ``TCPConnector()`` requires a running event loop.
+    If called outside an async context (e.g. during adapter init), this function
+    falls back to returning ``None`` so the caller can create the connector
+    later with ``ssl=_get_ssl_context()`` instead.
+    """
+    ssl_ctx = _get_ssl_context()
+    if ssl_ctx is None or not AIOHTTP_AVAILABLE:
+        return None
+    try:
+        return aiohttp.TCPConnector(ssl=ssl_ctx)
+    except RuntimeError:
+        # No running event loop — caller should use _get_ssl_context() directly
+        return None
+
+
+def _get_ssl_context() -> Optional["ssl.SSLContext"]:
+    """Return an SSLContext with certifi CA bundle, or None if unavailable.
+
+    This is safe to call from any context (sync or async) since it only
+    creates the SSL context, not the aiohttp connector.
     """
     try:
         import ssl
         import certifi
     except ImportError:
         return None
-    if not AIOHTTP_AVAILABLE:
-        return None
-    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    return aiohttp.TCPConnector(ssl=ssl_ctx)
+    return ssl.create_default_context(cafile=certifi.where())
 
 ITEM_TEXT = 1
 ITEM_IMAGE = 2
@@ -1298,13 +1316,16 @@ class WeixinAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
 
-        self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        _ssl_ctx = _get_ssl_context()
+        _poll_connector = aiohttp.TCPConnector(ssl=_ssl_ctx) if _ssl_ctx else None
+        self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_poll_connector)
         # Disable aiohttp's built-in ClientTimeout (total=None) to prevent
         # "Timeout context manager should be used inside a task" errors when
         # send() is invoked via asyncio.run_coroutine_threadsafe() from cron.
         # Timeout is managed externally via asyncio.wait_for() in _api_post/_api_get.
         _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
-        self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
+        _send_connector = aiohttp.TCPConnector(ssl=_ssl_ctx) if _ssl_ctx else None
+        self._send_session = aiohttp.ClientSession(trust_env=True, connector=_send_connector, timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()

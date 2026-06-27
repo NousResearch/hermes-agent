@@ -9,6 +9,7 @@ iteration.
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -43,21 +44,70 @@ def _run_reference(
     can still act with partial context. Designed to run inside a thread pool —
     ``call_llm`` is synchronous/blocking, so threads (not asyncio) are the right
     concurrency primitive, mirroring ``delegate_task``'s batch fan-out.
+
+    OAuth-based providers (xai-oauth) are handled via their own credential
+    resolution path since ``call_llm``'s auxiliary client does not support them.
     """
     label = _slot_label(slot)
+    provider = slot.get("provider", "")
     try:
-        response = call_llm(
-            task="moa_reference",
-            provider=slot["provider"],
-            model=slot["model"],
-            messages=ref_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        # OAuth providers need direct credential resolution + client creation.
+        if provider in ("xai-oauth",):
+            response = _call_reference_direct(slot, ref_messages, temperature=temperature, max_tokens=max_tokens)
+        else:
+            response = call_llm(
+                task="moa_reference",
+                provider=provider,
+                model=slot["model"],
+                messages=ref_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
         return label, _extract_text(response) or "(empty response)"
     except Exception as exc:
         logger.warning("MoA reference model %s failed: %s", label, exc)
         return label, f"[failed: {exc}]"
+
+
+def _call_reference_direct(
+    slot: dict[str, str],
+    messages: list[dict[str, Any]],
+    *,
+    temperature: float,
+    max_tokens: int,
+) -> Any:
+    """Call an OAuth-backed reference model directly, bypassing auxiliary_client."""
+    from openai import OpenAI
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    provider = slot.get("provider", "")
+    model = slot.get("model", "")
+    label = f"{provider}:{model}"
+
+    runtime = resolve_runtime_provider(
+        requested=provider
+    )
+    base_url = runtime.get("base_url") or ""
+    api_key = runtime.get("api_key") or ""
+
+    if not api_key:
+        raise RuntimeError(f"No credentials resolved for OAuth provider: {provider}")
+
+    client = OpenAI(base_url=base_url.rstrip("/") + "/", api_key=api_key)
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens or 4096,
+    }
+
+    t0 = time.monotonic()
+    resp = client.chat.completions.create(**kwargs)
+    dt = time.monotonic() - t0
+    text = _extract_text(resp)
+    logger.info("MoA reference %s succeeded in %.1fs (%d chars)", label, dt, len(text))
+    return resp
 
 
 def _run_references_parallel(

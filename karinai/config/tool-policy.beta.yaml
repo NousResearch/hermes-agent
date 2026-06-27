@@ -12,20 +12,21 @@ enabled_toolsets:
   - web
   - vision
   - todo
+  - memory
+  - skills
+  - session_search
+  - image_gen
+  - video_gen
+  - tts
+  - kanban
+  - delegation
+  - moa
 
 disabled_toolsets:
   - cronjob
-  - skills
-  - memory
-  - session_search
-  - delegation
-  - image_gen
   - video
-  - video_gen
-  - tts
   - homeassistant
   - computer_use
-  - kanban
   - discord
   - discord_admin
   - feishu_doc
@@ -33,7 +34,6 @@ disabled_toolsets:
   - spotify
   - x_search
   - yuanbao
-  - moa
 
 backend_owned_features:
   - schedules_and_cron

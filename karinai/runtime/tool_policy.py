@@ -9,6 +9,10 @@ from __future__ import annotations
 from typing import Iterable
 
 
+# Core productivity toolsets plus the safe/useful extensions. Integrations that
+# require per-tenant credentials/OAuth (discord, spotify, feishu, homeassistant,
+# x_search, yuanbao), browser/computer-use (needs a browser in the image), and
+# cronjob (schedules are backend-owned) stay disabled below.
 BETA_ENABLED_TOOLSETS: tuple[str, ...] = (
     "file",
     "terminal",
@@ -16,21 +20,22 @@ BETA_ENABLED_TOOLSETS: tuple[str, ...] = (
     "web",
     "vision",
     "todo",
+    "memory",
+    "skills",
+    "session_search",
+    "image_gen",
+    "video_gen",
+    "tts",
+    "kanban",
+    "delegation",
+    "moa",
 )
 
 BETA_DISABLED_TOOLSETS: tuple[str, ...] = (
     "cronjob",
-    "skills",
-    "memory",
-    "session_search",
-    "delegation",
-    "image_gen",
     "video",
-    "video_gen",
-    "tts",
     "homeassistant",
     "computer_use",
-    "kanban",
     "discord",
     "discord_admin",
     "feishu_doc",
@@ -38,18 +43,14 @@ BETA_DISABLED_TOOLSETS: tuple[str, ...] = (
     "spotify",
     "x_search",
     "yuanbao",
-    "moa",
 )
 
+# Hard guard: validate_beta_tool_policy() raises if any tool exposed by the
+# enabled-minus-disabled set appears here. Only tools that must never reach the
+# model in beta belong in this set, so it tracks BETA_DISABLED_TOOLSETS.
 FORBIDDEN_BETA_TOOLS: frozenset[str] = frozenset(
     {
         "cronjob",
-        "skill_manage",
-        "skills_list",
-        "skill_view",
-        "memory",
-        "session_search",
-        "delegate_task",
         "browser_navigate",
         "browser_snapshot",
         "browser_click",
@@ -62,20 +63,8 @@ FORBIDDEN_BETA_TOOLS: frozenset[str] = frozenset(
         "browser_console",
         "browser_cdp",
         "browser_dialog",
-        "image_generate",
         "video_analyze",
-        "video_generate",
-        "text_to_speech",
         "computer_use",
-        "kanban_show",
-        "kanban_list",
-        "kanban_complete",
-        "kanban_block",
-        "kanban_heartbeat",
-        "kanban_comment",
-        "kanban_create",
-        "kanban_link",
-        "kanban_unblock",
         "ha_list_entities",
         "ha_get_state",
         "ha_list_services",

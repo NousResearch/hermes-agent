@@ -1388,7 +1388,15 @@ def restore_primary_runtime(agent) -> bool:
         )
 
         # ── Rebuild client for the primary provider ──
-        if agent.api_mode == "anthropic_messages":
+        if agent.provider == "moa":
+            # MoA is a virtual chat-completions provider.  It never has real
+            # OpenAI client kwargs; restoring it after a fallback must recreate
+            # the facade, not call OpenAI() with an empty api_key.
+            from agent.moa_loop import MoAClient
+
+            agent.client = MoAClient(agent.model or "default")
+            agent._anthropic_client = None
+        elif agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]

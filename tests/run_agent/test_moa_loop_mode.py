@@ -81,6 +81,66 @@ def test_moa_runtime_provider_uses_virtual_endpoint():
     assert runtime["api_key"] == "moa-virtual-provider"
 
 
+def test_moa_primary_restore_rebuilds_virtual_facade(monkeypatch, tmp_path):
+    """MoA sessions must restore from fallback without constructing OpenAI().
+
+    Regression for a long-lived MoA session that failed over to a real provider:
+    the next turn restored provider/model to MoA but tried to rebuild the shared
+    client from MoA's empty client_kwargs, raising "api_key client option must be
+    set" and then "Failed to recreate closed OpenAI client".
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        max_iterations=1,
+    )
+    primary_client = agent.client
+
+    def fail_openai_rebuild(*_args, **_kwargs):
+        raise AssertionError("MoA restore must not build a real OpenAI client")
+
+    monkeypatch.setattr(agent, "_create_openai_client", fail_openai_rebuild)
+    setattr(agent, "_fallback_activated", True)
+    setattr(agent, "provider", "zai")
+    setattr(agent, "model", "glm-5.2")
+    agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+    agent.api_key = "fallback-key"
+    setattr(agent, "_client_kwargs", {"api_key": "fallback-key", "base_url": agent.base_url})
+    agent.client = SimpleNamespace(close=lambda: None, _client=SimpleNamespace(is_closed=True))
+
+    assert agent._restore_primary_runtime() is True
+    assert getattr(agent, "provider") == "moa"
+    assert getattr(agent, "model") == "review"
+    assert agent.client is not primary_client
+    assert hasattr(agent.client.chat, "completions")
+    assert getattr(agent, "_fallback_activated") is False
+
+
 def test_moa_does_not_cap_output_tokens(monkeypatch, tmp_path):
     """MoA must not inject an output cap on reference or aggregator calls.
 

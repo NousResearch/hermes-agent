@@ -127,6 +127,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    session_id: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,6 +138,13 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        session_id: Optional session ID. When set, the agent resumes that
+            session — loading its prior history and persisting this turn back
+            into it — instead of running statelessly. Enables multi-turn
+            continuity for piped frontends (hermesd) that drive one stable
+            session id per conversation. The id is used as-is; if no row
+            exists yet it is created (INSERT OR IGNORE), so a brand-new
+            conversation id works on its first turn.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -188,6 +196,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    session_id=session_id,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -248,9 +257,17 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    session_id: Optional[str] = None,
 ) -> str:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
-    run a single conversation.  Returns the final response string."""
+    run a single conversation.  Returns the final response string.
+
+    When ``session_id`` is provided the agent resumes that session: its prior
+    transcript is loaded from the session DB and replayed as
+    ``conversation_history`` (so the turn has memory), and the new messages are
+    persisted back under the same id. Without it, behaviour is unchanged — a
+    fresh, stateless one-shot run.
+    """
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
@@ -327,10 +344,54 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    # One-shot (`hermes -z`) bypasses HermesCLI._init_agent(), which is what kicks
+    # off MCP discovery (a background thread) for interactive/gateway sessions.
+    # Without it, the AIAgent below snapshots an empty MCP registry, so one-shot
+    # runs silently have zero MCP tools. Connect any configured MCP servers
+    # synchronously here, before the agent is built, so `-z` gets the same MCP
+    # tools an interactive chat turn would.
+    try:
+        from hermes_cli.mcp_startup import _has_configured_mcp_servers
+
+        if _has_configured_mcp_servers():
+            from tools.mcp_tool import discover_mcp_tools
+
+            discover_mcp_tools()
+    except Exception:
+        pass
+
     session_db = _create_session_db_for_oneshot()
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
+
+    # Resume support: when a session_id is supplied, load its prior transcript
+    # so this turn has memory, and pass the id so new messages persist back
+    # into the SAME session. resolve_resume_session_id() walks a compression
+    # chain to the live tip; get_messages_as_conversation() returns the
+    # replayable history. An unknown id (brand-new conversation) simply yields
+    # empty history and is created on first write (INSERT OR IGNORE), so the
+    # first turn of a piped conversation works too.
+    resume_history: Optional[list] = None
+    effective_session_id = session_id or None
+    if effective_session_id and session_db is not None:
+        try:
+            tip = session_db.resolve_resume_session_id(effective_session_id)
+            if tip:
+                effective_session_id = tip
+            restored = session_db.get_messages_as_conversation(effective_session_id)
+            if restored:
+                resume_history = [
+                    m for m in restored if m.get("role") != "session_meta"
+                ]
+            # Re-open the session if it was previously ended so the turn
+            # appends instead of starting a dead-ended lineage.
+            try:
+                session_db.reopen_session(effective_session_id)
+            except Exception:
+                pass
+        except Exception as exc:
+            logging.debug("oneshot resume failed for %s: %s", effective_session_id, exc)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),
@@ -341,6 +402,7 @@ def _run_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
+        session_id=effective_session_id,
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
@@ -364,6 +426,15 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
+    # When resuming, drive the full interface so prior history is replayed as
+    # context AND only the new messages are flushed to the DB (the flush layer
+    # keys off len(conversation_history)). The simple chat() path can't carry
+    # history. Fall back to chat() for the stateless case.
+    if resume_history:
+        result = agent.run_conversation(
+            prompt, conversation_history=resume_history
+        )
+        return (result or {}).get("final_response", "") or ""
     return agent.chat(prompt) or ""
 
 

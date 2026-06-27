@@ -13242,12 +13242,32 @@ def main():
     if getattr(args, "oneshot", None):
         from hermes_cli.oneshot import run_oneshot
 
+        # Resolve an optional session for continuity. -z is normally
+        # stateless, but when paired with --resume/-r <id|title> or
+        # --continue/-c [name] it must load that session's history and
+        # persist this turn back into it (so piped frontends like hermesd
+        # that drive one stable session id per conversation actually get
+        # multi-turn memory instead of a fresh, amnesiac session per call).
+        oneshot_session_id: Optional[str] = None
+        resume_val = getattr(args, "resume", None)
+        continue_val = getattr(args, "continue_last", None)
+        if resume_val:
+            oneshot_session_id = _resolve_session_by_name_or_id(resume_val) or resume_val
+        elif continue_val:
+            if isinstance(continue_val, str):
+                oneshot_session_id = (
+                    _resolve_session_by_name_or_id(continue_val) or continue_val
+                )
+            else:
+                oneshot_session_id = _resolve_last_session(source="cli")
+
         sys.exit(
             run_oneshot(
                 args.oneshot,
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                session_id=oneshot_session_id,
             )
         )
 

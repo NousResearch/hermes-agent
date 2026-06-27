@@ -527,6 +527,18 @@ def _handle_complete(args: dict, **kw) -> str:
         artifacts = [
             str(p).strip() for p in artifacts if str(p).strip()
         ]
+        # Validate that artifact files actually exist.  The gateway
+        # notifier reads these paths off the completion event and
+        # uploads each one as a native attachment — phantom paths
+        # silently produce empty notifications.
+        if artifacts:
+            missing = [p for p in artifacts if not os.path.isfile(p)]
+            if missing:
+                return tool_error(
+                    f"kanban_complete: artifact file(s) not found: "
+                    f"{', '.join(missing)}. "
+                    f"Create the file(s) before completing the task."
+                )
         # Carry the artifact list inside metadata so it rides the
         # existing completed-event payload without a schema change at
         # the DB layer.  The gateway notifier reads payload['artifacts']

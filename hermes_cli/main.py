@@ -5586,10 +5586,20 @@ def cmd_gui(args: argparse.Namespace):
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
-            if build_result.returncode != 0 and not source_mode:
+            if (
+                build_result.returncode != 0
+                and not source_mode
+                and _desktop_packaged_executable(desktop_dir) is None
+            ):
                 # Corrupt cached Electron zip → partial unpack → ENOENT on rename.
                 # stdlib zipfile won't catch the common concat-junk case, so purge
                 # and retry once; @electron/get SHASUM is the real gate.
+                #
+                # Gate on a MISSING packaged executable: that is the signature of
+                # the corrupt-download class this recovery exists for. A late
+                # failure such as macOS code signing leaves the executable in
+                # place — redownloading Electron can't repair it, so the purge +
+                # retry would only add another slow, identical failure (#40187).
                 purged: list[Path] = []
                 restored = False
                 if not _electron_dist_ok(PROJECT_ROOT):
@@ -5603,7 +5613,12 @@ def cmd_gui(args: argparse.Namespace):
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
-            if build_result.returncode != 0 and not source_mode and not env.get("ELECTRON_MIRROR"):
+            if (
+                build_result.returncode != 0
+                and not source_mode
+                and not env.get("ELECTRON_MIRROR")
+                and _desktop_packaged_executable(desktop_dir) is None
+            ):
                 print("  ⚠ Desktop build still failing; the Electron download from "
                       "GitHub looks blocked. Re-downloading via a public mirror "
                       "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")

@@ -1056,6 +1056,39 @@ class AsyncCodexAuxiliaryClient:
         self._real_client = sync_wrapper._real_client
 
 
+class _AsyncGeminiCloudCodeCompletionsAdapter:
+    """Async facade for Gemini Cloud Code's sync chat adapter."""
+
+    def __init__(self, sync_adapter: Any):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncGeminiCloudCodeChatShim:
+    def __init__(self, adapter: _AsyncGeminiCloudCodeCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncGeminiCloudCodeAuxiliaryClient:
+    """Async-compatible wrapper for GeminiCloudCodeClient."""
+
+    def __init__(self, sync_wrapper: Any):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncGeminiCloudCodeCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncGeminiCloudCodeChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+        self._real_client = sync_wrapper
+
+    def close(self):
+        close_fn = getattr(self._real_client, "close", None)
+        if callable(close_fn):
+            close_fn()
+
+
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
@@ -3730,6 +3763,13 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     except ImportError:
         pass
     try:
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+
+        if isinstance(sync_client, GeminiCloudCodeClient):
+            return AsyncGeminiCloudCodeAuxiliaryClient(sync_client), model
+    except ImportError:
+        pass
+    try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
             return sync_client, model
@@ -3993,6 +4033,40 @@ def resolve_provider_client(
                            "but no Codex OAuth token found (run: hermes model)")
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── Google Gemini CLI OAuth (Cloud Code Assist API) ────────────────
+    if provider == "google-gemini-cli":
+        try:
+            from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+            from hermes_cli.auth import AuthError, resolve_gemini_oauth_runtime_credentials
+        except ImportError as exc:
+            logger.warning(
+                "resolve_provider_client: google-gemini-cli requested but "
+                "Gemini OAuth support is unavailable: %s",
+                exc,
+            )
+            return None, None
+        try:
+            creds = resolve_gemini_oauth_runtime_credentials()
+        except AuthError as exc:
+            logger.warning(
+                "resolve_provider_client: google-gemini-cli requested but "
+                "Gemini OAuth credentials are unavailable: %s",
+                exc,
+            )
+            return None, None
+        final_model = _normalize_resolved_model(
+            model or (main_runtime.get("model") if main_runtime else None) or _read_main_model() or "gemini-3-flash-preview",
+            provider,
+        ) or "gemini-3-flash-preview"
+        client = GeminiCloudCodeClient(
+            api_key=str(creds.get("api_key") or "google-oauth"),
+            base_url=str(creds.get("base_url") or "cloudcode-pa://google"),
+            project_id=str(creds.get("project_id") or ""),
+        )
+        logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

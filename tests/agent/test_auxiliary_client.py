@@ -30,6 +30,7 @@ from agent.auxiliary_client import (
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    AsyncGeminiCloudCodeAuxiliaryClient,
 )
 
 
@@ -211,6 +212,68 @@ class TestNormalizeAuxProvider:
     def test_maps_github_copilot_acp_aliases(self):
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
+
+
+class TestGeminiCloudCodeAuxiliaryProvider:
+    class _FakeCloudCodeClient:
+        def __init__(self, *, api_key=None, base_url=None, project_id="", **_kwargs):
+            self.api_key = api_key
+            self.base_url = base_url
+            self.project_id = project_id
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **_call_kwargs: SimpleNamespace(choices=[]))
+            )
+
+        def close(self):
+            pass
+
+    def test_resolves_google_gemini_cli_oauth_client(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_gemini_oauth_runtime_credentials",
+            lambda: {
+                "api_key": "google-access-token",
+                "base_url": "cloudcode-pa://google",
+                "project_id": "project-123",
+            },
+        )
+        monkeypatch.setattr(
+            "agent.gemini_cloudcode_adapter.GeminiCloudCodeClient",
+            self._FakeCloudCodeClient,
+        )
+
+        client, model = resolve_provider_client(
+            "google-gemini-cli",
+            "gemini-3-flash-preview",
+        )
+
+        assert isinstance(client, self._FakeCloudCodeClient)
+        assert model == "gemini-3-flash-preview"
+        assert client.base_url == "cloudcode-pa://google"
+        assert client.project_id == "project-123"
+
+    def test_resolves_async_google_gemini_cli_oauth_client(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_gemini_oauth_runtime_credentials",
+            lambda: {
+                "api_key": "google-access-token",
+                "base_url": "cloudcode-pa://google",
+                "project_id": "project-123",
+            },
+        )
+        monkeypatch.setattr(
+            "agent.gemini_cloudcode_adapter.GeminiCloudCodeClient",
+            self._FakeCloudCodeClient,
+        )
+
+        client, model = resolve_provider_client(
+            "google-gemini-cli",
+            "gemini-3-flash-preview",
+            async_mode=True,
+        )
+
+        assert isinstance(client, AsyncGeminiCloudCodeAuxiliaryClient)
+        assert model == "gemini-3-flash-preview"
+        assert client.base_url == "cloudcode-pa://google"
 
 
 class TestReadCodexAccessToken:

@@ -1,5 +1,6 @@
 """Tests for gateway session management."""
 import json
+import logging
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -570,6 +571,36 @@ class TestLoadTranscriptDBOnly:
         assert len(result) == 2
         assert result[0]["content"] == "db-q"
         assert result[1]["content"] == "db-a"
+
+    def test_init_warning_does_not_claim_jsonl_fallback(self, tmp_path, caplog):
+        config = GatewayConfig()
+        with caplog.at_level(logging.WARNING, logger="gateway.session"):
+            with patch("hermes_state.SessionDB", side_effect=Exception("DB unavailable")):
+                SessionStore(sessions_dir=tmp_path, config=config)
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("transcript persistence is disabled" in msg for msg in messages)
+        assert all("falling back to JSONL" not in msg for msg in messages)
+
+    def test_transcript_db_unavailable_warns_once(self, tmp_path, caplog):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._session_db_unavailable_message = "SQLite session store not available: DB unavailable."
+        store._transcript_db_warning_emitted = False
+
+        with caplog.at_level(logging.WARNING, logger="gateway.session"):
+            assert store.load_transcript("missing") == []
+            store.append_to_transcript("missing", {"role": "user", "content": "hi"})
+            store.rewrite_transcript("missing", [])
+
+        warnings = [
+            r.getMessage() for r in caplog.records
+            if "Transcript reads/writes are disabled" in r.getMessage()
+        ]
+        assert len(warnings) == 1
 
 
 class TestSessionStoreSwitchSession:

@@ -784,7 +784,8 @@ class SessionStore:
     Manages session storage and retrieval.
     
     Uses SQLite (via SessionDB) for session metadata and message transcripts.
-    Falls back to legacy JSONL files if SQLite is unavailable.
+    Session routing metadata still persists in sessions.json if SQLite is
+    unavailable, but transcript persistence is disabled until state.db opens.
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
@@ -795,14 +796,39 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
+        self._session_db_unavailable_message: Optional[str] = None
+        self._transcript_db_warning_emitted = False
         
         # Initialize SQLite session database
         self._db = None
+        _hermes_state = None
         try:
-            from hermes_state import SessionDB
-            self._db = SessionDB()
+            import hermes_state as _hermes_state
+            self._db = _hermes_state.SessionDB()
         except Exception as e:
-            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+            self._session_db_unavailable_message = (
+                _hermes_state.format_session_db_unavailable(
+                    prefix="SQLite session store not available"
+                )
+                if _hermes_state is not None
+                else f"SQLite session store not available: {e}."
+            )
+            logger.warning(
+                "%s Gateway session routing will continue via sessions.json, "
+                "but transcript persistence is disabled.",
+                self._session_db_unavailable_message,
+            )
+
+    def _warn_transcript_db_unavailable_once(self) -> None:
+        """Emit one warning when transcript reads/writes are disabled."""
+        if self._db or self._transcript_db_warning_emitted:
+            return
+        self._transcript_db_warning_emitted = True
+        logger.warning(
+            "%s Transcript reads/writes are disabled; conversation history "
+            "will not persist until state.db opens successfully.",
+            self._session_db_unavailable_message or "SQLite session store not available.",
+        )
     
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
@@ -1434,6 +1460,10 @@ class SessionStore:
                      _flush_messages_to_session_db(), preventing the
                      duplicate-write bug (#860).
         """
+        if not self._db:
+            if not skip_db:
+                self._warn_transcript_db_unavailable_once()
+            return
         if self._db and not skip_db:
             try:
                 self._db.append_message(
@@ -1485,6 +1515,9 @@ class SessionStore:
         Used by /retry, /undo, and /compress to persist modified conversation
         history. state.db is the canonical store.
         """
+        if not self._db:
+            self._warn_transcript_db_unavailable_once()
+            return
         if self._db:
             try:
                 self._db.replace_messages(session_id, messages)
@@ -1499,6 +1532,7 @@ class SessionStore:
         migrated (their DB row holds the full message history).
         """
         if not self._db:
+            self._warn_transcript_db_unavailable_once()
             return []
         try:
             return self._db.get_messages_as_conversation(session_id)

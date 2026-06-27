@@ -3063,6 +3063,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
 
+    def _sync_voice_auto_join_state_to_adapter(self, adapter) -> None:
+        """Wire Discord voice auto-join callbacks onto a live adapter."""
+        if getattr(adapter, "platform", None) != Platform.DISCORD:
+            return
+        if hasattr(adapter, "_voice_auto_join_callback"):
+            adapter._voice_auto_join_callback = self._handle_discord_voice_auto_join
+
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
         """Call adapter.disconnect() defensively, swallowing any error.
 
@@ -6079,6 +6086,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
+                    self._sync_voice_auto_join_state_to_adapter(adapter)
                     connected_count += 1
                     self._update_platform_runtime_status(
                         platform.value,
@@ -6875,6 +6883,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
+                        self._sync_voice_auto_join_state_to_adapter(adapter)
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(
@@ -11354,6 +11363,95 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return raw.guild.id
         return None
 
+    async def _handle_discord_voice_auto_join(
+        self,
+        *,
+        guild_id: int,
+        user_id: str,
+        voice_channel_id: str,
+        text_channel_id: str,
+    ) -> bool:
+        """Auto-join Discord voice by reusing the manual /voice join path."""
+        adapter = self.adapters.get(Platform.DISCORD)
+        if not adapter or "get_user_voice_channel" not in dir(adapter):
+            return False
+
+        text_channel = None
+        client = getattr(adapter, "_client", None)
+        if client is not None:
+            try:
+                text_channel = client.get_channel(int(text_channel_id))
+            except Exception:
+                text_channel = None
+            if text_channel is None and hasattr(client, "fetch_channel"):
+                try:
+                    text_channel = await client.fetch_channel(int(text_channel_id))
+                except Exception:
+                    text_channel = None
+        if text_channel is None:
+            logger.warning(
+                "Discord voice auto-join skipped: linked text channel %s is unavailable",
+                text_channel_id,
+            )
+            return False
+
+        chat_name = getattr(text_channel, "name", str(text_channel_id))
+        guild = getattr(text_channel, "guild", None)
+        if guild is not None and getattr(guild, "name", None):
+            chat_name = f"{guild.name} / #{chat_name}"
+        parent_id = str(getattr(text_channel, "parent_id", "") or "")
+        channel_prompt = None
+        if "_resolve_channel_prompt" in dir(adapter):
+            try:
+                channel_prompt = adapter._resolve_channel_prompt(str(text_channel_id), parent_id or None)
+            except Exception:
+                channel_prompt = None
+
+        source = adapter.build_source(
+            chat_id=str(text_channel_id),
+            chat_name=chat_name,
+            chat_type="group",
+            user_id=str(user_id),
+            user_name=str(user_id),
+            guild_id=str(guild_id),
+            parent_chat_id=parent_id or None,
+        ) if "build_source" in dir(adapter) else SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=str(text_channel_id),
+            chat_name=chat_name,
+            chat_type="group",
+            user_id=str(user_id),
+            user_name=str(user_id),
+            guild_id=str(guild_id),
+            parent_chat_id=parent_id or None,
+        )
+
+        from types import SimpleNamespace
+        event = MessageEvent(
+            text="/voice join",
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=SimpleNamespace(guild_id=int(guild_id), guild=guild),
+            channel_prompt=channel_prompt,
+        )
+
+        result = await self._handle_voice_channel_join(event)
+        success = (
+            "is_in_voice_channel" in dir(adapter)
+            and adapter.is_in_voice_channel(int(guild_id))
+            and str(getattr(adapter, "_voice_text_channels", {}).get(int(guild_id))) == str(text_channel_id)
+        )
+        if success and "mark_voice_auto_join_target" in dir(adapter):
+            adapter.mark_voice_auto_join_target(
+                int(guild_id),
+                user_id=str(user_id),
+                voice_channel_id=str(voice_channel_id),
+                text_channel_id=str(text_channel_id),
+            )
+        if not success:
+            logger.debug("Discord voice auto-join did not connect: %s", result)
+        return bool(success)
+
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
@@ -11422,6 +11520,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
             return "Not in a voice channel."
+
+        suppress_auto_join = (
+            getattr(adapter, "suppress_voice_auto_join", None)
+            if "suppress_voice_auto_join" in dir(adapter)
+            else None
+        )
+        if suppress_auto_join is not None:
+            voice_channel_id = None
+            get_user_voice_channel = (
+                getattr(adapter, "get_user_voice_channel", None)
+                if "get_user_voice_channel" in dir(adapter)
+                else None
+            )
+            if get_user_voice_channel is not None:
+                try:
+                    voice_channel = await get_user_voice_channel(
+                        guild_id,
+                        event.source.user_id,
+                    )
+                    voice_channel_id = getattr(voice_channel, "id", None)
+                except Exception:
+                    voice_channel_id = None
+            suppress_auto_join(
+                guild_id,
+                user_id=event.source.user_id,
+                channel_id=str(voice_channel_id) if voice_channel_id is not None else None,
+            )
 
         try:
             await adapter.leave_voice_channel(guild_id)

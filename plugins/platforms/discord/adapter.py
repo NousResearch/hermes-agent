@@ -263,6 +263,52 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _clean_discord_channel_id(entry: str) -> str:
+    """Normalize a Discord channel/voice-channel ID pasted from config."""
+    entry = str(entry or "").strip()
+    if entry.startswith("<#") and entry.endswith(">"):
+        entry = entry[2:-1]
+    for prefix in ("channel:", "voice:", "vc:", "text:"):
+        if entry.lower().startswith(prefix):
+            entry = entry[len(prefix):]
+            break
+    return entry.strip()
+
+
+def _discord_config_id_set(value: Any, *, channel: bool = False) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        entries = value
+    else:
+        entries = str(value).split(",")
+    cleaner = _clean_discord_channel_id if channel else _clean_discord_id
+    return {cleaner(str(entry)) for entry in entries if cleaner(str(entry))}
+
+
+def _discord_config_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        return default
+    return bool(value)
+
+
+def _discord_config_float(value: Any, default: float, *, minimum: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, parsed)
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -761,6 +807,12 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        self._voice_auto_join_callback: Optional[Callable] = None  # set by run.py
+        self._voice_auto_join_cfg: Dict[str, Any] = self._load_voice_auto_join_config()
+        self._voice_timeout_seconds: float = self._voice_auto_join_cfg["idle_timeout_seconds"]
+        self._voice_auto_join_targets: Dict[int, Dict[str, str]] = {}
+        self._voice_auto_join_suppressed_until: Dict[Tuple[int, str, str], float] = {}
+        self._voice_auto_join_next_attempt_at: Dict[Tuple[int, str], float] = {}
         # Resolves the current voice-reply mode ("off"|"voice_only"|"all") for a
         # linked text-channel id; set by run.py. Lets the inactivity timer leave
         # the bot in the channel when the user deliberately picked text-only
@@ -1090,35 +1142,7 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
-                # Only track channels where the bot is connected
-                bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if not bot_guild_ids:
-                    return
-                guild_id = member.guild.id
-                if guild_id not in bot_guild_ids:
-                    return
-                # Ignore the bot itself
-                if member == adapter_self._client.user:
-                    return
-
-                joined = before.channel is None and after.channel is not None
-                left = before.channel is not None and after.channel is None
-                switched = (
-                    before.channel is not None
-                    and after.channel is not None
-                    and before.channel != after.channel
-                )
-
-                if joined or left or switched:
-                    logger.info(
-                        "Voice state: %s (%d) %s (guild %d)",
-                        member.display_name,
-                        member.id,
-                        "joined " + after.channel.name if joined
-                        else "left " + before.channel.name if left
-                        else f"moved {before.channel.name} -> {after.channel.name}",
-                        guild_id,
-                    )
+                await adapter_self._handle_voice_state_update(member, before, after)
 
             # Register slash commands
             if self._slash_commands:
@@ -2245,6 +2269,102 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("Could not load discord.voice_fx config: %s", e)
         return defaults
 
+    def _load_voice_auto_join_config(self) -> Dict[str, Any]:
+        """Read Discord voice auto-join/follow settings from config.yaml.
+
+        Behavioral settings live under ``discord.voice_auto_join`` and are
+        disabled by default. IDs must be explicit; Hermes never infers live
+        Discord users or channels for this feature.
+        """
+        defaults: Dict[str, Any] = {
+            "enabled": False,
+            "allowed_user_ids": set(),
+            "allowed_voice_channel_ids": set(),
+            "text_channel_id": None,
+            "idle_timeout_seconds": float(self.VOICE_TIMEOUT),
+            "target_leave_cleanup": True,
+            "stay_while_target_present": False,
+            "manual_leave_cooldown_seconds": 300.0,
+            "reconnect_cooldown_seconds": 15.0,
+            "failure_backoff_seconds": 60.0,
+        }
+        raw: Dict[str, Any] = {}
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            discord_cfg = cfg.get("discord") or {}
+            if isinstance(discord_cfg, dict):
+                block = discord_cfg.get("voice_auto_join") or {}
+                if isinstance(block, dict):
+                    raw.update(block)
+                # Top-level timeout alias so manual /voice joins can also use
+                # the configurable Discord voice inactivity timeout.
+                if "voice_idle_timeout_seconds" in discord_cfg:
+                    raw.setdefault(
+                        "idle_timeout_seconds",
+                        discord_cfg.get("voice_idle_timeout_seconds"),
+                    )
+        except Exception as e:
+            logger.debug("Could not load discord.voice_auto_join config: %s", e)
+
+        extra_block = {}
+        try:
+            extra_block = (getattr(self.config, "extra", {}) or {}).get("voice_auto_join") or {}
+        except Exception:
+            extra_block = {}
+        if isinstance(extra_block, dict):
+            raw.update(extra_block)
+
+        allowed_users = (
+            raw.get("allowed_user_ids")
+            if "allowed_user_ids" in raw
+            else raw.get("allowed_users")
+        )
+        allowed_vcs = (
+            raw.get("allowed_voice_channel_ids")
+            if "allowed_voice_channel_ids" in raw
+            else raw.get("allowed_voice_channels", raw.get("allowed_vcs"))
+        )
+        text_channel = raw.get(
+            "text_channel_id",
+            raw.get("linked_text_channel_id", raw.get("linked_text_channel")),
+        )
+        cleaned_text_channel = _clean_discord_channel_id(text_channel) if text_channel is not None else ""
+
+        defaults["enabled"] = _discord_config_bool(raw.get("enabled"), False)
+        defaults["allowed_user_ids"] = _discord_config_id_set(allowed_users)
+        defaults["allowed_voice_channel_ids"] = _discord_config_id_set(allowed_vcs, channel=True)
+        defaults["text_channel_id"] = cleaned_text_channel or None
+        defaults["idle_timeout_seconds"] = _discord_config_float(
+            raw.get("idle_timeout_seconds", raw.get("idle_timeout", raw.get("timeout_seconds"))),
+            defaults["idle_timeout_seconds"],
+            minimum=0.0,
+        )
+        defaults["target_leave_cleanup"] = _discord_config_bool(
+            raw.get("target_leave_cleanup"),
+            True,
+        )
+        defaults["stay_while_target_present"] = _discord_config_bool(
+            raw.get("stay_while_target_present"),
+            False,
+        )
+        defaults["manual_leave_cooldown_seconds"] = _discord_config_float(
+            raw.get("manual_leave_cooldown_seconds", raw.get("manual_leave_cooldown")),
+            defaults["manual_leave_cooldown_seconds"],
+            minimum=0.0,
+        )
+        defaults["reconnect_cooldown_seconds"] = _discord_config_float(
+            raw.get("reconnect_cooldown_seconds", raw.get("reconnect_cooldown")),
+            defaults["reconnect_cooldown_seconds"],
+            minimum=0.0,
+        )
+        defaults["failure_backoff_seconds"] = _discord_config_float(
+            raw.get("failure_backoff_seconds", raw.get("failure_backoff")),
+            defaults["failure_backoff_seconds"],
+            minimum=0.0,
+        )
+        return defaults
+
     def _get_ambient_pcm(self) -> Optional[bytes]:
         """Return decoded 48k/stereo/s16le PCM for the ambient idle bed.
 
@@ -2361,6 +2481,239 @@ class DiscordAdapter(BasePlatformAdapter):
         """True when a continuous mixer is installed for this guild."""
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
+
+    def suppress_voice_auto_join(
+        self,
+        guild_id: int,
+        *,
+        user_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        seconds: Optional[float] = None,
+    ) -> None:
+        """Suppress auto-rejoin after an intentional manual /voice leave."""
+        cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
+        cooldown = cfg.get("manual_leave_cooldown_seconds", 300.0) if seconds is None else seconds
+        cooldown = _discord_config_float(cooldown, 300.0, minimum=0.0)
+        if cooldown <= 0:
+            return
+
+        channel_ids = {str(channel_id)} if channel_id is not None else set()
+        if not channel_ids:
+            current = self._voice_clients.get(int(guild_id))
+            current_channel = getattr(current, "channel", None)
+            current_channel_id = getattr(current_channel, "id", None)
+            if current_channel_id is not None:
+                channel_ids.add(str(current_channel_id))
+        if not channel_ids:
+            return
+
+        user_ids = {str(user_id)} if user_id is not None else set()
+        if not user_ids:
+            user_ids.update(cfg.get("allowed_user_ids") or set())
+        if not user_ids:
+            return
+
+        until = time.monotonic() + cooldown
+        for target_user_id in user_ids:
+            for target_channel_id in channel_ids:
+                self._voice_auto_join_suppressed_until[
+                    (int(guild_id), str(target_user_id), str(target_channel_id))
+                ] = until
+
+    def _is_voice_auto_join_suppressed(self, guild_id: int, user_id: str, channel_id: str) -> bool:
+        key = (int(guild_id), str(user_id), str(channel_id))
+        until = self._voice_auto_join_suppressed_until.get(key)
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            self._voice_auto_join_suppressed_until.pop(key, None)
+            return False
+        return True
+
+    def _clear_voice_auto_join_suppression(self, guild_id: int, user_id: str, channel_id: str) -> None:
+        self._voice_auto_join_suppressed_until.pop(
+            (int(guild_id), str(user_id), str(channel_id)),
+            None,
+        )
+
+    def mark_voice_auto_join_target(
+        self,
+        guild_id: int,
+        *,
+        user_id: str,
+        voice_channel_id: str,
+        text_channel_id: str,
+    ) -> None:
+        """Record which configured user/channel this guild is following."""
+        self._voice_auto_join_targets[int(guild_id)] = {
+            "user_id": str(user_id),
+            "voice_channel_id": str(voice_channel_id),
+            "text_channel_id": str(text_channel_id),
+        }
+
+    def _voice_auto_join_target_present(self, guild_id: int) -> bool:
+        target = self._voice_auto_join_targets.get(int(guild_id))
+        if not target:
+            return False
+        vc = self._voice_clients.get(int(guild_id))
+        channel = getattr(vc, "channel", None)
+        if channel is None:
+            return False
+        if str(getattr(channel, "id", "")) != str(target.get("voice_channel_id")):
+            return False
+        for member in getattr(channel, "members", []) or []:
+            if str(getattr(member, "id", "")) == str(target.get("user_id")):
+                return True
+        return False
+
+    async def _handle_voice_state_update(self, member, before, after) -> None:
+        """Handle Discord voice-state changes for logging and auto-follow."""
+        if self._client is not None and member == getattr(self._client, "user", None):
+            return
+
+        before_channel = getattr(before, "channel", None)
+        after_channel = getattr(after, "channel", None)
+        joined = before_channel is None and after_channel is not None
+        left = before_channel is not None and after_channel is None
+        switched = (
+            before_channel is not None
+            and after_channel is not None
+            and before_channel != after_channel
+        )
+        if not (joined or left or switched):
+            return
+
+        await self._maybe_handle_voice_auto_join(member, before_channel, after_channel)
+
+        guild = getattr(member, "guild", None)
+        guild_id = getattr(guild, "id", None)
+        if guild_id in set(getattr(self, "_voice_clients", {}).keys()):
+            before_name = getattr(before_channel, "name", "")
+            after_name = getattr(after_channel, "name", "")
+            logger.info(
+                "Voice state: %s (%d) %s (guild %d)",
+                getattr(member, "display_name", str(getattr(member, "id", ""))),
+                getattr(member, "id", 0),
+                "joined " + after_name if joined
+                else "left " + before_name if left
+                else f"moved {before_name} -> {after_name}",
+                guild_id,
+            )
+
+    async def _maybe_handle_voice_auto_join(self, member, before_channel, after_channel) -> None:
+        guild = getattr(member, "guild", None)
+        guild_id = getattr(guild, "id", None)
+        user_id = str(getattr(member, "id", "") or "")
+        if guild_id is None or not user_id:
+            return
+        guild_id = int(guild_id)
+
+        if before_channel is not None:
+            await self._maybe_cleanup_voice_auto_join_target(
+                guild_id,
+                user_id,
+                before_channel,
+                after_channel,
+            )
+
+        if after_channel is None:
+            return
+
+        cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
+        if not cfg.get("enabled", False):
+            return
+
+        allowed_users = cfg.get("allowed_user_ids") or set()
+        allowed_channels = cfg.get("allowed_voice_channel_ids") or set()
+        text_channel_id = cfg.get("text_channel_id")
+        voice_channel_id = str(getattr(after_channel, "id", "") or "")
+        if not allowed_users or user_id not in allowed_users:
+            return
+        if not allowed_channels or voice_channel_id not in allowed_channels:
+            return
+        if not text_channel_id:
+            return
+
+        existing = self._voice_clients.get(guild_id)
+        if existing and existing.is_connected() and str(getattr(existing.channel, "id", "")) == voice_channel_id:
+            self.mark_voice_auto_join_target(
+                guild_id,
+                user_id=user_id,
+                voice_channel_id=voice_channel_id,
+                text_channel_id=str(text_channel_id),
+            )
+            return
+
+        if self._is_voice_auto_join_suppressed(guild_id, user_id, voice_channel_id):
+            return
+
+        attempt_key = (guild_id, voice_channel_id)
+        now = time.monotonic()
+        next_allowed = self._voice_auto_join_next_attempt_at.get(attempt_key, 0.0)
+        if now < next_allowed:
+            return
+
+        cooldown = float(cfg.get("reconnect_cooldown_seconds", 15.0) or 0.0)
+        self._voice_auto_join_next_attempt_at[attempt_key] = now + cooldown
+
+        callback = getattr(self, "_voice_auto_join_callback", None)
+        if callback is None:
+            return
+
+        success = False
+        try:
+            success = bool(await callback(
+                guild_id=guild_id,
+                user_id=user_id,
+                voice_channel_id=voice_channel_id,
+                text_channel_id=str(text_channel_id),
+            ))
+        except Exception as exc:
+            logger.warning("Discord voice auto-join failed: %s", exc, exc_info=True)
+
+        if success:
+            self.mark_voice_auto_join_target(
+                guild_id,
+                user_id=user_id,
+                voice_channel_id=voice_channel_id,
+                text_channel_id=str(text_channel_id),
+            )
+            return
+
+        backoff = float(cfg.get("failure_backoff_seconds", 60.0) or 0.0)
+        self._voice_auto_join_next_attempt_at[attempt_key] = now + max(cooldown, backoff)
+
+    async def _maybe_cleanup_voice_auto_join_target(
+        self,
+        guild_id: int,
+        user_id: str,
+        before_channel,
+        after_channel,
+    ) -> None:
+        before_channel_id = str(getattr(before_channel, "id", "") or "")
+        self._clear_voice_auto_join_suppression(guild_id, user_id, before_channel_id)
+
+        target = self._voice_auto_join_targets.get(int(guild_id))
+        if not target:
+            return
+        if str(target.get("user_id")) != str(user_id):
+            return
+        if str(target.get("voice_channel_id")) != before_channel_id:
+            return
+        if after_channel is not None and str(getattr(after_channel, "id", "")) == before_channel_id:
+            return
+
+        self._voice_auto_join_targets.pop(int(guild_id), None)
+        cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
+        if not cfg.get("target_leave_cleanup", True):
+            return
+        text_ch_id = self._voice_text_channels.get(int(guild_id))
+        await self.leave_voice_channel(int(guild_id))
+        if self._on_voice_disconnect and text_ch_id:
+            try:
+                self._on_voice_disconnect(str(text_ch_id))
+            except Exception:
+                pass
 
     async def join_voice_channel(self, channel) -> bool:
         """Join a Discord voice channel. Returns True on success."""
@@ -2535,8 +2888,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _voice_timeout_handler(self, guild_id: int) -> None:
         """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+        timeout_seconds = float(getattr(self, "_voice_timeout_seconds", self.VOICE_TIMEOUT))
         try:
-            await asyncio.sleep(self.VOICE_TIMEOUT)
+            await asyncio.sleep(timeout_seconds)
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
@@ -2554,6 +2908,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     return
             except Exception:
                 pass
+        auto_join_cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
+        if (
+            auto_join_cfg.get("stay_while_target_present")
+            and self._voice_auto_join_target_present(guild_id)
+        ):
+            return
         await self.leave_voice_channel(guild_id)
         # Notify the runner so it can clean up voice_mode state
         if self._on_voice_disconnect and text_ch_id:

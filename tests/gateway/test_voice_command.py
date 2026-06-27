@@ -926,6 +926,25 @@ class TestVoiceChannelCommands:
         assert runner._voice_mode["discord:123"] == "off"
         mock_adapter.leave_voice_channel.assert_called_once_with(111)
 
+    @pytest.mark.asyncio
+    async def test_leave_suppresses_voice_auto_rejoin(self, runner):
+        """Manual /voice leave starts the adapter's auto-join cooldown."""
+        mock_adapter = AsyncMock()
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        mock_adapter.leave_voice_channel = AsyncMock()
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=SimpleNamespace(id=222))
+        mock_adapter.suppress_voice_auto_join = MagicMock()
+        event = self._make_discord_event("/voice leave")
+        runner.adapters[event.source.platform] = mock_adapter
+
+        await runner._handle_voice_channel_leave(event)
+
+        mock_adapter.suppress_voice_auto_join.assert_called_once_with(
+            111,
+            user_id="user1",
+            channel_id="222",
+        )
+
     # -- _handle_voice_channel_input --
 
     @pytest.mark.asyncio
@@ -1081,6 +1100,201 @@ class TestVoiceChannelCommands:
         event.raw_message = SimpleNamespace(guild_id=None, guild=None)
         result = runner._get_guild_id(event)
         assert result is None
+
+
+class TestDiscordVoiceAutoJoin:
+    """Regression coverage for Discord voice auto-join/follow mode."""
+
+    @staticmethod
+    def _make_adapter(auto_join=None):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import Platform, PlatformConfig
+
+        config = PlatformConfig(
+            enabled=True,
+            extra={"voice_auto_join": auto_join or {}},
+        )
+        config.token = "fake-token"
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter.config = config
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+        adapter._voice_clients = {}
+        adapter._voice_locks = {}
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        adapter._voice_timeout_tasks = {}
+        adapter._voice_receivers = {}
+        adapter._voice_listen_tasks = {}
+        adapter._voice_input_callback = None
+        adapter._on_voice_disconnect = None
+        adapter._voice_auto_join_callback = AsyncMock(return_value=True)
+        adapter._voice_auto_join_cfg = adapter._load_voice_auto_join_config()
+        adapter._voice_timeout_seconds = adapter._voice_auto_join_cfg["idle_timeout_seconds"]
+        adapter._voice_auto_join_targets = {}
+        adapter._voice_auto_join_suppressed_until = {}
+        adapter._voice_auto_join_next_attempt_at = {}
+        return adapter
+
+    @staticmethod
+    def _voice_state(user_id="42", channel_id=222, before_channel=None):
+        guild = SimpleNamespace(id=111, name="Guild")
+        channel = SimpleNamespace(id=channel_id, name="General", guild=guild, members=[])
+        member = SimpleNamespace(id=int(user_id), display_name="Martin", guild=guild)
+        before = SimpleNamespace(channel=before_channel)
+        after = SimpleNamespace(channel=channel)
+        return member, before, after, channel
+
+    @pytest.mark.asyncio
+    async def test_auto_join_disabled_by_default(self):
+        adapter = self._make_adapter()
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        adapter._voice_auto_join_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_user_and_channel_auto_join(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+        })
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        adapter._voice_auto_join_callback.assert_awaited_once_with(
+            guild_id=111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+        )
+        assert adapter._voice_auto_join_targets[111]["user_id"] == "42"
+
+    @pytest.mark.asyncio
+    async def test_disallowed_user_or_channel_ignored(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["99"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+        })
+        member, before, after, _channel = self._voice_state(user_id="42")
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        adapter._voice_auto_join_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_manual_leave_cooldown_blocks_immediate_rejoin(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+        })
+        adapter.suppress_voice_auto_join(111, user_id="42", channel_id="222", seconds=30)
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        adapter._voice_auto_join_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failure_backoff_prevents_reconnect_thrash(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 60,
+        })
+        adapter._voice_auto_join_callback = AsyncMock(return_value=False)
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+        await adapter._handle_voice_state_update(member, before, after)
+
+        adapter._voice_auto_join_callback.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_target_leave_cleanup_disconnects_and_notifies_runner(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "target_leave_cleanup": True,
+        })
+        guild = SimpleNamespace(id=111, name="Guild")
+        before_channel = SimpleNamespace(id=222, name="General", guild=guild)
+        member = SimpleNamespace(id=42, display_name="Martin", guild=guild)
+        adapter._voice_auto_join_targets[111] = {
+            "user_id": "42",
+            "voice_channel_id": "222",
+            "text_channel_id": "333",
+        }
+        adapter._voice_text_channels[111] = 333
+        adapter.leave_voice_channel = AsyncMock()
+        disconnect_calls = []
+        adapter._on_voice_disconnect = lambda chat_id: disconnect_calls.append(chat_id)
+
+        await adapter._handle_voice_state_update(
+            member,
+            SimpleNamespace(channel=before_channel),
+            SimpleNamespace(channel=None),
+        )
+
+        adapter.leave_voice_channel.assert_awaited_once_with(111)
+        assert disconnect_calls == ["333"]
+        assert 111 not in adapter._voice_auto_join_targets
+
+    @pytest.mark.asyncio
+    async def test_runner_auto_join_reuses_manual_join_wiring(self, tmp_path):
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        guild = SimpleNamespace(id=111, name="Guild")
+        text_channel = SimpleNamespace(id=333, name="voice-chat", guild=guild, parent_id=None)
+        voice_channel = SimpleNamespace(id=222, name="General", guild=guild)
+        adapter = MagicMock()
+        adapter._client = MagicMock()
+        adapter._client.get_channel = MagicMock(return_value=text_channel)
+        adapter.get_user_voice_channel = AsyncMock(return_value=voice_channel)
+        adapter.join_voice_channel = AsyncMock(return_value=True)
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        adapter._voice_input_callback = None
+        adapter._on_voice_disconnect = None
+        adapter._voice_mode_getter = None
+        adapter._auto_tts_enabled_chats = set()
+        adapter._auto_tts_disabled_chats = set()
+        adapter.mark_voice_auto_join_target = MagicMock()
+        runner.adapters[Platform.DISCORD] = adapter
+
+        success = await runner._handle_discord_voice_auto_join(
+            guild_id=111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+        )
+
+        assert success is True
+        adapter.join_voice_channel.assert_awaited_once_with(voice_channel)
+        assert runner._voice_mode["discord:333"] == "all"
+        assert adapter._auto_tts_enabled_chats == {"333"}
+        adapter.mark_voice_auto_join_target.assert_called_once_with(
+            111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+        )
 
 
 # =====================================================================
@@ -1997,6 +2211,48 @@ class TestVoiceTimeoutCleansRunnerState:
 
         assert 111 not in adapter._voice_clients
         assert disconnect_calls == ["999"]
+
+    @pytest.mark.asyncio
+    async def test_timeout_uses_configured_seconds(self, adapter):
+        adapter._voice_timeout_seconds = 17
+        adapter._voice_auto_join_cfg = {}
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.disconnect = AsyncMock()
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_text_channels[111] = 999
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            await adapter._voice_timeout_handler(111)
+
+        mock_sleep.assert_awaited_once_with(17)
+
+    @pytest.mark.asyncio
+    async def test_timeout_stays_while_auto_join_target_present(self, adapter):
+        adapter._voice_timeout_seconds = 17
+        adapter._voice_auto_join_cfg = {"stay_while_target_present": True}
+        adapter._voice_auto_join_targets = {
+            111: {
+                "user_id": "42",
+                "voice_channel_id": "222",
+                "text_channel_id": "999",
+            }
+        }
+
+        target_member = SimpleNamespace(id=42)
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.disconnect = AsyncMock()
+        mock_vc.channel = SimpleNamespace(id=222, members=[target_member])
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_text_channels[111] = 999
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await adapter._voice_timeout_handler(111)
+
+        assert 111 in adapter._voice_clients
+        mock_vc.disconnect.assert_not_called()
 
 
 # =====================================================================

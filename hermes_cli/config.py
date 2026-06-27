@@ -669,7 +669,7 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_hermes_home, is_termux  # noqa: F811,E402
 from utils import atomic_replace
 
 def get_config_path() -> Path:
@@ -839,6 +839,31 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
+def _probe_hermes_home_writable(home: Path) -> None:
+    """Fail fast when HERMES_HOME exists but cannot actually accept writes."""
+    fd, probe_path = tempfile.mkstemp(prefix=".hermes-write-test-", dir=home)
+    os.close(fd)
+    try:
+        os.unlink(probe_path)
+    except FileNotFoundError:
+        pass
+
+
+def _raise_hermes_home_access_error(home: Path, exc: OSError) -> None:
+    """Raise a user-facing HERMES_HOME access error with platform-specific help."""
+    msg = (
+        f"Cannot initialize HERMES_HOME at {home}: {exc}. "
+        "Hermes needs read/write access to this directory before startup can continue."
+    )
+    if is_termux():
+        msg += (
+            " In Termux on Android, this often means another Hermes installation "
+            "(for example the Android app) is using a different sandboxed ~/.hermes. "
+            "Set HERMES_HOME to a Termux-only directory or remove the conflicting install."
+        )
+    raise RuntimeError(msg) from exc
+
+
 def ensure_hermes_home():
     """Ensure ~/.hermes directory structure exists with secure permissions.
 
@@ -854,16 +879,20 @@ def ensure_hermes_home():
         finally:
             os.umask(old_umask)
     else:
-        home.mkdir(parents=True, exist_ok=True)
-        _secure_dir(home)
-        for subdir in (
-            "cron", "sessions", "logs", "logs/curator", "memories",
-            "pairing", "hooks", "image_cache", "audio_cache", "skills",
-        ):
-            d = home / subdir
-            d.mkdir(parents=True, exist_ok=True)
-            _secure_dir(d)
-        _ensure_default_soul_md(home)
+        try:
+            home.mkdir(parents=True, exist_ok=True)
+            _secure_dir(home)
+            for subdir in (
+                "cron", "sessions", "logs", "logs/curator", "memories",
+                "pairing", "hooks", "image_cache", "audio_cache", "skills",
+            ):
+                d = home / subdir
+                d.mkdir(parents=True, exist_ok=True)
+                _secure_dir(d)
+            _probe_hermes_home_writable(home)
+            _ensure_default_soul_md(home)
+        except OSError as exc:
+            _raise_hermes_home_access_error(home, exc)
 
 
 def _ensure_hermes_home_managed(home: Path):

@@ -2814,7 +2814,7 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
     or git is unavailable. Never raises into the request path.
     """
     try:
-        out = subprocess.run(
+        out = _subprocess_compat.run(
             [
                 "git",
                 "-C",
@@ -13474,6 +13474,7 @@ _mount_plugin_api_routes()
 # always mounted — the gate middleware decides whether to enforce auth,
 # not whether the routes exist.
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
+from hermes_cli import _subprocess_compat
 app.include_router(_dashboard_auth_router)
 
 mount_spa(app)

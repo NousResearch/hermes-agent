@@ -22,6 +22,7 @@ from ._oss_providers import (
     KNOWN_DIMS,
     validate_oss_config,
 )
+from hermes_cli import _subprocess_compat
 
 
 def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -> int:
@@ -405,13 +406,13 @@ def _ensure_pgvector(host: str = "localhost", port: int = 5432) -> dict | None:
     # Check if our container already exists but is stopped
     if shutil.which("docker"):
         try:
-            result = subprocess.run(
+            result = _subprocess_compat.run(
                 ["docker", "inspect", _PGVECTOR_CONTAINER, "--format", "{{.State.Status}}"],
                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0 and "exited" in result.stdout:
                 print(f"  Found stopped container '{_PGVECTOR_CONTAINER}', restarting...")
-                subprocess.run(["docker", "start", _PGVECTOR_CONTAINER],
+                _subprocess_compat.run(["docker", "start", _PGVECTOR_CONTAINER],
                                capture_output=True, timeout=15,
                                stdin=subprocess.DEVNULL)
                 _wait_for_port(host, port, timeout=15)
@@ -438,17 +439,17 @@ def _start_pgvector_docker(host: str, port: int) -> dict | None:
     """Pull and start pgvector Docker container."""
     try:
         print(f"  Pulling {_PGVECTOR_IMAGE}...")
-        subprocess.run(["docker", "pull", _PGVECTOR_IMAGE],
+        _subprocess_compat.run(["docker", "pull", _PGVECTOR_IMAGE],
                        capture_output=True, timeout=120,
                        stdin=subprocess.DEVNULL)
 
         # Remove existing container if present
-        subprocess.run(["docker", "rm", "-f", _PGVECTOR_CONTAINER],
+        _subprocess_compat.run(["docker", "rm", "-f", _PGVECTOR_CONTAINER],
                        capture_output=True, timeout=10,
                        stdin=subprocess.DEVNULL)
 
         print(f"  Starting container '{_PGVECTOR_CONTAINER}' on port {port}...")
-        subprocess.run([
+        _subprocess_compat.run([
             "docker", "run", "-d",
             "--name", _PGVECTOR_CONTAINER,
             "-e", f"POSTGRES_PASSWORD={_PGVECTOR_PASSWORD}",
@@ -734,7 +735,7 @@ def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> Non
     for dep in sorted(deps):
         try:
             print(f"  Installing {dep}...")
-            subprocess.run(
+            _subprocess_compat.run(
                 ["uv", "pip", "install", "--python", sys.executable, dep],
                 capture_output=True, timeout=60,
             )

@@ -60,6 +60,7 @@ def _skin_color(key: str, fallback: str) -> str:
 # =========================================================================
 
 from hermes_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
+from hermes_cli import _subprocess_compat
 
 HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
@@ -157,7 +158,7 @@ def _is_official_ssh_remote(url: str | None) -> bool:
 
 def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             ["git", *args],
             capture_output=True,
             text=True,
@@ -178,7 +179,7 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     or ``None`` on failure.
     """
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
             capture_output=True, text=True, timeout=10,
         )
@@ -240,7 +241,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         return 0 if head_rev == target_rev else UPDATE_AVAILABLE_NO_COUNT
 
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             ["git", "rev-list", "--count", "HEAD..origin/main"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
@@ -387,7 +388,7 @@ def _resolve_repo_dir() -> Optional[Path]:
 def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
     """Resolve a git revision to an 8-character short hash."""
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             ["git", "rev-parse", "--short=8", rev],
             capture_output=True,
             text=True,
@@ -443,7 +444,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
 
     ahead = 0
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             ["git", "rev-list", "--count", "origin/main..HEAD"],
             capture_output=True,
             text=True,
@@ -479,7 +480,7 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
         return None
 
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             ["git", "describe", "--tags", "--abbrev=0"],
             capture_output=True,
             text=True,

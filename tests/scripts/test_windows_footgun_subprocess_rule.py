@@ -72,21 +72,42 @@ def test_flags_multiline_call_without_redirection(checker):
 @pytest.mark.parametrize(
     "src",
     [
-        # output captured / redirected -> inherits parent console, no popup
-        'subprocess.run(["git", "x"], capture_output=True)',
-        'subprocess.run(["git", "x"], stdout=subprocess.PIPE)',
-        'subprocess.run(["git", "x"], stderr=subprocess.DEVNULL)',
-        # check_output always captures stdout
-        'subprocess.check_output(["git", "rev-parse", "HEAD"])',
+        # captured/redirected AND not a known Windows-flashing program -> safe.
+        # (espeak-ng / a non-console-exe; capture inherits the parent console.)
+        'subprocess.run(["espeak-ng", "hi"], capture_output=True)',
+        'subprocess.run(["mytool", "x"], stdout=subprocess.PIPE)',
+        'subprocess.check_output(["mytool", "rev-parse"])',
         # already managing the console
-        'subprocess.run(["x"], creationflags=windows_hide_flags())',
+        'subprocess.run(["git", "x"], creationflags=windows_hide_flags())',
         # ** spread may carry a helper -> not penalised
         "subprocess.Popen(argv, **windows_detach_popen_kwargs())",
         "subprocess.run(cmd, **run_kwargs)",
+        # routed through the chokepoint wrapper -> different prefix, never flagged
+        "_subprocess_compat.run(['git', 'status'])",
     ],
 )
 def test_exempts_window_safe_calls(checker, src):
     assert _flag(checker, src) == [], src
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # Cross-platform console exes that allocate a Windows console even when
+        # captured — capture is NOT a safety boundary for these (Gille review,
+        # PR #53791 follow-up). They must be flagged despite capture/redirect.
+        'subprocess.run(["git", "status"], capture_output=True)',
+        'subprocess.run(["git", "x"], stdout=subprocess.PIPE)',
+        'subprocess.run(["gh", "pr", "list"], stderr=subprocess.DEVNULL)',
+        'subprocess.check_output(["git", "rev-parse", "HEAD"])',
+        'subprocess.run(["npm", "ci"], capture_output=True)',
+        'subprocess.run(["ffmpeg", "-i", "x"], capture_output=True)',
+        'subprocess.run(["docker", "info"], capture_output=True, timeout=10)',
+        'subprocess.run(["uv", "pip", "install"], capture_output=True)',
+    ],
+)
+def test_flags_flashing_programs_even_when_captured(checker, src):
+    assert _flag(checker, src) == [1], src
 
 
 @pytest.mark.parametrize(

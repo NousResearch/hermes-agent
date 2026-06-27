@@ -61,6 +61,7 @@ from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils import env_int
+from hermes_cli import _subprocess_compat
 
 logger = logging.getLogger(__name__)
 
@@ -445,7 +446,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
               "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         init_env.pop(k, None)
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             ["git", "init", "--bare", str(store)],
             capture_output=True, text=True,
             env=init_env, timeout=_GIT_TIMEOUT,

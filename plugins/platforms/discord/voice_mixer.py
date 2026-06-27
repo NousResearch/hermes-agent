@@ -45,6 +45,7 @@ the mixer's output cannot echo back into transcription.
 import logging
 import threading
 from typing import TYPE_CHECKING, List, Optional
+from hermes_cli import _subprocess_compat
 
 if TYPE_CHECKING:  # numpy is an optional ("voice" extra) dep — never import at runtime top-level
     import numpy as np
@@ -309,7 +310,7 @@ def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
     import subprocess
 
     try:
-        proc = subprocess.run(
+        proc = _subprocess_compat.run(
             [
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", path,

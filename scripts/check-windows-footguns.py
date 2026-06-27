@@ -392,6 +392,48 @@ _POSIX_ONLY_PROGRAMS = frozenset(
     }
 )
 
+# Cross-platform console programs that DO exist on Windows and allocate a
+# console window when spawned from a console-less parent (Desktop/Electron,
+# pythonw.exe, a detached gateway/cron). For these, capturing or redirecting
+# stdio is NOT a safety boundary — stream redirection controls where the
+# child's output goes, it does NOT suppress console *allocation*. Only
+# CREATE_NO_WINDOW (or routing through hermes_cli._subprocess_compat.run/popen,
+# which injects it) prevents the flash. So a call to one of these is flagged
+# even with capture_output=/stdout=/stderr= set. Matched against the first
+# element of a literal argv (bare name or .exe, path-stripped).
+_WINDOWS_FLASHING_PROGRAMS = frozenset(
+    {
+        "git",
+        "gh",
+        "node",
+        "npm",
+        "npx",
+        "yarn",
+        "pnpm",
+        "python",
+        "python3",
+        "pythonw",
+        "pip",
+        "uv",
+        "uvx",
+        "ffmpeg",
+        "ffprobe",
+        "ollama",
+        "docker",
+        "cmd",
+        "cmd.exe",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "where",
+        "taskkill",
+        "schtasks",
+        "wmic",
+        "tasklist",
+        "netstat",
+    }
+)
+
 SUBPROCESS_FOOTGUN_NAME = "subprocess without Windows no-window flag"
 SUBPROCESS_FOOTGUN_MESSAGE = (
     "subprocess.run/Popen/call on Windows flashes a console (cmd) window "
@@ -424,30 +466,61 @@ def _call_attr_name(node: ast.Call) -> str | None:
 def _suppresses_window(node: ast.Call, func_name: str) -> bool:
     """True if this subprocess call cannot create a new console window.
 
-    A child that inherits or redirects the parent's stdio reuses the parent
-    console — no new window is created, so CREATE_NO_WINDOW is moot. We treat
-    the following as window-safe:
-      * check_output           — always captures stdout
-      * capture_output=...      — captures both streams
-      * stdout= or stderr=      — at least one stream redirected/inherited
+    The honest invariant (corrected after review of PR #53791): capturing or
+    redirecting stdio is NOT the same as suppressing console allocation. From a
+    console-less parent (Desktop/Electron, pythonw.exe, a detached gateway/cron)
+    a console-subsystem child still allocates — and flashes — a window even with
+    capture_output=True. Only CREATE_NO_WINDOW (or routing through
+    hermes_cli._subprocess_compat.run/popen, which injects it) prevents it.
+
+    So capture/stdout/stderr/check_output is treated as window-safe ONLY when the
+    program is not a known cross-platform console exe that flashes on Windows
+    (see _WINDOWS_FLASHING_PROGRAMS — git/gh/npm/node/python/uv/ffmpeg/docker/…).
+    For those, even a fully-captured call is flagged.
+
+    Always window-safe regardless of program:
       * creationflags=...       — author is already managing the console
       * **<spread>              — kwargs may carry a _subprocess_compat helper;
                                   flag-via-spread is the recommended fix, so we
-                                  must not penalise it. (We accept the small
-                                  false-negative: a spread that happens to omit
-                                  creationflags. The alternative — flagging every
-                                  **kwargs call — would punish the correct fix.)
+                                  must not penalise it.
+      * POSIX-only program      — can't run on Windows, can't flash.
+    Conditionally safe (only when NOT a known flashing program):
+      * check_output / capture_output= / stdout= / stderr=
     """
-    if func_name == "check_output":
-        return True
     explicit = {kw.arg for kw in node.keywords if kw.arg}
-    if explicit & {"stdout", "stderr", "capture_output", "creationflags"}:
+    if "creationflags" in explicit:
         return True
     if any(kw.arg is None for kw in node.keywords):  # **kwargs spread
         return True
     if _is_posix_only_program(node):
         return True
+    # Capture/redirect is only a safety boundary for programs that don't
+    # allocate a Windows console — NOT for git/npm/node/python/ffmpeg/etc.
+    if not _is_windows_flashing_program(node):
+        if func_name == "check_output":
+            return True
+        if explicit & {"stdout", "stderr", "capture_output"}:
+            return True
     return False
+
+
+def _argv_head(node: ast.Call) -> str | None:
+    """Return the path-stripped first argv element if it's a string literal."""
+    if not node.args:
+        return None
+    first = node.args[0]
+    if isinstance(first, (ast.List, ast.Tuple)) and first.elts:
+        head = first.elts[0]
+        if isinstance(head, ast.Constant) and isinstance(head.value, str):
+            return head.value.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    return None
+
+
+def _is_windows_flashing_program(node: ast.Call) -> bool:
+    """True if the call's program is a known cross-platform console exe that
+    allocates a Windows console window (so capture is NOT a safe boundary)."""
+    prog = _argv_head(node)
+    return prog is not None and prog in _WINDOWS_FLASHING_PROGRAMS
 
 
 def _is_posix_only_program(node: ast.Call) -> bool:
@@ -675,7 +748,7 @@ def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footg
 def get_staged_files() -> list[Path]:
     """Return paths staged in the current git index. Empty on non-git trees."""
     try:
-        out = subprocess.check_output(
+        out = subprocess.check_output(  # windows-footgun: ok — dev-only checker, runs on Linux CI
             ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
             cwd=REPO_ROOT,
             stderr=subprocess.DEVNULL,
@@ -689,7 +762,7 @@ def get_staged_files() -> list[Path]:
 def get_diff_files(ref: str) -> list[Path]:
     """Return paths modified vs. the given git ref."""
     try:
-        out = subprocess.check_output(
+        out = subprocess.check_output(  # windows-footgun: ok — dev-only checker, runs on Linux CI
             ["git", "diff", f"{ref}...HEAD", "--name-only", "--diff-filter=ACMR"],
             cwd=REPO_ROOT,
             stderr=subprocess.DEVNULL,

@@ -287,6 +287,7 @@ _RESPONSES_BUILTIN_TOOL_TYPES = {
 # ---------------------------------------------------------------------------
 
 _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
+_RESPONSE_COMPACTION_ITEM_TYPES = {"compaction", "compaction_summary"}
 
 
 def _normalize_responses_message_status(value: Any, *, default: str = "completed") -> str:
@@ -423,6 +424,33 @@ def _chat_messages_to_responses_input(
                                 seen_item_ids.add(item_id)
                             has_codex_reasoning = True
 
+                # Replay encrypted compaction items produced by
+                # responses.compact(). These are opaque provider-owned state,
+                # analogous to reasoning.encrypted_content but representing a
+                # compacted conversation prefix.
+                codex_compactions = msg.get("codex_compaction_items")
+                has_codex_compaction = False
+                if isinstance(codex_compactions, list):
+                    for ci in codex_compactions:
+                        if isinstance(ci, dict) and ci.get("encrypted_content"):
+                            item_id = ci.get("id")
+                            if item_id and item_id in seen_item_ids:
+                                continue
+                            item_type = ci.get("type")
+                            if item_type not in _RESPONSE_COMPACTION_ITEM_TYPES:
+                                item_type = "compaction_summary"
+                            replay_item = {
+                                "type": item_type,
+                                "encrypted_content": ci.get("encrypted_content"),
+                            }
+                            created_by = ci.get("created_by")
+                            if isinstance(created_by, str) and created_by:
+                                replay_item["created_by"] = created_by
+                            items.append(replay_item)
+                            if item_id:
+                                seen_item_ids.add(item_id)
+                            has_codex_compaction = True
+
                 # Replay exact assistant message items (with id/phase) from
                 # previous turns so the API can maintain prefix-cache hits.
                 # OpenAI docs: "preserve and resend phase on all assistant
@@ -484,6 +512,10 @@ def _chat_messages_to_responses_input(
                     # content, emit an empty assistant message as the required
                     # following item.
                     items.append({"role": "assistant", "content": ""})
+                elif has_codex_compaction:
+                    # Compaction items are standalone state and do not need a
+                    # visible assistant text item.
+                    pass
 
                 tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list):
@@ -682,6 +714,24 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 else:
                     reasoning_item["summary"] = []
                 normalized.append(reasoning_item)
+            continue
+
+        if item_type in _RESPONSE_COMPACTION_ITEM_TYPES:
+            encrypted = item.get("encrypted_content")
+            if isinstance(encrypted, str) and encrypted:
+                item_id = item.get("id")
+                if isinstance(item_id, str) and item_id:
+                    if item_id in seen_ids:
+                        continue
+                    seen_ids.add(item_id)
+                compaction_item = {
+                    "type": item_type,
+                    "encrypted_content": encrypted,
+                }
+                created_by = item.get("created_by")
+                if isinstance(created_by, str) and created_by:
+                    compaction_item["created_by"] = created_by
+                normalized.append(compaction_item)
             continue
 
         if item_type == "message":
@@ -1113,6 +1163,7 @@ def _normalize_codex_response(
     content_parts: List[str] = []
     reasoning_parts: List[str] = []
     reasoning_items_raw: List[Dict[str, Any]] = []
+    compaction_items_raw: List[Dict[str, Any]] = []
     message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
@@ -1223,6 +1274,17 @@ def _normalize_codex_response(
                             raw_summary.append({"type": "summary_text", "text": text})
                     raw_item["summary"] = raw_summary
                 reasoning_items_raw.append(raw_item)
+        elif item_type in _RESPONSE_COMPACTION_ITEM_TYPES:
+            encrypted = getattr(item, "encrypted_content", None)
+            if isinstance(encrypted, str) and encrypted:
+                raw_item = {"type": item_type, "encrypted_content": encrypted}
+                item_id = getattr(item, "id", None)
+                if isinstance(item_id, str) and item_id:
+                    raw_item["id"] = item_id
+                created_by = getattr(item, "created_by", None)
+                if isinstance(created_by, str) and created_by:
+                    raw_item["created_by"] = created_by
+                compaction_items_raw.append(raw_item)
         elif item_type == "function_call":
             if item_status in {"queued", "in_progress", "incomplete"}:
                 continue
@@ -1312,6 +1374,7 @@ def _normalize_codex_response(
         reasoning_content=None,
         reasoning_details=None,
         codex_reasoning_items=reasoning_items_raw or None,
+        codex_compaction_items=compaction_items_raw or None,
         codex_message_items=message_items_raw or None,
     )
 

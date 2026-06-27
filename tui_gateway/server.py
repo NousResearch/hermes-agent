@@ -4635,6 +4635,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             "reasoning_content",
             "reasoning_details",
             "codex_reasoning_items",
+            "codex_compaction_items",
         )
         has_reasoning = role == "assistant" and any(
             m.get(key) for key in reasoning_keys

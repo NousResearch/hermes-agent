@@ -103,6 +103,16 @@ class TestBuildReplayEntry:
         entry = _build_replay_entry("assistant", "answer", msg)
         assert entry["codex_reasoning_items"] == items
 
+    def test_assistant_preserves_codex_compaction_items(self):
+        items = [{"type": "compaction", "encrypted_content": "blob"}]
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "codex_compaction_items": items,
+        }
+        entry = _build_replay_entry("assistant", "", msg)
+        assert entry["codex_compaction_items"] == items
+
     def test_assistant_preserves_codex_message_items(self):
         """codex_message_items was silently dropped before this fix.
 
@@ -222,6 +232,7 @@ class TestBuildReplayEntry:
             "reasoning_content",
             "reasoning_details",
             "codex_reasoning_items",
+            "codex_compaction_items",
             "codex_message_items",
             "finish_reason",
         ):
@@ -234,6 +245,7 @@ class TestBuildReplayEntry:
             "reasoning_content",
             "reasoning_details",
             "codex_reasoning_items",
+            "codex_compaction_items",
             "codex_message_items",
             "finish_reason",
         )

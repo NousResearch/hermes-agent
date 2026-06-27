@@ -1365,15 +1365,20 @@ def init_agent(
     if not isinstance(_compression_cfg, dict):
         _compression_cfg = {}
     compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    codex_native_compaction_enabled = is_truthy_value(
+        _compression_cfg.get("codex_native_compaction"), default=False
+    )
     # Per-model/route compaction-threshold override. Codex gpt-5.5 raises to
     # 85% (the Codex backend caps the window at 272K, so the default 50% would
     # compact at ~136K — half the usable context). Gated by an opt-out config
     # flag so the user can fall back to the global threshold; when the override
     # fires we stash a one-time notification (replayed on the first turn) that
     # tells the user what changed and how to revert.
-    _codex_gpt55_autoraise = str(
-        _compression_cfg.get("codex_gpt55_autoraise", True)
-    ).lower() in {"true", "1", "yes"}
+    _codex_gpt55_autoraise = (
+        str(_compression_cfg.get("codex_gpt55_autoraise", True)).lower()
+        in {"true", "1", "yes"}
+        and not codex_native_compaction_enabled
+    )
     agent._compression_threshold_autoraised = None
     try:
         from agent.auxiliary_client import (
@@ -1402,6 +1407,14 @@ def init_agent(
                 }
     except Exception:
         pass
+    if (
+        codex_native_compaction_enabled
+        and agent.api_mode == "codex_responses"
+        and agent.provider == "openai-codex"
+    ):
+        compression_threshold = float(
+            _compression_cfg.get("codex_responses_threshold", 0.85)
+        )
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
@@ -1425,6 +1438,16 @@ def init_agent(
     compression_in_place = is_truthy_value(
         _compression_cfg.get("in_place"), default=False
     )
+    codex_app_server_auto_compaction = str(
+        _compression_cfg.get("codex_app_server_auto", "native") or "native"
+    ).lower()
+    if codex_app_server_auto_compaction not in {"native", "hermes", "off"}:
+        _ra().logger.warning(
+            "Invalid compression.codex_app_server_auto=%r; using 'native'. "
+            "Valid values are: native, hermes, off.",
+            codex_app_server_auto_compaction,
+        )
+        codex_app_server_auto_compaction = "native"
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1667,6 +1690,8 @@ def init_agent(
         )
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
+    agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
+    agent.codex_native_compaction_enabled = codex_native_compaction_enabled
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

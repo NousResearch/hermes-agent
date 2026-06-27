@@ -683,7 +683,7 @@ def _is_fresh_gateway_interruption(
 #
 # ``reasoning`` and ``reasoning_details`` were the original three preserved
 # by PR #2974 (schema v6).  ``reasoning_content``, ``codex_reasoning_items``,
-# ``codex_message_items``, and ``finish_reason`` were added to the DB later
+# ``codex_compaction_items``, ``codex_message_items``, and ``finish_reason`` were added to the DB later
 # but the gateway's replay whitelist was never expanded to match — so any
 # pure-text assistant turn (no ``tool_calls``) silently dropped them on
 # replay, regressing the CLI-vs-gateway behavioural parity.
@@ -700,6 +700,8 @@ def _is_fresh_gateway_interruption(
 #     continuity across turns.
 #   * ``codex_reasoning_items``: encrypted reasoning blobs for the OpenAI
 #     Codex Responses API.
+#   * ``codex_compaction_items``: encrypted compaction blobs from
+#     responses.compact().
 #   * ``codex_message_items``: exact assistant message items with ``phase``.
 #     OpenAI docs: "preserve and resend phase on all assistant messages —
 #     dropping it can degrade performance."  Required for prefix cache hits.
@@ -710,6 +712,7 @@ _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
     "reasoning_content",
     "reasoning_details",
     "codex_reasoning_items",
+    "codex_compaction_items",
     "codex_message_items",
     "finish_reason",
 )
@@ -14239,8 +14242,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("model", "max_tokens"),
         ("compression", "enabled"),
         ("compression", "threshold"),
+        ("compression", "codex_gpt55_autoraise"),
+        ("compression", "codex_native_compaction"),
+        ("compression", "codex_responses_threshold"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
+        ("compression", "codex_app_server_auto"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
     )

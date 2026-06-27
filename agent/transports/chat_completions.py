@@ -133,7 +133,8 @@ class ChatCompletionsTransport(ProviderTransport):
         (or, in the case of some OpenAI-compatible gateways, 5xx):
 
         - Codex Responses API fields: ``codex_reasoning_items`` /
-          ``codex_message_items`` on the message, ``call_id`` /
+          ``codex_compaction_items`` / ``codex_message_items`` on the message,
+          ``call_id`` /
           ``response_item_id`` on ``tool_calls`` entries.
         - ``extra_content`` on ``tool_calls`` (Gemini thought_signature) —
           stripped unless the outgoing ``model`` is itself Gemini-family.
@@ -170,6 +171,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 continue
             if (
                 "codex_reasoning_items" in msg
+                or "codex_compaction_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
@@ -200,6 +202,7 @@ class ChatCompletionsTransport(ProviderTransport):
             if not isinstance(msg, dict):
                 continue
             msg.pop("codex_reasoning_items", None)
+            msg.pop("codex_compaction_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
             msg.pop("timestamp", None)  # #47868 — leak into strict providers

@@ -4008,12 +4008,14 @@ def run_conversation(
                 interim_has_content = bool((interim_msg.get("content") or "").strip())
                 interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
                 interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
+                interim_has_codex_compaction = bool(interim_msg.get("codex_compaction_items"))
                 interim_has_codex_message_items = bool(interim_msg.get("codex_message_items"))
 
                 if (
                     interim_has_content
                     or interim_has_reasoning
                     or interim_has_codex_reasoning
+                    or interim_has_codex_compaction
                     or interim_has_codex_message_items
                 ):
                     last_msg = messages[-1] if messages else None
@@ -4026,6 +4028,8 @@ def run_conversation(
                     # newer continuation state.
                     last_codex_items = last_msg.get("codex_reasoning_items") if isinstance(last_msg, dict) else None
                     interim_codex_items = interim_msg.get("codex_reasoning_items")
+                    last_codex_compaction_items = last_msg.get("codex_compaction_items") if isinstance(last_msg, dict) else None
+                    interim_codex_compaction_items = interim_msg.get("codex_compaction_items")
                     last_codex_message_items = last_msg.get("codex_message_items") if isinstance(last_msg, dict) else None
                     interim_codex_message_items = interim_msg.get("codex_message_items")
                     duplicate_interim = (
@@ -4035,6 +4039,7 @@ def run_conversation(
                         and (last_msg.get("content") or "") == (interim_msg.get("content") or "")
                         and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
                         and last_codex_items == interim_codex_items
+                        and last_codex_compaction_items == interim_codex_compaction_items
                         and last_codex_message_items == interim_codex_message_items
                     )
                     if not duplicate_interim:

@@ -3,9 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _chat_messages_to_responses_input,
     _format_responses_error,
     _normalize_codex_response,
     _preflight_codex_api_kwargs,
+    _preflight_codex_input_items,
 )
 
 
@@ -45,6 +47,100 @@ def test_normalize_codex_response_drops_transient_rs_tmp_reasoning_items():
             "id": "rs_456",
             "summary": [{"type": "summary_text", "text": "stable summary"}],
         }
+    ]
+
+
+def test_normalize_codex_response_preserves_compaction_items():
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="compaction_summary",
+                id="cmp_123",
+                encrypted_content="compact_opaque",
+                created_by="responses.compact",
+            ),
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="done")],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "done"
+    assert assistant_message.codex_compaction_items == [
+        {
+            "type": "compaction_summary",
+            "encrypted_content": "compact_opaque",
+            "id": "cmp_123",
+            "created_by": "responses.compact",
+        }
+    ]
+
+
+def test_chat_messages_replays_codex_compaction_items():
+    items = _chat_messages_to_responses_input(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_compaction_items": [
+                    {
+                        "type": "compaction_summary",
+                        "id": "cmp_123",
+                        "encrypted_content": "compact_opaque",
+                        "created_by": "responses.compact",
+                    }
+                ],
+            },
+            {"role": "user", "content": "continue"},
+        ]
+    )
+
+    assert items == [
+        {
+            "type": "compaction_summary",
+            "encrypted_content": "compact_opaque",
+            "created_by": "responses.compact",
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+
+def test_preflight_accepts_compaction_items():
+    normalized = _preflight_codex_input_items(
+        [
+            {
+                "type": "compaction",
+                "id": "cmp_123",
+                "encrypted_content": "compact_opaque",
+                "created_by": "responses.compact",
+            },
+            {
+                "type": "compaction_summary",
+                "id": "cmp_456",
+                "encrypted_content": "compact_opaque_2",
+            },
+            {"role": "user", "content": "continue"},
+        ]
+    )
+
+    assert normalized == [
+        {
+            "type": "compaction",
+            "encrypted_content": "compact_opaque",
+            "created_by": "responses.compact",
+        },
+        {
+            "type": "compaction_summary",
+            "encrypted_content": "compact_opaque_2",
+        },
+        {"role": "user", "content": "continue"},
     ]
 
 

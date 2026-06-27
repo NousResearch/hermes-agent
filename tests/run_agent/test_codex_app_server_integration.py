@@ -49,7 +49,7 @@ def fake_session(monkeypatch):
     )
 
 
-def _make_codex_agent():
+def _make_codex_agent(**kwargs):
     """Construct an AIAgent in codex_app_server mode without contacting any
     real provider. We pass api_mode explicitly so the constructor takes the
     fast path for direct credentials."""
@@ -61,6 +61,7 @@ def _make_codex_agent():
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
+        **kwargs,
     )
 
 
@@ -133,6 +134,46 @@ class TestRunConversationCodexPath:
         assert agent.context_compressor.last_completion_tokens == 25
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
+
+    def test_native_codex_compaction_updates_bookkeeping(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-compact-1",
+                thread_id="thread-compact-1",
+                compacted=True,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-compact-1"
+        )
+        events = []
+        agent = _make_codex_agent(event_callback=lambda name, payload: events.append((name, payload)))
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert agent.context_compressor.compression_count == 1
+        assert agent.context_compressor.last_prompt_tokens == -1
+        assert agent.context_compressor.awaiting_real_usage_after_compression is True
+        assert events == [
+            (
+                "session:compress",
+                {
+                    "platform": "",
+                    "session_id": agent.session_id,
+                    "old_session_id": "",
+                    "in_place": False,
+                    "compression_count": 1,
+                    "runtime": "codex_app_server",
+                    "thread_id": "thread-compact-1",
+                    "turn_id": "turn-compact-1",
+                },
+            )
+        ]
 
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()

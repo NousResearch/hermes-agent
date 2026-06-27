@@ -344,6 +344,34 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    codex_native_compaction_enabled = bool(
+        getattr(agent, "codex_native_compaction_enabled", False)
+    )
+    if (
+        codex_native_compaction_enabled
+        and getattr(agent, "api_mode", None) == "codex_app_server"
+    ):
+        return _compress_context_via_codex_app_server(
+            agent,
+            messages,
+            system_message,
+            approx_tokens=approx_tokens,
+            task_id=task_id,
+            force=force,
+        )
+    if (
+        codex_native_compaction_enabled
+        and getattr(agent, "api_mode", None) == "codex_responses"
+        and getattr(agent, "provider", None) == "openai-codex"
+    ):
+        return _compress_context_via_codex_responses(
+            agent,
+            messages,
+            system_message,
+            approx_tokens=approx_tokens,
+            task_id=task_id,
+        )
+
     # Lazy feasibility check — run the auxiliary-provider probe + context
     # length lookup just-in-time on the first compression attempt instead of
     # at AIAgent.__init__. Saves ~400ms cold off every short session that
@@ -823,6 +851,399 @@ def compress_context(
     # acquire on that — no race against our just-finished work.
     _release_lock()
     return compressed, new_system_prompt
+
+
+def _compress_context_via_codex_app_server(
+    agent: Any,
+    messages: list,
+    system_message: Optional[str],
+    *,
+    approx_tokens: Optional[int] = None,
+    task_id: str = "default",
+    force: bool = False,
+) -> Tuple[list, str]:
+    """Route compaction to Codex app-server for Codex-owned threads.
+
+    Hermes' normal compressor rewrites the local OpenAI-style transcript.
+    That does not shrink the actual Codex app-server thread context. For this
+    runtime, ask Codex to compact its own thread and keep Hermes' transcript
+    unchanged.
+    """
+    auto_mode = str(
+        getattr(agent, "codex_app_server_auto_compaction", "native") or "native"
+    ).lower()
+    if auto_mode not in {"native", "hermes", "off"}:
+        auto_mode = "native"
+    if not force and auto_mode != "hermes":
+        logger.info(
+            "codex app-server compaction skipped: mode=%s force=false "
+            "(session=%s messages=%d tokens=~%s)",
+            auto_mode,
+            getattr(agent, "session_id", None) or "none",
+            len(messages),
+            f"{approx_tokens:,}" if approx_tokens else "unknown",
+        )
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    codex_session = getattr(agent, "_codex_session", None)
+    if codex_session is None:
+        logger.info(
+            "codex app-server compaction skipped: no active codex thread "
+            "(session=%s messages=%d tokens=~%s)",
+            getattr(agent, "session_id", None) or "none",
+            len(messages),
+            f"{approx_tokens:,}" if approx_tokens else "unknown",
+        )
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    logger.info(
+        "codex app-server compaction started: session=%s messages=%d tokens=~%s",
+        getattr(agent, "session_id", None) or "none",
+        len(messages),
+        f"{approx_tokens:,}" if approx_tokens else "unknown",
+    )
+    try:
+        agent._emit_status(COMPACTION_STATUS)
+    except Exception:
+        pass
+
+    result = codex_session.compact_thread()
+    if getattr(result, "should_retire", False):
+        try:
+            codex_session.close()
+        except Exception:
+            pass
+        agent._codex_session = None
+
+    if getattr(result, "error", None):
+        try:
+            agent._emit_warning(
+                f"⚠ Codex app-server compaction failed: {result.error}"
+            )
+        except Exception:
+            pass
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    try:
+        from agent.codex_runtime import (
+            _record_codex_app_server_compaction,
+            _record_codex_app_server_usage,
+        )
+
+        _record_codex_app_server_compaction(
+            agent,
+            result,
+            approx_tokens=approx_tokens,
+            force=True,
+        )
+        if getattr(result, "token_usage_last", None):
+            _record_codex_app_server_usage(agent, result)
+    except Exception:
+        logger.debug("codex compaction bookkeeping failed", exc_info=True)
+
+    try:
+        from tools.file_tools import reset_file_dedup
+
+        reset_file_dedup(task_id)
+    except Exception:
+        pass
+
+    logger.info(
+        "codex app-server compaction done: session=%s thread=%s turn=%s",
+        getattr(agent, "session_id", None) or "none",
+        getattr(result, "thread_id", None) or "",
+        getattr(result, "turn_id", None) or "",
+    )
+    existing_prompt = getattr(agent, "_cached_system_prompt", None)
+    if not existing_prompt:
+        existing_prompt = agent._build_system_prompt(system_message)
+    return messages, existing_prompt
+
+
+def _get_item_field(item: Any, key: str, default: Any = None) -> Any:
+    value = getattr(item, key, None)
+    if value is None and isinstance(item, dict):
+        value = item.get(key, default)
+    return value if value is not None else default
+
+
+def _extract_codex_responses_compaction_items(response: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in getattr(response, "output", None) or []:
+        item_type = _get_item_field(item, "type")
+        if item_type not in {"compaction", "compaction_summary"}:
+            continue
+        encrypted = _get_item_field(item, "encrypted_content")
+        if not isinstance(encrypted, str) or not encrypted:
+            continue
+        compact_item: dict[str, Any] = {
+            "type": item_type,
+            "encrypted_content": encrypted,
+        }
+        item_id = _get_item_field(item, "id")
+        if isinstance(item_id, str) and item_id:
+            compact_item["id"] = item_id
+        created_by = _get_item_field(item, "created_by")
+        if isinstance(created_by, str) and created_by:
+            compact_item["created_by"] = created_by
+        items.append(compact_item)
+    return items
+
+
+def _codex_responses_tail_start(messages: list, protect_last_n: int) -> int:
+    if not messages:
+        return 0
+    tail_start = max(0, len(messages) - max(1, protect_last_n))
+    while tail_start < len(messages) and (
+        isinstance(messages[tail_start], dict)
+        and messages[tail_start].get("role") == "tool"
+    ):
+        tail_start += 1
+    # Never compact away the latest message entirely; the next API call still
+    # needs an explicit current user/tool context outside the opaque state.
+    if tail_start >= len(messages):
+        tail_start = max(0, len(messages) - 1)
+    return tail_start
+
+
+def _record_codex_responses_compaction_usage(agent: Any, response: Any) -> None:
+    try:
+        agent.session_api_calls += 1
+    except Exception:
+        pass
+
+    usage = getattr(response, "usage", None)
+    if not usage:
+        return
+    try:
+        from agent.usage_pricing import estimate_usage_cost, normalize_usage
+
+        canonical = normalize_usage(
+            usage,
+            provider=getattr(agent, "provider", None),
+            api_mode=getattr(agent, "api_mode", None),
+        )
+        usage_dict = {
+            "prompt_tokens": canonical.prompt_tokens,
+            "completion_tokens": canonical.output_tokens,
+            "total_tokens": canonical.total_tokens,
+            "input_tokens": canonical.input_tokens,
+            "output_tokens": canonical.output_tokens,
+            "cache_read_tokens": canonical.cache_read_tokens,
+            "cache_write_tokens": canonical.cache_write_tokens,
+            "reasoning_tokens": canonical.reasoning_tokens,
+        }
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor is not None:
+            compressor.update_from_response(usage_dict)
+
+        agent.session_prompt_tokens += canonical.prompt_tokens
+        agent.session_completion_tokens += canonical.output_tokens
+        agent.session_total_tokens += canonical.total_tokens
+        agent.session_input_tokens += canonical.input_tokens
+        agent.session_output_tokens += canonical.output_tokens
+        agent.session_cache_read_tokens += canonical.cache_read_tokens
+        agent.session_cache_write_tokens += canonical.cache_write_tokens
+        agent.session_reasoning_tokens += canonical.reasoning_tokens
+
+        cost = estimate_usage_cost(
+            agent.model,
+            canonical,
+            provider=agent.provider,
+            base_url=agent.base_url,
+            api_key=getattr(agent, "api_key", ""),
+        )
+        if cost.amount_usd is not None:
+            agent.session_estimated_cost_usd += float(cost.amount_usd)
+        agent.session_cost_status = cost.status
+        agent.session_cost_source = cost.source
+    except Exception:
+        logger.debug("codex responses compaction usage update failed", exc_info=True)
+
+
+def _compress_context_via_codex_responses(
+    agent: Any,
+    messages: list,
+    system_message: Optional[str],
+    *,
+    approx_tokens: Optional[int] = None,
+    task_id: str = "default",
+) -> Tuple[list, str]:
+    """Use Responses API compaction for the OpenAI Codex OAuth route."""
+    if len(messages) < 2:
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    compressor = getattr(agent, "context_compressor", None)
+    protect_last_n = int(getattr(compressor, "protect_last_n", 20) or 20)
+    tail_start = _codex_responses_tail_start(messages, protect_last_n)
+    prefix = messages[:tail_start]
+    tail = [m.copy() if isinstance(m, dict) else m for m in messages[tail_start:]]
+    if not prefix:
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    logger.info(
+        "codex responses compaction started: session=%s prefix_messages=%d tail_messages=%d tokens=~%s",
+        getattr(agent, "session_id", None) or "none",
+        len(prefix),
+        len(tail),
+        f"{approx_tokens:,}" if approx_tokens else "unknown",
+    )
+    try:
+        agent._emit_status(COMPACTION_STATUS)
+    except Exception:
+        pass
+
+    try:
+        api_kwargs = agent._build_api_kwargs(prefix)
+        if getattr(agent, "api_mode", None) == "codex_responses":
+            api_kwargs = agent._get_transport().preflight_kwargs(
+                api_kwargs,
+                allow_stream=False,
+            )
+        compact_kwargs: dict[str, Any] = {
+            "model": api_kwargs["model"],
+            "input": api_kwargs["input"],
+            "instructions": api_kwargs.get("instructions") or "",
+        }
+        if api_kwargs.get("prompt_cache_key"):
+            compact_kwargs["prompt_cache_key"] = api_kwargs["prompt_cache_key"]
+        if api_kwargs.get("timeout"):
+            compact_kwargs["timeout"] = api_kwargs["timeout"]
+
+        client = agent._ensure_primary_openai_client(reason="codex_responses_compact")
+        compact = getattr(getattr(client, "responses", None), "compact", None)
+        if not callable(compact):
+            raise RuntimeError("OpenAI SDK client does not expose responses.compact")
+
+        try:
+            response = compact(**compact_kwargs)
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", None)
+            if (
+                status_code == 401
+                and getattr(agent, "provider", None) == "openai-codex"
+                and agent._try_refresh_codex_client_credentials(force=True)
+            ):
+                client = agent._ensure_primary_openai_client(
+                    reason="codex_responses_compact_retry"
+                )
+                response = client.responses.compact(**compact_kwargs)
+            else:
+                raise
+    except Exception as exc:
+        logger.warning("codex responses compaction failed: %s", exc)
+        try:
+            agent._emit_warning(f"⚠ Codex Responses compaction failed: {exc}")
+        except Exception:
+            pass
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    compaction_items = _extract_codex_responses_compaction_items(response)
+    if not compaction_items:
+        logger.warning("codex responses compaction returned no compaction item")
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    compact_marker = {
+        "role": "assistant",
+        "content": "",
+        "codex_compaction_items": compaction_items,
+    }
+    compressed = [compact_marker] + tail
+
+    if compressor is not None:
+        compressor.compression_count = getattr(
+            compressor, "compression_count", 0
+        ) + 1
+        compressor.last_compression_rough_tokens = approx_tokens or 0
+        compressor.last_prompt_tokens = -1
+        compressor.last_completion_tokens = 0
+        compressor.awaiting_real_usage_after_compression = True
+
+    _record_codex_responses_compaction_usage(agent, response)
+
+    existing_prompt = getattr(agent, "_cached_system_prompt", None)
+    if not existing_prompt:
+        existing_prompt = agent._build_system_prompt(system_message)
+
+    if getattr(agent, "_session_db", None) and getattr(agent, "session_id", None):
+        try:
+            if (
+                hasattr(agent, "_ensure_db_session")
+                and not getattr(agent, "_session_db_created", True)
+            ):
+                agent._ensure_db_session()
+            if hasattr(agent, "commit_memory_session"):
+                agent.commit_memory_session(messages)
+            agent._session_db.archive_and_compact(agent.session_id, compressed)
+            if hasattr(agent._session_db, "update_system_prompt"):
+                agent._session_db.update_system_prompt(agent.session_id, existing_prompt)
+            if hasattr(agent, "_flushed_db_message_ids"):
+                agent._flushed_db_message_ids = set()
+            agent._last_flushed_db_idx = 0
+        except Exception as exc:
+            logger.warning(
+                "codex responses state.db compaction rewrite failed: %s",
+                exc,
+            )
+
+    agent._last_compaction_in_place = True
+    try:
+        if getattr(agent, "event_callback", None):
+            agent.event_callback(
+                "session:compress",
+                {
+                    "platform": getattr(agent, "platform", None) or "",
+                    "session_id": getattr(agent, "session_id", None) or "",
+                    "old_session_id": "",
+                    "in_place": True,
+                    "compression_count": getattr(
+                        compressor, "compression_count", 0
+                    )
+                    if compressor is not None
+                    else 0,
+                    "runtime": "codex_responses",
+                    "compaction_items": len(compaction_items),
+                },
+            )
+    except Exception:
+        logger.debug("event_callback error on codex responses session:compress", exc_info=True)
+
+    try:
+        from tools.file_tools import reset_file_dedup
+
+        reset_file_dedup(task_id)
+    except Exception:
+        pass
+
+    logger.info(
+        "codex responses compaction done: session=%s messages=%d->%d compaction_items=%d",
+        getattr(agent, "session_id", None) or "none",
+        len(messages),
+        len(compressed),
+        len(compaction_items),
+    )
+    return compressed, existing_prompt
 
 
 def try_shrink_image_parts_in_messages(

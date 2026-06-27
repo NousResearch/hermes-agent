@@ -85,6 +85,9 @@ compression:
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
+  codex_native_compaction: false  # Codex-native compaction paths are opt-in (default: false)
+  codex_responses_threshold: 0.85  # Codex OAuth native compaction trigger when opted in
+  codex_app_server_auto: native  # native|hermes|off for Codex app-server when opted in
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -103,6 +106,9 @@ auxiliary:
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+| `codex_native_compaction` | `false` | bool | Opt in to Codex-native compaction paths. Default off preserves Hermes' summary compressor |
+| `codex_responses_threshold` | `0.85` | 0.0-1.0 | Compression trigger for Codex OAuth / Responses API compaction when `codex_native_compaction` is enabled |
+| `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Auto-compaction mode for Codex app-server sessions when `codex_native_compaction` is enabled |
 
 ### Codex gpt-5.5 threshold autoraise
 
@@ -118,6 +124,31 @@ your global `threshold`. To opt back down to the global value:
 ```bash
 hermes config set compression.codex_gpt55_autoraise false
 ```
+
+### Codex-native compaction paths
+
+Codex-native compaction is opt-in. Existing installs continue using Hermes'
+auxiliary summarizer unless `compression.codex_native_compaction: true` is set.
+When enabled, Codex-backed sessions do not use Hermes' auxiliary summarizer for
+the compacted portion of the conversation:
+
+- **Codex OAuth / Responses API** (`provider: openai-codex`,
+  `api_mode: codex_responses`): Hermes calls `responses.compact(...)` for the
+  older prefix of the transcript, stores the returned encrypted compaction item
+  on an assistant marker message, and keeps the recent tail unmodified. Future
+  requests replay that opaque compaction state through the Responses adapter.
+  Its trigger uses `compression.codex_responses_threshold`.
+- **Codex app-server** (`api_mode: codex_app_server`): Codex owns the backing
+  thread context. Manual compaction asks the app-server to compact the thread
+  (`thread/compact/start`). For automatic compaction, the default
+  `codex_app_server_auto: native` lets the app-server decide when to compact and
+  Hermes records the resulting compaction events. Set `hermes` to let Hermes'
+  threshold initiate app-server compaction, or `off` to disable Hermes-initiated
+  automatic compaction.
+
+The global `protect_last_n` still controls how many recent local messages Hermes
+keeps outside Codex OAuth `responses.compact(...)`. It is not a separate Codex
+setting.
 
 ### Computed Values (for a 200K context model at defaults)
 

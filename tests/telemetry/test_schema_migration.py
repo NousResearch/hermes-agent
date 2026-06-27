@@ -9,8 +9,7 @@ import hermes_state
 
 TEL_TABLES = {
     "tel_runs", "tel_spans", "tel_model_calls", "tel_tool_calls",
-    "tel_gateway_events", "tel_cron_events", "tel_skill_events",
-    "tel_memory_events", "tel_feedback_events", "tel_error_events",
+    "tel_error_events",
 }
 
 

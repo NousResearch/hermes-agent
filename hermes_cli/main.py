@@ -14422,8 +14422,7 @@ def cmd_telemetry(args):
                     print(f"  • heartbeat  hermes={e.get('hermes_version')}  os={e.get('os_family')}")
                     continue
                 bits = [f"{e.get('event_name')}"]
-                for k in ("entrypoint", "platform", "end_reason", "duration_ms",
-                          "estimated_cost_usd"):
+                for k in ("entrypoint", "platform", "end_reason", "duration_ms"):
                     if e.get(k) is not None:
                         bits.append(f"{k}={e[k]}")
                 models = e.get("models_used") or []

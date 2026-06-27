@@ -23,7 +23,7 @@ def home(tmp_path, monkeypatch):
     now = time.time_ns()
     em.emit(RunEvent(run_id="r1", trace_id="t1", entrypoint="cli", end_reason="completed",
                      start_ns=now - 60_000_000, end_ns=now, model_call_count=1,
-                     tool_call_count=1, estimated_cost_usd=0.3))
+                     tool_call_count=1))
     em.emit(ModelCallEvent(span_id="m1", run_id="r1", provider="anthropic",
                            model="claude-opus-4",
                            input_tokens=20000, output_tokens=2000))

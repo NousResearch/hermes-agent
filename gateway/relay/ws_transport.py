@@ -120,6 +120,14 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         guild_id=src.get("guild_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
+        # Authentic upstream-trust signal: this event arrived over the
+        # per-instance-authenticated relay WS, so the connector already resolved
+        # it to this instance's owner-bound author. ``platform`` is the
+        # UNDERLYING platform (e.g. discord), not ``relay`` — authz keys the
+        # upstream-trust decision off THIS flag, not off ``platform`` (which
+        # would miss because the relay adapter is registered under
+        # ``Platform.RELAY``). Stamped here, never read off the wire.
+        delivered_via_upstream_relay=True,
     )
     try:
         msg_type = MessageType(raw.get("message_type", "text"))
@@ -193,6 +201,7 @@ class WebSocketRelayTransport:
         platform: str,
         bot_id: str,
         *,
+        identities: Optional[list[tuple[str, str]]] = None,
         connect_timeout_s: float = _HANDSHAKE_TIMEOUT_S,
         outbound_timeout_s: float = _OUTBOUND_TIMEOUT_S,
         gateway_id: Optional[str] = None,
@@ -209,6 +218,13 @@ class WebSocketRelayTransport:
         self._url = _ws_dial_url(url)
         self._platform = platform
         self._bot_id = bot_id
+        # Phase 1.5 (Shape A): the full SET of (platform, bot_id) this gateway
+        # fronts on this one WS. The handshake sends one `hello` per identity so
+        # the connector accumulates them into its advertised set (gateway-gateway
+        # D-Q1.5b.1); the first identity (platform/bot_id above) is the default an
+        # untagged outbound falls back to. Defaults to the single (platform, bot_id)
+        # so existing single-platform callers are unchanged.
+        self._identities = list(identities) if identities else [(platform, bot_id)]
         self._connect_timeout_s = connect_timeout_s
         self._outbound_timeout_s = outbound_timeout_s
         # Connection auth (Phase 2): when a per-gateway secret is configured the
@@ -232,6 +248,23 @@ class WebSocketRelayTransport:
         self._reconnect_backoff_s = reconnect_backoff_s
         self._reconnect_max_backoff_s = reconnect_max_backoff_s
         self._supervisor: Optional[asyncio.Task[None]] = None
+        # scale-to-zero §Phase 0 (D12/F14): a DORMANT close is distinct from both
+        # disconnect() (terminal: cancels the supervisor) and an unexpected close
+        # (re-dials immediately). go_dormant() sets this True, then closes the
+        # socket WITHOUT setting _closing — so _read_loop's fall-through still
+        # kicks the reconnect supervisor (the wake path stays armed), but the
+        # supervisor waits on the longer dormant cadence instead of the fast
+        # reconnect backoff, so it does not fight the platform's suspend window.
+        # On resume (process unfrozen) the pending wait completes, the re-dial
+        # succeeds, and the connector drains this instance's buffered backlog on
+        # the new handshake. Cleared on a successful re-dial (_dial_and_start).
+        self._dormant = False
+        # The re-dial poll cadence while dormant. A suspended machine's event
+        # loop is frozen, so this timer only advances once the machine is awake;
+        # it just needs to be short enough that a freshly-woken machine re-dials
+        # promptly (the connector's wake poke is what triggers the platform
+        # autostart in the first place — §3.4(5)).
+        self._dormant_redial_s = 1.0
 
         self._ws: Any = None
         self._reader: Optional[asyncio.Task[None]] = None
@@ -268,14 +301,23 @@ class WebSocketRelayTransport:
         # A fresh handshake is coming; clear any stale descriptor so handshake()
         # awaits the new one (matters on a re-dial).
         self._descriptor = None
+        # scale-to-zero (D12): a successful (re-)dial ends any dormant state — we
+        # are live again, so a subsequent UNEXPECTED close should reconnect on the
+        # normal fast backoff, not the dormant cadence.
+        self._dormant = False
         headers = self._upgrade_headers()
         if headers:
             self._ws = await websockets.connect(self._url, additional_headers=headers)  # type: ignore[union-attr]
         else:
             self._ws = await websockets.connect(self._url)  # type: ignore[union-attr]
         self._reader = asyncio.create_task(self._read_loop(), name="relay-ws-reader")
-        # Send hello; the descriptor arrives via the reader and resolves handshake().
-        await self._send({"type": "hello", "platform": self._platform, "botId": self._bot_id})
+        # Send one hello PER fronted identity (Phase 1.5 Shape A). The connector
+        # accumulates them into its advertised set (the first sets the session
+        # default; each adds to the egress-allowed set). A single-platform gateway
+        # sends exactly one hello — byte-identical to before. The descriptor for
+        # the FIRST identity resolves handshake(); later descriptors are absorbed.
+        for platform, bot_id in self._identities:
+            await self._send({"type": "hello", "platform": platform, "botId": bot_id})
 
     def _upgrade_headers(self) -> Dict[str, str]:
         """Auth headers for the WS upgrade, or {} when no secret is configured.
@@ -343,14 +385,35 @@ class WebSocketRelayTransport:
         self._inbound = handler
 
     # ── outbound ─────────────────────────────────────────────────────────
-    async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        return await self._request_response(action)
+    async def send_outbound(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await self._request_response(action, platform=platform)
 
-    async def send_follow_up(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_follow_up(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
         # follow_up rides the same outbound frame; the connector dispatches by
         # action.op. Kept as a distinct method to satisfy the transport Protocol
         # and to make the A2 call site explicit.
-        return await self._request_response(action)
+        return await self._request_response(action, platform=platform)
+
+    def _bot_id_for(self, platform: Optional[str]) -> Optional[str]:
+        """The bot_id this transport advertised at hello for ``platform`` (Phase 1.5).
+
+        The connector validates a per-frame egress target against the SET of
+        ``platform:botId`` pairs it accumulated from the N hellos, so a per-frame
+        ``platform`` must ride with its MATCHING ``botId`` (the session default
+        botId belongs to the first identity and would mis-key for a second
+        platform). Resolved from the identity set this transport was built with.
+        None when the platform isn't one we front (the connector then rejects it
+        with a structured failure — never a wrong-credential send)."""
+        if not platform:
+            return None
+        for p, b in self._identities:
+            if p == platform:
+                return b
+        return None
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         result = await self._request_response(
@@ -389,6 +452,50 @@ class WebSocketRelayTransport:
         finally:
             self._going_idle_ack = None
 
+    async def go_dormant(self, timeout_s: float = 10.0) -> bool:
+        """Quiesce this transport for a scale-to-zero suspend (D12 / Phase 0).
+
+        Distinct from BOTH ``disconnect()`` and an unexpected close (F14):
+          - ``disconnect()`` sets ``_closing=True`` and CANCELS the reconnect
+            supervisor — terminal, "shutting down for good." A machine suspended
+            after that never re-dials on wake, so its buffered backlog strands.
+          - An unexpected close re-dials IMMEDIATELY (fast backoff) — the socket
+            never stays down, so the platform proxy never sees the connection go
+            away and never suspends the machine.
+
+        ``go_dormant()`` is the third mode the suspend behaviour needs:
+          1. ``go_idle()`` → the connector flips this instance to buffered-only
+             and acks (so inbound that arrives while we sleep buffers durably and
+             replays on the next handshake).
+          2. Close the socket so the platform proxy sees load drop to zero (the
+             precondition for Fly ``autostop:"suspend"``) — but WITHOUT setting
+             ``_closing``. The reader's normal end-of-socket fall-through still
+             arms the reconnect supervisor, so the wake path stays live; the
+             ``_dormant`` flag just makes that supervisor poll on the dormant
+             cadence rather than fight the suspend window.
+
+        On resume (process unfrozen) the supervisor's pending wait completes, the
+        re-dial succeeds, and the connector drains the buffered backlog on the new
+        handshake. Returns the ``go_idle`` ack result (True on ack); the dormancy
+        close happens regardless (a missed ack at worst races one live event onto
+        a closing socket, exactly as §5.3 already tolerates).
+
+        No-op-safe: a transport that never connected (``_ws is None``) just
+        returns False without closing.
+        """
+        if self._ws is None:
+            return False
+        acked = await self.go_idle(timeout_s=timeout_s)
+        # Mark dormant BEFORE closing so the supervisor (armed by the reader's
+        # fall-through) takes the dormant cadence, and a racing live event can't
+        # flip us back to a fast reconnect.
+        self._dormant = True
+        try:
+            await self._ws.close()
+        except Exception:  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
+            logger.debug("relay go_dormant: ws.close() raised", exc_info=True)
+        return acked
+
     async def _send_inbound_ack(self, buffer_id: str) -> None:
         """Acknowledge durable receipt of a buffered inbound delivery (§5.3).
 
@@ -402,7 +509,11 @@ class WebSocketRelayTransport:
             logger.debug("relay: inbound_ack send failed for %s", buffer_id)
 
     async def _request_response(
-        self, action: Dict[str, Any], frame_type: str = "outbound"
+        self,
+        action: Dict[str, Any],
+        frame_type: str = "outbound",
+        *,
+        platform: Optional[str] = None,
     ) -> Dict[str, Any]:
         if self._ws is None:
             return {"success": False, "error": "relay transport not connected"}
@@ -410,8 +521,20 @@ class WebSocketRelayTransport:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[Dict[str, Any]] = loop.create_future()
         self._pending[request_id] = fut
+        frame: Dict[str, Any] = {"type": frame_type, "requestId": request_id, "action": action}
+        # Phase 1.5: tag the per-frame egress platform on the OutboundFrame
+        # envelope (gateway-gateway D-Q1.5b.1), with its MATCHING advertised botId
+        # so the connector's `${platform}:${botId}` advertised-set check passes.
+        # Only set when a concrete platform was resolved for this chat so a
+        # single-platform gateway emits the exact frame shape as before (the
+        # connector falls back to the session's default platform when absent).
+        if platform:
+            frame["platform"] = platform
+            bot_id = self._bot_id_for(platform)
+            if bot_id:
+                frame["botId"] = bot_id
         try:
-            await self._send({"type": frame_type, "requestId": request_id, "action": action})
+            await self._send(frame)
             return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
         except asyncio.TimeoutError:
             return {"success": False, "error": "relay outbound timed out"}
@@ -489,8 +612,16 @@ class WebSocketRelayTransport:
         or disconnect() is called. NET-NEW for §5.3: a re-established socket makes
         the connector replay this instance's buffered-only backlog on the new
         handshake (the delivery-leg onResume). Never raises out (a re-dial failure
-        just retries); ends when a dial succeeds (its reader takes over) or closing."""
-        backoff = self._reconnect_backoff_s
+        just retries); ends when a dial succeeds (its reader takes over) or closing.
+
+        scale-to-zero (D12): when the close was a deliberate go_dormant() rather
+        than an unexpected drop, start from the dormant poll cadence. On a
+        suspended machine the event loop is frozen, so this sleep only advances
+        once the machine is awake — it just needs to be short enough that a
+        freshly-woken machine re-dials promptly. A successful _dial_and_start()
+        clears _dormant, so any LATER unexpected drop reconnects on the normal
+        fast backoff."""
+        backoff = self._dormant_redial_s if self._dormant else self._reconnect_backoff_s
         while not self._closing:
             try:
                 await asyncio.sleep(backoff)

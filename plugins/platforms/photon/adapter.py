@@ -334,7 +334,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     # -- Connection lifecycle ---------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not HTTPX_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_DEP", "httpx not installed", retryable=False
@@ -550,7 +550,8 @@ class PhotonAdapter(BasePlatformAdapter):
                           "encoding"?}
                        | {"type": "reaction", "emoji": "❤️",
                           "targetMessageId": "..." | null,
-                          "targetDirection": "inbound"|"outbound" | null},
+                          "targetDirection": "inbound"|"outbound" | null,
+                          "targetText": "..." | null},
               "timestamp": "2026-05-14T19:06:32.000Z"
 
         Attachment and voice content carry the bytes inline as base64 ``data``
@@ -642,12 +643,22 @@ class PhotonAdapter(BasePlatformAdapter):
                 user_id=sender_id,
                 user_name=sender_id or None,
             )
+            # Correlate the tapback to the message it reacted to, so the agent
+            # sees WHAT was reacted to. `is_ours` above guarantees the target is
+            # one of the bot's own messages, so reply_to_is_own_message holds and
+            # the gateway injects `[Replying to your previous message: "..."]`.
+            # reply_to_text comes from the sidecar (hydrated reaction target);
+            # it's None for attachment/voice-only targets, and the gateway only
+            # injects the pointer when both id and text are present.
             await self.handle_message(
                 MessageEvent(
                     text=f"reaction:added:{emoji}",
                     message_type=MessageType.TEXT,
                     source=source,
                     message_id=event.get("messageId"),
+                    reply_to_message_id=target_id,
+                    reply_to_text=content.get("targetText") or None,
+                    reply_to_is_own_message=True,
                     raw_message=event,
                     timestamp=timestamp,
                 )

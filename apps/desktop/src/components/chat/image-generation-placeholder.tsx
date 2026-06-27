@@ -41,7 +41,11 @@ const parseColor = (value: string, fallback: Rgb): Rgb => {
   const srgb = v.match(/color\(\s*srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/i)
 
   return srgb
-    ? { r: Math.round(Number(srgb[1]) * 255), g: Math.round(Number(srgb[2]) * 255), b: Math.round(Number(srgb[3]) * 255) }
+    ? {
+        r: Math.round(Number(srgb[1]) * 255),
+        g: Math.round(Number(srgb[2]) * 255),
+        b: Math.round(Number(srgb[3]) * 255)
+      }
     : fallback
 }
 
@@ -275,7 +279,10 @@ export const DiffusionCanvas: FC = () => {
     // Re-resolve when the theme repaints (`applyTheme` toggles `.dark` and
     // rewrites inline custom props on the root) instead of per animation frame.
     const observer = new MutationObserver(sync)
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-hermes-mode'] })
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'style', 'data-hermes-mode']
+    })
 
     return () => {
       observer.disconnect()

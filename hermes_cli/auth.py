@@ -3833,6 +3833,17 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
                 return None
         return None
 
+    def _fallback_exhausted_reset_at(entry: Dict[str, Any], code: Any) -> Optional[float]:
+        status_at = _parse_reset_at(entry.get("last_status_at"))
+        if status_at is None:
+            return None
+        try:
+            code_int = int(code)
+        except (TypeError, ValueError):
+            code_int = None
+        ttl = 5 * 60 if code_int == 401 else 60 * 60
+        return status_at + ttl
+
     try:
         with _auth_store_lock():
             auth_store = _load_auth_store()
@@ -3862,10 +3873,18 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
                 or "rate limit" in message
                 or "usage limit" in message
                 or "quota" in message
+                # Older Codex pool entries can be marked exhausted without
+                # provider error metadata. The credential pool still freezes
+                # them for a default cooldown using last_status_at, and
+                # `hermes auth list` reports that cooldown. Keep status
+                # surfaces consistent with the pool in that legacy shape.
+                or (code is None and not reason and not message)
             )
             if not is_rate_limited:
                 continue
             reset_at = _parse_reset_at(entry.get("last_error_reset_at"))
+            if reset_at is None:
+                reset_at = _fallback_exhausted_reset_at(entry, code)
             if reset_at is not None and reset_at <= now:
                 continue
             return {

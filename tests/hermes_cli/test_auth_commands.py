@@ -498,6 +498,32 @@ def test_codex_auth_status_reports_pool_only_rate_limit(tmp_path, monkeypatch):
     assert status["error_code"] == "codex_rate_limited"
 
 
+def test_codex_auth_status_reports_legacy_exhausted_pool_cooldown(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    payload = _codex_pool_only_store()
+    entry = payload["credential_pool"]["openai-codex"][0]
+    entry.update(
+        {
+            "last_status": "exhausted",
+            "last_status_at": time.time(),
+            "last_error_code": None,
+            "last_error_reason": None,
+            "last_error_message": None,
+            "last_error_reset_at": None,
+        }
+    )
+    _write_auth_store(tmp_path, payload)
+
+    from hermes_cli.auth import get_codex_auth_status
+
+    status = get_codex_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["rate_limited"] is True
+    assert status["error_code"] == "codex_rate_limited"
+    assert status["reset_at"] > time.time()
+
+
 def test_format_quota_status_not_rate_limited_returns_empty():
     from hermes_cli.auth import format_quota_status
 

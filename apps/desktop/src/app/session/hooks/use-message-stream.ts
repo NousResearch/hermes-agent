@@ -566,21 +566,40 @@ export function useMessageStream({
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
           const dedupeReference = normalize(visibleFinalText)
 
+          // The gateway may truncate the final payload carried by
+          // message.complete, so the streaming-accumulated text can be longer
+          // (and more complete) than the completion text.  When that happens
+          // we must NOT discard the richer streaming content in favour of a
+          // shorter, truncated completion payload.
+          const streamedText = parts
+            .filter((p): p is Extract<ChatMessagePart, { type: 'text' }> => p.type === 'text')
+            .map(p => p.text)
+            .join('')
+            .trim()
+
+          const normalizedStreamed = normalize(streamedText)
+          const completionTruncatedStreamed =
+            streamedText.length > visibleFinalText.length &&
+            normalizedStreamed.startsWith(dedupeReference)
+
+          const effectiveText = completionTruncatedStreamed ? streamedText : visibleFinalText
+          const effectiveDedupe = completionTruncatedStreamed ? normalizedStreamed : dedupeReference
+
           const kept = parts.filter(part => {
             if (part.type === 'text') {
               return false
             }
 
-            if (part.type !== 'reasoning' || !dedupeReference) {
+            if (part.type !== 'reasoning' || !effectiveDedupe) {
               return true
             }
 
             const r = normalize(part.text)
 
-            return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
+            return !(r && (effectiveDedupe.startsWith(r) || r.startsWith(effectiveDedupe)))
           })
 
-          return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
+          return effectiveText ? [...kept, assistantTextPart(effectiveText)] : kept
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>

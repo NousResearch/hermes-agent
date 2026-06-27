@@ -130,6 +130,10 @@ import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persi
 import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
+import {
+  sameSessionRefreshRows,
+  useActiveSessionExternalRefresh
+} from './session/hooks/use-active-session-external-refresh'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -235,6 +239,8 @@ export function DesktopController() {
   const previewPaneOpen = useStore($paneOpen(PREVIEW_PANE_ID))
   const panesFlipped = useStore($panesFlipped)
   const profileScope = useStore($profileScope)
+  const sessions = useStore($sessions)
+  const messagingSessions = useStore($messagingSessions)
   // Below SIDEBAR_COLLAPSE_BREAKPOINT_PX there's no room for a docked rail —
   // collapse both sidebars (without touching their stored open state) so the
   // hover-reveal overlay becomes the way in. Restores once it's wide again.
@@ -438,7 +444,7 @@ export function DesktopController() {
       // sources) — those stay in local recents, not a platform section.
       const rows = result.sessions.filter(s => isMessagingSource(s.source))
 
-      setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
+      setMessagingSessions(prev => (sameSessionRefreshRows(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
       // so platform sections offer their own per-platform "load more".
       setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
@@ -651,9 +657,12 @@ export function DesktopController() {
         return
       }
 
-      const storedProfile = $sessions
-        .get()
-        .find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)?.profile
+      const sessionMatchesStoredId = (session: SessionInfo) =>
+        session.id === storedSessionId || session._lineage_root_id === storedSessionId
+
+      const storedProfile =
+        $sessions.get().find(sessionMatchesStoredId)?.profile ??
+        $messagingSessions.get().find(sessionMatchesStoredId)?.profile
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
@@ -691,6 +700,15 @@ export function DesktopController() {
     },
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
+
+  useActiveSessionExternalRefresh({
+    activeSessionId,
+    hydrateFromStoredSession,
+    messagingSessions,
+    selectedStoredSessionId,
+    sessionStateByRuntimeIdRef,
+    sessions
+  })
 
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,

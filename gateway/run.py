@@ -43,6 +43,7 @@ import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
+from types import SimpleNamespace
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
 
@@ -2671,6 +2672,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # /new and /reset.  /model and other mid-session operations
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
+        # SQLite-backed crash-recovery for /queue overflow.  See
+        # _ensure_queue_persistence_db and _rehydrate_queue_persistence.
+        # The connection is lazy — opened on first write, reused after.
+        self._queue_persistence_conn: Optional[Any] = None
+        # Counter for amortized queue-TTL checks (see _maybe_run_ttl_check).
+        self._queue_ttl_check_counter: int = 0
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
@@ -3895,7 +3902,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # _handle_reset_command.
 
     def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
-        """Append a /queue event to the FIFO chain for a session."""
+        """Append a /queue event to the FIFO chain for a session.
+
+        Stamps ``_queued_at`` on the event so the TTL check (Follow-up 1)
+        can expire stale items.  Also writes a row to the SQLite
+        crash-recovery table (best-effort).
+        """
         if adapter is None:
             return
         pending_slot = getattr(adapter, "_pending_messages", None)
@@ -3905,10 +3917,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if queued_events is None:
             queued_events = {}
             self._queued_events = queued_events
+        # Stamp _queued_at on the event for TTL tracking.  Use
+        # setattr to avoid touching MessageEvent's frozen surface.
+        if not getattr(queued_event, "_queued_at", None):
+            try:
+                queued_event._queued_at = time.time()  # type: ignore[attr-defined]
+            except (AttributeError, TypeError):
+                pass
         if session_key in pending_slot:
             queued_events.setdefault(session_key, []).append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+        # Persist for crash-recovery (best-effort).
+        self._persist_queued_event(session_key, queued_event)
 
     def _promote_queued_event(
         self,
@@ -3952,6 +3973,408 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
             depth += 1
         return depth
+
+    def _queue_inventory(
+        self, session_key: str, *, adapter: Any = None, max_preview: int = 60
+    ) -> List[str]:
+        """Human-readable preview of every queued item (slot + overflow).
+
+        Used by ``/queue`` (no args) and ``/status`` to make the queue
+        observable.  Each entry is the first ``max_preview`` characters of
+        the item's text, with an ellipsis when truncated, prefixed by a
+        1-based position number.
+        """
+        items: List[str] = []
+        slot_event = None
+        if adapter is not None:
+            slot_event = getattr(adapter, "_pending_messages", {}).get(session_key)
+        if slot_event is not None and getattr(slot_event, "text", None):
+            text = slot_event.text
+            preview = text[:max_preview] + ("..." if len(text) > max_preview else "")
+            items.append(f"  1. {preview}")
+        queued_events = getattr(self, "_queued_events", None) or {}
+        for idx, ev in enumerate(queued_events.get(session_key, []) or [], start=len(items) + 1):
+            text = getattr(ev, "text", "") or ""
+            preview = text[:max_preview] + ("..." if len(text) > max_preview else "")
+            items.append(f"  {idx}. {preview}")
+        return items
+
+    def _queue_inventory_message(self, session_key: str, adapter: Any) -> str:
+        """Build the user-facing message for ``/queue`` with no args.
+
+        Returns a one-liner when the queue is empty, or a numbered list of
+        item previews otherwise.  Always tells the user how to add or
+        drop items so the command is self-documenting.
+        """
+        items = self._queue_inventory(session_key, adapter=adapter)
+        if not items:
+            return "Queue is empty. Use `/queue <text>` to add one."
+        header = f"📋 Queue ({len(items)} item{'s' if len(items) != 1 else ''}):"
+        footer = "Use `/queue <text>` to add, `/queue drop` to remove the last, or `/queue clear` to empty."
+        return "\n".join([header, *items, footer])
+
+    def _queue_drop_command(
+        self,
+        session_key: str,
+        adapter: Any,
+        *,
+        count: int = 1,
+    ) -> str:
+        """Remove the ``count`` most-recent queued items (overflow tail).
+
+        Default ``count=1`` matches the legacy ``/queue drop`` behavior
+        (drop the last item).  ``count>=2`` lets the user bulk-drop with
+        ``/queue drop 3`` (drops items N, N-1, N-2 counting from the
+        tail).  Always targets the user's own most-recent enqueue, never
+        the slot's prior content which might be a photo-burst follow-up.
+        """
+        if count < 1:
+            return "Drop count must be >= 1."
+        if count > 50:
+            return "Refusing to drop more than 50 items at once — use `/queue clear` instead."
+        depth_before = self._queue_depth(session_key, adapter=adapter)
+        if depth_before == 0:
+            return "Queue is empty — nothing to drop."
+        actual_count = min(count, depth_before)
+        dropped_previews: List[str] = []
+        # Drain from the overflow tail first (newest = right end).
+        for _ in range(actual_count):
+            queued_events = getattr(self, "_queued_events", None) or {}
+            overflow = queued_events.get(session_key) or []
+            if overflow:
+                dropped = overflow.pop()
+                if not overflow:
+                    queued_events.pop(session_key, None)
+                self._promote_persisted_event(session_key)
+                text = getattr(dropped, "text", "") or ""
+                dropped_previews.append(text)
+                continue
+            # Fall back to the slot.
+            if adapter is not None:
+                slot = getattr(adapter, "_pending_messages", None)
+                if slot is not None and session_key in slot:
+                    dropped = slot.pop(session_key)
+                    self._promote_persisted_event(session_key)
+                    text = getattr(dropped, "text", "") or ""
+                    dropped_previews.append(text)
+                    break  # slot is single-item
+            break  # nothing left to drop
+        if not dropped_previews:
+            return "Queue is empty — nothing to drop."
+        depth_after = self._queue_depth(session_key, adapter=adapter)
+        if actual_count == 1:
+            preview = dropped_previews[0]
+            preview_str = preview[:50] + ("..." if len(preview) > 50 else "")
+            suffix = f" ({depth_after} remaining)" if depth_after else " (queue empty)"
+            return f"🗑️ Dropped from queue: '{preview_str}'{suffix}"
+        preview = dropped_previews[0][:50] + (
+            "..." if len(dropped_previews[0]) > 50 else ""
+        )
+        return (
+            f"🗑️ Dropped {actual_count} items from queue (most recent: '{preview}'). "
+            f"({depth_after} remaining)"
+        )
+
+    def _queue_clear_command(self, session_key: str, adapter: Any) -> str:
+        """Wipe the entire queue for a session and report what was cleared.
+
+        Counts the items before clearing so the user knows what they
+        removed.  Returns a friendly confirmation in all cases.
+        """
+        depth_before = self._queue_depth(session_key, adapter=adapter)
+        # Clear overflow
+        queued_events = getattr(self, "_queued_events", None) or {}
+        queued_events.pop(session_key, None)
+        # Clear slot only if the user is the one clearing; foreign follow-ups
+        # (photo-burst captions) are rare here, and if the user explicitly
+        # asks to clear, they want a clean slate.
+        if adapter is not None:
+            slot = getattr(adapter, "_pending_messages", None)
+            if slot is not None and session_key in slot:
+                slot.pop(session_key, None)
+        # Clear persistence too
+        self._clear_persisted_queue(session_key)
+        if depth_before == 0:
+            return "Queue was already empty."
+        suffix = "item" if depth_before == 1 else "items"
+        return f"🧹 Cleared {depth_before} queued {suffix}."
+
+    # ------------------------------------------------------------------
+    # Queue limits, TTL, and crash-recovery persistence
+    # ------------------------------------------------------------------
+    # DoS protection: upstream's _BUSY_QUEUE_MAX_PENDING (32) is the hard
+    # reject floor.  We layer a SOFT warning on top so users approaching
+    # the cap get a heads-up.  Both numbers are tuned for typical chat
+    # usage plus a safety margin; bumping them is a deliberate ops call.
+    _QUEUE_SOFT_LIMIT = 20
+    _QUEUE_HARD_LIMIT = 32  # matches upstream _BUSY_QUEUE_MAX_PENDING
+    _QUEUE_DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24h — Follow-up 1
+    _QUEUE_TTL_CHECK_INTERVAL = 50  # every Nth enqueue — cheap amortized
+
+    _queue_ttl_check_counter: int = 0
+
+    def _check_queue_capacity(self, session_key: str, *, adapter: Any) -> Optional[str]:
+        """Return an error string if the queue is at hard capacity, else None.
+
+        Used by the ``/queue`` enqueue path to surface a clear error to
+        the user before they hit the upstream hard cap and get a generic
+        "queue is full" message.
+        """
+        depth = self._queue_depth(session_key, adapter=adapter)
+        if depth >= self._QUEUE_HARD_LIMIT:
+            return (
+                f"Queue full ({depth}/{self._QUEUE_HARD_LIMIT}). "
+                "Use `/new` to start fresh, or `/queue clear` to drop pending items."
+            )
+        return None
+
+    def _queue_soft_warning(self, session_key: str, *, adapter: Any) -> str:
+        """Return a one-line warning if the queue is past the soft limit."""
+        depth = self._queue_depth(session_key, adapter=adapter)
+        if depth >= self._QUEUE_SOFT_LIMIT:
+            return (
+                f"\n⚠️ Queue is large ({depth} items). "
+                "Use `/queue clear` to drop pending items, or `/new` to reset."
+            )
+        return ""
+
+    def _expire_stale_queue_items(
+        self, session_key: str, *, adapter: Any, ttl_seconds: Optional[int] = None
+    ) -> int:
+        """Drop queued items whose ``_queued_at`` timestamp is older than
+        ``ttl_seconds`` (default ``_QUEUE_DEFAULT_TTL_SECONDS``).
+
+        Follow-up 1: prevents the queue from accumulating stale items
+        across long-lived sessions (e.g. user queues 5 things, walks
+        away for a week, comes back).  Returns the number of items
+        dropped so the caller can log it.  Cheap when called on every
+        enqueue (amortized via ``_queue_ttl_check_counter``).
+        """
+        if ttl_seconds is None:
+            ttl_seconds = self._QUEUE_DEFAULT_TTL_SECONDS
+        now = time.time()
+        dropped = 0
+        queued_events = getattr(self, "_queued_events", None) or {}
+        overflow = queued_events.get(session_key) or []
+        if overflow:
+            kept: List[Any] = []
+            for ev in overflow:
+                queued_at = getattr(ev, "_queued_at", None) or 0
+                if (now - queued_at) > ttl_seconds:
+                    dropped += 1
+                    continue
+                kept.append(ev)
+            if kept:
+                queued_events[session_key] = kept
+            else:
+                queued_events.pop(session_key, None)
+        # Also check the slot if it has a timestamp.  Done in a separate
+        # branch so a stale slot alone (no overflow) is still expired.
+        if adapter is not None:
+            slot = getattr(adapter, "_pending_messages", None)
+            if slot is not None and session_key in slot:
+                slot_ev = slot[session_key]
+                slot_queued_at = getattr(slot_ev, "_queued_at", None) or 0
+                if slot_queued_at and (now - slot_queued_at) > ttl_seconds:
+                    slot.pop(session_key, None)
+                    self._clear_persisted_queue(session_key)
+                    dropped += 1
+        if dropped:
+            logger.info(
+                "Queue TTL: dropped %d stale items for session %s (ttl=%ds)",
+                dropped,
+                session_key,
+                ttl_seconds,
+            )
+        return dropped
+
+    def _maybe_run_ttl_check(self, session_key: str, *, adapter: Any) -> int:
+        """Amortized TTL check — runs every Nth enqueue to avoid hot-path
+        cost.  Returns the number of items expired (0 most of the time).
+        """
+        self._queue_ttl_check_counter += 1
+        if self._queue_ttl_check_counter % self._QUEUE_TTL_CHECK_INTERVAL != 0:
+            return 0
+        return self._expire_stale_queue_items(session_key, adapter=adapter)
+
+    # ------------------------------------------------------------------
+    # SQLite-backed crash recovery
+    # ------------------------------------------------------------------
+    # On graceful restart (``_restart_requested`` + ``busy_input_mode in
+    # {queue, steer}``) the gateway already retries to preserve queue
+    # items.  But on a HARD crash (SIGKILL, OOM, machine reboot) the
+    # in-memory ``_queued_events`` dict is lost.  This SQLite table is
+    # the durable backstop: every enqueue writes a row, every promote
+    # deletes the matching row, and on startup the runner reloads any
+    # surviving rows into the in-memory state.  This is intentionally
+    # separate from the session DB to keep queue lifetimes short and
+    # avoid polluting the FTS5 index with user prompts.
+    _QUEUE_PERSISTENCE_SCHEMA = (
+        "CREATE TABLE IF NOT EXISTS queue_persistence ("
+        "  session_key TEXT NOT NULL,"
+        "  position    INTEGER NOT NULL,"
+        "  text        TEXT NOT NULL,"
+        "  source_platform TEXT,"
+        "  source_user_id TEXT,"
+        "  source_chat_id TEXT,"
+        "  queued_at   REAL NOT NULL,"
+        "  PRIMARY KEY (session_key, position)"
+        ")"
+    )
+    _QUEUE_PERSISTENCE_INDEX = (
+        "CREATE INDEX IF NOT EXISTS idx_queue_persistence_queued_at "
+        "ON queue_persistence (queued_at)"
+    )
+
+    def _get_queue_persistence_path(self) -> Optional[Path]:
+        """Path to the queue-persistence SQLite file.  None if hermes_home
+        is unavailable (test fixtures)."""
+        try:
+            home = get_hermes_home()
+        except Exception:
+            return None
+        if home is None:
+            return None
+        return Path(home) / "queue_persistence.sqlite"
+
+    def _ensure_queue_persistence_db(self) -> Optional[Any]:
+        """Return an open sqlite3 connection with the schema applied, or
+        None if persistence isn't available.  Cheap to call repeatedly —
+        connection is cached on the runner."""
+        if not getattr(self, "_queue_persistence_conn", None):
+            db_path = self._get_queue_persistence_path()
+            if db_path is None:
+                return None
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            import sqlite3
+            conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute(self._QUEUE_PERSISTENCE_SCHEMA)
+            conn.execute(self._QUEUE_PERSISTENCE_INDEX)
+            conn.commit()
+            self._queue_persistence_conn = conn
+        return self._queue_persistence_conn
+
+    def _persist_queued_event(self, session_key: str, queued_event: Any) -> None:
+        """Write one queued event to SQLite.  Best-effort — failures are
+        logged and swallowed so persistence issues can never block the
+        user-facing queue path."""
+        conn = self._ensure_queue_persistence_db()
+        if conn is None:
+            return
+        try:
+            text = getattr(queued_event, "text", "") or ""
+            source = getattr(queued_event, "source", None)
+            platform = getattr(source, "platform", None)
+            platform_val = platform.value if hasattr(platform, "value") else platform
+            user_id = getattr(source, "user_id", None)
+            chat_id = getattr(source, "chat_id", None)
+            queued_at = getattr(queued_event, "_queued_at", None) or time.time()
+            row = conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM queue_persistence WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+            position = (row[0] if row else 0)
+            conn.execute(
+                "INSERT OR REPLACE INTO queue_persistence "
+                "(session_key, position, text, source_platform, source_user_id, source_chat_id, queued_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_key, position, text, platform_val, user_id, chat_id, queued_at),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.warning("Queue persistence write failed: %s", exc)
+
+    def _promote_persisted_event(self, session_key: str) -> None:
+        """Drop the head row for a session after the FIFO promotion.  Idempotent."""
+        conn = self._ensure_queue_persistence_db()
+        if conn is None:
+            return
+        try:
+            conn.execute(
+                "DELETE FROM queue_persistence WHERE session_key = ? AND position = "
+                "(SELECT MIN(position) FROM queue_persistence WHERE session_key = ?)",
+                (session_key, session_key),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.warning("Queue persistence promote-cleanup failed: %s", exc)
+
+    def _clear_persisted_queue(self, session_key: str) -> None:
+        """Wipe all persisted queue rows for a session (used by /new and
+        by ``/queue clear``)."""
+        conn = self._ensure_queue_persistence_db()
+        if conn is None:
+            return
+        try:
+            conn.execute(
+                "DELETE FROM queue_persistence WHERE session_key = ?",
+                (session_key,),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.warning("Queue persistence clear failed: %s", exc)
+
+    def _rehydrate_queue_persistence(self) -> int:
+        """Reload any persisted queue rows from disk into in-memory state.
+
+        Called once during runner startup.  Returns the number of sessions
+        rehydrated.  On graceful restart the in-memory state is still
+        authoritative; this only matters when the process was killed
+        without draining.  Best-effort — failures don't block startup.
+        """
+        conn = self._ensure_queue_persistence_db()
+        if conn is None:
+            return 0
+        try:
+            rows = conn.execute(
+                "SELECT session_key, position, text, source_platform, source_user_id, source_chat_id, queued_at "
+                "FROM queue_persistence ORDER BY session_key, position"
+            ).fetchall()
+        except Exception as exc:
+            logger.warning("Queue persistence rehydrate read failed: %s", exc)
+            return 0
+        if not rows:
+            return 0
+        rehydrated_count = 0
+        for row in rows:
+            session_key, _position, text, _platform, _user_id, _chat_id, queued_at = row
+            queued_events = getattr(self, "_queued_events", None)
+            if queued_events is None:
+                queued_events = {}
+                self._queued_events = queued_events
+            placeholder = SimpleNamespace(
+                text=text,
+                source=None,
+                message_id=None,
+                channel_prompt=None,
+                _queued_at=queued_at,
+            )
+            queued_events.setdefault(session_key, []).append(placeholder)
+            rehydrated_count += 1
+        if rehydrated_count:
+            logger.info(
+                "Queue persistence rehydrated %d items across %d session(s)",
+                rehydrated_count,
+                len({row[0] for row in rows}),
+            )
+        return rehydrated_count
+
+    def get_queue_for_compact(self, session_key: str, *, adapter: Any = None) -> str:
+        """Return a compact summary of the queue for ``/compact`` output.
+
+        Follow-up 2: when the user triggers ``/compact``, the model
+        should know what is queued so it can either preserve it in the
+        compressed history or warn the user that pending items will be
+        left out.  The summary is a single line per item, capped to
+        avoid context flooding.
+        """
+        items = self._queue_inventory(session_key, adapter=adapter, max_preview=80)
+        if not items:
+            return ""
+        header = f"Queue has {len(items)} pending item{'s' if len(items) != 1 else ''} (will NOT be carried into the compressed context unless you /queue them again):"
+        return "\n".join([header, *items])
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
@@ -4622,6 +5045,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._BUSY_QUEUE_MAX_PENDING,
             )
             return
+
+        # Follow-up 1: amortized TTL sweep — every Nth enqueue we walk the
+        # overflow list and drop items whose _queued_at is older than the
+        # configured TTL.  Cheap when amortized over many enqueues.
+        _ttl_fn = getattr(self, "_maybe_run_ttl_check", None)
+        if callable(_ttl_fn):
+            try:
+                _ttl_fn(session_key, adapter=adapter)
+            except Exception as _ttl_exc:
+                logger.debug("queue TTL sweep in busy-mode enqueue failed: %s", _ttl_exc)
 
         self._enqueue_fifo(session_key, event, adapter)
 
@@ -5750,6 +6183,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except RuntimeError:
             self._gateway_loop = None
         logger.info("Session storage: %s", self.config.sessions_dir)
+
+        # Rehydrate the queue-persistence SQLite table from the previous run
+        # so any messages queued before a hard crash (SIGKILL, OOM, power
+        # loss) are restored into the in-memory FIFO.  Best-effort — if the
+        # DB is missing or corrupted, the runner still starts clean.
+        try:
+            self._rehydrate_queue_persistence()
+        except Exception as _exc:
+            logger.warning("Queue persistence rehydrate failed at startup: %s", _exc)
 
         # Sanity-check that systemd's TimeoutStopSec covers our drain
         # window.  When the user upgraded hermes-agent without re-running
@@ -8573,6 +9015,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "queue":
+            return await self._handle_queue_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)

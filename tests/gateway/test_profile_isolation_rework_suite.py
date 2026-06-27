@@ -438,3 +438,70 @@ def test_g2_hard_guard_blocks_outside_profile_home(test_env):
             assert not forbidden_path.exists()
         finally:
             clear_session_vars(tokens)
+
+
+def test_profile_store_cache_lru_eviction(test_env, monkeypatch):
+    """The per-profile SessionStore cache is LRU-bounded and closes evicted
+    DB connections, so a multi-profile gateway can't leak file descriptors
+    until it hits EMFILE (the FD-exhaustion / 'Too many open files' bug)."""
+    import gateway.run as run_mod
+    monkeypatch.setattr(run_mod, "_PROFILE_STORE_CACHE_MAX_SIZE", 3)
+    runner = GatewayRunner(config=GatewayConfig(platforms={}))
+
+    # Close evicted stores synchronously (bypass the daemon thread) so the
+    # assertions are deterministic, and record which homes were evicted.
+    evicted_homes = []
+
+    def _sync_close(home, store):
+        evicted_homes.append(home)
+        db = getattr(store, "_db", None)
+        if db is not None:
+            db.close()
+
+    runner._close_evicted_profile_store = _sync_close
+
+    homes = []
+    base = test_env / "lru_homes"
+    base.mkdir(parents=True, exist_ok=True)
+    for i in range(5):
+        h = (base / f"h{i}").resolve()
+        h.mkdir(parents=True, exist_ok=True)
+        homes.append(h)
+        runner._get_or_create_store_for_home(h)
+
+    # Never exceeds the cap...
+    assert len(runner._profile_session_stores) <= 3
+    # ...the two oldest of our homes were evicted (LRU order)...
+    assert homes[0] in evicted_homes
+    assert homes[1] in evicted_homes
+    # ...and the three most-recent homes are still resident.
+    for h in homes[2:]:
+        assert h in runner._profile_session_stores
+
+    # Re-touching a resident home makes it most-recently-used, so the NEXT
+    # insertion evicts a different (now-oldest) home — proving LRU recency,
+    # not plain FIFO.
+    runner._get_or_create_store_for_home(homes[2])  # h2 -> MRU
+    h_new = (base / "h_new").resolve()
+    h_new.mkdir(parents=True, exist_ok=True)
+    runner._get_or_create_store_for_home(h_new)
+    assert homes[2] in runner._profile_session_stores  # survived (was touched)
+    assert homes[3] in evicted_homes                   # oldest -> evicted
+
+
+def test_session_db_reuses_store_connection(test_env):
+    """_session_db reuses the profile SessionStore's connection rather than
+    opening a SECOND SQLite handle to the same state.db (the FD doubling)."""
+    runner = GatewayRunner(config=GatewayConfig(platforms={}))
+    store = runner.session_store
+    assert store._db is not None
+    assert runner._session_db is store._db
+
+
+def test_session_db_setter_override_is_honored(test_env):
+    """An explicit _session_db assignment still wins for the current home —
+    the broad attribute contract (tests / back-compat call sites) is kept."""
+    runner = GatewayRunner(config=GatewayConfig(platforms={}))
+    sentinel = object()
+    runner._session_db = sentinel
+    assert runner._session_db is sentinel

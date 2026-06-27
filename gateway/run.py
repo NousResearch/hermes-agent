@@ -65,6 +65,16 @@ from hermes_cli.fallback_config import get_fallback_chain
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+
+# --- Per-profile session-store cache tuning -------------------------------
+# Each routed topic/profile gets its own SessionStore backed by a SQLite
+# connection (3 fds: db + WAL + SHM) to that profile's state.db.  Without a
+# bound the gateway keeps one live connection per distinct profile for the
+# whole process lifetime; on macOS's default launchd RLIMIT_NOFILE=256 a
+# multi-profile deployment exhausts the fd budget, after which *every*
+# state.db/kanban.db open fails with EMFILE and the kanban dispatcher spins
+# retrying.  Bound the cache LRU-style, mirroring the agent cache above.
+_PROFILE_STORE_CACHE_MAX_SIZE = 16
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
@@ -2825,21 +2835,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not hasattr(self, "_profile_cache_lock"):
             import threading
             self._profile_cache_lock = threading.Lock()
-        if not hasattr(self, "_profile_session_stores"):
-            self._profile_session_stores = {}
+        # OrderedDict so move_to_end()/popitem(last=False) give LRU eviction.
+        # Upgrade in place if an older init path (or a test) left a plain dict.
+        stores = getattr(self, "_profile_session_stores", None)
+        if not isinstance(stores, OrderedDict):
+            self._profile_session_stores = OrderedDict(stores or {})
+        evicted = []
         with self._profile_cache_lock:
-            if home not in self._profile_session_stores:
-                from gateway.session import SessionStore
-                from tools.process_registry import process_registry
-                profile_sessions_dir = home / "sessions"
-                store = SessionStore(
-                    profile_sessions_dir,
-                    self.config,
-                    has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
-                    db_path=home / "state.db",
-                )
-                self._profile_session_stores[home] = store
-            return self._profile_session_stores[home]
+            cache = self._profile_session_stores
+            if home in cache:
+                cache.move_to_end(home)  # mark most-recently-used
+                return cache[home]
+            from gateway.session import SessionStore
+            from tools.process_registry import process_registry
+            profile_sessions_dir = home / "sessions"
+            store = SessionStore(
+                profile_sessions_dir,
+                self.config,
+                has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+                db_path=home / "state.db",
+            )
+            cache[home] = store  # inserted at the tail → most-recently-used
+            # Enforce the LRU cap.  The just-inserted `home` is at the tail, so
+            # popitem(last=False) only ever evicts a strictly older, idle
+            # profile — never the one being served this turn.
+            while len(cache) > _PROFILE_STORE_CACHE_MAX_SIZE:
+                evicted.append(cache.popitem(last=False))
+        # Close evicted stores' DB connections OUTSIDE the cache lock so a live
+        # profile lookup never blocks on SQLite's WAL-checkpoint-on-close.
+        for old_home, old_store in evicted:
+            self._close_evicted_profile_store(old_home, old_store)
+        return store
+
+    def _close_evicted_profile_store(self, home: "Path", store: Any) -> None:
+        """Close an LRU-evicted profile SessionStore's DB connection off-thread.
+
+        Mirrors ``_release_evicted_agent_soft``: the close runs on a daemon
+        thread so the cache lock is never held across SQLite's
+        WAL-checkpoint-on-close.  ``SessionDB.close()`` takes its own internal
+        lock, so any in-flight operation on the connection finishes before the
+        handle (db + WAL + SHM fds) is released.  The victim is always the
+        least-recently-used home, never the profile being served this turn, so
+        a live session is not torn down mid-write.
+        """
+        db = getattr(store, "_db", None)
+        if db is None or not hasattr(db, "close"):
+            return
+
+        def _do_close():
+            try:
+                db.close()
+            except Exception as exc:  # best effort — never fatal
+                logger.debug("evicted profile SessionDB close error (%s): %s", home, exc)
+
+        try:
+            threading.Thread(
+                target=_do_close, daemon=True, name="profile-store-evict"
+            ).start()
+        except Exception:
+            # Interpreter shutdown / thread exhaustion: close inline.
+            _do_close()
 
     @property
     def session_store(self):
@@ -2888,21 +2943,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _session_db(self):
         from hermes_constants import get_hermes_home
         current_home = get_hermes_home().resolve()
-        if not hasattr(self, "_profile_cache_lock"):
-            import threading
-            self._profile_cache_lock = threading.Lock()
-        if not hasattr(self, "_profile_session_dbs"):
-            self._profile_session_dbs = {}
-        with self._profile_cache_lock:
-            if current_home not in self._profile_session_dbs:
-                try:
-                    from hermes_state import SessionDB
-                    db = SessionDB(db_path=current_home / "state.db")
-                    self._profile_session_dbs[current_home] = db
-                except Exception as e:
-                    logger.warning("SQLite session store not available for %s: %s", current_home, e)
-                    self._profile_session_dbs[current_home] = None
-            return self._profile_session_dbs[current_home]
+        # An explicit per-home override (written via the setter — used by tests
+        # and back-compat call sites) always wins.
+        overrides = getattr(self, "_profile_session_dbs", None)
+        if overrides and current_home in overrides:
+            return overrides[current_home]
+        # Otherwise reuse the profile's SessionStore connection rather than
+        # opening a SECOND SQLite handle to the same state.db.  The store and
+        # this property used to each open their own connection per home, which
+        # doubled the file descriptors held per profile (the FD-leak doubling).
+        try:
+            store = self._get_or_create_store_for_home(current_home)
+        except Exception as e:
+            logger.warning("SQLite session store not available for %s: %s", current_home, e)
+            return None
+        return getattr(store, "_db", None)
 
     @_session_db.setter
     def _session_db(self, value):
@@ -3127,19 +3182,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("approvals.mode startup check skipped", exc_info=True)
 
-        # Initialize session database for session_search tool support
-        self._session_db = None
+        # Session database for session_search/resume/history.  The default
+        # profile's connection is owned by self.session_store (created above);
+        # _session_db now reuses it (see the property) instead of opening a
+        # second SQLite handle to the same state.db.  Surface an init failure
+        # here the same way as before so NFS/locking problems still land in
+        # errors.log (WARNING, not DEBUG — matches cli.py's init path; without
+        # it, NFS-mounted HERMES_HOME silently lost /resume, /title, /history,
+        # /branch and session search).
         try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
-        except Exception as e:
-            # WARNING (not DEBUG) so the failure appears in errors.log — matches
-            # cli.py's handling of the same init path.  Users hitting NFS-mounted
-            # HERMES_HOME silently lost /resume, /title, /history, /branch, and
-            # session search without this.  The underlying cause (usually
-            # "locking protocol" from NFS) is now also captured by
-            # hermes_state.get_last_init_error() for slash-command error strings.
-            logger.warning("SQLite session store not available: %s", e)
+            _default_store = getattr(self, "session_store", None)
+            if _default_store is not None and getattr(_default_store, "_db", None) is None:
+                from hermes_state import get_last_init_error
+                logger.warning(
+                    "SQLite session store not available: %s",
+                    get_last_init_error() or "see earlier log",
+                )
+        except Exception:
+            logger.debug("session store availability probe skipped", exc_info=True)
 
         # Opportunistic state.db maintenance: prune ended sessions older
         # than sessions.retention_days + optional VACUUM. Tracks last-run

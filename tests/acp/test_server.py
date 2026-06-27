@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -51,6 +52,16 @@ def mock_manager():
 def agent(mock_manager):
     """HermesACPAgent backed by a mock session manager."""
     return HermesACPAgent(session_manager=mock_manager)
+
+
+@pytest.fixture(autouse=True)
+def stub_concurrent_log_handler(monkeypatch):
+    """Windows test envs may not have concurrent-log-handler installed."""
+    monkeypatch.setitem(
+        sys.modules,
+        "concurrent_log_handler",
+        SimpleNamespace(ConcurrentRotatingFileHandler=MagicMock()),
+    )
 
 
 @pytest.mark.asyncio
@@ -1249,6 +1260,74 @@ class TestPrompt:
         assert captured["inner"] == new_resp.session_id
         # Outer scope must be restored.
         assert os.environ.get("HERMES_SESSION_ID") == "outer-sess"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_prompts_do_not_cross_leak_subprocess_session_id(self, agent, monkeypatch):
+        """ACP subprocess env must not inherit another concurrent session's id.
+
+        The ACP adapter mirrors HERMES_SESSION_ID through process-global
+        os.environ around run_conversation(). local._make_run_env() starts from
+        os.environ and only overlays ContextVar session vars when they are
+        truthy. ACP binds session_key but leaves the ContextVar session_id empty,
+        so a concurrent session can overwrite the global value seen by child
+        subprocesses.
+        """
+        import threading
+        from tools.environments.local import _make_run_env
+
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+        resp_a = await agent.new_session(cwd=".")
+        resp_b = await agent.new_session(cwd=".")
+        state_a = agent.session_manager.get_session(resp_a.session_id)
+        state_b = agent.session_manager.get_session(resp_b.session_id)
+
+        started_a = threading.Event()
+        started_b = threading.Event()
+        release_a = threading.Event()
+        release_b = threading.Event()
+        captured: dict[str, str | None] = {}
+
+        def run_a(*args, **kwargs):
+            captured["a_before"] = os.environ.get("HERMES_SESSION_ID")
+            started_a.set()
+            if not release_a.wait(timeout=5):
+                raise AssertionError("run_a release timed out")
+            captured["a_child"] = _make_run_env({}).get("HERMES_SESSION_ID")
+            return {"final_response": "A", "messages": []}
+
+        def run_b(*args, **kwargs):
+            captured["b_before"] = os.environ.get("HERMES_SESSION_ID")
+            started_b.set()
+            if not release_b.wait(timeout=5):
+                raise AssertionError("run_b release timed out")
+            return {"final_response": "B", "messages": []}
+
+        state_a.agent.run_conversation = run_a
+        state_b.agent.run_conversation = run_b
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt_a = asyncio.create_task(
+            agent.prompt(prompt=[TextContentBlock(type="text", text="hi a")], session_id=resp_a.session_id)
+        )
+        await asyncio.to_thread(started_a.wait, 5)
+
+        prompt_b = asyncio.create_task(
+            agent.prompt(prompt=[TextContentBlock(type="text", text="hi b")], session_id=resp_b.session_id)
+        )
+        await asyncio.to_thread(started_b.wait, 5)
+
+        release_a.set()
+        await prompt_a
+        release_b.set()
+        await prompt_b
+
+        assert captured["a_before"] == resp_a.session_id
+        assert captured["b_before"] == resp_b.session_id
+        assert captured["a_child"] == resp_a.session_id
 
     @pytest.mark.asyncio
     async def test_prompt_does_not_duplicate_streamed_final_message(self, agent):

@@ -2,6 +2,7 @@
 """File Tools Module - LLM agent file manipulation tools."""
 
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -19,6 +20,10 @@ from tools import file_state
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+
+class _DedupHashMismatch(Exception):
+    """Raised when content hash differs despite matching mtime."""
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
@@ -1000,17 +1005,30 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["dedup_hits"] = {}
             if "read_timestamps" not in task_data:
                 task_data["read_timestamps"] = {}
-            cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+            cached_entry = task_data.get("dedup", {}).get(dedup_key)
+        # Backward-compat: old entries store bare mtime float; new
+        # entries store (mtime, content_hash) tuple.
+        if isinstance(cached_entry, tuple):
+            cached_mtime, cached_hash = cached_entry
+        else:
+            cached_mtime, cached_hash = cached_entry, None
 
         if cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
-                    # Count repeated stub returns so weak tool-followers that
-                    # ignore the "refer to earlier result" hint don't burn
-                    # their iteration budget in an infinite read loop.  After
-                    # 2 stubs for the same key we escalate to a hard block
-                    # mirroring the count>=4 path on real reads.
+                    if cached_hash is not None:
+                        # mtime matches and we have a hash — verify
+                        # content to catch sub-second edits.
+                        current_hash = hashlib.md5(
+                            open(resolved_str, "rb").read()
+                        ).hexdigest()
+                        if current_hash != cached_hash:
+                            # Content changed despite same mtime.
+                            # Fall through to full read.
+                            raise _DedupHashMismatch
+                    # mtime (and hash, if available) match — file is
+                    # unchanged.  Return lightweight stub.
                     with _read_tracker_lock:
                         hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
                         task_data["dedup_hits"][dedup_key] = hits
@@ -1038,8 +1056,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                         "dedup": True,
                         "content_returned": False,
                     }, ensure_ascii=False)
-            except OSError:
-                pass  # stat failed — fall through to full read
+            except (OSError, _DedupHashMismatch):
+                pass  # stat/hash failed or mismatched — full read
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
@@ -1113,7 +1131,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             #    the agent last read it (external edit, concurrent agent, etc.).
             try:
                 _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
+                _content_hash = hashlib.md5(
+                    open(resolved_str, "rb").read()
+                ).hexdigest()
+                task_data["dedup"][dedup_key] = (_mtime_now, _content_hash)
                 task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
             except OSError:
                 pass  # Can't stat — skip tracking for this entry

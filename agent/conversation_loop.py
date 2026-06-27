@@ -1168,10 +1168,21 @@ def run_conversation(
                 # stream.  Mirror the ACP exclusion used for Responses
                 # API upgrade (lines ~1083-1085).
                 elif (
-                    agent.provider in {"copilot-acp", "moa"}
+                    agent.provider in {"copilot-acp"}
                     or str(agent.base_url or "").lower().startswith("acp://copilot")
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
                 ):
+                    _use_streaming = False
+                # MoA streams only when a display/TTS consumer is present to
+                # receive the deltas. MoAChatCompletions.create() honors
+                # stream=True (runs the references, then returns the aggregator's
+                # raw token stream) and is reached here because, for provider
+                # "moa", _create_request_openai_client returns the MoA facade
+                # itself. Without consumers (quiet mode, subagents, health-check
+                # probes) we keep the complete-response path: the facade returns a
+                # whole response when stream is not requested, preserving the
+                # prior behavior for those callers.
+                elif agent.provider == "moa" and not agent._has_stream_consumers():
                     _use_streaming = False
                 elif not agent._has_stream_consumers():
                     # No display/TTS consumer. Still prefer streaming for

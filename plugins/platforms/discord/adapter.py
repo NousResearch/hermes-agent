@@ -263,6 +263,36 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+_DISCORD_VISIBLE_USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
+
+
+def _discord_visible_mention_ids(message: Any) -> set[str]:
+    """Return raw Discord user mention IDs visible in message content."""
+    content = getattr(message, "content", "") or ""
+    return {match.group(1) for match in _DISCORD_VISIBLE_USER_MENTION_RE.finditer(content)}
+
+
+def _discord_message_mentions_user(message: Any, user: Any) -> bool:
+    """Return True when a Discord message explicitly mentions *user*.
+
+    Discord may omit a user from ``message.mentions`` when the sender used
+    ``allowed_mentions`` to render a visible ``<@id>`` token without sending a
+    notification.  Gateway routing still needs to treat that visible token as
+    an explicit handoff/mention.
+    """
+    if user is None:
+        return False
+
+    user_id = str(getattr(user, "id", "") or "").strip()
+    for mention in getattr(message, "mentions", []) or []:
+        if mention == user:
+            return True
+        if user_id and str(getattr(mention, "id", "") or "") == user_id:
+            return True
+
+    return bool(user_id and user_id in _discord_visible_mention_ids(message))
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -1025,7 +1055,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        if not _discord_message_mentions_user(message, self._client.user):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -1054,11 +1084,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 # This replaces the older DISCORD_IGNORE_NO_MENTION logic
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
-                if not isinstance(message.channel, discord.DMChannel) and message.mentions:
-                    _self_mentioned = (
-                        self._client.user is not None
-                        and self._client.user in message.mentions
-                    )
+                _visible_mention_ids = _discord_visible_mention_ids(message)
+                if not isinstance(message.channel, discord.DMChannel) and (
+                    message.mentions or _visible_mention_ids
+                ):
+                    _self_mentioned = _discord_message_mentions_user(message, self._client.user)
                     _other_bots_mentioned = any(
                         m.bot and m != self._client.user
                         for m in message.mentions
@@ -5201,6 +5231,7 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+        self_user = self._client.user if self._client else None
 
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
@@ -5212,10 +5243,13 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
-        if self._client.user and self._client.user in message.mentions:
+        if _discord_message_mentions_user(message, self_user):
             mention_prefix = True
-            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            normalized_content = re.sub(
+                rf"<@!?{re.escape(str(self_user.id))}>",
+                "",
+                normalized_content,
+            ).strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
@@ -5265,7 +5299,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).

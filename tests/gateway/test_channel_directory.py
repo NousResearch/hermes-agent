@@ -3,9 +3,11 @@
 import asyncio
 import json
 import os
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from gateway import channel_directory as channel_directory_module
 from gateway.channel_directory import (
     build_channel_directory,
     lookup_channel_type,
@@ -64,6 +66,70 @@ class TestLoadDirectory:
 
 
 class TestBuildChannelDirectoryWrites:
+    def test_session_scan_does_not_block_event_loop(self, tmp_path, monkeypatch):
+        def slow_sessions():
+            time.sleep(0.08)
+            return {
+                "telegram": [{"id": "123", "name": "Alice", "type": "dm"}],
+            }
+
+        ticks = asyncio.run(self._run_build_with_ticker(
+            tmp_path,
+            monkeypatch,
+            slow_sessions=slow_sessions,
+        ))
+
+        assert ticks >= 3
+
+    def test_directory_write_does_not_block_event_loop(self, tmp_path, monkeypatch):
+        def slow_write(_path, _directory):
+            time.sleep(0.08)
+
+        ticks = asyncio.run(self._run_build_with_ticker(
+            tmp_path,
+            monkeypatch,
+            slow_write=slow_write,
+        ))
+
+        assert ticks >= 3
+
+    async def _run_build_with_ticker(
+        self,
+        tmp_path,
+        monkeypatch,
+        slow_sessions=None,
+        slow_write=None,
+    ):
+        tick_count = 0
+        stop = asyncio.Event()
+
+        async def ticker():
+            nonlocal tick_count
+            while not stop.is_set():
+                tick_count += 1
+                await asyncio.sleep(0.01)
+
+        ticker_task = asyncio.create_task(ticker())
+        await asyncio.sleep(0)
+
+        if slow_sessions is not None:
+            monkeypatch.setattr(
+                channel_directory_module,
+                "_build_sessions_by_platform",
+                slow_sessions,
+            )
+        if slow_write is not None:
+            monkeypatch.setattr(channel_directory_module, "atomic_json_write", slow_write)
+
+        try:
+            with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "channel_directory.json"):
+                await build_channel_directory({})
+        finally:
+            stop.set()
+            await ticker_task
+
+        return tick_count
+
     def test_failed_write_preserves_previous_cache(self, tmp_path, monkeypatch):
         cache_file = _write_directory(tmp_path, {
             "telegram": [{"id": "123", "name": "Alice", "type": "dm"}]

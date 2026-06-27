@@ -18,8 +18,12 @@ backends reject.
 """
 
 import json
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from tools.memory_tool import MEMORY_SCHEMA
+from agent.prompt_builder import MEMORY_GUIDANCE
+from agent.system_prompt import build_system_prompt_parts
+from tools.memory_tool import MEMORY_SCHEMA, check_memory_requirements
 
 
 _FORBIDDEN_TOP_LEVEL_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
@@ -52,3 +56,93 @@ def test_memory_schema_is_well_formed():
 
 def test_memory_schema_is_json_serializable():
     json.dumps(MEMORY_SCHEMA)
+
+
+def test_memory_tool_hidden_when_built_in_memory_disabled(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"memory_enabled": False, "user_profile_enabled": False}},
+    )
+
+    assert check_memory_requirements() is False
+
+
+def test_memory_tool_available_when_memory_enabled(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"memory_enabled": True, "user_profile_enabled": False}},
+    )
+
+    assert check_memory_requirements() is True
+
+
+def test_memory_tool_available_when_user_profile_enabled(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"memory_enabled": False, "user_profile_enabled": True}},
+    )
+
+    assert check_memory_requirements() is True
+
+
+def test_memory_tool_registry_gate_updates_immediately(monkeypatch):
+    from model_tools import get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    state = {"memory_enabled": True, "user_profile_enabled": False}
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": dict(state)},
+    )
+    invalidate_check_fn_cache()
+
+    enabled = get_tool_definitions(enabled_toolsets=["memory"], quiet_mode=False)
+    assert {tool["function"]["name"] for tool in enabled} == {"memory"}
+
+    state["memory_enabled"] = False
+    disabled = get_tool_definitions(enabled_toolsets=["memory"], quiet_mode=False)
+    assert "memory" not in {tool["function"]["name"] for tool in disabled}
+
+
+def test_memory_guidance_follows_registry_filtered_tool_names(monkeypatch):
+    from model_tools import get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    state = {"memory_enabled": True, "user_profile_enabled": False}
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": dict(state)},
+    )
+    invalidate_check_fn_cache()
+
+    def stable_prompt_for_registry_tools():
+        tools = get_tool_definitions(enabled_toolsets=["memory"], quiet_mode=False)
+        agent = SimpleNamespace(
+            load_soul_identity=False,
+            skip_context_files=False,
+            valid_tool_names={tool["function"]["name"] for tool in tools},
+            _task_completion_guidance=False,
+            _parallel_tool_call_guidance=False,
+            _tool_use_enforcement=False,
+            _environment_probe=False,
+            _kanban_worker_guidance="",
+            _memory_store=None,
+            _memory_manager=None,
+            model="",
+            provider="",
+            platform="",
+            pass_session_id=False,
+            session_id="",
+        )
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            return build_system_prompt_parts(agent)["stable"]
+
+    assert MEMORY_GUIDANCE in stable_prompt_for_registry_tools()
+
+    state["memory_enabled"] = False
+    assert MEMORY_GUIDANCE not in stable_prompt_for_registry_tools()

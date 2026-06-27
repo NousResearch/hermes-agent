@@ -1035,8 +1035,25 @@ def memory_tool(
 
 
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
-    return True
+    """Expose the built-in memory tool only when built-in memory is enabled."""
+    try:
+        from hermes_cli.config import load_config
+
+        memory_config = load_config().get("memory", {})
+    except Exception:
+        return False
+    return bool(
+        memory_config.get("memory_enabled")
+        or memory_config.get("user_profile_enabled")
+    )
+
+
+# This predicate is a deterministic config gate, not a flaky external probe.
+# It must reflect user config changes immediately so the memory tool and
+# MEMORY_GUIDANCE do not stay exposed after both built-in memory surfaces are
+# disabled. See tools.registry._check_fn_cached().
+check_memory_requirements._hermes_check_fn_cache_ttl_seconds = 0.0
+check_memory_requirements._hermes_check_fn_failure_grace_seconds = 0.0
 
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
@@ -1146,7 +1163,5 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
 
 

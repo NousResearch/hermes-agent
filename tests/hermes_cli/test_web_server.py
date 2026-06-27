@@ -249,6 +249,22 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_get_status_uses_cached_gateway_pid_probe(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        calls = {"get_running_pid_cached": 0}
+
+        def _cached_pid():
+            calls["get_running_pid_cached"] += 1
+            return None
+
+        monkeypatch.setattr(web_server, "get_running_pid_cached", _cached_pid)
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert calls["get_running_pid_cached"] == 1
+
     def test_gateway_drain_begin_writes_marker(self):
         from gateway import drain_control
 
@@ -1277,7 +1293,7 @@ class TestWebServerEndpoints:
             def get_connected_platforms(self):
                 return [_Platform("telegram")]
 
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
@@ -1309,7 +1325,7 @@ class TestWebServerEndpoints:
             def get_connected_platforms(self):
                 return []
 
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
@@ -4321,7 +4337,7 @@ class TestStatusRemoteGateway:
         """When local PID check fails and remote probe succeeds, gateway shows running."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
         monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
@@ -4343,7 +4359,7 @@ class TestStatusRemoteGateway:
         """When local PID check succeeds, the remote probe is never called."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},
@@ -4366,7 +4382,7 @@ class TestStatusRemoteGateway:
         """When GATEWAY_HEALTH_URL is unset, no probe is attempted."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
 
@@ -4380,7 +4396,7 @@ class TestStatusRemoteGateway:
         """Remote gateway running but PID not in response — pid should be None."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
         monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
@@ -4419,7 +4435,7 @@ class TestGatewayBusyReadout:
         """gateway_busy is True iff running AND active_agents > 0."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},
@@ -4437,7 +4453,7 @@ class TestGatewayBusyReadout:
         """A running gateway with zero in-flight turns is drainable, not busy."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},
@@ -4455,7 +4471,7 @@ class TestGatewayBusyReadout:
         gate dominates."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "draining",
             "platforms": {},
@@ -4471,7 +4487,7 @@ class TestGatewayBusyReadout:
         active_agents 0 — never a spurious busy that would wedge NAS."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
 
@@ -4487,9 +4503,9 @@ class TestGatewayBusyReadout:
         wins over the file."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
-        # File says running with active turns, but get_running_pid()==None and
+        # File says running with active turns, but get_running_pid_cached()==None and
         # get_runtime_status_running_pid finds no live PID → gateway_running False.
         monkeypatch.setattr(ws, "get_runtime_status_running_pid", lambda *_a, **_k: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
@@ -4508,7 +4524,7 @@ class TestGatewayBusyReadout:
         float so NAS can size its poll deadline without out-of-band knowledge."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},
@@ -4526,7 +4542,7 @@ class TestGatewayBusyReadout:
         produce a spurious busy — it degrades to 0/not-busy."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},

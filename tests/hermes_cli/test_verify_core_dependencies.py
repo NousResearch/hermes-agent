@@ -70,9 +70,10 @@ class TestVerifyCoreDependencies:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
             from hermes_cli.main import _verify_core_dependencies_installed
-            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+            ok = _verify_core_dependencies_installed(["uv", "pip"], env=env)
 
             # Probe ran, repair install did not.
+            assert ok is True
             assert mock_run.called, "verification probe should have run"
             assert not mock_install.called, "repair install should not fire when nothing is missing"
 
@@ -96,8 +97,9 @@ class TestVerifyCoreDependencies:
              patch("hermes_cli.main._run_install_with_heartbeat") as mock_install:
 
             from hermes_cli.main import _verify_core_dependencies_installed
-            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+            ok = _verify_core_dependencies_installed(["uv", "pip"], env=env)
 
+            assert ok is True
             assert mock_install.called, "repair install must fire when a dep is missing"
             # First repair must use --reinstall to force re-resolution.
             first_repair = mock_install.call_args_list[0]
@@ -130,8 +132,9 @@ class TestVerifyCoreDependencies:
              patch("hermes_cli.main._run_install_with_heartbeat") as mock_install:
 
             from hermes_cli.main import _verify_core_dependencies_installed
-            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+            ok = _verify_core_dependencies_installed(["uv", "pip"], env=env)
 
+            assert ok is True
             assert mock_install.call_count >= 2, (
                 "expected at least 2 repair installs (reinstall + per-package), "
                 f"got {mock_install.call_count}"
@@ -163,8 +166,9 @@ class TestVerifyCoreDependencies:
              patch("sys.platform", "win32"):
 
             from hermes_cli.main import _verify_core_dependencies_installed
-            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+            ok = _verify_core_dependencies_installed(["uv", "pip"], env=env)
 
+        assert ok is True
         # Find the probe argv — it's the call that passed the dep names.
         probe = next(
             (argv for argv in captured_argv if any("importlib.metadata" in str(a) for a in argv)),
@@ -187,9 +191,32 @@ class TestVerifyCoreDependencies:
         with patch("hermes_cli.main._resolve_install_target_python") as mock_resolve, \
              patch("hermes_cli.main._run_install_with_heartbeat") as mock_install:
             from hermes_cli.main import _verify_core_dependencies_installed
-            _verify_core_dependencies_installed(["uv", "pip"], env={})
+            ok = _verify_core_dependencies_installed(["uv", "pip"], env={})
+            assert ok is False
             assert not mock_resolve.called
             assert not mock_install.called
+
+    def test_returns_false_when_repair_install_fails(
+        self, temp_pyproject, fake_venv_python
+    ):
+        """The stamp skip path must not treat failed repair as verified."""
+        py, venv_root = fake_venv_python
+        env = {"VIRTUAL_ENV": str(venv_root)}
+
+        def fake_subprocess_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout="pathspec\n", stderr="")
+
+        with patch("hermes_cli.main._resolve_install_target_python", return_value=py), \
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_subprocess_run), \
+             patch(
+                 "hermes_cli.main._run_install_with_heartbeat",
+                 side_effect=subprocess.CalledProcessError(1, ["uv", "pip"]),
+             ):
+
+            from hermes_cli.main import _verify_core_dependencies_installed
+            ok = _verify_core_dependencies_installed(["uv", "pip"], env=env)
+
+        assert ok is False
 
     def test_repair_reinstall_quarantines_running_shim_on_windows(
         self, temp_pyproject, fake_venv_python

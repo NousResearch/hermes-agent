@@ -687,6 +687,12 @@ In addition to connecting **to** MCP servers, Hermes can also **be** an MCP serv
 - You want a single MCP server that bridges to all of Hermes's connected messaging platforms at once
 - You already have a running Hermes gateway with connected platforms
 
+:::note
+**This bridge observes and sends — it does not task the agent.** `messages_send` delivers through Hermes's own bot identity (the same `send_message` path the Hermes agent uses), so a message sent this way is an *outbound bot message* — the Hermes agent does not receive it as a prompt and will not process or reply to it. `events_poll`, `events_wait`, and `messages_read` let an MCP client *observe* conversations.
+
+An MCP client can therefore **watch** Hermes's conversations and **post as the Hermes bot**, but it cannot hand the Hermes agent a task through this bridge. To have the Hermes agent act on a request, the request must arrive through a real inbound channel — a message from an allowlisted user on a connected platform, the terminal UI, or a [scheduled cron job](/docs/user-guide/features/cron).
+:::
+
 ### Quick start
 
 ```bash
@@ -735,7 +741,7 @@ The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus
 | `attachments_fetch` | Extract non-text attachments (images, media) from a specific message. |
 | `events_poll` | Poll for new conversation events since a cursor position. |
 | `events_wait` | Long-poll / block until the next event arrives (near-real-time). |
-| `messages_send` | Send a message through a platform (e.g. `telegram:123456`, `discord:#general`). |
+| `messages_send` | Send a message through a platform **as the Hermes bot** (e.g. `telegram:123456`, `discord:#general`). |
 | `channels_list` | List available messaging targets across all platforms. |
 | `permissions_list_open` | List pending approval requests observed during this bridge session. |
 | `permissions_respond` | Allow or deny a pending approval request. |
@@ -765,7 +771,7 @@ hermes mcp serve --verbose    # Debug logging on stderr
 
 ### How it works
 
-The MCP server reads conversation data directly from Hermes's session store (`~/.hermes/sessions/sessions.json` and the SQLite database). A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same `send_message` infrastructure as the Hermes agent itself.
+The MCP server reads conversation data directly from Hermes's session store (`~/.hermes/sessions/sessions.json` and the SQLite database). A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same `send_message` infrastructure as the Hermes agent itself — so a message sent through `messages_send` goes out as the Hermes bot, not as inbound input to the Hermes agent.
 
 The gateway does NOT need to be running for read operations (listing conversations, reading history, polling events). It DOES need to be running for send operations, since the platform adapters need active connections.
 
@@ -775,6 +781,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 - Event polling at ~200ms intervals via mtime-optimized DB polling (skips work when files are unchanged)
 - No `claude/channel` push notification protocol yet
 - Text-only sends (no media/attachment sending through `messages_send`)
+- Observe-and-send only — the bridge cannot task the Hermes agent (`messages_send` posts as the bot; no tool injects a prompt into Hermes's reasoning loop)
 
 ## Related docs
 

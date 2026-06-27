@@ -239,15 +239,8 @@ interface SessionContextMenuProps extends SessionActions {
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
   const { renameDialog, renderItems } = useSessionActions(actions)
-  // Mobile shell: no long-press context menu — would surface a desktop-sized
-  // dropdown over the session list.
-  if (
-    typeof window !== 'undefined' &&
-    Boolean((window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__)
-  ) {
-    return <>{children}</>
-  }
-
+  // Radix ContextMenu binds to right-click on desktop and long-press on
+  // touch, so the same wrapper covers both phones and laptops.
   return (
     <>
       <ContextMenu>

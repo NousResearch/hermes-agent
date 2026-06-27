@@ -956,7 +956,18 @@ export function ChatSidebar({
         )}
 
         {contentVisible && showSessionSections && (
-          <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)}>
+          <div
+            className={cn(
+              'flex min-h-0 flex-1 flex-col pb-1.75',
+              SCROLL_Y,
+              // On mobile, kill the flex growth — let everything stack flush
+              // under the search box and rely on the outer SidebarContent's
+              // own overflow-y-auto to scroll. flex-1 here just leaves a big
+              // dead space between Search and Sessions whenever pinned and
+              // messaging groups are empty.
+              mobileStandalone && 'flex-none'
+            )}
+          >
             {trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}

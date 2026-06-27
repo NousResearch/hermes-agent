@@ -237,7 +237,15 @@ termux-all = [
   "hermes-agent[sms]",
   "hermes-agent[web]",
 ]
-dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
+dingtalk = [
+  "dingtalk-stream==0.24.3",
+  "alibabacloud-dingtalk==2.2.42",
+  "qrcode==7.4.2",
+  # File content parsing for rich-media messages (docx/pdf/xlsx)
+  "python-docx==1.2.0",
+  "pdfplumber==0.11.9",
+  "openpyxl==3.1.5",
+]
 feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,

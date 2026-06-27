@@ -84,6 +84,8 @@ mini-swe-agent/
 .nix-stamps/
 result
 website/static/api/skills-index.json
+.claude
+
 # skills.json + skills-meta.json are build artifacts emitted by
 # website/scripts/extract-skills.py during prebuild — keep them out of
 # git for the same reason as skills-index.json (large, generated, change

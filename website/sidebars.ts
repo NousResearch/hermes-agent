@@ -40,6 +40,7 @@ const sidebars: SidebarsConfig = {
           ],
         },
         'user-guide/sessions',
+        'user-guide/disaster-recovery',
         'user-guide/profiles',
         'user-guide/profile-distributions',
         'user-guide/multi-profile-gateways',

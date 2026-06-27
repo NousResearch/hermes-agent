@@ -179,6 +179,107 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         _cleanup(mcp_tool, "srv")
 
 
+def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_path):
+    """A half-open probe against a server with no live session must request
+    a transport reconnect and return a clean error — NOT write into a dead
+    pipe or permanently re-arm the breaker.
+
+    This is the #16788 wedge: a dead stdio subprocess leaves ``session=None``
+    (the run loop parked after exhausting retries). The old handler bumped
+    the breaker every cooldown forever; the fix signals ``_reconnect_event``
+    so the parked task revives and rebuilds the transport.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    server = _install_stub_server(mcp_tool, "srv", None)
+    # Simulate a dead/parked transport: no live session.
+    server.session = None
+    # Drive _signal_reconnect down its direct .set() path (no live loop).
+    monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
+
+    try:
+        mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        fake_now = [1000.0]
+
+        def _fake_monotonic():
+            return fake_now[0]
+
+        monkeypatch.setattr(mcp_tool.time, "monotonic", _fake_monotonic)
+        mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
+        cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
+
+        # Advance past cooldown → next call is a half-open probe.
+        fake_now[0] += cooldown + 1.0
+
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+        result = handler({})
+        parsed = json.loads(result)
+
+        # Clean "reconnecting" error, and a reconnect was actually signalled.
+        assert "reconnect" in parsed.get("error", "").lower(), parsed
+        server._reconnect_event.set.assert_called_once()
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
+    """Once the transport comes back (session repopulated + breaker reset by
+    the run loop), the next call must go straight through — proving the wedge
+    is escapable, not just deferred.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    async def _call_tool_success(*a, **kw):
+        result = MagicMock()
+        result.isError = False
+        block = MagicMock()
+        block.text = "ok"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    server = _install_stub_server(mcp_tool, "srv", _call_tool_success)
+    server.session = None  # transport down at first
+    monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        fake_now = [1000.0]
+        monkeypatch.setattr(mcp_tool.time, "monotonic", lambda: fake_now[0])
+        mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
+        cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
+        fake_now[0] += cooldown + 1.0
+
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+
+        # Probe 1: transport down → reconnect requested, clean error.
+        parsed = json.loads(handler({}))
+        assert "reconnect" in parsed.get("error", "").lower(), parsed
+
+        # Simulate the run loop rebuilding the session + resetting the breaker
+        # (what _run_stdio does on successful re-init).
+        live = MagicMock()
+        live.call_tool = _call_tool_success
+        server.session = live
+        mcp_tool._reset_server_error("srv")
+
+        # Advance past the re-armed cooldown so the next call is a fresh probe.
+        fake_now[0] += cooldown + 1.0
+
+        # Next call goes straight through.
+        parsed = json.loads(handler({}))
+        assert parsed.get("result") == "ok", parsed
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
     """When the auth-recovery path successfully reconnects the server,
     the breaker should be cleared so subsequent calls aren't gated on a
@@ -250,3 +351,98 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         )
     finally:
         _cleanup(mcp_tool, "srv")
+
+
+def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
+    """The run loop must NOT exit when the reconnect budget is exhausted.
+
+    It deregisters tools and parks as a dormant listener; a later
+    ``_reconnect_event`` revives it and re-enters the transport. This is the
+    structural fix for #16788 — without a live task, no half-open probe could
+    ever bring a dead stdio server back.
+    """
+    import asyncio
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import MCPServerTask
+
+    # Shrink the budget and collapse backoff sleeps (but still yield control
+    # to the loop) so the test runs fast without starving the scheduler.
+    monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 2)
+
+    _real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_delay, *a, **kw):
+        await _real_sleep(0)
+
+    monkeypatch.setattr(mcp_tool.asyncio, "sleep", _fast_sleep)
+
+    state = {"transport_calls": 0, "deregistered": 0, "revived": False}
+
+    async def _scenario():
+        class _Task(MCPServerTask):
+            def _is_http(self):
+                return False
+
+            def _deregister_tools(self):
+                state["deregistered"] += 1
+                self._registered_tool_names = []
+
+            async def _run_stdio(self, config):
+                state["transport_calls"] += 1
+                # First connect succeeds (sets _ready) then immediately
+                # fails, as if the subprocess died — the post-ready failure
+                # path that counts toward the reconnect budget.
+                if state["transport_calls"] == 1:
+                    self.session = object()
+                    self._ready.set()
+                    self.session = None
+                    raise RuntimeError("subprocess died")
+                # Keep failing until the budget is exhausted and the loop
+                # parks, UNLESS we've been revived after parking.
+                if state["revived"]:
+                    self.session = object()
+                    self._ready.set()
+                    await self._wait_for_lifecycle_event()
+                    return
+                raise RuntimeError("still down")
+
+        task = _Task("srv")
+        task._registered_tool_names = ["srv__tool"]
+
+        run_task = asyncio.ensure_future(task.run({"command": "x"}))
+
+        # Wait until the loop has parked (it deregisters tools right before
+        # blocking on _wait_for_reconnect_or_shutdown).
+        for _ in range(500):
+            await _real_sleep(0)
+            if state["deregistered"] >= 1:
+                break
+        # Give the loop one more tick to settle into the park wait.
+        await _real_sleep(0)
+        assert not run_task.done(), "run loop exited instead of parking"
+        assert state["deregistered"] >= 1, "tools not deregistered on park"
+
+        # Revive it: a reconnect signal must wake the parked task.
+        state["revived"] = True
+        before = state["transport_calls"]
+        task._reconnect_event.set()
+        for _ in range(500):
+            await _real_sleep(0)
+            if state["transport_calls"] > before:
+                break
+        assert state["transport_calls"] > before, (
+            "parked task did not re-enter transport on reconnect signal"
+        )
+
+        # Clean shutdown.
+        task._shutdown_event.set()
+        task._reconnect_event.set()
+        try:
+            await asyncio.wait_for(run_task, timeout=2)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            run_task.cancel()
+
+    asyncio.run(_scenario())

@@ -353,3 +353,35 @@ async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatc
     assert "API_KEY=super-secret" not in result.message
     assert "PRIVATE-KEY" not in result.message
     assert any("sensitive credential" in warning for warning in result.warnings)
+
+
+def test_remove_reference_tokens_preserves_paragraphs():
+    """Regression: removing @ tokens must not collapse blank lines/paragraphs (issue #48484)."""
+    from agent.context_references import _remove_reference_tokens, parse_context_references
+
+    msg = (
+        "Please refactor the auth module.\n\n"
+        "@file:auth.py\n\n"
+        "Make these changes:\n1. Add logging\n2. Handle timeouts\n\n"
+        "Keep the public API stable."
+    )
+    refs = parse_context_references(msg)
+    result = _remove_reference_tokens(msg, refs)
+
+    assert "\n\n" in result, "paragraph breaks must be preserved"
+    assert "module.\n\nMake" in result, "blank line between sections must survive"
+    assert "timeouts\n\nKeep" in result, "blank line before closing must survive"
+    # The @ token itself must be gone
+    assert "@file:auth.py" not in result
+
+
+def test_remove_reference_tokens_preserves_single_newlines():
+    """Single newlines in bullet lists must survive reference removal."""
+    from agent.context_references import _remove_reference_tokens, parse_context_references
+
+    msg = "Review this:\n@file:src.py\n\nLine one\nLine two\nLine three"
+    refs = parse_context_references(msg)
+    result = _remove_reference_tokens(msg, refs)
+
+    assert "Line one\nLine two\nLine three" in result
+    assert "@file:src.py" not in result

@@ -170,19 +170,23 @@ def aggregate_moa_context(
     temperature: float = 0.6,
     aggregator_temperature: float = 0.4,
     max_tokens: int = 4096,
+    reference_max_tokens: int | None = None,
+    aggregator_max_tokens: int | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice.
 
     Failures are returned as model-specific notes instead of aborting the normal
     agent loop; the main model can still act with partial context.
     """
+    _ref_cap = int(reference_max_tokens or max_tokens)
+    _agg_cap = int(aggregator_max_tokens or max(max_tokens, 32000))
     reference_outputs: list[tuple[str, str]] = []
     ref_messages = _reference_messages(api_messages)
     reference_outputs = _run_references_parallel(
         reference_models,
         ref_messages,
         temperature=temperature,
-        max_tokens=max_tokens,
+        max_tokens=_ref_cap,
     )
 
     joined = "\n\n".join(
@@ -207,7 +211,7 @@ def aggregate_moa_context(
             model=aggregator["model"],
             messages=[{"role": "user", "content": synth_prompt}],
             temperature=aggregator_temperature,
-            max_tokens=max_tokens,
+            max_tokens=_agg_cap,
         )
         synthesis = _extract_text(response)
     except Exception as exc:
@@ -242,6 +246,19 @@ class MoAChatCompletions:
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}
         max_tokens = int(preset.get("max_tokens", api_kwargs.get("max_tokens") or 4096) or 4096)
+        reference_max_tokens = int(preset.get("reference_max_tokens", max_tokens) or max_tokens)
+        # The aggregator is the acting model: it synthesizes every reference and
+        # may answer the user / emit tool calls. Capping it at the small shared
+        # `max_tokens` (4096) is what produced the misleading "Response truncated
+        # due to output length limit" warnings after MoA turns. Give it a real
+        # output budget and honor any larger cap the agent loop boosted in.
+        aggregator_max_tokens = int(
+            preset.get("aggregator_max_tokens", max(max_tokens, 32000))
+            or max(max_tokens, 32000)
+        )
+        _caller_cap = api_kwargs.get("max_tokens")
+        if _caller_cap:
+            aggregator_max_tokens = max(aggregator_max_tokens, int(_caller_cap))
         temperature = float(preset.get("reference_temperature", 0.6) or 0.6)
         aggregator_temperature = float(preset.get("aggregator_temperature", api_kwargs.get("temperature") or 0.4) or 0.4)
 
@@ -257,7 +274,7 @@ class MoAChatCompletions:
             reference_models,
             ref_messages,
             temperature=temperature,
-            max_tokens=max_tokens,
+            max_tokens=reference_max_tokens,
         )
 
         agg_messages = [dict(m) for m in messages]
@@ -288,13 +305,14 @@ class MoAChatCompletions:
         agg_kwargs["messages"] = agg_messages
         agg_kwargs["model"] = aggregator.get("model")
         agg_kwargs["temperature"] = aggregator_temperature
+        agg_kwargs["max_tokens"] = aggregator_max_tokens
         return call_llm(
             task="moa_aggregator",
             provider=aggregator.get("provider"),
             model=aggregator.get("model"),
             messages=agg_messages,
             temperature=aggregator_temperature,
-            max_tokens=agg_kwargs.get("max_tokens"),
+            max_tokens=aggregator_max_tokens,
             tools=agg_kwargs.get("tools"),
             extra_body=agg_kwargs.get("extra_body"),
         )

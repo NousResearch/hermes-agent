@@ -66,6 +66,8 @@ def _default_preset() -> dict[str, Any]:
         "reference_temperature": 0.6,
         "aggregator_temperature": 0.4,
         "max_tokens": 4096,
+        "reference_max_tokens": 4096,
+        "aggregator_max_tokens": 32000,
         "enabled": True,
     }
 
@@ -81,13 +83,29 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
 
     aggregator = _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR)
 
+    base_max_tokens = _coerce_int(raw.get("max_tokens"), 4096)
+    # Reference models only need room for one advisory answer; the aggregator
+    # synthesizes ALL of them (plus may answer the user as the acting model),
+    # so it needs a much larger output budget. Defaulting the aggregator cap to
+    # the legacy shared value (4096) is the root cause of MoA "Response
+    # truncated due to output length limit" warnings — keep it high unless the
+    # preset explicitly overrides it.
+    reference_max_tokens = _coerce_int(
+        raw.get("reference_max_tokens"), base_max_tokens
+    )
+    aggregator_max_tokens = _coerce_int(
+        raw.get("aggregator_max_tokens"), max(base_max_tokens, 32000)
+    )
+
     return {
         "enabled": bool(raw.get("enabled", True)),
         "reference_models": refs,
         "aggregator": aggregator,
         "reference_temperature": _coerce_float(raw.get("reference_temperature"), 0.6),
         "aggregator_temperature": _coerce_float(raw.get("aggregator_temperature"), 0.4),
-        "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
+        "max_tokens": base_max_tokens,
+        "reference_max_tokens": reference_max_tokens,
+        "aggregator_max_tokens": aggregator_max_tokens,
     }
 
 
@@ -133,6 +151,8 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "reference_temperature": active["reference_temperature"],
         "aggregator_temperature": active["aggregator_temperature"],
         "max_tokens": active["max_tokens"],
+        "reference_max_tokens": active["reference_max_tokens"],
+        "aggregator_max_tokens": active["aggregator_max_tokens"],
         "enabled": active["enabled"],
     }
 

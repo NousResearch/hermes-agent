@@ -800,7 +800,7 @@ async def _vision_analyze_native(
 
 async def vision_analyze_tool(
     image_url: str,
-    user_prompt: str,
+    user_prompt: str = "Describe this image in detail.",
     model: str = None,
 ) -> str:
     """
@@ -837,6 +837,12 @@ async def vision_analyze_tool(
     """
     if not isinstance(user_prompt, str):
         user_prompt = str(user_prompt) if user_prompt is not None else ""
+    if not user_prompt.strip():
+        raise ValueError(
+            "user_prompt cannot be empty. Provide a question or instruction "
+            "for the vision model, or omit the parameter to use the default "
+            "(\"Describe this image in detail.\")."
+        )
     debug_call_data = {
         "parameters": {
             "image_url": image_url,
@@ -1186,17 +1192,17 @@ VISION_ANALYZE_SCHEMA = {
             },
             "question": {
                 "type": "string",
-                "description": "Your specific question or request about the image. Optional context the model uses on the next turn after seeing the image."
+                "description": "Your specific question or request about the image. If omitted, a default description prompt is used. Optional context the model uses on the next turn after seeing the image."
             }
         },
-        "required": ["image_url", "question"]
+        "required": ["image_url"]
     }
 }
 
 
 def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     image_url = args.get("image_url", "")
-    question = args.get("question", "")
+    question = args.get("question", "").strip()
 
     # Fast path: when native image routing is in effect for the active main
     # model (provider accepts images in tool results, or the user set the
@@ -1209,10 +1215,15 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         return _vision_analyze_native(image_url, question)
 
     # Legacy path: aux LLM describes the image and we return its text.
-    full_prompt = (
-        "Fully describe and explain everything about this image, then answer the "
-        f"following question:\n\n{question}"
-    )
+    # When no question is provided, use a sensible default description prompt
+    # instead of sending an empty question to the upstream API.
+    if question:
+        full_prompt = (
+            "Fully describe and explain everything about this image, then answer the "
+            f"following question:\n\n{question}"
+        )
+    else:
+        full_prompt = "Describe this image in detail."
     model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return vision_analyze_tool(image_url, full_prompt, model)
 

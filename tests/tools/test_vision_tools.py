@@ -1069,3 +1069,171 @@ class TestDownloadRetryClassification:
         # All three attempts used, two backoff sleeps between them.
         assert mock_client.get.await_count == 3
         assert mock_sleep.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# vision_analyze_tool — empty/missing user_prompt validation
+# Issue #53638: empty user_prompt sent to upstream API → HTTP 400
+# ---------------------------------------------------------------------------
+
+
+class TestVisionAnalyzeEmptyPrompt:
+    """Tests for user_prompt validation in vision_analyze_tool.
+
+    Ensures that a missing or blank user_prompt either uses a sensible
+    default or raises a clear ValueError instead of sending an empty
+    message to the upstream API (which returns a confusing HTTP 400).
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_string_prompt_raises_value_error(self):
+        """An explicitly empty user_prompt should raise ValueError, not hit the API."""
+        with pytest.raises(ValueError, match="user_prompt cannot be empty"):
+            await vision_analyze_tool("https://example.com/image.jpg", "")
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_prompt_raises_value_error(self):
+        """A whitespace-only user_prompt should raise ValueError."""
+        with pytest.raises(ValueError, match="user_prompt cannot be empty"):
+            await vision_analyze_tool("https://example.com/image.jpg", "   ")
+
+    @pytest.mark.asyncio
+    async def test_none_prompt_coerced_then_raises_value_error(self):
+        """None user_prompt is coerced to '' which then raises ValueError."""
+        with pytest.raises(ValueError, match="user_prompt cannot be empty"):
+            await vision_analyze_tool("https://example.com/image.jpg", None)
+
+    @pytest.mark.asyncio
+    async def test_default_prompt_used_when_omitted(self, tmp_path):
+        """When user_prompt is omitted entirely, the default prompt should be used.
+
+        We patch the LLM call to capture the prompt that would be sent,
+        verifying it is the default rather than an empty string.
+        """
+        # Create a tiny valid image file so we get past the image-loading stage
+        import struct
+
+        minimal_png = (
+            b"\x89PNG\r\n\x1a\n"
+            + struct.pack(">I", 13)  # IHDR length
+            + b"IHDR"
+            + struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)  # 1x1 RGBA
+            + b"\x00" * 4  # CRC (not valid but enough for mime detection)
+            + struct.pack(">I", 0)  # IDAT length
+            + b"IDAT" + b"\x00" * 4
+            + struct.pack(">I", 0)  # IEND length
+            + b"IEND" + b"\x00" * 4
+        )
+        img_path = tmp_path / "test.png"
+        img_path.write_bytes(minimal_png)
+
+        captured_prompt = {}
+
+        async def fake_call_llm(**kwargs):
+            messages = kwargs.get("messages", [{}])
+            content = messages[0].get("content", []) if messages else []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    captured_prompt["prompt"] = part.get("text", "")
+                    break
+            return {"choices": [{"message": {"content": "test description"}}]}
+
+        with (
+            patch("tools.vision_tools.async_call_llm", new=fake_call_llm),
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+        ):
+            await vision_analyze_tool(str(img_path))
+
+        # The default prompt should have been used, not an empty string
+        assert captured_prompt.get("prompt") == "Describe this image in detail."
+
+
+class TestHandleVisionAnalyzeEmptyQuestion:
+    """Tests for _handle_vision_analyze when question is missing or empty.
+
+    The handler is the entry point from the agent loop. When the model
+    omits the optional 'question' parameter, the handler should build a
+    sensible default prompt rather than passing an empty string through.
+    """
+
+    @pytest.mark.asyncio
+    async def test_missing_question_uses_default_prompt(self):
+        """When 'question' is not in args, full_prompt should be the default."""
+        captured_args = {}
+
+        async def fake_tool(image_url, full_prompt, model):
+            captured_args["full_prompt"] = full_prompt
+            captured_args["image_url"] = image_url
+            captured_args["model"] = model
+
+        with (
+            patch("tools.vision_tools.vision_analyze_tool", side_effect=fake_tool),
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+            patch("tools.vision_tools.os.getenv", return_value=""),
+        ):
+            await _handle_vision_analyze({"image_url": "https://example.com/img.jpg"})
+
+        assert captured_args["full_prompt"] == "Describe this image in detail."
+
+    @pytest.mark.asyncio
+    async def test_empty_question_uses_default_prompt(self):
+        """When 'question' is an empty string, full_prompt should be the default."""
+        captured_args = {}
+
+        async def fake_tool(image_url, full_prompt, model):
+            captured_args["full_prompt"] = full_prompt
+
+        with (
+            patch("tools.vision_tools.vision_analyze_tool", side_effect=fake_tool),
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+            patch("tools.vision_tools.os.getenv", return_value=""),
+        ):
+            await _handle_vision_analyze({"image_url": "https://example.com/img.jpg", "question": ""})
+
+        assert captured_args["full_prompt"] == "Describe this image in detail."
+
+    @pytest.mark.asyncio
+    async def test_whitespace_question_uses_default_prompt(self):
+        """When 'question' is only whitespace, full_prompt should be the default."""
+        captured_args = {}
+
+        async def fake_tool(image_url, full_prompt, model):
+            captured_args["full_prompt"] = full_prompt
+
+        with (
+            patch("tools.vision_tools.vision_analyze_tool", side_effect=fake_tool),
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+            patch("tools.vision_tools.os.getenv", return_value=""),
+        ):
+            await _handle_vision_analyze({"image_url": "https://example.com/img.jpg", "question": "   "})
+
+        assert captured_args["full_prompt"] == "Describe this image in detail."
+
+    @pytest.mark.asyncio
+    async def test_non_empty_question_uses_question_prompt(self):
+        """When 'question' has content, the full formatted prompt should be used."""
+        captured_args = {}
+
+        async def fake_tool(image_url, full_prompt, model):
+            captured_args["full_prompt"] = full_prompt
+
+        with (
+            patch("tools.vision_tools.vision_analyze_tool", side_effect=fake_tool),
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+            patch("tools.vision_tools.os.getenv", return_value=""),
+        ):
+            await _handle_vision_analyze({"image_url": "https://example.com/img.jpg", "question": "What color is the car?"})
+
+        assert "What color is the car?" in captured_args["full_prompt"]
+        assert "Describe this image in detail." not in captured_args["full_prompt"]
+
+
+class TestVisionAnalyzeSchema:
+    """Tests for the VISION_ANALYZE_SCHEMA — question should be optional."""
+
+    def test_question_not_in_required(self):
+        """The 'question' parameter should not be in the required list."""
+        from tools.vision_tools import VISION_ANALYZE_SCHEMA
+
+        assert "question" not in VISION_ANALYZE_SCHEMA["parameters"]["required"]
+        assert "image_url" in VISION_ANALYZE_SCHEMA["parameters"]["required"]

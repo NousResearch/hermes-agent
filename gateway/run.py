@@ -16278,7 +16278,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            # Gate on needs_progress_queue (tool_progress OR thinking_progress)
+            # rather than tool_progress alone: the progress_callback also relays
+            # _thinking assistant scratch text, which is gated on
+            # thinking_progress and is intentionally independent of tool
+            # progress. With the old `tool_progress_enabled`-only gate, a user
+            # who set thinking_progress:true but kept tool_progress:off got a
+            # None callback — so _thinking scratch bubbles never relayed even
+            # though the progress queue was created for them.
+            agent.tool_progress_callback = progress_callback if needs_progress_queue else None
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (
@@ -17004,9 +17012,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "response_transformed": result.get("response_transformed", False),
             }
         
-        # Start progress message sender if enabled
+        # Start progress message sender if enabled. Gate on needs_progress_queue
+        # (tool_progress OR thinking_progress), not tool_progress alone: the
+        # sender drains BOTH tool-progress lines and _thinking scratch bubbles.
+        # With the old tool_progress-only gate, a thinking_progress:true /
+        # tool_progress:off user had the callback queue _thinking messages that
+        # no task ever drained — so they silently never appeared.
         progress_task = None
-        if tool_progress_enabled:
+        if needs_progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
 
         # Start stream consumer task — polls for consumer creation since it

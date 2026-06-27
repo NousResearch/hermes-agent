@@ -5201,6 +5201,12 @@ def _build_call_kwargs(
         )
         if _is_anthropic_compat_endpoint(provider, _effective_base):
             kwargs["max_tokens"] = max_tokens
+        elif max_tokens is not None:
+            # Pass max_tokens explicitly. Some LiteLLM proxies default to a
+            # very large value when max_tokens is omitted, which Bedrock
+            # rejects with a 400 ("exceeds the model limit").
+            _mt = auxiliary_max_tokens_param(max_tokens, model=model)
+            kwargs.update(_mt)
 
     if tools:
         # Defensive dedup: providers like Google Vertex, Azure, and Bedrock

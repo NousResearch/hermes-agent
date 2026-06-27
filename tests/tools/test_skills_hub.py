@@ -2311,6 +2311,67 @@ class TestInstallPathSafety:
         assert victim.exists()
         assert (victim / "important").read_text() == "don't delete me"
 
+    def test_install_from_quarantine_records_bundle_hash_in_lock(self, tmp_path):
+        """Regression: install_from_quarantine must store bundle_content_hash()
+        in the lock so that check_for_skill_updates() sees 'up_to_date'.
+
+        Previously the lock stored content_hash(install_dir), which could
+        diverge from bundle_content_hash(bundle) if extra files (e.g. .DS_Store)
+        appear on disk or if write_text / read_bytes round-trip encoding differs
+        from the in-memory bundle content.  Issue #41176.
+        """
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        lock_file = skills_dir / ".hub" / "lock.json"
+        audit_log = skills_dir / ".hub" / "audit.log"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "demo-skill"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: demo-skill\n---\n")
+        (q_dir / "references").mkdir()
+        (q_dir / "references" / "api.md").write_text("# API\n")
+
+        bundle = hub.SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "---\nname: demo-skill\n---\n",
+                "references/api.md": "# API\n",
+            },
+            source="official",
+            identifier="official/demo-skill",
+            trust_level="official",
+        )
+        scan_result = ScanResult(
+            skill_name="demo-skill",
+            source="official",
+            trust_level="official",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch.object(hub, "LOCK_FILE", lock_file), \
+             patch.object(hub, "AUDIT_LOG", audit_log), \
+             patch.object(hub.HubLockFile, "__init__", lambda self, **kw: setattr(self, 'path', lock_file)):
+            hub.install_from_quarantine(
+                q_dir, "demo-skill", "", bundle, scan_result,
+            )
+
+        # The lock must have been written with the bundle hash
+        lock = hub.HubLockFile(path=lock_file)
+        entry = lock.get_installed("demo-skill")
+        assert entry is not None, "skill not found in lock after install"
+        stored_hash = entry["content_hash"]
+        expected_hash = hub.bundle_content_hash(bundle)
+        assert stored_hash == expected_hash, (
+            f"Lock hash {stored_hash!r} != bundle hash {expected_hash!r}. "
+            "check_for_skill_updates() would report update_available forever."
+        )
+
     def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
         """Skill install must not follow symlinks that leak file contents
         from outside the quarantine directory."""

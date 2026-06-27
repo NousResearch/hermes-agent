@@ -3441,7 +3441,12 @@ def install_from_quarantine(
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
 
-    # Record in lock file
+    # Record in lock file — use bundle_content_hash() so the stored hash
+    # is guaranteed to match what check_for_skill_updates() computes.
+    # Using content_hash(install_dir) can diverge if disk-only files
+    # (e.g. .DS_Store) are present or if write_text/read_bytes round-trip
+    # encoding differs from the in-memory bundle content.
+    skill_hash = bundle_content_hash(bundle)
     lock = HubLockFile()
     lock.record_install(
         name=safe_skill_name,
@@ -3449,7 +3454,7 @@ def install_from_quarantine(
         identifier=bundle.identifier,
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
-        skill_hash=content_hash(install_dir),
+        skill_hash=skill_hash,
         install_path=str(install_dir.relative_to(SKILLS_DIR)),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
@@ -3458,7 +3463,7 @@ def install_from_quarantine(
     append_audit_log(
         "INSTALL", safe_skill_name, bundle.source,
         bundle.trust_level, scan_result.verdict,
-        content_hash(install_dir),
+        skill_hash,
     )
 
     return install_dir

@@ -476,6 +476,7 @@ class TestSendMessageTool:
             source_label="telegram",
             thread_id=None,
             user_id="user-123",
+            seed_if_missing=False,
         )
 
     def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path, monkeypatch):

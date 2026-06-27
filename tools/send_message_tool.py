@@ -460,6 +460,7 @@ def _handle_send(args):
                     source_label=source_label,
                     thread_id=thread_id,
                     user_id=user_id,
+                    seed_if_missing=(platform_name == "discord" and bool(thread_id)),
                 ):
                     result["mirrored"] = True
             except Exception:

@@ -215,3 +215,32 @@ class TestParentChatIdMatching:
         r = ProfileRoute(name="g", platform="discord", profile="server",
                          guild_id="111")
         assert r.matches("discord", guild_id="111", chat_id="333", parent_chat_id="444")
+
+
+class TestForumPostMatching:
+    """Test that forum posts match via parent_chat_id (direct parent)."""
+
+    def test_forum_channel_route_matches_forum_post(self):
+        """A route on a forum channel should match comments on posts in that forum.
+        
+        In Discord, forum posts (threads) have parent_chat_id = forum channel ID.
+        No cache is needed — the parent relationship is direct.
+        """
+        r = ProfileRoute(name="forum", platform="discord", profile="forum_profile",
+                         chat_id="forum_channel_123")
+        # A comment on a forum post: chat_id=post_thread_id, parent_chat_id=forum_channel_id
+        assert r.matches("discord", chat_id="post_thread_456", parent_chat_id="forum_channel_123")
+
+    def test_forum_post_comment_matches_channel_not_thread_id(self):
+        """Verify that thread_id matching is distinct from parent_chat_id matching."""
+        routes = [
+            ProfileRoute(name="forum", platform="discord", profile="forum_profile",
+                         chat_id="forum_channel_123"),
+            ProfileRoute(name="post", platform="discord", profile="post_profile",
+                         thread_id="post_thread_456"),
+        ]
+        # A comment on the forum post should match the forum channel route, not the thread route
+        m = match_profile_route(routes, "discord", chat_id="post_thread_456", 
+                                 parent_chat_id="forum_channel_123")
+        assert m is not None
+        assert m.profile == "forum_profile"

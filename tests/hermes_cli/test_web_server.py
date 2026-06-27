@@ -4121,6 +4121,102 @@ class TestModelContextLength:
         assert result["model"]["context_length"] == 32000
 
 
+class TestDenormalizeProviderSwitch:
+    """The flat Config-page Model field carries no provider info. When the
+    model string changes to one served by a different provider, the saved
+    provider must follow it (issue #14058)."""
+
+    def test_vendor_slug_switches_off_non_aggregator_provider(self):
+        """ollama-local + a vendor/model slug → switch to openrouter and drop
+        the stale local base_url (the issue's exact repro)."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "llama3.2",
+                "provider": "ollama-local",
+                "base_url": "http://localhost:11434/v1",
+                "api_mode": "chat_completions",
+            }
+        })
+
+        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
+        model = result["model"]
+        assert model["provider"] == "openrouter"
+        assert model["default"] == "google/gemini-2.5-flash"
+        # The old ollama-local endpoint must not carry over to openrouter.
+        assert not model.get("base_url")
+
+    def test_unchanged_model_preserves_provider_and_base_url(self):
+        """Saving with the model unchanged must never re-detect/overwrite the
+        provider — protects unrelated config saves and custom endpoints."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "llama3.2",
+                "provider": "ollama-local",
+                "base_url": "http://localhost:11434/v1",
+            }
+        })
+
+        result = _denormalize_config_from_web({"model": "llama3.2"})
+        model = result["model"]
+        assert model["provider"] == "ollama-local"
+        assert model["base_url"] == "http://localhost:11434/v1"
+
+    def test_bare_model_name_change_keeps_local_provider(self):
+        """A bare (non-slug) model name gives no provider signal — leave the
+        existing provider alone rather than guessing."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "llama3.2",
+                "provider": "ollama-local",
+                "base_url": "http://localhost:11434/v1",
+            }
+        })
+
+        result = _denormalize_config_from_web({"model": "qwen2.5"})
+        model = result["model"]
+        assert model["provider"] == "ollama-local"
+        assert model["default"] == "qwen2.5"
+
+    def test_same_aggregator_model_swap_keeps_provider(self):
+        """Swapping models within an aggregator must not change the provider."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
+        })
+
+        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
+        model = result["model"]
+        assert model["provider"] == "openrouter"
+        assert model["default"] == "google/gemini-2.5-flash"
+
+    def test_context_length_override_survives_provider_switch(self):
+        """An explicit context-length override must persist alongside a
+        provider switch."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({"model": {"default": "llama3.2", "provider": "ollama-local"}})
+
+        result = _denormalize_config_from_web({
+            "model": "google/gemini-2.5-flash",
+            "model_context_length": 128000,
+        })
+        model = result["model"]
+        assert model["provider"] == "openrouter"
+        assert model["context_length"] == 128000
+
+
 class TestModelContextLengthSchema:
     """Tests for model_context_length placement in CONFIG_SCHEMA."""
 

@@ -4270,6 +4270,56 @@ def _apply_model_assignment_sync(
 
 
 
+def _infer_provider_on_model_change(model_val: str, prev_provider: str) -> tuple[str, str]:
+    """Infer which provider serves ``model_val`` when the flat Config-page Model
+    field changes, given the previously-saved ``prev_provider``.
+
+    Returns ``(provider, model)``; ``provider`` is empty when no switch is
+    warranted (leave the existing provider untouched). Two signals, in order:
+
+    1. Curated-catalog detection (``detect_provider_for_model``) — handles the
+       ~28 OpenRouter-curated models and direct provider-static catalogs.
+    2. Vendor-slug heuristic — a ``vendor/model`` slug cannot belong to a
+       single-model / non-aggregator provider (e.g. ``ollama-local``). When the
+       current provider is not an aggregator that serves vendor-prefixed slugs,
+       route to an aggregator. ``_normalize_main_model_assignment`` (called by
+       the caller) keeps the user's current aggregator when they're already on
+       one, else falls back to openrouter — the same chokepoint logic as
+       ``POST /api/model/set``.
+    """
+    name = (model_val or "").strip()
+    if not name:
+        return "", name
+    try:
+        from hermes_cli.models import (
+            _AGGREGATOR_PROVIDERS,
+            detect_provider_for_model,
+            normalize_provider,
+        )
+    except Exception:
+        return "", name
+
+    try:
+        detected = detect_provider_for_model(name, prev_provider)
+    except Exception:
+        detected = None
+    if detected:
+        return detected[0], detected[1]
+
+    # Vendor-prefixed slug under a non-aggregator provider → reassign. Use a
+    # sentinel "openrouter" here; _normalize_main_model_assignment resolves the
+    # real aggregator (keeps a current aggregator, else openrouter).
+    if "/" in name:
+        try:
+            cur_is_aggregator = normalize_provider(prev_provider) in _AGGREGATOR_PROVIDERS
+        except Exception:
+            cur_is_aggregator = False
+        if not cur_is_aggregator:
+            return "openrouter", name
+
+    return "", name
+
+
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Reverse _normalize_config_for_web before saving.
 
@@ -4302,6 +4352,31 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
             disk_config = load_config()
             disk_model = disk_config.get("model")
             if isinstance(disk_model, dict):
+                prev_default = str(disk_model.get("default") or "").strip()
+                prev_provider = str(disk_model.get("provider") or "").strip()
+                # When the model name actually changed, re-detect which
+                # provider serves it. The Config-page Model field is a flat
+                # string with no provider info, so without this a user who
+                # picks an OpenRouter model while their default provider is
+                # ollama-local keeps the stale provider and 404s. Only fires
+                # on a real model change so saving unrelated config fields
+                # never overwrites an explicit provider.
+                if model_val != prev_default and prev_provider:
+                    new_provider, resolved_model = _infer_provider_on_model_change(
+                        model_val, prev_provider
+                    )
+                    if new_provider and new_provider.strip().lower() != prev_provider.lower():
+                        # Route through the canonical assignment chokepoints so
+                        # the model is normalized for the new provider and stale
+                        # base_url/api_mode/api_key are cleared on the switch
+                        # (and preserved on a same-provider re-pick).
+                        norm_provider, norm_model = _normalize_main_model_assignment(
+                            new_provider, resolved_model
+                        )
+                        disk_model = _apply_main_model_assignment(
+                            disk_model, norm_provider, norm_model
+                        )
+                        model_val = norm_model
                 # Preserve all subkeys, update default with the new value
                 disk_model["default"] = model_val
                 # Write context_length into the model dict (0 = remove/auto)

@@ -1256,7 +1256,7 @@ export const ja = defineLocale({
       completed: '完了'
     },
     deliveryLabels: {
-      local: 'このデスクトップ',
+      local: 'ローカルに保存のみ',
       telegram: 'Telegram',
       discord: 'Discord',
       slack: 'Slack',

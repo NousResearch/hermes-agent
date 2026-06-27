@@ -1133,7 +1133,7 @@ export const en: Translations = {
       completed: 'completed'
     },
     deliveryLabels: {
-      local: 'This desktop',
+      local: 'Local (save only)',
       telegram: 'Telegram',
       discord: 'Discord',
       slack: 'Slack',

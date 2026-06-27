@@ -1210,7 +1210,7 @@ export const zhHant = defineLocale({
       completed: '已完成'
     },
     deliveryLabels: {
-      local: '此桌面',
+      local: '僅本機儲存',
       telegram: 'Telegram',
       discord: 'Discord',
       slack: 'Slack',

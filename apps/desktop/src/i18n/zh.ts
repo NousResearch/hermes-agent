@@ -1317,7 +1317,7 @@ export const zh: Translations = {
       completed: '已完成'
     },
     deliveryLabels: {
-      local: '此桌面',
+      local: '仅本地保存',
       telegram: 'Telegram',
       discord: 'Discord',
       slack: 'Slack',

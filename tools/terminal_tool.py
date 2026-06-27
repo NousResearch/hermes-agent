@@ -2701,8 +2701,10 @@ def terminal_tool(
 
     except Exception as e:
         import traceback
+        from hermes_cli.sanitize import sanitize_traceback
         tb_str = traceback.format_exc()
         logger.error("terminal_tool exception:\n%s", tb_str)
+        tb_str = sanitize_traceback(tb_str)
         return json.dumps({
             "output": "",
             "exit_code": -1,

@@ -4230,6 +4230,11 @@ def _make_agent(
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
+        # Carry the resolved provider's request_overrides (custom_providers
+        # extra_body, e.g. chat_template_kwargs) so a rebuilt/resumed session
+        # keeps the switched provider's settings instead of reverting to the
+        # default provider's first-match merge.
+        request_overrides=runtime.get("request_overrides"),
         quiet_mode=True,
         # verbose_logging controls DEBUG-level agent logging; it is intentionally
         # independent of tool_progress_mode (which only controls per-tool

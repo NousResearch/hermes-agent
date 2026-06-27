@@ -8451,3 +8451,54 @@ class TestResolveRuntimeWithFallback:
 
         assert agent.model == "gpt-5.5"
         assert captured["provider"] == "deepseek"
+
+def test_make_agent_carries_request_overrides_on_rebuild(monkeypatch):
+    """A rebuilt/resumed session must keep the switched provider's
+    request_overrides (custom_providers extra_body) — otherwise thinking
+    reverts to the default provider's first-match merge on /new or resume."""
+    captured = {}
+
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model=kwargs.get("model"))
+
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"model": {"default": "main", "provider": "custom:main-think"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, target_model=None, **kw: {
+            "provider": "custom",
+            "base_url": "http://10.0.0.1:8000/v1",
+            "api_key": "no-key-required",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+            "request_overrides": {
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": True}}
+            },
+        },
+    )
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server._make_agent(
+        "sid",
+        "session-key",
+        model_override={
+            "model": "main",
+            "provider": "custom:main-think",
+            "base_url": "http://10.0.0.1:8000/v1",
+            "api_key": "k",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    assert captured["request_overrides"] == {
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": True}}
+    }

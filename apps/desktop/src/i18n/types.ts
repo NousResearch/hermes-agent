@@ -224,6 +224,7 @@ export interface Translations {
     unmuteHaptics: string
     openSettings: string
     openKeybinds: string
+    closeWindow: string
   }
 
   keybinds: {

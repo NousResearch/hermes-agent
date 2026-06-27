@@ -1,7 +1,11 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 
-const { OVERLAY_FALLBACK_WIDTH, nativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
+const {
+  OVERLAY_FALLBACK_WIDTH,
+  nativeOverlayWidth,
+  shouldShowWindowControlsFallback
+} = require('./titlebar-overlay-width.cjs')
 
 // This static reservation is only the pre-layout FALLBACK. Once laid out the
 // renderer reads the exact width from navigator.windowControlsOverlay
@@ -26,4 +30,11 @@ test('plain Linux and macOS reserve nothing', () => {
 
 test('the fallback width is a sane positive pixel value', () => {
   assert.ok(Number.isInteger(OVERLAY_FALLBACK_WIDTH) && OVERLAY_FALLBACK_WIDTH > 0)
+})
+
+test('only plain Linux shows the custom window-controls fallback', () => {
+  assert.equal(shouldShowWindowControlsFallback({ isMac: true }), false)
+  assert.equal(shouldShowWindowControlsFallback({ isWindows: true }), false)
+  assert.equal(shouldShowWindowControlsFallback({ isWsl: true }), false)
+  assert.equal(shouldShowWindowControlsFallback(), true)
 })

@@ -24,7 +24,7 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 import { useWindowControlsOverlayWidth } from './hooks/use-window-controls-overlay-width'
 import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
-import { TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
+import { showTitlebarCloseFallback, TITLEBAR_HEIGHT, titlebarControlsPosition, titlebarSystemToolCount } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
 interface AppShellProps {
@@ -96,6 +96,7 @@ export function AppShell({
   const measuredOverlayWidth = useWindowControlsOverlayWidth()
   const staticOverlayWidth = connection?.nativeOverlayWidth ?? 0
   const nativeOverlayWidth = measuredOverlayWidth ?? staticOverlayWidth
+  const showWindowCloseFallback = showTitlebarCloseFallback(connection, isFullscreen)
   const titlebarToolsRight = nativeOverlayWidth > 0 ? `${nativeOverlayWidth}px` : '0.75rem'
 
   // When the native window controls overlay our titlebar band — Windows and
@@ -134,7 +135,7 @@ export function AppShell({
   // between the pane-tool cluster and the system cluster so they don't sit
   // flush against each other. Modeled as N gaps (N - 1 inner + 1 trailing)
   // to keep the formula generic for any pane-tool count.
-  const SYSTEM_TOOL_COUNT = 4
+  const SYSTEM_TOOL_COUNT = titlebarSystemToolCount(showWindowCloseFallback)
   const paneToolCount = titlebarTools?.filter(tool => !tool.hidden).length ?? 0
   const systemToolsWidth = `calc(${SYSTEM_TOOL_COUNT} * (var(--titlebar-control-size) + 0.25rem))`
 
@@ -186,7 +187,12 @@ export function AppShell({
       }
     >
       {!hideTitlebarControls && (
-        <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
+        <TitlebarControls
+          leftTools={leftTitlebarTools}
+          onOpenSettings={onOpenSettings}
+          showWindowCloseFallback={showWindowCloseFallback}
+          tools={titlebarTools}
+        />
       )}
 
       {nativeOverlayWidth > 0 && (

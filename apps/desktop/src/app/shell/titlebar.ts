@@ -1,4 +1,4 @@
-import type { HermesConnection } from '@/global'
+import type { HermesConnection, HermesWindowState } from '@/global'
 
 export const TITLEBAR_HEIGHT = 34
 export const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -26,6 +26,20 @@ export const titlebarHeaderTitleClass = 'min-w-0 flex-1 overflow-hidden'
 
 export const titlebarHeaderShadowClass =
   "after:pointer-events-none after:absolute after:left-0 after:right-0 after:top-full after:h-4 after:bg-linear-to-b after:from-(--ui-chat-surface-background) after:to-transparent after:content-['']"
+
+export function showTitlebarCloseFallback(
+  windowState:
+    | Pick<HermesConnection, 'isFullscreen' | 'showWindowControlsFallback'>
+    | Pick<HermesWindowState, 'isFullscreen' | 'showWindowControlsFallback'>
+    | undefined,
+  isFullscreen = windowState?.isFullscreen ?? false
+) {
+  return Boolean(windowState?.showWindowControlsFallback) && !isFullscreen
+}
+
+export function titlebarSystemToolCount(showCloseFallback = false) {
+  return 4 + Number(showCloseFallback)
+}
 
 export function titlebarControlsPosition(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,

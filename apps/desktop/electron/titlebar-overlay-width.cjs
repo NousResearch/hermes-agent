@@ -8,4 +8,9 @@ function nativeOverlayWidth({ isWindows = false, isWsl = false } = {}) {
   return isWindows || isWsl ? OVERLAY_FALLBACK_WIDTH : 0
 }
 
-module.exports = { OVERLAY_FALLBACK_WIDTH, nativeOverlayWidth }
+/** @param {{ isMac?: boolean, isWindows?: boolean, isWsl?: boolean }} opts */
+function shouldShowWindowControlsFallback({ isMac = false, isWindows = false, isWsl = false } = {}) {
+  return !isMac && nativeOverlayWidth({ isWindows, isWsl }) === 0
+}
+
+module.exports = { OVERLAY_FALLBACK_WIDTH, nativeOverlayWidth, shouldShowWindowControlsFallback }

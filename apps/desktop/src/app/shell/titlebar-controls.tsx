@@ -44,9 +44,15 @@ interface TitlebarControlsProps extends ComponentProps<'div'> {
   leftTools?: readonly TitlebarTool[]
   tools?: readonly TitlebarTool[]
   onOpenSettings: () => void
+  showWindowCloseFallback?: boolean
 }
 
-export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
+export function TitlebarControls({
+  leftTools = [],
+  tools = [],
+  onOpenSettings,
+  showWindowCloseFallback = false
+}: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
@@ -108,6 +114,19 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       rightEdge.toggle()
     }
   }
+
+  const closeWindowTool: TitlebarTool | null = showWindowCloseFallback
+    ? {
+        className: 'hover:bg-destructive hover:text-white focus-visible:ring-destructive/20',
+        icon: <Codicon name="close" />,
+        id: 'window-close',
+        label: t.titlebar.closeWindow,
+        onSelect: () => {
+          triggerHaptic('tap')
+          void window.hermesDesktop.closeWindow()
+        }
+      }
+    : null
 
   // Static system tools — always pinned to the screen's right edge.
   const systemTools: TitlebarTool[] = [
@@ -192,6 +211,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         ))}
         {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
+        {closeWindowTool && <TitlebarToolButton navigate={navigate} tool={closeWindowTool} />}
       </div>
     </>
   )

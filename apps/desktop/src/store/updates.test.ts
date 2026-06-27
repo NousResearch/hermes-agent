@@ -177,6 +177,7 @@ describe('checkBackendUpdates', () => {
       isFullscreen: false,
       mode: on ? 'remote' : 'local',
       nativeOverlayWidth: 0,
+      showWindowControlsFallback: false,
       token: 't',
       wsUrl: 'ws://box:9119',
       logs: [],

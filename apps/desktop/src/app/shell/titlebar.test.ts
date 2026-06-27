@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  showTitlebarCloseFallback,
   TITLEBAR_CONTROL_OFFSET_X,
   TITLEBAR_EDGE_INSET,
   TITLEBAR_FALLBACK_WINDOW_BUTTON_X,
-  titlebarControlsPosition
+  titlebarControlsPosition,
+  titlebarSystemToolCount
 } from './titlebar'
 
 describe('titlebarControlsPosition', () => {
@@ -22,5 +24,16 @@ describe('titlebarControlsPosition', () => {
 
   it('uses the macOS fallback while the initial window state is unknown', () => {
     expect(titlebarControlsPosition(undefined).left).toBe(TITLEBAR_FALLBACK_WINDOW_BUTTON_X + TITLEBAR_CONTROL_OFFSET_X)
+  })
+
+  it('shows the custom close button only on non-fullscreen fallback platforms', () => {
+    expect(showTitlebarCloseFallback({ isFullscreen: false, showWindowControlsFallback: true })).toBe(true)
+    expect(showTitlebarCloseFallback({ isFullscreen: true, showWindowControlsFallback: true })).toBe(false)
+    expect(showTitlebarCloseFallback({ isFullscreen: false, showWindowControlsFallback: false })).toBe(false)
+  })
+
+  it('accounts for the optional close button in the fixed tool cluster width', () => {
+    expect(titlebarSystemToolCount()).toBe(4)
+    expect(titlebarSystemToolCount(true)).toBe(5)
   })
 })

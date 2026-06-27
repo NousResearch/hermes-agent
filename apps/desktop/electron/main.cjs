@@ -44,7 +44,10 @@ const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-ma
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
-const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
+const {
+  nativeOverlayWidth: computeNativeOverlayWidth,
+  shouldShowWindowControlsFallback: computeShouldShowWindowControlsFallback
+} = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
 const {
@@ -3791,10 +3794,15 @@ function getNativeOverlayWidth() {
   return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL })
 }
 
+function shouldShowWindowControlsFallback() {
+  return computeShouldShowWindowControlsFallback({ isMac: IS_MAC, isWindows: IS_WINDOWS, isWsl: IS_WSL })
+}
+
 function getWindowState() {
   return {
     isFullscreen: Boolean(mainWindow?.isFullScreen?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
+    showWindowControlsFallback: shouldShowWindowControlsFallback(),
     windowButtonPosition: getWindowButtonPosition()
   }
 }
@@ -5994,6 +6002,15 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
 ipcMain.handle('hermes:window:openNewSession', async () => {
   createNewSessionWindow()
 
+  return { ok: true }
+})
+ipcMain.handle('hermes:window:close', async event => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win || win.isDestroyed()) {
+    return { ok: false, error: 'missing-window' }
+  }
+
+  win.close()
   return { ok: true }
 })
 

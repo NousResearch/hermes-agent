@@ -228,34 +228,53 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     #   true  — always inject (all models)
     #   false — never inject
     #   list  — custom model-name substrings to match
-    if agent.valid_tool_names:
-        _enforce = agent._tool_use_enforcement
+    #
+    # NOTE: the original `if agent.valid_tool_names:` wrapper here caused
+    # Telegram / Discord sessions on z-ai/glm-5.2 (and other weak
+    # tool_use-format-trained models) to receive ZERO guidance — the
+    # entire tool-use enforcement block was skipped when the session
+    # started without tools loaded, which is the default for many gateway
+    # entry points.  On a model that already emits tool intent as plain
+    # text or markdown instead of structured ``tool_calls``, that omission
+    # produces the "stall after one assistant turn" failure mode (the
+    # model writes ``bash`` code blocks or ``[TOOL_CALL]`` markers, the
+    # runtime sees ``tool_calls=None``, and the conversation loop ends
+    # with ``finish_reason=stop`` after one turn).  The guidance must be
+    # model-driven, not tool-driven — if the model is in
+    # TOOL_USE_ENFORCEMENT_MODELS the model needs the instruction,
+    # regardless of whether the current session happens to have tools
+    # loaded.  See ``TestToolUseEnforcementInjectionWithoutTools`` for
+    # the regression coverage.
+    _enforce = agent._tool_use_enforcement
+    _inject = False
+    if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
+        _inject = True
+    elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in {"false", "never", "no", "off"}):
         _inject = False
-        if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
-            _inject = True
-        elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in {"false", "never", "no", "off"}):
-            _inject = False
-        elif isinstance(_enforce, list):
-            model_lower = (agent.model or "").lower()
-            _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
-        else:
-            # "auto" or any unrecognised value — use hardcoded defaults
-            model_lower = (agent.model or "").lower()
-            _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
-        if _inject:
-            stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
-            _model_lower = (agent.model or "").lower()
-            # Google model operational guidance (conciseness, absolute
-            # paths, parallel tool calls, verify-before-edit, etc.)
-            if "gemini" in _model_lower or "gemma" in _model_lower:
-                stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-            # OpenAI GPT/Codex execution discipline (tool persistence,
-            # prerequisite checks, verification, anti-hallucination).
-            # Also applied to xAI Grok — same failure modes (claims completion
-            # without tool calls, suggests workarounds instead of using
-            # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
-                stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+    elif isinstance(_enforce, list):
+        model_lower = (agent.model or "").lower()
+        _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
+    else:
+        # "auto" or any unrecognised value — use hardcoded defaults
+        model_lower = (agent.model or "").lower()
+        _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+    if _inject:
+        stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+        _model_lower = (agent.model or "").lower()
+        # Google model operational guidance (conciseness, absolute
+        # paths, parallel tool calls, verify-before-edit, etc.) — only
+        # inject when the session has tools loaded, because the
+        # guidance is about how to use them (file paths, edit-before-
+        # verify, non-interactive flags).  No tools → no point.
+        if agent.valid_tool_names and ("gemini" in _model_lower or "gemma" in _model_lower):
+            stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+        # OpenAI GPT/Codex execution discipline (tool persistence,
+        # prerequisite checks, verification, anti-hallucination).
+        # Also applied to xAI Grok — same failure modes (claims completion
+        # without tool calls, suggests workarounds instead of using
+        # existing tools, replies with plans instead of executing).
+        if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+            stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:

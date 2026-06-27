@@ -60,6 +60,24 @@ class TestCLIQuickCommands:
         # stderr fallback — should print something
         cli.console.print.assert_called_once()
 
+    def test_exec_command_replaces_args_placeholder(self):
+        """Exec quick commands can safely receive slash-command arguments."""
+        cli = self._make_cli({"say": {"type": "exec", "command": "printf '%s' {args}"}})
+        result = cli.process_command("/say hello world")
+        assert result is True
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert printed == "hello world"
+
+    def test_exec_command_quotes_args_placeholder(self):
+        """Arguments inserted into shell commands must not become shell syntax."""
+        cli = self._make_cli({"say": {"type": "exec", "command": "printf '%s' {args}"}})
+        result = cli.process_command("/say hello; echo hacked")
+        assert result is True
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert printed == "hello; echo hacked"
+
     def test_exec_command_no_output_shows_fallback(self):
         cli = self._make_cli({"empty": {"type": "exec", "command": "true"}})
         cli.process_command("/empty")
@@ -159,6 +177,34 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_replaces_args_placeholder(self):
+        """Gateway quick command exec can receive slash-command arguments."""
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"say": {"type": "exec", "command": "printf '%s' {args}"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("say", "hello world")
+        result = await runner._handle_message(event)
+        assert result == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_quotes_args_placeholder(self):
+        """Gateway args replacement must quote shell metacharacters."""
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"say": {"type": "exec", "command": "printf '%s' {args}"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("say", "hello; echo hacked")
+        result = await runner._handle_message(event)
+        assert result == "hello; echo hacked"
 
     @pytest.mark.asyncio
     async def test_exec_command_does_not_leak_credentials(self):

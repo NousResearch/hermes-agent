@@ -8546,8 +8546,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            user_args = cmd_original[len(base_cmd):].strip()
+                            if "{args}" in exec_cmd:
+                                import shlex
+                                exec_cmd = exec_cmd.replace(
+                                    "{args}", shlex.quote(user_args) if user_args else ""
+                                )
                             # shell=True is intentional: quick_commands are user-defined
                             # shell snippets from config.yaml — not agent/LLM controlled.
+                            # User-provided slash-command arguments are shell-quoted before
+                            # replacing the optional {args} placeholder.
                             result = subprocess.run(
                                 exec_cmd, shell=True, capture_output=True,
                                 text=True, timeout=30

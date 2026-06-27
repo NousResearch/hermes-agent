@@ -178,8 +178,76 @@ elif hasattr(signal, "SIGBREAK"):
     # Windows-only: Ctrl+Break in a console window delivers SIGBREAK.
     # Route it through the same handler so kills are diagnosable.
     signal.signal(signal.SIGBREAK, _log_signal)
+# SIGINT: two-stage handler so a wedged process is recoverable from the
+# keyboard.  Stage 1 (first Ctrl+C) logs the signal and gracefully
+# interrupts every running session (agent interrupt + pending prompt
+# clear).  Stage 2 (second Ctrl+C within the grace window, or after the
+# grace window expires without the sessions having drained) force-exits
+# so the user isn't stuck hunting for a ``kill -9``.
+#
+# The old ``SIG_IGN`` made Ctrl+C a no-op unconditionally, which meant
+# the only recovery from a runaway agent thread was ``kill -9 <pid>``
+# from another terminal — the user's keyboard was useless even when the
+# Node.js TUI parent was healthy but the Python gateway was stuck in a
+# tight tool loop (#53362).
+_sigint_stage: int = 0
+_SIGINT_GRACE_S = 2.0
+
+
+def _handle_sigint(signum: int, frame) -> None:
+    global _sigint_stage
+
+    if _sigint_stage > 0:
+        # Stage 2 (repeated Ctrl+C or after grace expiry) — immediate
+        # hard exit.  No logging, no session finalize: the user wants
+        # out as fast as possible.
+        os._exit(0)
+
+    _sigint_stage = 1
+
+    # ── Stage 1: log, then gracefully interrupt ──────────────────────
+    try:
+        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                f"\n=== SIGINT stage 1 · {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+            )
+    except Exception:
+        pass
+    print("[gateway-signal] SIGINT stage 1: interrupting sessions...",
+          file=sys.stderr, flush=True)
+
+    # Best-effort interrupt of every running session so the agent's
+    # conversation loop breaks at the top of its next iteration (the
+    # ``_interrupt_requested`` check).  This lets the user recover the
+    # session instead of losing it to a full gateway restart.
+    try:
+        from tui_gateway.server import _sessions as _tui_sessions
+        for _sid, _s in list(_tui_sessions.items()):
+            try:
+                if _s.get("running") and hasattr(_s.get("agent"), "interrupt"):
+                    _s["agent"].interrupt()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        from tui_gateway.server import _clear_pending as _tui_clear_pending
+        _tui_clear_pending()
+    except Exception:
+        pass
+
+    # ── Fallback: hard-exit after grace window ────────────────────────
+    # If the interrupt didn't shake the agent thread loose (e.g. it's
+    # blocked on an unkillable I/O or in a C extension that ignores
+    # Python interrupt), the grace timer guarantees the process still
+    # dies so the user can restart.
+    import threading as _sigint_threading
+    _sigint_threading.Timer(_SIGINT_GRACE_S, os._exit, args=(0,)).start()
+
+
 if hasattr(signal, "SIGINT"):
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, _handle_sigint)
 
 
 def _log_exit(reason: str) -> None:

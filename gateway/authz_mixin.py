@@ -489,20 +489,15 @@ class GatewayAuthorizationMixin:
             if normalized_user_id:
                 check_ids.add(normalized_user_id)
 
-        # SimpleX: SIMPLEX_ALLOWED_USERS accepts either the numeric contactId
-        # or the contact's display name. The adapter sets user_id=contactId for
-        # stability across renames, but the SimpleX UI never surfaces the
-        # numeric id — operators only see display names, so that's what they
-        # naturally put in the env var. Match both so the allowlist works
-        # regardless of which form was chosen.
+        # SimpleX: SIMPLEX_ALLOWED_USERS must match only the stable numeric
+        # contactId (held in user_id), NOT the mutable display name
+        # (user_name).  A contact's localDisplayName / profile.displayName
+        # is attacker-controlled: any SimpleX contact can set their display
+        # name to match another user's, which would bypass the allowlist if
+        # user_name were also checked.  Operators should put the numeric
+        # contactId in SIMPLEX_ALLOWED_USERS.
         # Plugin platform: compare by value since Platform.SIMPLEX is not a
         # hardcoded enum member (it's a dynamic plugin platform).
-        if (
-            source.platform is not None
-            and source.platform.value == "simplex"
-            and source.user_name
-        ):
-            check_ids.add(source.user_name)
 
         return bool(check_ids & allowed_ids)
 

@@ -1220,6 +1220,16 @@ DEFAULT_CONFIG = {
         "min_interval_hours": 24,
     },
 
+    # Context-file injection controls. ``external_files`` are loaded in order
+    # before automatic cwd discovery. Entries may be strings or
+    # {path, label} maps; missing/empty files are skipped. ``ignore_hermes_md``
+    # lets profiles opt out of .hermes.md/HERMES.md discovery so configured
+    # AGENTS.md chains are not shadowed by compatibility files.
+    "context": {
+        "external_files": [],
+        "ignore_hermes_md": False,
+    },
+
     # Hard cap (chars) for a single automatic context file such as SOUL.md,
     # AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes applies
     # head/tail truncation. ``null`` (the default) lets the cap scale with the

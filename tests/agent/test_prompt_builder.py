@@ -708,6 +708,82 @@ class TestBuildContextFilesPrompt:
         assert "Ruff for linting" in result
         assert "Project Context" in result
 
+    def test_loads_context_external_files_in_config_order(self, tmp_path, monkeypatch):
+        root = tmp_path / "root.md"
+        scope = tmp_path / "scope.md"
+        root.write_text("Root contract.", encoding="utf-8")
+        scope.write_text("Scope contract.", encoding="utf-8")
+        (tmp_path / "AGENTS.md").write_text("Local project rules.", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "context": {
+                    "external_files": [
+                        {"path": str(root), "label": "Root context"},
+                        str(scope),
+                    ]
+                }
+            },
+        )
+
+        result = build_context_files_prompt(cwd=str(tmp_path))
+
+        assert "## Root context" in result
+        assert f"Source: {root}" in result
+        assert "Root contract." in result
+        assert f"## {scope}" in result
+        assert "Scope contract." in result
+        assert "Local project rules." in result
+        assert result.index("Root contract.") < result.index("Scope contract.")
+        assert result.index("Scope contract.") < result.index("Local project rules.")
+
+    def test_context_external_files_ignore_hermes_md_and_dedupe_project_context(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / ".git").mkdir()
+        root_agents = tmp_path / "AGENTS.md"
+        root_agents.write_text("Root AGENTS contract.", encoding="utf-8")
+        scope = tmp_path / "scope" / "AGENTS.md"
+        scope.parent.mkdir()
+        scope.write_text("Scope AGENTS contract.", encoding="utf-8")
+        (tmp_path / "HERMES.md").write_text("Wrong Hermes context.", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "context": {
+                    "ignore_hermes_md": True,
+                    "external_files": [
+                        {"path": str(root_agents), "label": "Root"},
+                        {"path": str(scope), "label": "Scope"},
+                    ],
+                }
+            },
+        )
+
+        result = build_context_files_prompt(cwd=str(tmp_path))
+
+        assert "Wrong Hermes context" not in result
+        assert "Root AGENTS contract." in result
+        assert "Scope AGENTS contract." in result
+        assert result.count("Root AGENTS contract.") == 1
+
+    def test_context_external_files_skip_missing_entries(self, tmp_path, monkeypatch):
+        present = tmp_path / "present.md"
+        missing = tmp_path / "missing.md"
+        present.write_text("Present context.", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"context": {"external_files": [str(missing), str(present)]}},
+        )
+
+        result = build_context_files_prompt(cwd=str(tmp_path))
+
+        assert "Present context." in result
+        assert "missing.md" not in result
+
     def test_loads_cursorrules(self, tmp_path):
         (tmp_path / ".cursorrules").write_text("Always use type hints.")
         result = build_context_files_prompt(cwd=str(tmp_path))

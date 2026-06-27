@@ -95,6 +95,24 @@ def _as_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _get_env(key: str, default: str = "") -> str:
+    """Read an env var from the Hermes .env file first, then os.environ.
+
+    Worker processes skip loading ``.env`` into ``os.environ``
+    (see ``_profile_env``), so a plain ``os.environ.get()`` misses keys
+    stored in ``~/.hermes/.env``.  This helper bridges the gap by calling
+    :func:`hermes_cli.config.get_env_value` which always reads the file.
+    """
+    try:
+        from hermes_cli.config import get_env_value
+        value = get_env_value(key)
+        if value:
+            return value
+    except Exception:
+        pass
+    return os.environ.get(key, default)
+
+
 def _load_supermemory_config(hermes_home: str) -> dict:
     config = _default_config()
     config_path = Path(hermes_home) / "supermemory.json"
@@ -473,7 +491,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return "supermemory"
 
     def is_available(self) -> bool:
-        api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
+        api_key = _get_env("SUPERMEMORY_API_KEY")
         if not api_key:
             return False
         try:
@@ -504,11 +522,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._session_id = session_id
         self._turn_count = 0
         self._config = _load_supermemory_config(self._hermes_home)
-        self._api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
+        self._api_key = _get_env("SUPERMEMORY_API_KEY")
 
         # Resolve container tag: env var > config > default.
         # Supports {identity} template for profile-scoped containers.
-        env_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip()
+        env_tag = _get_env("SUPERMEMORY_CONTAINER_TAG").strip()
         raw_tag = env_tag or self._config["container_tag"]
         identity = kwargs.get("agent_identity", "default")
         self._container_tag = _sanitize_tag(raw_tag.replace("{identity}", identity))

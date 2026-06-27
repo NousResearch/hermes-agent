@@ -457,3 +457,66 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestGetEnv:
+    """_get_env reads API keys from Hermes .env file, not just os.environ (#34994)."""
+
+    def test_reads_from_dotenv_when_not_in_os_environ(self, monkeypatch):
+        """When key is in .env but not os.environ, _get_env still finds it."""
+        from plugins.memory.supermemory import _get_env
+        monkeypatch.delenv("SUPERMEMORY_API_KEY", raising=False)
+        from unittest.mock import patch as mock_patch
+        with mock_patch("hermes_cli.config.get_env_value", return_value="***"):
+            result = _get_env("SUPERMEMORY_API_KEY")
+        assert result == "***"
+
+    def test_falls_back_to_os_environ(self, monkeypatch):
+        """When .env has nothing, _get_env falls back to os.environ."""
+        from plugins.memory.supermemory import _get_env
+        monkeypatch.setenv("SUPERMEMORY_API_KEY", "***")
+        from unittest.mock import patch as mock_patch
+        with mock_patch("hermes_cli.config.get_env_value", return_value=None):
+            result = _get_env("SUPERMEMORY_API_KEY")
+        assert result == "***"
+
+    def test_returns_empty_when_nowhere(self, monkeypatch):
+        """When key is nowhere, _get_env returns empty string."""
+        from plugins.memory.supermemory import _get_env
+        monkeypatch.delenv("SUPERMEMORY_API_KEY", raising=False)
+        from unittest.mock import patch as mock_patch
+        with mock_patch("hermes_cli.config.get_env_value", return_value=None):
+            result = _get_env("SUPERMEMORY_API_KEY")
+        assert result == ""
+
+    def test_dotenv_takes_precedence(self, monkeypatch):
+        """When key is in .env, it wins over os.environ."""
+        from plugins.memory.supermemory import _get_env
+        monkeypatch.setenv("SUPERMEMORY_API_KEY", "***")
+        from unittest.mock import patch as mock_patch
+        with mock_patch("hermes_cli.config.get_env_value", return_value="***"):
+            result = _get_env("SUPERMEMORY_API_KEY")
+        assert result == "***"
+
+    def test_is_available_finds_key_from_dotenv(self, monkeypatch):
+        """is_available() finds API key from .env even when os.environ is empty."""
+        monkeypatch.delenv("SUPERMEMORY_API_KEY", raising=False)
+        p = SupermemoryMemoryProvider()
+        from unittest.mock import patch as mock_patch, MagicMock
+        with mock_patch("hermes_cli.config.get_env_value", return_value="sk_test_123"):
+            fake_sm = MagicMock()
+            with mock_patch.dict("sys.modules", {"supermemory": fake_sm}):
+                assert p.is_available() is True
+
+    def test_initialize_reads_key_from_dotenv(self, monkeypatch, tmp_path):
+        """initialize() picks up API key from .env when os.environ is empty."""
+        monkeypatch.delenv("SUPERMEMORY_API_KEY", raising=False)
+        monkeypatch.delenv("SUPERMEMORY_CONTAINER_TAG", raising=False)
+        p = SupermemoryMemoryProvider()
+        from unittest.mock import patch as mock_patch, MagicMock
+        with mock_patch("hermes_cli.config.get_env_value", side_effect=lambda k: {
+            "SUPERMEMORY_API_KEY": "***",
+            "SUPERMEMORY_CONTAINER_TAG": "",
+        }.get(k)):
+            p.initialize("test-session", hermes_home=str(tmp_path))
+        assert p._api_key == "***"

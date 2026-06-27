@@ -143,7 +143,13 @@ $PythonVersion = "3.11"
 # available, in preference order.  uv discovers both uv-managed and system
 # interpreters, so this list also matches a pre-existing system Python.  Single
 # source of truth shared by Test-Python's fallback and Resolve-AvailablePythonVersion.
-$PythonFallbackVersions = @("3.12", "3.13", "3.10")
+#
+# After the repository is cloned, these defaults are overridden by
+# Update-PythonVersionsFromPyproject which reads the actual requires-python
+# from pyproject.toml.  The values here are only used for the pre-clone
+# ``python`` stage, where they must be compatible with the project's
+# published constraint (currently >=3.11,<3.14).
+$PythonFallbackVersions = @("3.12", "3.13")
 $NodeVersion = "22"
 
 # Stage-protocol version.  Bumped only for genuinely breaking changes to the
@@ -572,6 +578,72 @@ function Resolve-AvailablePythonVersion {
         } catch { }
     }
     return $null
+}
+
+function Update-PythonVersionsFromPyproject {
+    <#
+    .SYNOPSIS
+    Read requires-python from the cloned repo's pyproject.toml and update
+    $script:PythonVersion + $script:PythonFallbackVersions to match the
+    project's constraint.  This keeps the installer in sync with upstream's
+    Python version requirement without manual bumps.
+
+    Called from Install-Repository (after clone/update) and Install-Venv
+    (as a safety net for cross-process stage-driver mode).  Idempotent and
+    best-effort: if pyproject.toml doesn't exist or can't be parsed, the
+    hardcoded defaults (which are compatible with the published constraint)
+    are preserved.
+    #>
+    $pyproject = Join-Path $InstallDir "pyproject.toml"
+    if (-not (Test-Path $pyproject)) { return }
+
+    try {
+        $content = Get-Content $pyproject -Raw -ErrorAction SilentlyContinue
+        if (-not $content) { return }
+
+        $m = [regex]::Match($content, 'requires-python\s*=\s*"([^"]+)"')
+        if (-not $m.Success) { return }
+        $spec = $m.Groups[1].Value
+
+        # Parse minimum version (e.g., >=3.11 → 3.11)
+        $minMatch = [regex]::Match($spec, '>=(\d+\.\d+)')
+        if (-not $minMatch.Success) { return }
+        $minVer = $minMatch.Groups[1].Value
+
+        # Parse maximum version (e.g., <3.14 → 3.14) — optional
+        $maxMatch = [regex]::Match($spec, '<(\d+\.\d+)')
+        $maxVer = if ($maxMatch.Success) { $maxMatch.Groups[1].Value } else { $null }
+
+        if ($script:PythonVersion -ne $minVer) {
+            Write-Info "Project requires Python $spec; configuring installer for Python $minVer"
+            $script:PythonVersion = $minVer
+        }
+
+        $parts = $minVer.Split('.')
+        $maj = $parts[0]
+        $min = [int]$parts[1]
+
+        # Upper bound, if present, as a comparable numeric
+        $maxMin = [int]999
+        if ($maxVer) {
+            $maxParts = $maxVer.Split('.')
+            $maxMin = [int]$maxParts[1]
+        }
+
+        # Build fallback list: next 3 minor versions within the constraint
+        $fb = @()
+        $c = $min + 1
+        while ($fb.Count -lt 3 -and $c -lt $maxMin) {
+            $fb += "$maj.$c"
+            $c++
+        }
+        $script:PythonFallbackVersions = $fb
+
+    } catch {
+        # Best-effort; keep hardcoded defaults if parsing fails.
+        # The installer continues with the pre-clone defaults, which
+        # are already compatible with the published constraint.
+    }
 }
 
 function Test-Python {
@@ -1570,6 +1642,10 @@ function Install-Repository {
         }
     }
 
+    # Derive Python versions from the cloned project's requires-python,
+    # so a future pyproject.toml bump doesn't silently break the installer.
+    Update-PythonVersionsFromPyproject
+
     Write-Success "Repository ready"
 }
 
@@ -1578,6 +1654,12 @@ function Install-Venv {
         Write-Info "Skipping virtual environment (-NoVenv)"
         return
     }
+
+    # Ensure Python version config reflects the cloned project's constraint,
+    # even when Install-Repository ran in a previous process (stage-driver
+    # / Hermes-Setup.exe mode) and its Update-PythonVersionsFromPyproject
+    # call didn't survive into this one.
+    Update-PythonVersionsFromPyproject
 
     # Re-resolve the interpreter before creating the venv.  Under Hermes-Setup.exe
     # each stage runs in its own powershell.exe, so the fallback the `python`
@@ -1680,6 +1762,10 @@ function Install-Venv {
 }
 
 function Install-Dependencies {
+    # Ensure Python version config is up to date (safety net for
+    # cross-process stage-driver mode).
+    Update-PythonVersionsFromPyproject
+
     Write-Info "Installing dependencies..."
     
     Push-Location $InstallDir

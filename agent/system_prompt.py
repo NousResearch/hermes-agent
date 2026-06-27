@@ -42,6 +42,8 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
+    clear_active_soul_source,
+    get_active_soul_source,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -152,10 +154,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md(_ctx_len, cwd=resolve_context_cwd())
+        clear_active_soul_source()
+        # Cwd-local SOUL.md belongs to the same trust boundary as project
+        # context files.  If context discovery is disabled but global soul
+        # identity is requested, only the HERMES_HOME fallback may load.
+        _soul_content = _r.load_soul_md(
+            _ctx_len,
+            cwd=resolve_context_cwd(),
+            allow_local=not agent.skip_context_files,
+        )
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
+            agent._active_soul_source = get_active_soul_source()
+        else:
+            agent._active_soul_source = None
 
     if not _soul_loaded:
         # Fallback to hardcoded identity

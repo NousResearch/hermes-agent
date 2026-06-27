@@ -83,6 +83,26 @@ _SOUL_MD_CANDIDATES = (
     ("SOUL.md",),
 )
 
+_active_soul_source: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "active_soul_source",
+    default=None,
+)
+
+
+def get_active_soul_source() -> Optional[str]:
+    """Return the source path used by the most recent ``load_soul_md`` call.
+
+    This is diagnostic metadata only.  It lets `/status` and debug surfaces show
+    which identity file won without injecting path/source text into the identity
+    body itself.
+    """
+    return _active_soul_source.get()
+
+
+def clear_active_soul_source() -> None:
+    """Clear soul-source diagnostics for the current prompt-build context."""
+    _active_soul_source.set(None)
+
 
 def _find_hermes_md(cwd: Path) -> Optional[Path]:
     """Discover the nearest ``.hermes.md`` or ``HERMES.md``.
@@ -1766,6 +1786,8 @@ def _truncate_content(
 def load_soul_md(
     context_length: Optional[int] = None,
     cwd: Optional[str | Path] = None,
+    *,
+    allow_local: bool = True,
 ) -> Optional[str]:
     """Load the active SOUL.md content, or ``None``.
 
@@ -1781,7 +1803,9 @@ def load_soul_md(
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = _find_local_soul_md(cwd) if cwd is not None else None
+    _active_soul_source.set(None)
+
+    soul_path = _find_local_soul_md(cwd) if allow_local and cwd is not None else None
     if soul_path is None:
         soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
@@ -1795,6 +1819,7 @@ def load_soul_md(
             content, soul_path.name, context_length=context_length,
             read_path=str(soul_path),
         )
+        _active_soul_source.set(str(soul_path))
         return content
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)

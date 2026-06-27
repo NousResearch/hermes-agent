@@ -6,7 +6,7 @@ description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, global
 
 # Context Files
 
-Hermes Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` is now global to the Hermes instance and is loaded from `HERMES_HOME` only.
+Hermes Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` is the primary identity file: Hermes uses the global `$HERMES_HOME/SOUL.md` fallback by default, and can use a cwd-local soul only inside the trusted project-context boundary.
 
 ## Supported Context Files
 
@@ -15,7 +15,7 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
-| **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
+| **SOUL.md** | Primary identity/personality for this Hermes instance; optionally cwd-local inside trusted project context | `$HERMES_HOME/SOUL.md` fallback; cwd/parents only when project context discovery is enabled |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
@@ -83,14 +83,14 @@ This is a Next.js 14 web application with a Python FastAPI backend.
 
 **Location:**
 
-- `~/.hermes/SOUL.md`
-- or `$HERMES_HOME/SOUL.md` if you run Hermes with a custom home directory
+- `$HERMES_HOME/SOUL.md` fallback
+- trusted cwd-local candidates, in this order, when project context discovery is enabled: `.hermes/soul.md`, `.hermes/SOUL.md`, `soul.md`, `SOUL.md`, then parent directories up to the git root
 
 Important details:
 
 - Hermes seeds a default `SOUL.md` automatically if one does not exist yet
-- Hermes loads `SOUL.md` only from `HERMES_HOME`
-- Hermes does not probe the working directory for `SOUL.md`
+- Hermes skips cwd-local `SOUL.md` when context files are disabled, even if global soul identity remains enabled
+- `/status` shows the active SOUL.md source path when a soul file is loaded
 - If the file is empty, nothing from `SOUL.md` is added to the prompt
 - If the file has content, the content is injected verbatim after scanning and truncation
 

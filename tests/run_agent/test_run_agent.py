@@ -1095,6 +1095,35 @@ class TestBuildSystemPrompt:
         assert "SOUL IDENTITY" in prompt
         assert DEFAULT_AGENT_IDENTITY not in prompt
 
+    def test_skipped_context_files_do_not_trust_cwd_local_soul(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("GLOBAL TRUSTED SOUL", encoding="utf-8")
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / "SOUL.md").write_text("LOCAL UNTRUSTED SOUL", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_CWD", str(project))
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                load_soul_identity=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+
+        assert "GLOBAL TRUSTED SOUL" in prompt
+        assert "LOCAL UNTRUSTED SOUL" not in prompt
+        assert getattr(agent, "_active_soul_source") == str(hermes_home / "SOUL.md")
+
     def test_includes_system_message(self, agent):
         prompt = agent._build_system_prompt(system_message="Custom instruction")
         assert "Custom instruction" in prompt

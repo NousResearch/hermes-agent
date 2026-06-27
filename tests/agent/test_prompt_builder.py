@@ -18,6 +18,7 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    get_active_soul_source,
     load_soul_md,
     CONTEXT_FILE_MAX_CHARS,
     _dynamic_context_file_max_chars,
@@ -763,6 +764,21 @@ class TestBuildContextFilesPrompt:
         (hermes_home / "SOUL.md").write_text("Global soul.", encoding="utf-8")
         result = load_soul_md(cwd=str(tmp_path))
         assert "Global soul." in result
+        assert get_active_soul_source() == str(hermes_home / "SOUL.md")
+
+    def test_load_soul_md_can_disable_local_discovery(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Global soul.", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("Untrusted local soul.", encoding="utf-8")
+
+        result = load_soul_md(cwd=str(tmp_path), allow_local=False)
+
+        assert result is not None
+        assert "Global soul." in result
+        assert "Untrusted local soul." not in result
+        assert get_active_soul_source() == str(hermes_home / "SOUL.md")
 
     def test_soul_md_has_no_wrapper_text(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))

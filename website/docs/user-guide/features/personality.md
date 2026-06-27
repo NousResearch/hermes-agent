@@ -8,7 +8,7 @@ description: "Customize Hermes Agent's personality with SOUL.md, built-in person
 
 Hermes Agent's personality is fully customizable. `SOUL.md` is the **primary identity** — it's the first thing in the system prompt and defines who the agent is.
 
-- `SOUL.md` — a durable persona file that serves as the agent's identity (slot #1 in the system prompt). A cwd-local soul can override the global profile soul for that session.
+- `SOUL.md` — a durable persona file that serves as the agent's identity (slot #1 in the system prompt). A trusted cwd-local soul can override the global profile soul for that session.
 - built-in or custom `/personality` presets — session-level system-prompt overlays
 
 If you want to change who Hermes is — or replace it with an entirely different agent persona — edit `SOUL.md`.
@@ -27,7 +27,9 @@ More precisely, it uses the current instance's `HERMES_HOME`, so if you run Herm
 $HERMES_HOME/SOUL.md
 ```
 
-A working directory can also provide a local soul for that session. Hermes checks the current working directory first, then walks parent directories up to the git root if one exists.
+A trusted working directory can also provide a local soul for that session. Hermes only trusts cwd-local soul files when project context discovery is enabled for that run, which is the same boundary used for `AGENTS.md` and other context files. In isolation modes that set `skip_context_files=True` but still request a soul identity, Hermes skips cwd-local soul files and uses only the global `$HERMES_HOME/SOUL.md` fallback.
+
+When local soul discovery is enabled, Hermes checks the current working directory first, then walks parent directories up to the git root if one exists.
 
 Lookup order:
 
@@ -44,7 +46,9 @@ Lookup order:
 - **SOUL.md is the agent's primary identity.** It occupies slot #1 in the system prompt, replacing the hardcoded default identity.
 - Hermes creates a starter global `SOUL.md` automatically if one does not exist yet
 - Existing user `SOUL.md` files are never overwritten
-- A cwd-local soul overrides the global profile soul for that session
+- A cwd-local soul overrides the global profile soul only when project context discovery is enabled for the session
+- If context files are skipped but SOUL identity is still enabled, Hermes uses only `$HERMES_HOME/SOUL.md`
+- `/status` shows the active SOUL.md source path when a soul file is loaded, so users can see which identity is in effect
 - If no local soul exists, Hermes falls back to `$HERMES_HOME/SOUL.md`
 - If the selected `SOUL.md` exists but is empty, or cannot be loaded, Hermes falls back to a built-in default identity
 - If `SOUL.md` has content, that content is injected verbatim after security scanning and truncation

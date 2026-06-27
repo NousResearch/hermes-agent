@@ -538,10 +538,12 @@ class GatewaySlashCommandsMixin:
         base_url = ""
         context_used = 0
         context_total = 0
+        soul_source = ""
         if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
             model_name = _clean_str(getattr(status_agent, "model", ""))
             provider_name = _clean_str(getattr(status_agent, "provider", ""))
             base_url = _clean_str(getattr(status_agent, "base_url", ""))
+            soul_source = _clean_str(getattr(status_agent, "_active_soul_source", ""))
             ctx = getattr(status_agent, "context_compressor", None)
             if ctx is not None:
                 context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
@@ -604,6 +606,8 @@ class GatewaySlashCommandsMixin:
             lines.append(model_line)
         if context_line:
             lines.append(context_line)
+        if soul_source:
+            lines.append(f"Active SOUL.md: {soul_source}")
         lines.extend([
             t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
             t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),

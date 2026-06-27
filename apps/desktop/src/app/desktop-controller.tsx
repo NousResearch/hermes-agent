@@ -105,7 +105,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
-import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
+import { requestComposerFocus, requestComposerInsert, requestVoiceStart } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -1018,7 +1018,12 @@ export function DesktopController() {
     if (!gw) {
       return
     }
-    return gw.on('wake.detected', () => startFreshSessionDraft())
+    return gw.on('wake.detected', () => {
+      startFreshSessionDraft()
+      // Begin hands-free back-and-forth voice in the fresh session. The bus
+      // defers a tick, so the new composer is mounted before voice starts.
+      requestVoiceStart()
+    })
   }, [gatewayState, requestGateway, gatewayRef, startFreshSessionDraft])
 
   // Keep the cron jobs section live without a user action: the scheduler ticks

@@ -4,11 +4,12 @@ import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { resetBrowseState } from '@/store/composer-input-history'
+import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 
 import type { ComposerTarget } from '../focus'
-import { onComposerVoiceToggleRequest } from '../focus'
+import { onComposerVoiceStartRequest, onComposerVoiceToggleRequest } from '../focus'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -141,6 +142,34 @@ export function useComposerVoice({
     () => onComposerVoiceToggleRequest(toggled => toggled === target && toggleVoiceConversation()),
     [target, toggleVoiceConversation]
   )
+
+  useEffect(
+    () =>
+      onComposerVoiceStartRequest(() => {
+        if (target === 'main' && !disabled && !voiceConversationActive) {
+          setVoiceConversationActive(true)
+        }
+      }),
+    [disabled, target, voiceConversationActive]
+  )
+
+  const wakePausedRef = useRef(false)
+
+  useEffect(() => {
+    const gateway = $gateway.get()
+
+    if (!gateway) {
+      return
+    }
+
+    if (voiceConversationActive) {
+      wakePausedRef.current = true
+      void gateway.request('wake.pause', {}).catch(() => undefined)
+    } else if (wakePausedRef.current) {
+      wakePausedRef.current = false
+      void gateway.request('wake.resume', {}).catch(() => undefined)
+    }
+  }, [voiceConversationActive])
 
   // Explicit start/end for the on-screen conversation controls (the hotkey uses
   // the gated toggle above).

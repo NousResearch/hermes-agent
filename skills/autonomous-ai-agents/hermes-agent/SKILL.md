@@ -61,6 +61,9 @@ hermes model
 
 # Check health
 hermes doctor
+
+# Local web dashboard (v0.9+)
+hermes dashboard
 ```
 
 ---

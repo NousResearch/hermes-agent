@@ -1686,6 +1686,24 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _replace_script_template_vars(prompt: str, template_vars: dict) -> str:
+    for key, value in template_vars.items():
+        prompt = prompt.replace(f"{{{{ {key} }}}}", str(value))
+        prompt = prompt.replace(f"{{{{{key}}}}}", str(value))
+    return prompt
+
+
+def _cleanup_script_paths(job: dict) -> None:
+    cleanup_paths = job.pop("_script_cleanup_paths", None) or []
+    for raw in cleanup_paths:
+        try:
+            path = Path(raw)
+            if path.exists() and path.is_file():
+                path.unlink()
+        except Exception as exc:
+            logger.warning("Failed to clean up cron script artifact '%s': %s", raw, exc)
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -1715,7 +1733,40 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         else:
             success, script_output = _run_job_script(script_path)
         if success:
+            script_payload = None
             if script_output:
+                try:
+                    candidate = json.loads(script_output)
+                    if isinstance(candidate, dict):
+                        script_payload = candidate
+                except Exception:
+                    script_payload = None
+
+            if script_payload is not None:
+                template_vars = script_payload.get("template_vars") or {}
+                if isinstance(template_vars, dict):
+                    prompt = _replace_script_template_vars(prompt, template_vars)
+                cleanup_paths = script_payload.get("cleanup_paths") or []
+                if isinstance(cleanup_paths, list):
+                    job["_script_cleanup_paths"] = [str(path) for path in cleanup_paths if path]
+                prepend_context = str(script_payload.get("prepend_context") or "").strip()
+                if prepend_context:
+                    prompt = (
+                        "## Script Output\n"
+                        "The following data was collected by a pre-run script. "
+                        "Use it as context for your analysis.\n\n"
+                        f"{prepend_context}\n\n"
+                        f"{prompt}"
+                    )
+                elif script_output:
+                    prompt = (
+                        "## Script Output\n"
+                        "The following data was collected by a pre-run script. "
+                        "Use it as context for your analysis.\n\n"
+                        f"```json\n{script_output}\n```\n\n"
+                        f"{prompt}"
+                    )
+            elif script_output:
                 prompt = (
                     "## Script Output\n"
                     "The following data was collected by a pre-run script. "
@@ -2692,6 +2743,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
+        _cleanup_script_paths(job)
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
         # only ever mutate it when the job has a workdir; see the setup block
         # at the top of run_job for the serialization guarantee.

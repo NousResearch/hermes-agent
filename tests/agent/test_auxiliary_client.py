@@ -4011,6 +4011,28 @@ class TestNvidiaBillingHeaders:
         headers = call_kwargs.get("default_headers", {})
         assert "X-BILLING-INVOKE-ORIGIN" not in headers
 
+    def test_aux_kwargs_preserve_output_cap_for_nvidia_profile(self):
+        kwargs = _build_call_kwargs(
+            "nvidia",
+            "minimaxai/minimax-m3",
+            [{"role": "user", "content": "summarize"}],
+            max_tokens=4096,
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+
+        assert kwargs["max_tokens"] == 4096
+
+    def test_aux_kwargs_still_omit_output_cap_for_plain_chat_provider(self):
+        kwargs = _build_call_kwargs(
+            "openrouter",
+            "meta-llama/llama-3.1-70b-instruct",
+            [{"role": "user", "content": "summarize"}],
+            max_tokens=4096,
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        assert "max_tokens" not in kwargs
+
 
 class TestOpenRouterExplicitApiKey:
     """Test that explicit_api_key is correctly propagated to _try_openrouter()."""

@@ -59,6 +59,7 @@ class FailoverReason(enum.Enum):
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
+    vllm_tool_choice_unconfigured = "vllm_tool_choice_unconfigured"  # vLLM rejected tools because --enable-auto-tool-choice / --tool-call-parser missing on the server
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -268,6 +269,14 @@ _REQUEST_VALIDATION_PATTERNS = [
     "invalid_request_error",
     "unknown_parameter",
     "unsupported_parameter",
+]
+
+# vLLM OpenAI-compatible server rejected a tools request because
+# --enable-auto-tool-choice / --tool-call-parser were not active on the
+# instance that received the call (common with misconfigured Nemotron serves).
+_VLLM_TOOL_CHOICE_PATTERNS = [
+    '"auto" tool choice requires --enable-auto-tool-choice',
+    "tool choice requires --enable-auto-tool-choice and --tool-call-parser",
 ]
 
 # OpenRouter aggregator policy-block patterns.
@@ -984,6 +993,14 @@ def _classify_400(
             retryable=True,
         )
 
+    # vLLM tool-calling flags missing on the server handling this request.
+    if any(p in error_msg for p in _VLLM_TOOL_CHOICE_PATTERNS):
+        return result_fn(
+            FailoverReason.vllm_tool_choice_unconfigured,
+            retryable=False,
+            should_fallback=False,
+        )
+
     # Invalid encrypted reasoning replay blob (OpenAI Responses API).  Must be
     # checked BEFORE context_overflow because some surfaces emit messages that
     # contain context-like phrasing ("encrypted content … could not be
@@ -1191,6 +1208,13 @@ def _classify_by_message(
         return result_fn(
             FailoverReason.image_too_large,
             retryable=True,
+        )
+
+    if any(p in error_msg for p in _VLLM_TOOL_CHOICE_PATTERNS):
+        return result_fn(
+            FailoverReason.vllm_tool_choice_unconfigured,
+            retryable=False,
+            should_fallback=False,
         )
 
     # Usage-limit patterns need the same disambiguation as 402: some providers

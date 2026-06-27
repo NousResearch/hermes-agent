@@ -697,14 +697,27 @@ hermes model
 
 **Context length:** vLLM reads the model's `max_position_embeddings` by default. If that exceeds your GPU memory, it errors and asks you to set `--max-model-len` lower. You can also use `--max-model-len auto` to automatically find the maximum that fits. Set `--gpu-memory-utilization 0.95` (default 0.9) to squeeze more context into VRAM.
 
-**Tool calling requires explicit flags:**
+**Tool calling requires explicit server flags** whenever the agent sends `tools` (delegation, subagents, and normal turns all do). Hermes uses the standard chat-completions path and does not inject `tool_choice: "auto"` on custom/vLLM endpoints, but vLLM still requires the flags below on the instance that receives the request:
 
 | Flag | Purpose |
 |------|---------|
-| `--enable-auto-tool-choice` | Required for `tool_choice: "auto"` (the default in Hermes) |
-| `--tool-call-parser <name>` | Parser for the model's tool call format |
+| `--enable-auto-tool-choice` | Lets vLLM accept tool-enabled chat completion requests |
+| `--tool-call-parser <name>` | Parser matching the model family's tool-call format |
 
-Supported parsers: `hermes` (Qwen 2.5, Hermes 2/3), `llama3_json` (Llama 3.x), `mistral`, `deepseek_v3`, `deepseek_v31`, `xlam`, `pythonic`. Without these flags, tool calls won't work — the model will output tool calls as text.
+Supported parsers include `hermes` (Qwen 2.5, Hermes 2/3), `llama3_json` (Llama 3.x), `qwen3_coder` (Nemotron 3, Qwen3 coder), `mistral`, `deepseek_v3`, `deepseek_v31`, `xlam`, `pythonic`. Without the correct parser, tool calls come back as plain text or the server returns HTTP 400.
+
+**NVIDIA Nemotron 3 Super (NVFP4 / FP8 / BF16):** use `qwen3_coder`, not `hermes`. NVIDIA's vLLM recipes also recommend `--reasoning-parser nemotron_v3` (or `super_v3` with the plugin script from the model card) so reasoning tokens stay separate from tool arguments:
+
+```bash
+vllm serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
+  --served-model-name nemotron \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder \
+  --reasoning-parser nemotron_v3 \
+  --trust-remote-code
+```
+
+Point `custom_providers.base_url` at the same host/port you verify with `curl /v1/chat/completions` (include a dummy `tools[]` payload). If curl returns the same 400, fix the vLLM launch flags before retrying from Hermes.
 
 **Qwen reasoning parsers:** Hermes preserves structured reasoning metadata such as `reasoning`, `reasoning_content`, and streamed reasoning deltas when OpenAI-compatible servers return them. That metadata is treated as reasoning/thinking trace data, not as a replacement for the assistant's visible answer. For Qwen reasoning models served by vLLM, make sure the final user-visible response still appears in `content`. If `--reasoning-parser qwen3` leaves `content` empty in your deployment, either disable that parser or pass a server-supported request option such as `chat_template_kwargs.enable_thinking: false` through `extra_body`.
 

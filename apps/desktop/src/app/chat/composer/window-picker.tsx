@@ -79,8 +79,11 @@ export function WindowPickerDialog({
           <div className="px-1 py-6 text-sm text-(--ui-text-tertiary)">{c.windowPickerEmpty}</div>
         ) : (
           <ul className="grid max-h-80 gap-1 overflow-y-auto">
-            {windows.map(win => (
-              <li key={`${win.pid}:${win.name}:${win.class_name}`}>
+            {windows.map((win, i) => (
+              // Same app can report multiple windows with identical name+pid+
+              // class (e.g. two Chrome/Electron frames), so include the index to
+              // keep React keys unique.
+              <li key={`${win.pid}:${win.class_name}:${i}`}>
                 <button
                   className={cn(
                     'group/win flex w-full cursor-pointer items-start gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors',

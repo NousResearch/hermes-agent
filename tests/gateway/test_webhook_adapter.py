@@ -353,6 +353,17 @@ class TestRenderPrompt:
         assert "my-route" in result
         assert "key" in result
 
+    def test_render_prompt_event_and_route_tokens(self):
+        """Special tokens expose webhook metadata not present in payload."""
+        adapter = _make_adapter()
+        result = adapter._render_prompt(
+            "event={__event__} route={__route__} action={action}",
+            {"action": "opened"},
+            "issues",
+            "github-comments",
+        )
+        assert result == "event=issues route=github-comments action=opened"
+
 
 # ===================================================================
 # Delivery extra rendering

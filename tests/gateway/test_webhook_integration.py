@@ -272,7 +272,12 @@ class TestGitHubCommentDelivery:
     @pytest.mark.asyncio
     async def test_github_comment_delivery(self):
         """When deliver='github_comment', the adapter invokes
-        ``gh pr comment`` via subprocess.run (mocked)."""
+        ``gh issue comment`` via subprocess.run (mocked).
+
+        ``gh issue comment`` works for both issues and PR conversation
+        threads, so webhook routes can use either issue_number or the legacy
+        pr_number deliver_extra key.
+        """
         routes = {
             "pr-bot": {
                 "secret": _INSECURE_NO_AUTH,
@@ -325,7 +330,7 @@ class TestGitHubCommentDelivery:
         assert result.success is True
         mock_run.assert_called_once_with(
             [
-                "gh", "pr", "comment", "42",
+                "gh", "issue", "comment", "42",
                 "--repo", "org/repo",
                 "--body", "LGTM! The code looks great.",
             ],

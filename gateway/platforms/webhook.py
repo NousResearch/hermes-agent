@@ -863,9 +863,14 @@ class WebhookAdapter(BasePlatformAdapter):
 
         def _resolve(match: re.Match) -> str:
             key = match.group(1)
-            # Special token: dump the entire payload as JSON
+            # Special tokens expose webhook metadata/payload not otherwise
+            # available through dot-notation payload lookup.
             if key == "__raw__":
                 return json.dumps(payload, indent=2)[:4000]
+            if key == "__event__":
+                return event_type
+            if key == "__route__":
+                return route_name
             value: Any = payload
             for part in key.split("."):
                 if isinstance(value, dict):
@@ -925,26 +930,32 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _deliver_github_comment(
         self, content: str, delivery: dict
     ) -> SendResult:
-        """Post agent response as a GitHub PR/issue comment via ``gh`` CLI."""
+        """Post agent response as a GitHub issue/PR conversation comment.
+
+        GitHub pull requests are issues under the hood, and ``gh issue
+        comment`` works for both issue comments and PR conversation comments.
+        Accept the newer ``issue_number`` key while keeping ``pr_number`` as a
+        backwards-compatible alias for existing webhook routes.
+        """
         extra = delivery.get("deliver_extra", {})
         repo = extra.get("repo", "")
-        pr_number = extra.get("pr_number", "")
+        issue_number = extra.get("issue_number") or extra.get("pr_number", "")
 
-        if not repo or not pr_number:
+        if not repo or not issue_number:
             logger.error(
-                "[webhook] github_comment delivery missing repo or pr_number"
+                "[webhook] github_comment delivery missing repo or issue_number"
             )
             return SendResult(
-                success=False, error="Missing repo or pr_number"
+                success=False, error="Missing repo or issue_number"
             )
 
         try:
             result = subprocess.run(
                 [
                     "gh",
-                    "pr",
+                    "issue",
                     "comment",
-                    str(pr_number),
+                    str(issue_number),
                     "--repo",
                     repo,
                     "--body",
@@ -956,12 +967,12 @@ class WebhookAdapter(BasePlatformAdapter):
             )
             if result.returncode == 0:
                 logger.info(
-                    "[webhook] Posted comment on %s#%s", repo, pr_number
+                    "[webhook] Posted comment on %s#%s", repo, issue_number
                 )
                 return SendResult(success=True)
             else:
                 logger.error(
-                    "[webhook] gh pr comment failed: %s", result.stderr
+                    "[webhook] gh issue comment failed: %s", result.stderr
                 )
                 return SendResult(success=False, error=result.stderr)
         except FileNotFoundError:

@@ -40,6 +40,7 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application()
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/api/sessions", adapter._handle_list_sessions)
+    app.router.add_get("/api/sessions/search", adapter._handle_search_sessions)
     app.router.add_post("/api/sessions", adapter._handle_create_session)
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
@@ -69,6 +70,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["skills_api"] is True
     assert features["realtime_voice"] is False
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
+    assert data["endpoints"]["sessions_search"] == {"method": "GET", "path": "/api/sessions/search"}
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
@@ -127,12 +129,20 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
 async def test_session_crud_and_message_history(adapter, session_db):
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
-        create_resp = await cli.post("/api/sessions", json={"title": "Mobile chat", "model": "test-model"})
+        create_resp = await cli.post(
+            "/api/sessions",
+            json={
+                "title": "Mobile chat",
+                "model": "test-model",
+                "custom_metadata": {"issue_id": "HERMES-123", "summary": "Mobile import"},
+            },
+        )
         assert create_resp.status == 201
         created = await create_resp.json()
         session_id = created["session"]["id"]
         assert created["object"] == "hermes.session"
         assert created["session"]["title"] == "Mobile chat"
+        assert created["session"]["custom_metadata"] == {"issue_id": "HERMES-123", "summary": "Mobile import"}
 
         session_db.append_message(session_id, "user", "hello from phone")
         session_db.append_message(session_id, "assistant", "hello from hermes")
@@ -157,10 +167,37 @@ async def test_session_crud_and_message_history(adapter, session_db):
         assert [m["role"] for m in messages["data"]] == ["user", "assistant"]
         assert messages["data"][0]["content"] == "hello from phone"
 
-        patch_resp = await cli.patch(f"/api/sessions/{session_id}", json={"title": "Renamed"})
+        patch_resp = await cli.patch(
+            f"/api/sessions/{session_id}",
+            json={
+                "title": "Renamed",
+                "custom_metadata_update": {"status": "triaged"},
+                "custom_metadata_remove": ["summary"],
+            },
+        )
         assert patch_resp.status == 200
         patched = await patch_resp.json()
         assert patched["session"]["title"] == "Renamed"
+        assert patched["session"]["custom_metadata"] == {"issue_id": "HERMES-123", "status": "triaged"}
+
+        search_resp = await cli.get("/api/sessions/search?metadata_key=issue_id&metadata_value=HERMES-123")
+        assert search_resp.status == 200
+        searched = await search_resp.json()
+        assert [s["id"] for s in searched["data"]] == [session_id]
+
+        text_search_resp = await cli.get("/api/sessions/search?q=triaged")
+        assert text_search_resp.status == 200
+        text_searched = await text_search_resp.json()
+        assert [s["id"] for s in text_searched["data"]] == [session_id]
+
+        empty_search_resp = await cli.get("/api/sessions/search")
+        assert empty_search_resp.status == 400
+
+        invalid_resp = await cli.patch(f"/api/sessions/{session_id}", json={"custom_metadata": []})
+        assert invalid_resp.status == 400
+
+        invalid_update_resp = await cli.patch(f"/api/sessions/{session_id}", json={"custom_metadata_update": []})
+        assert invalid_update_resp.status == 400
 
         delete_resp = await cli.delete(f"/api/sessions/{session_id}")
         assert delete_resp.status == 200

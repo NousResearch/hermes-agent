@@ -319,16 +319,36 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/sessions` | List sessions (paginated — `limit`, `offset`, `source`, `include_children`) |
-| `POST` | `/api/sessions` | Create an empty session |
-| `GET` | `/api/sessions/{id}` | Read session metadata |
-| `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
+| `GET` | `/api/sessions/search` | Search sessions by `custom_metadata` (`q`, `metadata_key`, `metadata_value`) |
+| `POST` | `/api/sessions` | Create an empty session, optionally with `custom_metadata` |
+| `GET` | `/api/sessions/{id}` | Read session metadata, including `custom_metadata` |
+| `PATCH` | `/api/sessions/{id}` | Update title, `end_reason`, or custom metadata (`custom_metadata`, `custom_metadata_update`, `custom_metadata_remove`) |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
 
+`custom_metadata` is a bounded JSON object for client-safe labels such as issue IDs, workflow states, or generated summaries. It is stored separately from prompts and messages, so it does not change conversation context or prompt caching. Do not store secrets in custom metadata. Search requires either `q` or `metadata_key`; `metadata_value` is an exact-match refinement for `metadata_key`.
+
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
+
+To attach metadata, send `PATCH /api/sessions/{id}` with a JSON body. If `custom_metadata` and `custom_metadata_update` are sent together, Hermes replaces the object first, then applies the merge/remove operation:
+
+```json
+{
+  "custom_metadata_update": {
+    "issue_id": "HERMES-123",
+    "summary": "Investigated API session state"
+  }
+}
+```
+
+Search the attached metadata later with:
+
+```text
+GET /api/sessions/search?metadata_key=issue_id&metadata_value=HERMES-123
+```
 
 ```bash
 # fork a session and run one turn

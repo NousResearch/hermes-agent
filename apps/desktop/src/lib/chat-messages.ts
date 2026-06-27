@@ -121,6 +121,25 @@ export function chatMessageText(message: ChatMessage): string {
     .join('')
 }
 
+function normalizeAssistantCompletionText(text: string): string {
+  return text
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/[*_`~]/g, '')
+    .replace(/\s+/g, '')
+    .toLowerCase()
+}
+
+export function assistantCompletionLooksEquivalent(existingText: string, finalText: string): boolean {
+  const existing = normalizeAssistantCompletionText(existingText)
+  const final = normalizeAssistantCompletionText(finalText)
+
+  if (!existing || !final) {
+    return false
+  }
+
+  return existing === final || existing.startsWith(final) || final.startsWith(existing)
+}
+
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g

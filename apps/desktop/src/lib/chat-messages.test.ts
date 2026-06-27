@@ -4,6 +4,7 @@ import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
+  assistantCompletionLooksEquivalent,
   chatMessageText,
   preserveLocalAssistantErrors,
   renderMediaTags,
@@ -173,6 +174,20 @@ describe('renderMediaTags', () => {
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+  })
+})
+
+describe('assistantCompletionLooksEquivalent', () => {
+  it('treats markdown and whitespace-only drift as the same completion', () => {
+    expect(assistantCompletionLooksEquivalent('Here is**one**answer', 'Here is **one** answer')).toBe(true)
+  })
+
+  it('treats a streamed prefix as the same completion tail', () => {
+    expect(assistantCompletionLooksEquivalent('Sure,hereisthere', 'Sure, here is the rest of the answer')).toBe(true)
+  })
+
+  it('does not collapse unrelated assistant turns', () => {
+    expect(assistantCompletionLooksEquivalent('first answer', 'completely different reply')).toBe(false)
   })
 })
 

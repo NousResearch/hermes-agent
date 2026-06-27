@@ -14,8 +14,31 @@ function readBasePath(): string {
   return withLead.replace(/\/+$/, "");
 }
 
+function readApiBaseUrl(): string {
+  // Supports build-time Vite env (Vercel) and runtime bootstrap injection
+  // (Hermes dashboard server). Set this to the API origin or proxy prefix
+  // without repeating the route prefix used by the caller.
+  if (typeof window !== "undefined" && window.__HERMES_API_BASE_URL__) {
+    return window.__HERMES_API_BASE_URL__.trim().replace(/\/+$/, "");
+  }
+  const envBase = import.meta.env.VITE_HERMES_API_BASE_URL;
+  if (typeof envBase === "string" && envBase.trim()) {
+    return envBase.trim().replace(/\/+$/, "");
+  }
+  return "";
+}
+
+function joinUrlBase(base: string, path: string): string {
+  if (!base) return path;
+  const normalizedBase = base.replace(/\/+$/, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${normalizedBase}${normalizedPath}`;
+}
+
 export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
+const API_BASE_URL = readApiBaseUrl();
+const resolveApiUrl = (path: string) => joinUrlBase(API_BASE_URL || BASE, path);
 
 import type { DashboardTheme } from "@/themes/types";
 
@@ -25,6 +48,7 @@ declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
     __HERMES_BASE_PATH__?: string;
+    __HERMES_API_BASE_URL__?: string;
     /** Server-injected flag: ``true`` when the dashboard's OAuth gate is
      * engaged (public bind, no ``--insecure``). Toggles the SPA's
      * WS-upgrade path from legacy ``?token=`` to single-use ``?ticket=``
@@ -101,7 +125,7 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, {
+  const res = await fetch(resolveApiUrl(url), {
     ...init,
     headers,
     // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
@@ -217,7 +241,7 @@ async function getSessionToken(): Promise<string> {
  * fetch a fresh ticket.
  */
 export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: number }> {
-  const res = await fetch(`${BASE}/api/auth/ws-ticket`, {
+  const res = await fetch(resolveApiUrl("/api/auth/ws-ticket"), {
     method: "POST",
     credentials: "include",
   });
@@ -267,7 +291,7 @@ export async function authedFetch(
   if (token) {
     setSessionHeader(headers, token);
   }
-  return fetch(`${BASE}${url}`, {
+  return fetch(resolveApiUrl(url), {
     ...init,
     headers,
     credentials: init?.credentials ?? "include",
@@ -295,7 +319,11 @@ export async function buildWsUrl(
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const qs = new URLSearchParams(params ?? {});
   qs.set(authName, authValue);
-  return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
+  const target = new URL(API_BASE_URL || BASE || "/", window.location.origin);
+  target.protocol = proto;
+  target.pathname = joinUrlBase(target.pathname || "", path).replace(/^\/+/, "/");
+  target.search = qs.toString();
+  return target.toString();
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -335,7 +363,7 @@ export const api = {
       allowUnauthorized: true,
     }),
   logout: () =>
-    fetch(`${BASE}/auth/logout`, {
+    fetch(resolveApiUrl("/auth/logout"), {
       method: "POST",
       credentials: "include",
     }).then((r) => {
@@ -862,6 +890,15 @@ export const api = {
     fetchJSON<ActionStatusResponse>(
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
+  transcribeAudio: (dataUrl: string, mimeType?: string) =>
+    fetchJSON<AudioTranscriptionResponse>("/api/audio/transcribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        data_url: dataUrl,
+        mime_type: mimeType,
+      }),
+    }),
 
   // Dashboard plugins
   getPlugins: () =>
@@ -1200,6 +1237,12 @@ export interface ActionResponse {
   error?: string;
   message?: string;
   update_command?: string;
+}
+
+export interface AudioTranscriptionResponse {
+  ok: boolean;
+  transcript: string;
+  provider?: string | null;
 }
 
 export interface DebugShareResponse {

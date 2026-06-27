@@ -12405,11 +12405,14 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
+        api_base_url = os.getenv("HERMES_API_BASE_URL", "").rstrip("/")
+        api_base_js = json.dumps(api_base_url)
         if gated:
             bootstrap_script = (
                 f"<script>"
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_API_BASE_URL__={api_base_js};"
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
                 f"</script>"
             )
@@ -12418,6 +12421,7 @@ def mount_spa(application: FastAPI):
                 f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_API_BASE_URL__={api_base_js};"
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
                 f"</script>"
             )

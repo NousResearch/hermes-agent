@@ -33,9 +33,11 @@ import json
 import logging
 import os
 import uuid
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_dir
@@ -152,7 +154,120 @@ def _is_retryable_download_error(error: Exception) -> bool:
     return True
 
 
+class _OpenGraphHTMLParser(HTMLParser):
+    """Extract enough Open Graph/Twitter metadata to describe a URL card."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.meta: Dict[str, str] = {}
+        self.title_parts: list[str] = []
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        attrs_dict = {k.lower(): (v or "") for k, v in attrs if k}
+        tag_lower = tag.lower()
+        if tag_lower == "title":
+            self._in_title = True
+            return
+        if tag_lower != "meta":
+            return
+        key = (attrs_dict.get("property") or attrs_dict.get("name") or "").strip().lower()
+        value = (attrs_dict.get("content") or "").strip()
+        if key and value and key not in self.meta:
+            self.meta[key] = value
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title and data:
+            self.title_parts.append(data)
+
+
+def _collapse_ws(value: Optional[str]) -> str:
+    return " ".join(unescape(value or "").split())
+
+
+def _extract_open_graph_card(html: str, page_url: str) -> Optional[Dict[str, str]]:
+    """Return Open Graph/Twitter card metadata for a non-image URL."""
+    if not isinstance(html, str) or not html.strip():
+        return None
+    parser = _OpenGraphHTMLParser()
+    try:
+        parser.feed(html[:1_000_000])
+    except Exception:
+        return None
+
+    meta = parser.meta
+    title = _collapse_ws(
+        meta.get("og:title")
+        or meta.get("twitter:title")
+        or " ".join(parser.title_parts)
+    )
+    description = _collapse_ws(
+        meta.get("og:description")
+        or meta.get("twitter:description")
+        or meta.get("description")
+    )
+    image = _collapse_ws(
+        meta.get("og:image:secure_url")
+        or meta.get("og:image")
+        or meta.get("twitter:image")
+        or meta.get("twitter:image:src")
+    )
+    canonical_url = _collapse_ws(meta.get("og:url") or page_url)
+    card_type = _collapse_ws(meta.get("og:type") or meta.get("twitter:card"))
+
+    card: Dict[str, str] = {}
+    if title:
+        card["title"] = title
+    if description:
+        card["description"] = description
+    if image:
+        card["image"] = urljoin(page_url, image)
+    if canonical_url:
+        card["url"] = urljoin(page_url, canonical_url)
+    if card_type:
+        card["type"] = card_type
+    return card if card else None
+
+
+def _open_graph_card_from_file(path: Path, page_url: str) -> Optional[Dict[str, str]]:
+    """Parse a downloaded non-image response as an Open Graph card if possible."""
+    try:
+        raw = path.read_bytes()[:1_000_000]
+    except Exception:
+        return None
+    # Don't try to parse arbitrary binary blobs as HTML.
+    prefix = raw[:512].lstrip().lower()
+    if b"<html" not in prefix and b"<!doctype html" not in prefix and b"<head" not in raw[:4096].lower():
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    return _extract_open_graph_card(text, page_url)
+
+
+def _format_open_graph_card(card: Dict[str, str], source_url: str) -> str:
+    """Format Open Graph metadata as plain text for the agent."""
+    lines = [
+        "The supplied URL did not resolve to image bytes. I fetched its Open Graph card instead.",
+        f"Source URL: {source_url}",
+    ]
+    for label, key in (
+        ("Title", "title"),
+        ("Description", "description"),
+        ("Image", "image"),
+        ("Canonical URL", "url"),
+        ("Type", "type"),
+    ):
+        value = card.get(key)
+        if value:
+            lines.append(f"{label}: {value}")
+    return "\n".join(lines)
+
+
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
+
     """
     Download an image from a URL to a local destination (async) with retry logic.
     
@@ -739,6 +854,14 @@ async def _vision_analyze_native(
         image_size_bytes = temp_image_path.stat().st_size
         detected_mime_type = _detect_image_mime_type(temp_image_path)
         if not detected_mime_type:
+            if _validate_image_url(image_url):
+                card = _open_graph_card_from_file(temp_image_path, image_url)
+                if card:
+                    return json.dumps({
+                        "success": True,
+                        "analysis": _format_open_graph_card(card, image_url),
+                        "open_graph": card,
+                    })
             return tool_error(
                 "Only real image files are supported for vision analysis.",
                 success=False,
@@ -897,6 +1020,17 @@ async def vision_analyze_tool(
 
         detected_mime_type = _detect_image_mime_type(temp_image_path)
         if not detected_mime_type:
+            if _validate_image_url(image_url):
+                card = _open_graph_card_from_file(temp_image_path, image_url)
+                if card:
+                    analysis = _format_open_graph_card(card, image_url)
+                    debug_call_data["success"] = True
+                    debug_call_data["analysis_length"] = len(analysis)
+                    return json.dumps({
+                        "success": True,
+                        "analysis": analysis,
+                        "open_graph": card,
+                    })
             raise ValueError("Only real image files are supported for vision analysis.")
         
         # Convert image to base64 — send at full resolution first.

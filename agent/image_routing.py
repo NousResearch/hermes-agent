@@ -340,6 +340,15 @@ def decide_image_input_mode(
     if _explicit_aux_vision_override(cfg):
         return "text"
 
+    # The ChatGPT Codex backend currently advertises vision-capable model
+    # metadata, but rejects Hermes' local-file data URLs with HTTP 400
+    # ``invalid_value`` / "image data ... does not represent a valid image"
+    # even when the bytes are a valid PNG/JPEG/GIF/WebP. Route Codex images
+    # through the auxiliary text-vision path by default so screenshots remain
+    # usable; users can still force native mode with agent.image_input_mode.
+    if provider.strip().lower() == "openai-codex":
+        return "text"
+
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
@@ -431,15 +440,23 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
     quality tax just because one other provider is stricter.
 
-    Returns None only if the file can't be read (missing, permission
-    denied, etc.); the caller reports those paths in ``skipped``.
+    Returns None if the file can't be read OR if its bytes do not match a
+    supported image signature. Never trust the extension alone: a URL preview
+    HTML file saved as ``.jpg``/``.png`` must not be sent to the model as an
+    image.
     """
     try:
         raw = path.read_bytes()
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
-    mime = _guess_mime(path, raw=raw)
+    mime = _sniff_mime_from_bytes(raw)
+    if mime not in {"image/jpeg", "image/png", "image/gif", "image/webp"}:
+        logger.warning(
+            "image_routing: refusing to attach %s as image; unsupported or non-image bytes",
+            path,
+        )
+        return None
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

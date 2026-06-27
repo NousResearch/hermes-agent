@@ -103,6 +103,14 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
 
+    def test_auto_uses_text_for_openai_codex_native_data_url_rejection(self):
+        # ChatGPT's Codex backend advertises vision-capable model metadata but
+        # rejects valid local-file data URLs with HTTP 400 invalid_value. Keep
+        # screenshots working by using the auxiliary text-vision pipeline in
+        # auto mode; explicit agent.image_input_mode="native" still overrides.
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("openai-codex", "gpt-5.5", {}) == "text"
+
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", None) == "native"
@@ -333,6 +341,15 @@ class TestBuildNativeContentParts:
         assert skipped == [str(tmp_path / "missing.png")]
         # Skipped paths are NOT advertised in the path hints — the model
         # would otherwise be told a non-existent file is attached.
+        assert parts == [{"type": "text", "text": "hi"}]
+
+    def test_non_image_bytes_are_skipped_even_with_image_suffix(self, tmp_path: Path):
+        fake = tmp_path / "preview.png"
+        fake.write_text("<html><head><meta property='og:title' content='Not pixels'></head></html>")
+
+        parts, skipped = build_native_content_parts("hi", [str(fake)])
+
+        assert skipped == [str(fake)]
         assert parts == [{"type": "text", "text": "hi"}]
 
     def test_path_hint_appended(self, tmp_path: Path):

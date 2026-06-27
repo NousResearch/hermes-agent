@@ -145,7 +145,7 @@ from tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import sanitize_context, strip_injected_recall_blocks
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.model_metadata import (
@@ -3137,6 +3137,7 @@ class AIAgent:
         # memory, vs the default space-join used for log/trajectory previews).
         user_text = _summarize_user_message_for_log(original_user_message, sep="\n")
         response_text = _summarize_user_message_for_log(final_response, sep="\n")
+        response_text = strip_injected_recall_blocks(response_text).strip()
         if not (user_text and response_text):
             return
         try:

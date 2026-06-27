@@ -168,6 +168,40 @@ def sanitize_context(text: str) -> str:
     return text
 
 
+# Signature-anchored matchers for the *injected* recall block: the open tag is
+# always immediately followed by the system-note line. Anchoring on that phrase
+# scrubs the real block while leaving a stray ``<memory-context>`` a user might
+# type in normal conversation untouched.
+_INJECTED_NOTE_SIGNATURE = "[system note: the following is recalled memory context"
+_INJECTED_CONTEXT_RE = re.compile(
+    r'<\s*memory-context\s*>\s*\[System note:\s*The following is recalled memory context,'
+    r'[\s\S]*?</\s*memory-context\s*>',
+    re.IGNORECASE,
+)
+_INJECTED_NOTE_RE = re.compile(
+    r'\[System note:\s*The following is recalled memory context[\s\S]*?\]\s*',
+    re.IGNORECASE,
+)
+
+
+def strip_injected_recall_blocks(text: str) -> str:
+    """Remove the signed injected recall block from persisted/synced text.
+
+    Keys on the system-note signature so a bare ``<memory-context>`` a user
+    types is preserved. Used at the turn-finalize boundary to keep an echoed
+    block out of stored turns, trajectory, and provider sync.
+    """
+    if not isinstance(text, str) or not text:
+        return text or ""
+    original = text
+    text = _INJECTED_CONTEXT_RE.sub('', text)
+    if _INJECTED_NOTE_SIGNATURE in text.lower():
+        text = _INJECTED_NOTE_RE.sub('', text)
+    if text != original:
+        text = re.sub(r'(?:\r?\n){3,}', '\n\n', text)
+    return text
+
+
 class StreamingContextScrubber:
     """Stateful scrubber for streaming text that may contain split memory-context spans.
 

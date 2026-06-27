@@ -25,6 +25,28 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.memory_manager import strip_injected_recall_blocks
+
+
+def _sanitize_current_turn_assistant_messages(messages) -> None:
+    """Keep an echoed recall block out of the persisted assistant turn.
+
+    Walks back over the current turn's assistant messages (until the user
+    message that opened it) and strips the signed injected block in place, so it
+    never reaches stored turns, trajectory, or the in-memory state replayed next
+    turn. Single chokepoint — see #40170.
+    """
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content:
+            msg["content"] = strip_injected_recall_blocks(content).strip()
 
 
 def finalize_turn(
@@ -144,6 +166,10 @@ def finalize_turn(
     # are surfaced on the result dict via ``cleanup_errors`` rather than
     # killing the turn.
     _cleanup_errors = []
+
+    # Strip any echoed recall block before it reaches trajectory, stored turns,
+    # or the in-memory state replayed next turn (#40170).
+    _sanitize_current_turn_assistant_messages(messages)
 
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.

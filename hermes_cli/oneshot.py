@@ -364,7 +364,19 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    response = agent.chat(prompt) or ""
+
+    # Join memory-provider daemon threads (e.g. Honcho's honcho-sync,
+    # honcho-prewarm-dialectic, honcho-context-prefetch) before the process
+    # exits.  Without this, CPython's Py_FinalizeEx force-terminates the
+    # still-running daemon threads via pthread_exit(), and glibc converts
+    # that forced unwind into abort() → SIGABRT → exit 134.  (#37632)
+    try:
+        agent.shutdown_memory_provider()
+    except Exception:
+        pass  # memory providers are strictly best-effort
+
+    return response
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

@@ -656,6 +656,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        self._client_lock = threading.Lock()
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
@@ -1010,8 +1011,19 @@ class HindsightMemoryProvider(MemoryProvider):
         ]
 
     def _get_client(self):
-        """Return the cached Hindsight client (created once, reused)."""
-        if self._client is None:
+        """Return the cached Hindsight client (created once, reused).
+
+        Thread-safe: a dedicated lock prevents two concurrent callers from
+        racing to create duplicate clients.  Only the first caller pays the
+        creation cost; subsequent callers return the cached instance.
+        """
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            # Double-check after acquiring the lock — another thread may
+            # have finished creating the client while we were waiting.
+            if self._client is not None:
+                return self._client
             if self._mode == "local_embedded":
                 available, reason = _check_local_runtime()
                 if not available:

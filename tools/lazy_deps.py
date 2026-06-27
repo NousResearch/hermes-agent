@@ -135,6 +135,21 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "numpy==2.4.3",
     ),
 
+    # ─── Wake word ("Hey Hermes") engines ──────────────────────────────────
+    # Keep in sync with the `wake` extra in pyproject.toml. openWakeWord is the
+    # free, local default (ONNX runtime); Porcupine is the premium engine.
+    "wake.openwakeword": (
+        "openwakeword==0.6.0",
+        "onnxruntime==1.27.0",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+    "wake.porcupine": (
+        "pvporcupine==4.0.3",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
 

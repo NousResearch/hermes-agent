@@ -177,6 +177,16 @@ voice = [
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
+# "Hey Hermes" wake word — on-device hotword detection. Both engines are
+# optional; openWakeWord (ONNX) is the free default, Porcupine the premium
+# alternative. Lazy-installed on first /wake; mirrored in tools/lazy_deps.py.
+wake = [
+  "openwakeword==0.6.0",
+  "onnxruntime==1.27.0",
+  "pvporcupine==4.0.3",
+  "sounddevice==0.5.5",
+  "numpy==2.4.3",
+]
 pty = [
   # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now
   # in the main `dependencies` list (with the same platform markers), so

@@ -2204,6 +2204,29 @@ DEFAULT_CONFIG = {
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
     },
+
+    # "Hey Hermes" hands-free wake word (CLI). Always-on, on-device hotword
+    # detection that starts a fresh voice session — the "Hey Siri" pattern.
+    # Off by default; toggle with /wake or `wake_word.enabled: true`.
+    "wake_word": {
+        "enabled": False,
+        "provider": "openwakeword",   # "openwakeword" (free, local) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
+        "phrase": "hey jarvis",       # cosmetic label only; detection is keyed by the engine model/keyword below
+        "sensitivity": 0.5,           # 0.0-1.0 detection threshold (higher = stricter)
+        "start_new_session": True,    # start a fresh session on wake vs. continue the current one
+        "openwakeword": {
+            # Built-in model name ("hey_jarvis", "alexa", "hey_mycroft", ...) or
+            # a path to a custom .onnx/.tflite model. Train a "hey hermes" model
+            # and point this at it — see the wake-word docs.
+            "model": "hey_jarvis",
+            "inference_framework": "onnx",  # "onnx" | "tflite"
+        },
+        "porcupine": {
+            # Built-in keyword ("jarvis", "computer", "bumblebee", ...) or a path
+            # to a custom .ppn from the Picovoice Console.
+            "keyword": "jarvis",
+        },
+    },
     
     "human_delay": {
         "mode": "off",
@@ -3973,6 +3996,13 @@ OPTIONAL_ENV_VARS = {
         "description": "Mistral API key for Voxtral TTS and transcription (STT)",
         "prompt": "Mistral API key",
         "url": "https://console.mistral.ai/",
+        "password": True,
+        "category": "tool",
+    },
+    "PORCUPINE_ACCESS_KEY": {
+        "description": "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; openWakeWord is the free default)",
+        "prompt": "Picovoice access key",
+        "url": "https://console.picovoice.ai/",
         "password": True,
         "category": "tool",
     },

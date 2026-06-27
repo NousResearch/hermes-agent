@@ -1280,6 +1280,16 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "post_response_enabled": False,  # Gateway-only: when True, run a best-effort
+                                      # compression pass after a response has been
+                                      # delivered/persisted so the next turn is less
+                                      # likely to pay the compression latency.
+                                      # Default False preserves existing cost/timing:
+                                      # preflight compression still runs as the safety net.
+        "post_response_threshold": None,  # Optional ratio (0.0-1.0) for the gateway
+                                      # post-response pass. Null means reuse the
+                                      # agent's live compression threshold, including
+                                      # any model-specific auto-raise/lowering.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
@@ -6750,6 +6760,20 @@ def show_config():
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        _post_enabled = str(
+            compression.get('post_response_enabled', False)
+        ).lower() in {"true", "1", "yes"}
+        _post_threshold = compression.get('post_response_threshold')
+        if _post_enabled:
+            _post_label = "threshold"
+            if _post_threshold is not None:
+                try:
+                    _post_label = f"{float(_post_threshold) * 100:.0f}%"
+                except (TypeError, ValueError):
+                    _post_label = "threshold"
+            print(f"  Post-response: yes ({_post_label})")
+        else:
+            print("  Post-response: no")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")

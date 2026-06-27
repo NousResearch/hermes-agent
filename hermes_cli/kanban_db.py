@@ -6421,11 +6421,21 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # ready → blocked with a ``gave_up`` event on top of the ``crashed``
     # event we already emitted.
     #
-    # Protocol-violation crashes force an immediate trip (failure_limit=1)
-    # because clean-exit-without-transition is deterministic: the next
-    # respawn will do exactly the same thing. Better to surface to a
-    # human with a clear reason than to loop ``DEFAULT_FAILURE_LIMIT``
-    # times first.
+    # Protocol-violation crashes (worker exited cleanly without calling
+    # kanban_complete / kanban_block) used to force ``failure_limit=1``
+    # on the assumption that the next respawn would do exactly the same
+    # thing. That's true for genuine worker-driver bugs, but it also
+    # locked out an entire class of *recoverable* failures — most notably
+    # upstream provider-auth exhaustion, where the next respawn runs
+    # *only* after the operator rotates the OpenRouter key (or the
+    # account cooldown elapses). One crash → permanent block on what is
+    # actually a credentials problem. We now let the global
+    # ``kanban.failure_limit`` (default 2) be the floor, so a transient
+    # recovery (key rotation) can land the retry before the breaker
+    # trips. The genuine-loop safety net is preserved via the
+    # ``is_systemic`` fingerprint check on the non-protocol-violation
+    # path — three same-fingerprint crashes still auto-block
+    # immediately, regardless of the failure_limit floor.
     auto_blocked: list[str] = []
     if crash_details:
         # Fingerprint errors to detect systemic failures.
@@ -6443,7 +6453,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if (protocol_violation or is_systemic) else None,
+                # Protocol-violation crashes respect the global
+                # ``kanban.failure_limit`` floor (default 2) instead of
+                # hard-coded 1 — see comment above. ``is_systemic``
+                # non-protocol-violation loops still trip on the first
+                # iteration above threshold (preserved).
+                failure_limit=1 if is_systemic else None,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
@@ -7580,6 +7595,112 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+# Status values from ``agent/credential_pool.py`` that mean the credential
+# is permanently unusable for this run. ``exhausted`` (HTTP 401/402/429)
+# covers auth rejection, billing/quota, and rate-limit; ``dead`` covers
+# terminal OAuth states (token_revoked / token_invalidated). Other
+# ``last_status`` values (``None``/missing, ``ok``) are NOT terminal and
+# are not eligible for the spawn-preflight short-circuit.
+_SPAWN_PREFLIGHT_BLOCKING_STATUSES = frozenset({"exhausted", "dead"})
+
+
+def _spawn_preflight_credentials(profile_arg: str) -> None:
+    """Spawn-time gate: refuse to spawn a worker when every credential
+    entry on its profile is stamped with a blocking status.
+
+    Returns ``None`` when the profile is healthy (or has no auth.json on
+    disk yet — the worker may still pick up env-var auth). Raises
+    ``RuntimeError`` with a concrete remediation hint when ALL entries
+    on ALL providers are ``exhausted`` or ``dead`` — i.e. the worker
+    subprocess is going to die in <1s with the rc=0 protocol-violation
+    signature before reaching any tool loop. The dispatcher's existing
+    ``except Exception`` around ``_default_spawn`` catches this and
+    routes through ``_record_spawn_failure`` (``outcome='spawn_failed'``),
+    stamping ``last_failure_error`` with the reason and bumping
+    ``consecutive_failures`` — which gives Frank a concrete action to
+    take instead of a 60-second 401 → block dance.
+
+    Belt-and-braces with the protocol-violation floor raise at line 6149:
+    when this preflight passes (e.g. a profile with some healthy and
+    some exhausted entries), the worker still might crash cleanly, but
+    at least the spawn wasn't doomed from the start. The two patches
+    complement each other — the floor keeps a transient recovery (key
+    rotation) alive, the preflight short-circuits the obvious case
+    where the *first* attempt cannot succeed at all.
+
+    Fail-open semantics: any error reading or parsing auth.json is
+    swallowed and the spawn proceeds. The credential pool itself
+    re-reads auth.json on every entry selection, so the worst case is
+    "we didn't catch it pre-spawn" — not "we false-blocked a healthy
+    profile."
+    """
+    try:
+        from hermes_cli.profiles import resolve_profile_env
+        profile_home = resolve_profile_env(profile_arg)
+    except FileNotFoundError:
+        # Profile directory doesn't exist — defer to the worker.
+        return
+    except Exception:
+        # Any other resolution error (imports, env) — don't block spawn.
+        return
+
+    auth_path = os.path.join(profile_home, "auth.json")
+    if not os.path.isfile(auth_path):
+        # No auth.json means no credential pool entries on disk — the
+        # worker may still auth via env vars or interactive flows.
+        return
+
+    try:
+        with open(auth_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        # Corrupt or unreadable auth.json — don't block spawn, let the
+        # credential pool surface the real error inside the worker.
+        return
+    if not isinstance(data, dict):
+        return
+
+    pool = data.get("credential_pool")
+    if not isinstance(pool, dict) or not pool:
+        # No pool entries recorded — same as no auth.json.
+        return
+
+    blocking_providers: list[str] = []
+    for provider_name, entries in pool.items():
+        if not isinstance(entries, list) or not entries:
+            continue
+        # A provider is "blocking" iff EVERY entry is exhausted/dead.
+        # An entry with status=None or missing counts as healthy
+        # (never failed yet).
+        all_blocked = all(
+            isinstance(e, dict)
+            and e.get("last_status") in _SPAWN_PREFLIGHT_BLOCKING_STATUSES
+            for e in entries
+        )
+        if all_blocked:
+            # Surface the most informative error reason for the operator.
+            sample = next(
+                (e for e in entries if isinstance(e, dict)),
+                {},
+            )
+            code = sample.get("last_error_code")
+            message = sample.get("last_error_message") or "<no message>"
+            blocking_providers.append(
+                f"{provider_name} (last_error_code={code}, "
+                f"message={message!r})"
+            )
+
+    if blocking_providers:
+        raise RuntimeError(
+            f"spawn preflight: profile {profile_arg!r} has no usable "
+            f"credentials — every pool entry is exhausted or dead. "
+            f"Blocking providers: {'; '.join(blocking_providers)}. "
+            f"Remediate by running `hermes auth` (or rotating the key in "
+            f"~/.hermes/profiles/{profile_arg}/auth.json), then "
+            f"`hermes kanban unblock <task-id>` to retry."
+        )
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -7605,6 +7726,21 @@ def _default_spawn(
     from hermes_cli.profiles import normalize_profile_name
 
     profile_arg = normalize_profile_name(task.assignee)
+
+    # Spawn-time credential preflight. Belt-and-braces with the
+    # protocol-violation floor raise at line 6149: when the profile's
+    # credential pool is fully exhausted (every entry stamped
+    # ``last_status='exhausted'`` or ``'dead'``), the worker is going
+    # to die in <1s with the rc=0 protocol-violation signature before
+    # any tool loop runs. Surface that as a ``spawn_failed`` here
+    # instead of burning 60 seconds of grace + a worker budget on a
+    # doomed call. The dispatcher's existing ``except Exception``
+    # handler catches the RuntimeError, calls
+    # ``_record_spawn_failure`` (which writes a ``spawn_failed`` event
+    # + bumps ``consecutive_failures``), and lands the task in
+    # ``blocked`` with a ``last_failure_error`` that tells the
+    # operator exactly which profile + provider is broken.
+    _spawn_preflight_credentials(profile_arg)
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)

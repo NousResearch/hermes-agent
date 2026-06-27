@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
@@ -5925,7 +5927,27 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
     assert urls[0] == "http://127.0.0.1:9222/json/version"
 
 
-def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
+@pytest.mark.parametrize(
+    "manual_cmd, expect_no_executable",
+    [
+        # No browser executable on this host → "No supported …" hint branch.
+        (None, True),
+        # A browser executable IS present → concrete launch-command hint branch.
+        (
+            "'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' "
+            "--remote-debugging-port=9222",
+            False,
+        ),
+    ],
+    ids=["no-executable", "executable-present"],
+)
+def test_browser_manage_connect_default_local_reports_launch_hint(
+    monkeypatch, manual_cmd, expect_no_executable
+):
+    # The failure-message branch is decided by manual_chrome_debug_command()
+    # which probes the HOST for a browser executable. Mock it so the test is
+    # deterministic on any host (macOS-with-Chrome, Linux-without-chromium, CI)
+    # instead of depending on whether a browser happens to be installed.
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     emitted: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5947,6 +5969,10 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
             ),
+            patch(
+                "hermes_cli.browser_connect.manual_chrome_debug_command",
+                return_value=manual_cmd,
+            ),
         ):
             resp = server.handle_request(
                 {
@@ -5960,22 +5986,28 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 }
             )
 
+    messages = resp["result"]["messages"]
     assert resp["result"]["connected"] is False
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
     assert (
-        resp["result"]["messages"][0]
+        messages[0]
         == "Chromium-family browser isn't running with remote debugging — attempting to launch..."
     )
-    assert any(
-        "No supported Chromium-family browser executable was found" in line
-        for line in resp["result"]["messages"]
-    )
-    assert any(
-        "--remote-debugging-port=9222" in line for line in resp["result"]["messages"]
-    )
+    # Both branches mention the port; the discriminating string differs.
+    assert any("--remote-debugging-port=9222" in line for line in messages)
+    no_executable_msg = "No supported Chromium-family browser executable was found"
+    start_browser_msg = "Start a Chromium-family browser with remote debugging, then retry"
+    if expect_no_executable:
+        assert any(no_executable_msg in line for line in messages)
+        assert not any(start_browser_msg in line for line in messages)
+    else:
+        assert any(start_browser_msg in line for line in messages)
+        assert any(manual_cmd in line for line in messages)
+        assert not any(no_executable_msg in line for line in messages)
     assert "BROWSER_CDP_URL" not in os.environ
     progress = [p["message"] for evt, p in emitted if evt == "browser.progress"]
-    assert progress == resp["result"]["messages"]
+    assert progress == messages
+
 
 
 def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):

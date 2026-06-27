@@ -1,0 +1,11 @@
+name: harness_engineering
+version: 0.1.0
+description: Harness / Agenting Engineering intake commands and slash helper
+kind: standalone
+provides_cli:
+  - harness
+provides_commands:
+  - intake
+provides_hooks:
+  - pre_gateway_dispatch
+author: Hermes Agent

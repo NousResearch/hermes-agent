@@ -201,6 +201,8 @@ the competing PRs into plugins against that interface.
 
 ## Development Environment
 
+Before any non-trivial AI-assisted engineering change, follow the repository's Harness / Agenting Engineering contract in [`docs/harness-agenting-engineering.md`](docs/harness-agenting-engineering.md): specify correctness before editing, route context explicitly, implement through the right extension surface, verify with evidence, and retain reusable lessons as skills or contract updates.
+
 ```bash
 # Prefer .venv; fall back to venv if that's what your checkout has.
 source .venv/bin/activate   # or: source venv/bin/activate

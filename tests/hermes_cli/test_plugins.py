@@ -1,5 +1,6 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
+import importlib.util
 import logging
 import sys
 import types
@@ -27,6 +28,18 @@ from hermes_cli.middleware import (
     apply_tool_request_middleware,
     run_tool_execution_middleware,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_harness_engineering_plugin():
+    plugin_path = REPO_ROOT / "plugins" / "harness_engineering" / "__init__.py"
+    spec = importlib.util.spec_from_file_location("test_harness_engineering_plugin", plugin_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -657,6 +670,56 @@ class TestPluginHooks:
         )
         assert len(results) == 1
         assert results[0] == {"action": "skip", "reason": "test"}
+
+    def test_harness_engineering_preflight_reads_config_mode(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"harness_engineering": {"preflight_mode": "strict"}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_HARNESS_PREFLIGHT", raising=False)
+
+        plugin = _load_harness_engineering_plugin()
+        event = types.SimpleNamespace(text="请修复这个 bug")
+
+        result = plugin._handle_pre_gateway_dispatch(event=event)
+
+        assert result["action"] == "rewrite"
+        assert "intake required" in result["text"]
+        assert "请修复这个 bug" in result["text"]
+
+    def test_harness_engineering_preflight_env_overrides_config(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"harness_engineering": {"preflight_mode": "strict"}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_HARNESS_PREFLIGHT", "off")
+
+        plugin = _load_harness_engineering_plugin()
+        event = types.SimpleNamespace(text="请实现一个新功能并加测试")
+
+        result = plugin._handle_pre_gateway_dispatch(event=event)
+
+        assert result == {"action": "allow"}
+
+    def test_harness_engineering_preflight_ignores_plain_questions(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"harness_engineering": {"preflight_mode": "advisory"}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_HARNESS_PREFLIGHT", raising=False)
+
+        plugin = _load_harness_engineering_plugin()
+        event = types.SimpleNamespace(text="解释一下什么是 MCP")
+
+        result = plugin._handle_pre_gateway_dispatch(event=event)
+
+        assert result == {"action": "allow"}
 
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""

@@ -1,0 +1,3 @@
+[submodule "hermes-webui"]
+	path = hermes-webui
+	url = https://github.com/nesquena/hermes-webui.git

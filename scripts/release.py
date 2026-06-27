@@ -45,6 +45,8 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "blaryx@gmail.com": "Blaryxoff",  # PR #32602 salvage (deep-merge PUT /api/config to preserve unrelated sections; #13396)
+    "diamondeyesfox@gmail.com": "DiamondEyesFox",  # PR #53351 salvage (rebaseline in-place compression flushes to prevent duplicate compacted rows; #9096)
     "piyrw9754@gmail.com": "rlaope",  # PR #35075 salvage (align cron invisible-unicode set with install-time scanner; #35075)
     "rebel@rebels-Mac-Studio-2.local": "rebel0789",  # PR #47308 salvage (redact browser_type typed text across display surfaces; #47197)
     "267614622+agt-user@users.noreply.github.com": "agt-user",  # PR #48496 salvage (telegram CLOSE-WAIT polling heartbeat, #48495)
@@ -54,6 +56,7 @@ AUTHOR_MAP = {
     "140971685+Dr1985@users.noreply.github.com": "Dr1985",  # PR #42567 salvage (launchd supervision detection + status reporting; #42524)
     "8180647+herbalizer404@users.noreply.github.com": "herbalizer404",  # PR #49076 + #51835 salvage (auxiliary compression fallback: 403/session-usage payment errors + honor fallback chain when aux provider auth unavailable)
     "pyxl-dev@users.noreply.github.com": "pyxl-dev",  # PR #52230 salvage (include rate-limit in auxiliary capacity-error fallback gate; #52228)
+    "yashiel@skyner.co.za": "yashiels",  # PR #53284 salvage (discord markdown table-to-bullet conversion; #21168)
     "benbenwyb@gmail.com": "benbenlijie",  # PR #47205 salvage (named custom-provider extra_body + Z.AI Coding overload adaptive backoff; #50663)
     "dana@added-value.co.il": "Danamove",  # PR #46726 salvage (kill venv-resident pythonw gateway before recreating venv on Windows; #47036/#47557/#47910)
     "145739220+wgu9@users.noreply.github.com": "wgu9",  # PR #51468 salvage (WSL/no-systemd orphan gateway tracking, #51325)
@@ -150,6 +153,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "--email": "andryypaez@gmail.com",
     "mucio@mucio.net": "francescomucio",
     "291572938+thestral123@users.noreply.github.com": "thestral123",
     "tkwong@inspiresynergy.com": "tkwong",

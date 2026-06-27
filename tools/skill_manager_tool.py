@@ -254,6 +254,27 @@ def _background_review_write_guard(
     except Exception:
         return None
 
+    # Pin must be respected by autonomous maintenance. The curator already
+    # skips pinned skills from every auto-transition; the background review
+    # fork is the same kind of autonomous, no-user-present actor, so it must
+    # not write to a pinned skill either (issue #25839). This is stricter than
+    # the foreground ``_pinned_guard`` (which only blocks deletion) precisely
+    # because there is no user in the loop to consent to an edit here.
+    try:
+        from tools import skill_usage
+        if skill_usage.get_record(name).get("pinned"):
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing background curator {action} for pinned skill "
+                    f"'{name}': pinned skills are off-limits to autonomous "
+                    "maintenance. Ask the user to run "
+                    f"`hermes curator unpin {name}` if they want it changed."
+                ),
+            }
+    except Exception:
+        logger.debug("pinned skill guard lookup failed for %s", name, exc_info=True)
+
     try:
         from agent.skill_utils import is_external_skill_path
         if is_external_skill_path(skill_dir):

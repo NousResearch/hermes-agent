@@ -912,6 +912,67 @@ class TestExternalSkillMutations:
         assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
         assert "NEW_MARKER" not in (skill_dir / "SKILL.md").read_text()
 
+    def test_background_review_refuses_to_patch_pinned_skill(self, tmp_path):
+        """#25839: the autonomous review fork respects pin like the curator
+        does — a pinned skill is off-limits to background maintenance, even
+        for patch/edit (which a foreground user-directed call is allowed to
+        perform). Without a user in the loop there is no one to consent."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        def _fake_get_record(skill_name):
+            return {"pinned": True} if skill_name == "my-skill" else {"pinned": False}
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                with patch("tools.skill_usage.get_record", side_effect=_fake_get_record):
+                    raw = skill_manage(
+                        action="patch",
+                        name="my-skill",
+                        old_string="Do the thing.",
+                        new_string="Do the new thing.",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+
+    def test_background_review_unpinned_skill_not_blocked_by_pin_guard(self, tmp_path):
+        """The pin guard must not over-block: an unpinned agent-owned skill is
+        still writable by the review fork."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                with patch(
+                    "tools.skill_usage.get_record",
+                    side_effect=lambda n: {"pinned": False},
+                ):
+                    raw = skill_manage(
+                        action="patch",
+                        name="my-skill",
+                        old_string="Do the thing.",
+                        new_string="Do the new thing.",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+
 
 
 # ---------------------------------------------------------------------------

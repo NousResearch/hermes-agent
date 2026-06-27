@@ -293,8 +293,11 @@ def main():
     if _has_mcp_servers:
         def _discover_mcp_background() -> None:
             try:
-                from tools.mcp_tool import discover_mcp_tools
-                discover_mcp_tools()
+                from hermes_cli.mcp_startup import (
+                    _discover_mcp_tools_without_interactive_oauth,
+                )
+
+                _discover_mcp_tools_without_interactive_oauth()
             except Exception:
                 logger.warning(
                     "Background MCP tool discovery failed", exc_info=True

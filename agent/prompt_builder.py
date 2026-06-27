@@ -617,7 +617,12 @@ DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
-        "Please do not use markdown as it does not render. "
+        "Standard markdown (**bold**, *italic*, ~~strike~~, # headers, "
+        "`code`, ```code blocks```, [links](url)) is auto-converted to "
+        "WhatsApp's native syntax (*bold*, _italic_, ~strike~, monospace) — "
+        "feel free to write in markdown, and use bullet lists ('- item') "
+        "freely. Tables are NOT supported — prefer bullet lists or labeled "
+        "key:value pairs. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. The file "
         "will be sent as a native WhatsApp attachment — images (.jpg, .png, "
@@ -682,7 +687,11 @@ PLATFORM_HINTS = {
     ),
     "signal": (
         "You are on a text messaging communication platform, Signal. "
-        "Please do not use markdown as it does not render. "
+        "Standard markdown (**bold**, *italic*, ~~strike~~, # headers, "
+        "`code`, ```code blocks```) is auto-converted to Signal's native "
+        "rich formatting — feel free to write in markdown, and use bullet "
+        "lists ('- item') freely (they render as • bullets). Tables are NOT "
+        "supported — prefer bullet lists or labeled key:value pairs. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio as attachments, and other "

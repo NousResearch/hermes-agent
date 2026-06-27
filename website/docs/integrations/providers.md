@@ -829,6 +829,8 @@ To set persistent per-model defaults: My Models tab → gear icon on the model �
 
 **Tool calling:** Supported since LM Studio 0.3.6. Models with native tool-calling training (Qwen 2.5, Llama 3.x, Mistral, Hermes) are auto-detected and shown with a tool badge. Other models use a generic fallback that may be less reliable.
 
+**Server-version detection.** Hermes probes both `/api/v1/models` (LM Studio ≥ 0.4.0) and `/api/v0/models` (LM Studio 0.3.6–0.3.x) when introspecting your local server. Older installs that only ship `v0` still detect correctly. The probe result is cached per `(base_url, api_key)` for 5 minutes so the gateway message-handling hot path doesn't re-issue the probes on every Discord/Slack/Telegram message — that previously caused `WARNING discord.gateway: Shard ID None heartbeat blocked for more than 20 seconds` warnings (#24510). If you restart your local server with a different backend (Ollama → LM Studio etc.), wait for the TTL or restart the gateway to force a re-probe.
+
 ---
 
 ### WSL2 Networking (Windows Users)

@@ -903,7 +903,7 @@ export function ChatSidebar({
                       {contentVisible && (
                         <>
                           <span className="min-w-0 flex-1 truncate">{s.nav[item.id] ?? item.label}</span>
-                          {isNewSession && (
+                          {isNewSession && !mobileStandalone && (
                             <KbdGroup
                               className={cn('ml-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
                               keys={[...NEW_SESSION_KBD]}
@@ -1231,6 +1231,12 @@ function SidebarAllPinnedState() {
 
 function SidebarPinnedEmptyState() {
   const { t } = useI18n()
+
+  // The hint references a mouse gesture ("Shift-click"); no equivalent
+  // exists on touch yet, so suppress on mobile rather than mislead.
+  if (typeof window !== 'undefined' && Boolean((window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__)) {
+    return null
+  }
 
   return (
     <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)">

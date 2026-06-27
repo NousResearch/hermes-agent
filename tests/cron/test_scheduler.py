@@ -1863,6 +1863,59 @@ class TestRunJobConfigEnvVarExpansion:
             "config.yaml ${VAR} in fallback_providers was not expanded."
         )
 
+    def test_auth_fallback_provider_model_is_used_for_cron_agent(self, tmp_path):
+        """When auth falls back to another provider, its configured model is used."""
+        (tmp_path / "config.yaml").write_text(
+            "model: gpt-5\n"
+            "fallback_providers:\n"
+            "  - provider: google-gemini-cli\n"
+            "    model: gemini-2.5-pro\n"
+        )
+
+        from hermes_cli.auth import AuthError
+
+        job = {
+            "id": "fb-model-job",
+            "name": "fallback model test",
+            "prompt": "hi",
+            "provider": "openai-codex",
+        }
+        fake_db = MagicMock()
+        resolver_calls = []
+
+        def fake_resolve_runtime_provider(**kwargs):
+            resolver_calls.append(kwargs)
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("primary auth failed", provider="openai-codex")
+            return {
+                "api_key": "fallback-key",
+                "base_url": "https://example.invalid/v1",
+                "provider": "google-gemini-cli",
+                "api_mode": "chat_completions",
+            }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=fake_resolve_runtime_provider), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert [c.get("requested") for c in resolver_calls] == [
+            "openai-codex",
+            "google-gemini-cli",
+        ]
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["provider"] == "google-gemini-cli"
+        assert kwargs["model"] == "gemini-2.5-pro"
+
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
         (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")

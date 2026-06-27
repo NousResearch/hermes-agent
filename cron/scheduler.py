@@ -2370,6 +2370,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if entry.get("api_key"):
                         fb_kwargs["explicit_api_key"] = entry["api_key"]
                     runtime = resolve_runtime_provider(**fb_kwargs)
+                    fb_model = str(entry.get("model") or "").strip()
+                    if fb_model:
+                        model = fb_model
                     logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
                     break
                 except Exception as fb_exc:

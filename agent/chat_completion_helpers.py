@@ -38,6 +38,7 @@ from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
+_OPENROUTER_PROVIDER_DATA_COLLECTION_VALUES = {"allow", "deny"}
 
 
 def _ra():
@@ -129,6 +130,23 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
         "Ignoring invalid OpenRouter provider.sort value %r (allowed: %s)",
         raw_sort,
         ", ".join(sorted(_OPENROUTER_PROVIDER_SORT_VALUES)),
+    )
+    return None
+
+
+def _validated_openrouter_provider_data_collection(raw_data_collection: Any) -> Optional[str]:
+    """Return a normalized OpenRouter provider.data_collection value or None."""
+    if not isinstance(raw_data_collection, str):
+        return None
+    data_collection_value = raw_data_collection.strip().lower()
+    if not data_collection_value:
+        return None
+    if data_collection_value in _OPENROUTER_PROVIDER_DATA_COLLECTION_VALUES:
+        return data_collection_value
+    logger.warning(
+        "Ignoring invalid OpenRouter provider.data_collection value %r (allowed: %s)",
+        raw_data_collection,
+        ", ".join(sorted(_OPENROUTER_PROVIDER_DATA_COLLECTION_VALUES)),
     )
     return None
 
@@ -721,8 +739,9 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _prefs["sort"] = _provider_sort
     if agent.provider_require_parameters:
         _prefs["require_parameters"] = True
-    if agent.provider_data_collection:
-        _prefs["data_collection"] = agent.provider_data_collection
+    _provider_data_collection = _validated_openrouter_provider_data_collection(agent.provider_data_collection)
+    if _provider_data_collection:
+        _prefs["data_collection"] = _provider_data_collection
 
     # Claude max-output override on aggregators
     _ant_max = None

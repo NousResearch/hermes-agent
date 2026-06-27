@@ -228,6 +228,70 @@ def _normalize_chat_content(
         return ""
 
 
+def _conversation_history_entry_validation_error(
+    entry: Dict[str, Any], index: int,
+) -> Optional[str]:
+    """Return an OpenAI-style error message, or None if the entry is valid."""
+    if not isinstance(entry, dict):
+        return f"conversation_history[{index}] must be a message object"
+    if "role" not in entry:
+        return f"conversation_history[{index}] must have 'role' field"
+    role = str(entry["role"])
+    tool_calls = entry.get("tool_calls")
+    has_tool_calls = isinstance(tool_calls, list) and len(tool_calls) > 0
+    tool_call_id = entry.get("tool_call_id") or entry.get("call_id")
+    if role == "tool":
+        if not tool_call_id:
+            return f"conversation_history[{index}] with role=tool requires 'tool_call_id'"
+        return None
+    if has_tool_calls:
+        return None
+    if "content" not in entry:
+        return f"conversation_history[{index}] must have 'content' field"
+    return None
+
+
+def _normalize_conversation_history_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize one inbound conversation_history row for run_conversation.
+
+    Simple user/assistant rows are flattened to role+content. Native tool
+    sequences (assistant ``tool_calls``, ``role=tool`` results) keep
+    correlation fields so ``repair_message_sequence`` can validate them.
+    """
+    role = str(entry["role"])
+    tool_calls = entry.get("tool_calls")
+    has_tool_calls = isinstance(tool_calls, list) and len(tool_calls) > 0
+    tool_call_id = entry.get("tool_call_id") or entry.get("call_id")
+    is_tool_message = role == "tool"
+
+    def _normalize_content_field(raw: Any) -> Any:
+        if raw is None:
+            return ""
+        try:
+            return _normalize_multimodal_content(raw)
+        except ValueError:
+            return _normalize_chat_content(raw)
+
+    if has_tool_calls or tool_call_id or is_tool_message:
+        msg: Dict[str, Any] = {
+            "role": role,
+            "content": _normalize_content_field(entry.get("content")),
+        }
+        if has_tool_calls:
+            msg["tool_calls"] = tool_calls
+        if tool_call_id:
+            msg["tool_call_id"] = str(tool_call_id)
+        tool_name = entry.get("tool_name") or entry.get("name")
+        if tool_name:
+            msg["tool_name"] = str(tool_name)
+        return msg
+
+    return {
+        "role": role,
+        "content": _normalize_multimodal_content(entry.get("content", "")),
+    }
+
+
 # Content part type aliases used by the OpenAI Chat Completions and Responses
 # APIs.  We accept both spellings on input and emit a single canonical internal
 # shape (``{"type": "text", ...}`` / ``{"type": "image_url", ...}``) that the
@@ -4588,7 +4652,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -4597,12 +4661,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
             for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return web.json_response(
-                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
-                        status=400,
-                    )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                err = _conversation_history_entry_validation_error(entry, i)
+                if err is not None:
+                    return web.json_response(_openai_error(err), status=400)
+                try:
+                    conversation_history.append(_normalize_conversation_history_entry(entry))
+                except ValueError as exc:
+                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 

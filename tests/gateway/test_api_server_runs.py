@@ -22,6 +22,8 @@ from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _approval_event_choices,
+    _conversation_history_entry_validation_error,
+    _normalize_conversation_history_entry,
     cors_middleware,
     security_headers_middleware,
 )
@@ -250,6 +252,108 @@ class TestRunToolSSECallbacks:
 
                 assert "tool.completed" in body
                 assert "skill body" in body
+
+
+# ---------------------------------------------------------------------------
+# Conversation history normalization (H1–H3)
+# ---------------------------------------------------------------------------
+
+
+NATIVE_TOOL_HISTORY = [
+    {"role": "user", "content": "use data-mask"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{
+            "id": "call_abc",
+            "type": "function",
+            "function": {"name": "skill_view", "arguments": '{"name":"data-mask"}'},
+        }],
+    },
+    {
+        "role": "tool",
+        "tool_call_id": "call_abc",
+        "content": "skill instructions body",
+        "name": "skill_view",
+    },
+    {"role": "assistant", "content": "ready"},
+]
+
+
+class TestRunsConversationHistory:
+    def test_normalize_preserves_assistant_tool_calls(self):
+        msg = _normalize_conversation_history_entry(NATIVE_TOOL_HISTORY[1])
+        assert msg["role"] == "assistant"
+        assert msg["tool_calls"][0]["id"] == "call_abc"
+        assert msg["content"] == ""
+
+    def test_normalize_preserves_tool_result(self):
+        msg = _normalize_conversation_history_entry(NATIVE_TOOL_HISTORY[2])
+        assert msg["role"] == "tool"
+        assert msg["tool_call_id"] == "call_abc"
+        assert msg["content"] == "skill instructions body"
+        assert msg["tool_name"] == "skill_view"
+
+    def test_normalize_simple_message_unchanged(self):
+        msg = _normalize_conversation_history_entry({"role": "user", "content": "hello"})
+        assert msg == {"role": "user", "content": "hello"}
+
+    def test_validation_requires_tool_call_id_for_tool_role(self):
+        err = _conversation_history_entry_validation_error(
+            {"role": "tool", "content": "body"}, 0,
+        )
+        assert err is not None
+        assert "tool_call_id" in err
+
+    def test_validation_allows_assistant_with_tool_calls_no_content(self):
+        err = _conversation_history_entry_validation_error(NATIVE_TOOL_HISTORY[1], 1)
+        assert err is None
+
+    @pytest.mark.asyncio
+    async def test_runs_passes_native_history_to_run_conversation(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "ok"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "continue", "conversation_history": NATIVE_TOOL_HISTORY},
+                )
+                assert resp.status == 202
+
+                for _ in range(20):
+                    if mock_agent.run_conversation.called:
+                        break
+                    await asyncio.sleep(0.05)
+
+                mock_agent.run_conversation.assert_called_once()
+                history = mock_agent.run_conversation.call_args.kwargs["conversation_history"]
+                assert len(history) == 4
+                assert history[1]["tool_calls"][0]["id"] == "call_abc"
+                assert history[2]["tool_call_id"] == "call_abc"
+                assert history[2]["tool_name"] == "skill_view"
+
+    @pytest.mark.asyncio
+    async def test_runs_rejects_tool_row_without_call_id(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={
+                    "input": "continue",
+                    "conversation_history": [
+                        {"role": "tool", "content": "orphan"},
+                    ],
+                },
+            )
+        assert resp.status == 400
+        assert adapter._run_streams == {}
 
 
 # ---------------------------------------------------------------------------

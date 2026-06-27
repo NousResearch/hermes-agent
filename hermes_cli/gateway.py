@@ -26,6 +26,7 @@ from gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
 )
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
@@ -427,6 +428,7 @@ def _scan_gateway_pids(
                         encoding="utf-8",
                         errors="ignore",
                         timeout=15,
+                        creationflags=windows_hide_flags(),
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     return []

@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 from hermes_constants import get_hermes_home
 
@@ -248,6 +249,7 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         env=env,
         check=True,
         capture_output=True,
+        creationflags=windows_hide_flags(),
     )
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:

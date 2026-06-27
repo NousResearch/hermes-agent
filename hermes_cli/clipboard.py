@@ -19,6 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import is_wsl as _is_wsl
 
 logger = logging.getLogger(__name__)
@@ -201,6 +202,7 @@ def _run_powershell(exe: str, script: str, timeout: int) -> subprocess.Completed
     return subprocess.run(
         [exe, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True, text=True, timeout=timeout,
+        creationflags=windows_hide_flags(),
     )
 
 
@@ -257,9 +259,10 @@ def _find_powershell() -> str | None:
     for name in ("powershell", "pwsh"):
         try:
             r = subprocess.run(
-                [name, "-NoProfile", "-NonInteractive", "-Command", "echo ok"],
-                capture_output=True, text=True, timeout=5,
-            )
+                            [name, "-NoProfile", "-NonInteractive", "-Command", "echo ok"],
+                            capture_output=True, text=True, timeout=5,
+                            creationflags=windows_hide_flags(),
+                        )
             if r.returncode == 0 and "ok" in r.stdout:
                 return name
         except FileNotFoundError:

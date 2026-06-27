@@ -711,8 +711,10 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, "invalid_path", str(exc))
         return
-    from tools.skills_hub import SKILLS_DIR
-    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
+    from tools.skills_hub import install_path_relative_to_skills_dir
+    c.print(
+        f"[bold green]Installed:[/] {install_path_relative_to_skills_dir(install_dir)}"
+    )
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
     # Blueprint detection: if the installed skill declares a

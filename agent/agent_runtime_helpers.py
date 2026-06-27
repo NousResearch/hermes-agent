@@ -2512,6 +2512,7 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
             else:
                 resets_in_match = re.search(
                     r"resets?\s+in\s+"
+                    r"(?:(\d+(?:\.\d+)?)\s*(?:d|day|days)\b\s*)?"
                     r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
                     r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
                     r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?",
@@ -2519,10 +2520,17 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
                     re.IGNORECASE,
                 )
                 if resets_in_match and any(resets_in_match.groups()):
-                    hours = float(resets_in_match.group(1) or 0)
-                    minutes = float(resets_in_match.group(2) or 0)
-                    seconds = float(resets_in_match.group(3) or 0)
-                    context["reset_at"] = time.time() + (hours * 3600) + (minutes * 60) + seconds
+                    days = float(resets_in_match.group(1) or 0)
+                    hours = float(resets_in_match.group(2) or 0)
+                    minutes = float(resets_in_match.group(3) or 0)
+                    seconds = float(resets_in_match.group(4) or 0)
+                    reset_seconds = (
+                        (days * 86400)
+                        + (hours * 3600)
+                        + (minutes * 60)
+                        + seconds
+                    )
+                    context["reset_at"] = time.time() + reset_seconds
                 else:
                     sec_match = re.search(
                         r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",

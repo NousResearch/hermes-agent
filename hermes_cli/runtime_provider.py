@@ -790,6 +790,22 @@ def _normalize_base_url_for_match(value) -> str:
     return str(value or "").strip().rstrip("/").lower()
 
 
+def _explicit_base_url_matches_runtime(explicit_base_url: str, resolved_base_url: str) -> bool:
+    """Return True when an explicit URL is the same pool-backed endpoint.
+
+    Anthropic-style runtimes (including OpenCode Anthropic models) strip a
+    trailing /v1 before constructing SDK clients. Treat that normalization as
+    equivalent so a saved model.base_url does not detach the credential pool.
+    """
+    explicit = _normalize_base_url_for_match(explicit_base_url)
+    resolved = _normalize_base_url_for_match(resolved_base_url)
+    if not explicit or not resolved:
+        return False
+    return explicit == resolved or re.sub(r"/v1/?$", "", explicit) == re.sub(
+        r"/v1/?$", "", resolved
+    )
+
+
 def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
     extra_body = custom_provider.get("extra_body")
     if not isinstance(extra_body, dict) or not extra_body:
@@ -1334,6 +1350,39 @@ def _resolve_explicit_runtime(
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
+        # A saved model.base_url is passed into this resolver as an "explicit"
+        # base URL by callers that persist per-session runtime settings.  Do
+        # not let that detach the credential pool when it names the same
+        # provider endpoint: pool attachment is what lets 429/quota recovery
+        # rotate to the next key.  An explicitly supplied API key still wins and
+        # intentionally bypasses the pool.
+        if explicit_base_url and not explicit_api_key:
+            try:
+                pool = load_pool(provider)
+            except Exception:
+                pool = None
+            if pool and pool.has_credentials():
+                entry = pool.select()
+                pool_api_key = ""
+                if entry is not None:
+                    pool_api_key = (
+                        getattr(entry, "runtime_api_key", None)
+                        or getattr(entry, "access_token", "")
+                    )
+                if entry is not None and pool_api_key:
+                    pool_runtime = _resolve_runtime_from_pool_entry(
+                        provider=provider,
+                        entry=entry,
+                        requested_provider=requested_provider,
+                        model_cfg=model_cfg,
+                        pool=pool,
+                    )
+                    if _explicit_base_url_matches_runtime(
+                        explicit_base_url,
+                        str(pool_runtime.get("base_url") or ""),
+                    ):
+                        return pool_runtime
+
         env_url = ""
         if pconfig.base_url_env_var:
             env_url = _getenv(pconfig.base_url_env_var, "").strip().rstrip("/")

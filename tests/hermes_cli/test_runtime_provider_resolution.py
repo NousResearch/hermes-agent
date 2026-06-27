@@ -112,6 +112,47 @@ def test_resolve_runtime_provider_anthropic_explicit_override_skips_pool(monkeyp
     assert resolved.get("credential_pool") is None
 
 
+def test_resolve_runtime_provider_api_key_explicit_base_url_keeps_matching_pool(monkeypatch):
+    class _Entry:
+        access_token = "pool-opencode-token"
+        source = "manual"
+        base_url = "https://opencode.ai/zen/go/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    def _unexpected_env_credentials(provider):
+        raise AssertionError(f"env credentials should not be used for {provider}")
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "deepseek-v4-pro",
+            "base_url": "https://opencode.ai/zen/go/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "resolve_api_key_provider_credentials", _unexpected_env_credentials)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="opencode-go",
+        explicit_base_url="https://opencode.ai/zen/go/v1/",
+    )
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_key"] == "pool-opencode-token"
+    assert resolved["source"] == "manual"
+    assert resolved["credential_pool"] is not None
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
 def test_resolve_runtime_provider_falls_back_when_pool_empty(monkeypatch):
     class _Pool:
         def has_credentials(self):

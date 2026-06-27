@@ -8542,16 +8542,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
+                    import shlex
                     import subprocess
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
-                            # shell=True is intentional: quick_commands are user-defined
-                            # shell snippets from config.yaml — not agent/LLM controlled.
-                            result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30
-                            )
+                            # Prefer argv-list execution to reduce shell injection
+                            # surface if config.yaml is compromised (CWE-78). Fall
+                            # back to shell=True only when the command uses shell
+                            # features (pipes, redirects, chaining) that cannot be
+                            # expressed as a plain argv list.
+                            try:
+                                cmd_parts = shlex.split(exec_cmd)
+                            except ValueError:
+                                use_shell = True
+                                cmd_parts = exec_cmd
+                            else:
+                                shell_operators = {'|', ';', '&&', '||', '>', '<', '>>', '&', '$('}
+                                use_shell = any(op in exec_cmd for op in shell_operators)
+
+                            if use_shell:
+                                result = subprocess.run(
+                                    exec_cmd, shell=True, capture_output=True,
+                                    text=True, timeout=30
+                                )
+                            else:
+                                result = subprocess.run(
+                                    cmd_parts, capture_output=True,
+                                    text=True, timeout=30
+                                )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
                                 self._console_print(_rich_text_from_ansi(output))

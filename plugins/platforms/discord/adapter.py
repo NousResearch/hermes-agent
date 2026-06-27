@@ -1938,6 +1938,32 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Discord message.
+
+        Used by cleanup_progress to remove tool-progress bubbles after
+        the final response lands.  Discord's API allows bots to delete
+        their own messages.  Failures are non-fatal — the caller leaves
+        the message in place and logs at debug level.
+        """
+        if not self._client:
+            return False
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                return False
+            msg = await channel.fetch_message(int(message_id))
+            await msg.delete()
+            return True
+        except Exception as e:
+            logger.debug(
+                "[%s] Failed to delete Discord message %s: %s",
+                self.name, message_id, e,
+            )
+            return False
+
     async def _send_file_attachment(
         self,
         chat_id: str,

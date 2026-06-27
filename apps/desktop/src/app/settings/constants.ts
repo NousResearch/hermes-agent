@@ -272,6 +272,12 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     personality: 'Personality',
     showReasoning: 'Reasoning Blocks'
   },
+  desktop: {
+    editor: {
+      spellcheck: 'Enable Spellcheck',
+      language: 'Spellcheck Language'
+    }
+  },
   agent: {
     maxTurns: 'Max Agent Steps',
     imageInputMode: 'Image Attachments',
@@ -423,6 +429,12 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     personality: 'Default assistant style for new sessions.',
     showReasoning: 'Show reasoning sections when the backend provides them.'
   },
+  desktop: {
+    editor: {
+      spellcheck: 'Underline misspellings and enable native suggestions in the chat composer.',
+      language: 'BCP 47 language tag for composer spellcheck. Leave blank to follow your system language.'
+    }
+  },
   timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
@@ -497,7 +509,14 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
-    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+    keys: [
+      'display.personality',
+      'timezone',
+      'display.show_reasoning',
+      'agent.image_input_mode',
+      'desktop.editor.spellcheck',
+      'desktop.editor.language'
+    ]
   },
   {
     id: 'appearance',

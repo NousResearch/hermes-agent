@@ -98,6 +98,12 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_desktop_editor_spellcheck_defaults(self):
+        editor = DEFAULT_CONFIG["desktop"]["editor"]
+
+        assert editor["spellcheck"] is True
+        assert editor["language"] == ""
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

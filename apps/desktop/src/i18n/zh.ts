@@ -438,6 +438,12 @@ export const zh: Translations = {
         personality: '人格',
         showReasoning: '推理过程块'
       },
+      desktop: {
+        editor: {
+          spellcheck: '启用拼写检查',
+          language: '拼写检查语言'
+        }
+      },
       agent: {
         maxTurns: '最大智能体步数',
         imageInputMode: '图片附件',
@@ -587,6 +593,12 @@ export const zh: Translations = {
       display: {
         personality: '新会话的默认助手风格。',
         showReasoning: '当后端提供推理内容时予以显示。'
+      },
+      desktop: {
+        editor: {
+          spellcheck: '在聊天输入框中标出拼写错误，并启用原生候选建议。',
+          language: '用于输入框拼写检查的 BCP 47 语言标签。留空则跟随系统语言。'
+        }
       },
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {

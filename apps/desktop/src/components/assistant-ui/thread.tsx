@@ -99,6 +99,7 @@ import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { $backgroundResume } from '@/store/background-delegation'
 import { $compactionActive } from '@/store/compaction'
 import type { ComposerAttachment } from '@/store/composer'
+import { $composerEditorPreferences } from '@/store/composer-preferences'
 import { notifyError } from '@/store/notifications'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $connection } from '@/store/session'
@@ -1304,6 +1305,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const [staging, setStaging] = useState(false)
   const expanded = draft.includes('\n')
   const canSubmit = draft.trim().length > 0
+  const editorPreferences = useStore($composerEditorPreferences)
   const at = useAtCompletions({ cwd, gateway, sessionId })
   const slash = useSlashCompletions({ gateway })
 
@@ -1843,6 +1845,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               contentEditable
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
+              lang={editorPreferences.language}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
@@ -1854,7 +1857,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               onPaste={handlePaste}
               ref={editorRef}
               role="textbox"
-              spellCheck={false}
+              spellCheck={editorPreferences.spellcheck}
               suppressContentEditableWarning
             />
             <ComposerPrimitive.Input

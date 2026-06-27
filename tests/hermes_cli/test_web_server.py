@@ -2799,6 +2799,17 @@ class TestBuildSchemaFromConfig:
         if "agent.max_turns" in CONFIG_SCHEMA:
             assert CONFIG_SCHEMA["agent.max_turns"]["category"] == "agent"
 
+    def test_desktop_editor_spellcheck_schema_is_display_scoped(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        spellcheck = CONFIG_SCHEMA["desktop.editor.spellcheck"]
+        language = CONFIG_SCHEMA["desktop.editor.language"]
+
+        assert spellcheck["type"] == "boolean"
+        assert spellcheck["category"] == "display"
+        assert language["type"] == "string"
+        assert language["category"] == "display"
+
     def test_category_merge_applied(self):
         """Small categories should be merged into larger ones."""
         from hermes_cli.web_server import CONFIG_SCHEMA

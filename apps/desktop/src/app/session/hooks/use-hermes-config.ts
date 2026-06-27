@@ -2,6 +2,7 @@ import { type MutableRefObject, useCallback, useState } from 'react'
 
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
+import { setComposerEditorPreferencesFromConfig } from '@/store/composer-preferences'
 import {
   $currentCwd,
   setAvailablePersonalities,
@@ -32,6 +33,8 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
   const refreshHermesConfig = useCallback(async () => {
     try {
       const [config, defaults] = await Promise.all([getHermesConfig(), getHermesConfigDefaults().catch(() => ({}))])
+
+      setComposerEditorPreferencesFromConfig(config)
 
       const personality = normalizePersonalityValue(
         typeof config.display?.personality === 'string' ? config.display.personality : ''

@@ -216,6 +216,12 @@ export interface HermesConfig {
     personality?: string
     skin?: string
   }
+  desktop?: {
+    editor?: {
+      language?: string
+      spellcheck?: boolean
+    }
+  }
   terminal?: {
     cwd?: string
   }

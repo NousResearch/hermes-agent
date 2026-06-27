@@ -9,9 +9,10 @@ import { ExportedMessageRepository } from '@assistant-ui/core/internal'
 // carve-out in thread.tsx.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
+import { setComposerEditorPreferencesFromConfig } from '@/store/composer-preferences'
 
 import { Thread } from './thread'
 
@@ -30,6 +31,10 @@ vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
 vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
 
 Element.prototype.scrollTo = function scrollTo() {}
+
+afterEach(() => {
+  setComposerEditorPreferencesFromConfig({})
+})
 
 function stubOffsetDimension(
   prop: 'offsetHeight' | 'offsetWidth',
@@ -137,5 +142,29 @@ describe('click-to-edit user message', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
     })
+  })
+
+  it('applies composer spellcheck preferences to the visible edit editor only', async () => {
+    setComposerEditorPreferencesFromConfig({
+      desktop: { editor: { language: 'en-GB', spellcheck: false } }
+    })
+
+    const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
+
+    const bubble = await screen.findByRole('button', { name: 'Edit message' })
+
+    fireEvent.click(bubble)
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
+    })
+
+    const editor = container.querySelector('[data-slot="composer-rich-input"][contenteditable="true"]') as HTMLElement | null
+    const hiddenInput = container.querySelector('textarea.sr-only')
+
+    expect(editor?.lang).toBe('en-GB')
+    expect(editor?.getAttribute('spellcheck')).toBe('false')
+
+    expect(hiddenInput?.getAttribute('spellcheck')).toBe('false')
   })
 })

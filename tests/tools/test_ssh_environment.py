@@ -37,6 +37,7 @@ class TestBuildSSHCommand:
 
     @pytest.fixture(autouse=True)
     def _mock_connection(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _: "/usr/bin/ssh")
         monkeypatch.setattr("tools.environments.ssh.subprocess.run",
                             lambda *a, **k: subprocess.CompletedProcess([], 0))
         monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
@@ -79,6 +80,7 @@ class TestControlSocketPath:
 
     @pytest.fixture(autouse=True)
     def _mock_connection(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _: "/usr/bin/ssh")
         monkeypatch.setattr("tools.environments.ssh.subprocess.run",
                             lambda *a, **k: subprocess.CompletedProcess([], 0))
         monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",

@@ -13322,7 +13322,19 @@ def main():
     # so introspection/management commands (hermes hooks list, cron
     # list, gateway status, mcp add, ...) don't pay discovery cost or
     # trigger consent prompts for hooks the user is still inspecting.
-    _prepare_agent_startup(args)
+    #
+    # Guard the first Ctrl+C: plugin discovery walks every manifest and
+    # imports heavy third-party SDKs (e.g. the Teams adapter), so it owns a
+    # noticeable slice of startup wall-clock and is by far the most likely
+    # place a startup interrupt lands. There is no session to preserve here,
+    # so exit cleanly with 130 (128 + SIGINT) instead of unwinding an
+    # uncaught KeyboardInterrupt into a full traceback. Runtime interrupts
+    # during a command/TUI keep their own finer-grained handling downstream.
+    try:
+        _prepare_agent_startup(args)
+    except KeyboardInterrupt:
+        print("\nhermes: interrupted", file=sys.stderr)
+        raise SystemExit(130)
 
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.

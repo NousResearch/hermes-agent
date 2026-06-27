@@ -295,6 +295,8 @@ def decompose_task(
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
+    custom_prompt = (kanban_cfg.get("decompose_system_prompt") or "").strip()
+    system_prompt = custom_prompt if custom_prompt else _SYSTEM_PROMPT
     roster, valid_names = _build_roster()
 
     try:
@@ -327,7 +329,7 @@ def decompose_task(
         resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.3,
@@ -431,6 +433,13 @@ def decompose_task(
             parents = []
         # Clean parent indices: drop non-int and out-of-range.
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
+        # When a custom decomposer prompt is active (e.g. goal-splitter
+        # mode), hard-override assignee and parents so the LLM cannot
+        # route children to arbitrary profiles or create inter-sibling
+        # dependencies.  The orchestrator (PM) handles all routing.
+        if custom_prompt:
+            chosen = orchestrator
+            clean_parents = []
         children.append({
             "title": title.strip()[:200],
             "body": body.strip(),

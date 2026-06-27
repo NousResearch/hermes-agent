@@ -55,7 +55,7 @@ def _get_anthropic_sdk():
 
 logger = logging.getLogger(__name__)
 
-THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
+THINKING_BUDGET = {"max": 64000, "xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
 # Anthropic exposes 5 levels on 4.7+: low, medium, high, xhigh, max.
 # Opus/Sonnet 4.6 only expose 4 levels: low, medium, high, max — no xhigh.
@@ -2527,6 +2527,16 @@ def build_anthropic_kwargs(
                     "effort": adaptive_effort,
                 }
             else:
+                # Clamp the thinking budget to the model's output ceiling so
+                # the enforced max_tokens (budget + 4096 headroom) never exceeds
+                # what the API will accept. Without this, high/xhigh/max can
+                # push max_tokens past the output cap and 400 on models with
+                # smaller ceilings (e.g. Sonnet 4.5 / Opus 4.5 at 64K, or
+                # Claude 3.5 at 8K). The 1024 floor keeps thinking above
+                # Anthropic's minimum budget.
+                _out_ceiling = _get_anthropic_max_output(model)
+                if _out_ceiling > 0:
+                    budget = min(budget, max(1024, _out_ceiling - 4096))
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # Anthropic requires temperature=1 when thinking is enabled on older models
                 kwargs["temperature"] = 1

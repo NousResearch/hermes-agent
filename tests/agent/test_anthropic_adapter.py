@@ -10,6 +10,7 @@ import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
+    _get_anthropic_max_output,
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
     _refresh_oauth_token,
@@ -1248,6 +1249,75 @@ class TestBuildAnthropicKwargs:
         assert kwargs["temperature"] == 1
         assert kwargs["max_tokens"] >= 16000 + 4096
         assert "output_config" not in kwargs
+
+    def test_max_effort_budget_on_manual_thinking_path(self):
+        # Regression for #49580: the manual/non-adaptive thinking path looks
+        # the budget up via THINKING_BUDGET.get(effort, 8000). Before "max"
+        # had a key it fell through to the 8000 default — BELOW xhigh's 32000 —
+        # silently under-budgeting the strongest tier on pre-adaptive Claude.
+        # On a model with a large output ceiling, "max" resolves to its full
+        # 64000 budget and max_tokens grows to fit it.
+        kwargs = build_anthropic_kwargs(
+            model="claude-3-7-sonnet-20250219",  # 128K output ceiling, manual path
+            messages=[{"role": "user", "content": "think as hard as possible"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert kwargs["thinking"]["type"] == "enabled"
+        assert "output_config" not in kwargs  # proves we stayed on the manual path
+        assert kwargs["thinking"]["budget_tokens"] == 64000
+        assert kwargs["thinking"]["budget_tokens"] > 32000  # never under-budget vs xhigh
+        assert kwargs["max_tokens"] >= 64000 + 4096
+
+    def test_manual_thinking_budget_clamped_to_output_ceiling(self):
+        # The enforced max_tokens is max(requested, budget + 4096). A large
+        # effort budget must NOT drive max_tokens past the model's output
+        # ceiling, or the Anthropic API 400s. The budget is clamped to
+        # (ceiling - 4096) so max_tokens lands at the ceiling, not above it.
+        # claude-sonnet-4-20250514 has a 64K output ceiling on the manual path.
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "max it out"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert kwargs["thinking"]["type"] == "enabled"
+        assert "output_config" not in kwargs
+        ceiling = _get_anthropic_max_output("claude-sonnet-4-20250514")
+        # budget clamped below the raw 64000 so it fits under the ceiling
+        assert kwargs["thinking"]["budget_tokens"] <= ceiling - 4096
+        # critical invariant: max_tokens never exceeds the output ceiling
+        assert kwargs["max_tokens"] <= ceiling
+
+    @pytest.mark.parametrize(
+        "model,effort",
+        [
+            ("claude-sonnet-4-20250514", "max"),    # 64K ceiling
+            ("claude-opus-4-1", "max"),             # 32K ceiling
+            ("claude-3-5-sonnet-20241022", "max"),  # 8K ceiling
+            # pre-existing bug class: high/xhigh could also overrun small caps
+            ("claude-3-5-sonnet-20241022", "xhigh"),
+            ("claude-3-5-sonnet-20241022", "high"),
+        ],
+    )
+    def test_manual_thinking_respects_output_ceiling_across_tiers(self, model, effort):
+        # Invariant for #49580 (whole bug class): on the manual thinking path,
+        # the effort-driven budget must never push max_tokens above the model's
+        # output ceiling, for ANY effort tier — not just "max". Budget stays at
+        # or above Anthropic's 1024 minimum.
+        kwargs = build_anthropic_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "think"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        ceiling = _get_anthropic_max_output(model)
+        assert "output_config" not in kwargs  # manual path
+        assert kwargs["thinking"]["budget_tokens"] >= 1024
+        assert kwargs["max_tokens"] <= ceiling
 
     def test_reasoning_config_maps_to_adaptive_thinking_for_4_6_models(self):
         kwargs = build_anthropic_kwargs(

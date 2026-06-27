@@ -186,6 +186,10 @@ class TestGatewayKnownCommands:
                 for alias in cmd.aliases:
                     assert alias in GATEWAY_KNOWN_COMMANDS
 
+    def test_goal_and_forge_are_gateway_known(self):
+        assert "goal" in GATEWAY_KNOWN_COMMANDS
+        assert "forge" in GATEWAY_KNOWN_COMMANDS
+
     def test_bg_alias_in_gateway(self):
         assert "bg" in GATEWAY_KNOWN_COMMANDS
         assert "background" in GATEWAY_KNOWN_COMMANDS
@@ -252,6 +256,7 @@ class TestTelegramBotCommands:
         assert "background" in names
         assert "queue" in names
         assert "steer" in names
+        assert "forge" in names
 
     def test_hyphenated_codex_runtime_is_exposed_as_underscore_command(self):
         """Telegram autocomplete exposes /codex-runtime as /codex_runtime."""

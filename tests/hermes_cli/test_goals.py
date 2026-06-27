@@ -349,6 +349,14 @@ def test_goal_command_in_registry():
     assert cmd.name == "goal"
 
 
+def test_forge_command_in_registry():
+    from hermes_cli.commands import resolve_command
+
+    cmd = resolve_command("forge")
+    assert cmd is not None
+    assert cmd.name == "forge"
+
+
 def test_goal_command_dispatches_in_cli_registry_helpers():
     """goal shows up in autocomplete / help categories alongside other Session cmds."""
     from hermes_cli.commands import COMMANDS, COMMANDS_BY_CATEGORY

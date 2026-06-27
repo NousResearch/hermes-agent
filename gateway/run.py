@@ -8238,6 +8238,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "goal":
             return await self._handle_goal_command(event)
 
+        if canonical == "forge":
+            return await self._handle_forge_command(event)
+
         if canonical == "subgoal":
             return await self._handle_subgoal_command(event)
 

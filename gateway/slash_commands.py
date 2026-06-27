@@ -1833,6 +1833,41 @@ class GatewaySlashCommandsMixin:
 
         return t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
 
+    async def _handle_forge_command(self, event: "MessageEvent") -> str:
+        """Handle /forge as a NightForge-style Telegram shortcut.
+
+        /forge is a branded wrapper around the existing goal system.
+        ``/forge tonight`` seeds a NightForge prompt; ``status`` / ``pause`` /
+        ``resume`` / ``clear`` mirror /goal subcommands. ``history`` is kept
+        honest: this Hermes prototype does not persist a NightForge-specific
+        history store, so users should rely on the dedicated NightForge bot
+        for that flow.
+        """
+        args = (event.get_command_args() or "").strip()
+        lower = args.lower()
+
+        if lower == "history":
+            return (
+                "NightForge history is tracked in the dedicated NightForge bot. "
+                "This Hermes prototype only mirrors /forge tonight and the /goal-style controls."
+            )
+
+        if lower in {"status", "pause", "resume", "clear", "stop", "done"}:
+            event.text = f"/goal {lower}".strip()
+            return await self._handle_goal_command(event)
+
+        forge_prompt = (
+            "Build Papzin NightForge v0: a Telegram-first daily app-goal generator that "
+            "turns current workflow pain into one overnight goal, with app name, problem "
+            "solved, why now, MVP scope, acceptance checklist, mobile test steps, and "
+            "a copy-pasteable /goal."
+        )
+        if args and lower != "tonight":
+            forge_prompt = f"{forge_prompt} Focus this run on: {args}"
+
+        event.text = f"/goal {forge_prompt}".strip()
+        return await self._handle_goal_command(event)
+
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).
 

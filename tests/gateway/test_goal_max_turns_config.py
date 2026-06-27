@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -22,8 +24,7 @@ class _FakeSessionStore:
         return "agent:main:discord:channel:goal-config"
 
 
-@pytest.mark.asyncio
-async def test_gateway_goal_uses_goals_max_turns_from_full_config(tmp_path, monkeypatch):
+def test_gateway_goal_uses_goals_max_turns_from_full_config(tmp_path, monkeypatch):
     """Gateway /goal should honor top-level goals.max_turns from config.yaml."""
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -51,12 +52,52 @@ async def test_gateway_goal_uses_goals_max_turns_from_full_config(tmp_path, monk
         message_id="msg-goal-config",
     )
 
-    response = await GatewayRunner._handle_goal_command(runner, event)
+    response = asyncio.run(GatewayRunner._handle_goal_command(runner, event))
 
     try:
         assert "⊙ Goal set (7-turn budget): ship the benchmark" in response
         state = goals.GoalManager("sid-gateway-goal-config").state
         assert state is not None
         assert state.max_turns == 7
+    finally:
+        goals._DB_CACHE.clear()
+
+
+def test_gateway_forge_shortcut_uses_goal_system(tmp_path, monkeypatch):
+    """Gateway /forge should reuse the goal system and seed a NightForge prompt."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("goals:\n  max_turns: 7\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+
+    event = MessageEvent(
+        text="/forge tonight",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chat-forge-config",
+            chat_type="channel",
+            user_id="user-forge-config",
+        ),
+        message_id="msg-forge-config",
+    )
+
+    response = asyncio.run(GatewayRunner._handle_forge_command(runner, event))
+
+    try:
+        assert "NightForge" in response
+        assert "Goal set" in response
+        state = goals.GoalManager("sid-gateway-goal-config").state
+        assert state is not None
+        assert "NightForge" in state.goal
     finally:
         goals._DB_CACHE.clear()

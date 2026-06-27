@@ -253,6 +253,7 @@ class TestTelegramBotCommands:
         assert "background" in names
         assert "queue" in names
         assert "steer" in names
+        assert "looper" in names
 
     def test_hyphenated_codex_runtime_is_exposed_as_underscore_command(self):
         """Telegram autocomplete exposes /codex-runtime as /codex_runtime."""

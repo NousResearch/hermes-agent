@@ -1424,6 +1424,27 @@ class TestTaskDelegationRouting(unittest.TestCase):
         self.assertEqual(routing["api_key"], "global-key")
         self.assertIsNone(routing["reasoning_config"])
 
+    def test_invalid_phase_assignment_shape_warns_and_falls_back(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "global-model",
+            "provider": "",
+            "base_url": "https://global.example.com/v1",
+            "api_key": "global-key",
+            "phase_assignments": {"sdd-spec": "not-a-mapping"},
+        }
+
+        with self.assertLogs("tools.delegate_tool", level="WARNING") as logs:
+            routing = _resolve_task_delegation_routing(cfg, "sdd-spec", parent)
+
+        self.assertEqual(routing["model"], "global-model")
+        self.assertEqual(routing["base_url"], "https://global.example.com/v1")
+        self.assertEqual(routing["api_key"], "global-key")
+        self.assertTrue(
+            any("Ignoring delegation.phase_assignments entry" in line for line in logs.output),
+            logs.output,
+        )
+
     def test_invalid_phase_reasoning_falls_back_to_global_reasoning(self):
         parent = _make_mock_parent(depth=0)
         cfg = {

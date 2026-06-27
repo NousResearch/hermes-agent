@@ -3133,8 +3133,21 @@ def _phase_assignment_for(cfg: dict, phase: Optional[str]) -> Optional[dict]:
         return None
     assignments = cfg.get("phase_assignments")
     if not isinstance(assignments, dict):
+        if assignments is not None:
+            logger.warning(
+                "Ignoring delegation.phase_assignments for phase %r: expected mapping, got %s",
+                phase_key,
+                type(assignments).__name__,
+            )
         return None
     assignment = assignments.get(phase_key)
+    if assignment is not None and not isinstance(assignment, dict):
+        logger.warning(
+            "Ignoring delegation.phase_assignments entry for phase %r: expected mapping, got %s",
+            phase_key,
+            type(assignment).__name__,
+        )
+        return None
     return assignment if isinstance(assignment, dict) else None
 
 

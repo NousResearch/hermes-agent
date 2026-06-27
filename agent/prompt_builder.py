@@ -76,6 +76,12 @@ def _find_git_root(start: Path) -> Optional[Path]:
 
 
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
+_SOUL_MD_CANDIDATES = (
+    (".hermes", "soul.md"),
+    (".hermes", "SOUL.md"),
+    ("soul.md",),
+    ("SOUL.md",),
+)
 
 
 def _find_hermes_md(cwd: Path) -> Optional[Path]:
@@ -94,6 +100,33 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
             if candidate.is_file():
                 return candidate
         # Stop walking at the git root (or filesystem root).
+        if stop_at and directory == stop_at:
+            break
+    return None
+
+
+def _find_local_soul_md(cwd: Optional[str | Path]) -> Optional[Path]:
+    """Discover cwd-local ``soul.md``/``SOUL.md`` without touching HERMES_HOME.
+
+    Search order is cwd first, then parents up to and including the git root
+    when one exists.  Within each directory, ``.hermes/soul.md`` wins over
+    root-level ``SOUL.md`` so agent-home metadata can stay grouped under the
+    local ``.hermes/`` directory.
+    """
+    if cwd is None:
+        return None
+    try:
+        current = Path(cwd).resolve()
+    except Exception:
+        logger.debug("Could not resolve cwd for local SOUL.md discovery: %s", cwd)
+        return None
+
+    stop_at = _find_git_root(current)
+    for directory in [current, *current.parents]:
+        for parts in _SOUL_MD_CANDIDATES:
+            candidate = directory.joinpath(*parts)
+            if candidate.is_file():
+                return candidate
         if stop_at and directory == stop_at:
             break
     return None
@@ -1730,9 +1763,14 @@ def _truncate_content(
     return head + marker + tail
 
 
-def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
-    """Load SOUL.md from HERMES_HOME and return its content, or None.
+def load_soul_md(
+    context_length: Optional[int] = None,
+    cwd: Optional[str | Path] = None,
+) -> Optional[str]:
+    """Load the active SOUL.md content, or ``None``.
 
+    Cwd-local soul files let separate agent homes carry their own stable
+    identity while preserving the historical ``HERMES_HOME/SOUL.md`` fallback.
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
     ``skip_soul=True`` so SOUL.md isn't injected twice.
@@ -1743,16 +1781,18 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = get_hermes_home() / "SOUL.md"
+    soul_path = _find_local_soul_md(cwd) if cwd is not None else None
+    if soul_path is None:
+        soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
         return None
     try:
         content = soul_path.read_text(encoding="utf-8").strip()
         if not content:
             return None
-        content = _scan_context_content(content, "SOUL.md")
+        content = _scan_context_content(content, soul_path.name)
         content = _truncate_content(
-            content, "SOUL.md", context_length=context_length,
+            content, soul_path.name, context_length=context_length,
             read_path=str(soul_path),
         )
         return content
@@ -1871,7 +1911,9 @@ def build_context_files_prompt(
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
-    SOUL.md from HERMES_HOME is independent and always included when present.
+    SOUL.md is resolved independently from project context: cwd-local
+    ``.hermes/soul.md``/``SOUL.md`` files take precedence, then the historical
+    HERMES_HOME/SOUL.md fallback is used when no local soul exists.
 
     Each context source is capped before injection. The cap defaults to the
     model's context window (scaled — see ``_dynamic_context_file_max_chars``)
@@ -1897,9 +1939,9 @@ def build_context_files_prompt(
     if project_context:
         sections.append(project_context)
 
-    # SOUL.md from HERMES_HOME only — skip when already loaded as identity
+    # SOUL.md from local cwd or HERMES_HOME fallback — skip when already loaded as identity
     if not skip_soul:
-        soul_content = load_soul_md(context_length)
+        soul_content = load_soul_md(context_length, cwd=str(cwd_path))
         if soul_content:
             sections.append(soul_content)
 

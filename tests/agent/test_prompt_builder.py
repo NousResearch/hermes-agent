@@ -18,6 +18,7 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    load_soul_md,
     CONTEXT_FILE_MAX_CHARS,
     _dynamic_context_file_max_chars,
     _get_context_file_max_chars,
@@ -713,15 +714,55 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "type hints" in result
 
-    def test_loads_soul_md_from_hermes_home_only(self, tmp_path, monkeypatch):
+    def test_loads_cwd_soul_md_before_hermes_home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
         hermes_home = tmp_path / "hermes_home"
         hermes_home.mkdir()
         (hermes_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
-        (tmp_path / "SOUL.md").write_text("cwd soul should be ignored", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("Local agent soul.", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
-        assert "Be concise and friendly." in result
-        assert "cwd soul should be ignored" not in result
+        assert "Local agent soul." in result
+        assert "Be concise and friendly." not in result
+
+    def test_loads_dot_hermes_soul_md_before_cwd_root_soul(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Global soul.", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("Root local soul.", encoding="utf-8")
+        dot_hermes = tmp_path / ".hermes"
+        dot_hermes.mkdir()
+        (dot_hermes / "soul.md").write_text("Dot Hermes local soul.", encoding="utf-8")
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "Dot Hermes local soul." in result
+        assert "Root local soul." not in result
+        assert "Global soul." not in result
+
+    def test_load_soul_md_walks_parent_dirs_to_git_root(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Global soul.", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("Outside repo soul.", encoding="utf-8")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        (repo / ".hermes").mkdir()
+        (repo / ".hermes" / "soul.md").write_text("Repo agent soul.", encoding="utf-8")
+        child = repo / "agents" / "gardener"
+        child.mkdir(parents=True)
+        result = load_soul_md(cwd=str(child))
+        assert "Repo agent soul." in result
+        assert "Outside repo soul." not in result
+        assert "Global soul." not in result
+
+    def test_load_soul_md_falls_back_to_hermes_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Global soul.", encoding="utf-8")
+        result = load_soul_md(cwd=str(tmp_path))
+        assert "Global soul." in result
 
     def test_soul_md_has_no_wrapper_text(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))

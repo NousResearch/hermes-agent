@@ -152,7 +152,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md(_ctx_len)
+        _soul_content = _r.load_soul_md(_ctx_len, cwd=resolve_context_cwd())
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True

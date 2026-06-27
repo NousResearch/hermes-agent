@@ -56,6 +56,26 @@ class TestContextFileCwd:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
 
+    def test_cwd_soul_loads_as_primary_identity(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Global profile soul.", encoding="utf-8")
+        local_home = tmp_path / ".hermes"
+        local_home.mkdir()
+        (local_home / "soul.md").write_text("Local directory soul.", encoding="utf-8")
+
+        with (
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            parts = build_system_prompt_parts(_make_agent())
+
+        assert "Local directory soul." in parts["stable"]
+        assert "Global profile soul." not in parts["stable"]
+
 
 def _stable_prompt(agent):
     with (

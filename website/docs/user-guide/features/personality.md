@@ -1,57 +1,70 @@
 ---
 sidebar_position: 9
 title: "Personality & SOUL.md"
-description: "Customize Hermes Agent's personality with a global SOUL.md, built-in personalities, and custom persona definitions"
+description: "Customize Hermes Agent's personality with SOUL.md, built-in personalities, and custom persona definitions"
 ---
 
 # Personality & SOUL.md
 
 Hermes Agent's personality is fully customizable. `SOUL.md` is the **primary identity** — it's the first thing in the system prompt and defines who the agent is.
 
-- `SOUL.md` — a durable persona file that lives in `HERMES_HOME` and serves as the agent's identity (slot #1 in the system prompt)
+- `SOUL.md` — a durable persona file that serves as the agent's identity (slot #1 in the system prompt). A cwd-local soul can override the global profile soul for that session.
 - built-in or custom `/personality` presets — session-level system-prompt overlays
 
 If you want to change who Hermes is — or replace it with an entirely different agent persona — edit `SOUL.md`.
 
 ## How SOUL.md works now
 
-Hermes now seeds a default `SOUL.md` automatically in:
+Hermes seeds a default global `SOUL.md` automatically in:
 
 ```text
 ~/.hermes/SOUL.md
 ```
 
-More precisely, it uses the current instance's `HERMES_HOME`, so if you run Hermes with a custom home directory, it will use:
+More precisely, it uses the current instance's `HERMES_HOME`, so if you run Hermes with a custom home directory, the global fallback is:
 
 ```text
 $HERMES_HOME/SOUL.md
 ```
 
+A working directory can also provide a local soul for that session. Hermes checks the current working directory first, then walks parent directories up to the git root if one exists.
+
+Lookup order:
+
+1. `.hermes/soul.md`
+2. `.hermes/SOUL.md`
+3. `soul.md`
+4. `SOUL.md`
+5. parent directories, using the same order and stopping at the git root
+6. `$HERMES_HOME/SOUL.md`
+7. built-in default identity
+
 ### Important behavior
 
 - **SOUL.md is the agent's primary identity.** It occupies slot #1 in the system prompt, replacing the hardcoded default identity.
-- Hermes creates a starter `SOUL.md` automatically if one does not exist yet
+- Hermes creates a starter global `SOUL.md` automatically if one does not exist yet
 - Existing user `SOUL.md` files are never overwritten
-- Hermes loads `SOUL.md` only from `HERMES_HOME`
-- Hermes does not look in the current working directory for `SOUL.md`
-- If `SOUL.md` exists but is empty, or cannot be loaded, Hermes falls back to a built-in default identity
+- A cwd-local soul overrides the global profile soul for that session
+- If no local soul exists, Hermes falls back to `$HERMES_HOME/SOUL.md`
+- If the selected `SOUL.md` exists but is empty, or cannot be loaded, Hermes falls back to a built-in default identity
 - If `SOUL.md` has content, that content is injected verbatim after security scanning and truncation
 - SOUL.md is **not** duplicated in the context files section — it appears only once, as the identity
 
-That makes `SOUL.md` a true per-user or per-instance identity, not just an additive layer.
+That makes `SOUL.md` a true identity layer, not just an additive context file.
 
 ## Why this design
 
-This keeps personality predictable.
+This keeps personality predictable while supporting per-directory agent homes.
 
-If Hermes loaded `SOUL.md` from whatever directory you happened to launch it in, your personality could change unexpectedly between projects. By loading only from `HERMES_HOME`, the personality belongs to the Hermes instance itself.
+The global `$HERMES_HOME/SOUL.md` remains the stable default for normal use. Local soul files are opt-in: the agent identity changes only when the cwd or one of its parents deliberately contains a `soul.md`/`SOUL.md` file.
 
-That also makes it easier to teach users:
-- "Edit `~/.hermes/SOUL.md` to change Hermes' default personality."
+That gives you two clear patterns:
+- edit `~/.hermes/SOUL.md` to change Hermes' default personality
+- add `.hermes/soul.md` inside an agent or workspace directory to give that location its own identity
 
 ## Where to edit it
 
-For most users:
+For your global default:
 
 ```bash
 ~/.hermes/SOUL.md
@@ -61,6 +74,12 @@ If you use a custom home:
 
 ```bash
 $HERMES_HOME/SOUL.md
+```
+
+For a cwd-local agent identity:
+
+```bash
+.hermes/soul.md
 ```
 
 ## What should go in SOUL.md?
@@ -153,8 +172,9 @@ Use for:
 - commands, ports, paths, deployment notes
 
 A useful rule:
-- if it should follow you everywhere, it belongs in `SOUL.md`
-- if it belongs to a project, it belongs in `AGENTS.md`
+- if it should follow you everywhere, put it in the global `SOUL.md`
+- if it is the identity for a specific agent or workspace, use local `.hermes/soul.md`
+- if it is project/task instructions rather than identity, put it in `AGENTS.md`
 
 ## SOUL.md vs `/personality`
 
@@ -207,7 +227,7 @@ Hermes ships with built-in personalities you can switch to with `/personality`.
 /personality teacher
 ```
 
-These are convenient overlays, but your global `SOUL.md` still gives Hermes its persistent default personality unless the overlay meaningfully changes it.
+These are convenient overlays, but your selected `SOUL.md` still gives Hermes its persistent default personality unless the overlay meaningfully changes it.
 
 ## Custom personalities in config
 
@@ -232,11 +252,13 @@ Then switch to it with:
 A strong default setup is:
 
 1. Keep a thoughtful global `SOUL.md` in `~/.hermes/SOUL.md`
-2. Put project instructions in `AGENTS.md`
-3. Use `/personality` only when you want a temporary mode shift
+2. Optionally add `.hermes/soul.md` inside directories that should behave like their own agent homes
+3. Put project instructions in `AGENTS.md`
+4. Use `/personality` only when you want a temporary mode shift
 
 That gives you:
 - a stable voice
+- optional folder-scoped agent identities
 - project-specific behavior where it belongs
 - temporary control when needed
 

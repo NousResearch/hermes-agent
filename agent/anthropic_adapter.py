@@ -697,6 +697,23 @@ def _build_anthropic_client_with_bearer_hook(
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
+def _get_third_party_user_agent() -> str:
+    """Return the User-Agent for third-party Anthropic endpoints.
+
+    Reads ``model.third_party_user_agent`` from the Hermes config.
+    Defaults to ``"curl/8.4.0"`` — a neutral UA accepted by one-api /
+    new-api gateways that block the official
+    ``Anthropic/Python x.y`` SDK User-Agent with HTTP 403.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+        model_config = config.get("model", {}) if isinstance(config, dict) else {}
+        return str(model_config.get("third_party_user_agent") or "curl/8.4.0")
+    except Exception:
+        return "curl/8.4.0"
+
+
 def build_anthropic_client(
     api_key,
     base_url: str = None,
@@ -798,8 +815,16 @@ def build_anthropic_client(
         # don't follow Anthropic's sk-ant-* prefix convention and would be
         # misclassified as OAuth tokens.
         kwargs["api_key"] = api_key
-        if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+        # one-api/new-api gateways block the official
+        # "Anthropic/Python x.y" SDK User-Agent with 403.
+        # Override with a neutral UA so x-api-key requests are accepted,
+        # same technique as the Kimi branch above.
+        # Default is "curl/8.4.0"; set model.third_party_user_agent in
+        # config.yaml to use a different value.
+        kwargs["default_headers"] = {
+            "User-Agent": _get_third_party_user_agent(),
+            **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
+        }
     elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;

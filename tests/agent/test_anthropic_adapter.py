@@ -109,9 +109,11 @@ class TestBuildAnthropicClient:
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
-            assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
-            }
+            # custom.api.com is a third-party (non-anthropic.com) endpoint;
+            # it gets the User-Agent override in addition to common betas.
+            assert kwargs["default_headers"]["User-Agent"] == "curl/8.4.0"
+            assert "interleaved-thinking-2025-05-14" in kwargs["default_headers"]["anthropic-beta"]
+            assert "fine-grained-tool-streaming-2025-05-14" in kwargs["default_headers"]["anthropic-beta"]
 
     def test_custom_base_url_strips_trailing_v1(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -200,6 +202,42 @@ class TestBuildAnthropicClient:
             # Azure keeps the 1M-context beta (it's not MiniMax).
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
+
+    def test_third_party_endpoint_uses_default_user_agent(self):
+        """Third-party endpoints get curl/8.4.0 UA by default."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-abc123", base_url="https://api.proxy.example.com"
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["User-Agent"] == "curl/8.4.0"
+            # Verify betas are also present when common_betas exist
+            assert "anthropic-beta" in kwargs["default_headers"]
+
+    def test_third_party_endpoint_uses_configured_user_agent(self):
+        """model.third_party_user_agent in config overrides the default UA."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("agent.anthropic_adapter._get_third_party_user_agent",
+                   return_value="MyCustomAgent/2.0"):
+            build_anthropic_client(
+                "sk-abc123", base_url="https://api.proxy.example.com"
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["User-Agent"] == "MyCustomAgent/2.0"
+
+    def test_third_party_endpoint_user_agent_with_common_betas(self):
+        """UA and anthropic-beta coexist in default_headers for third-party."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("agent.anthropic_adapter._get_third_party_user_agent",
+                   return_value="TestUA/1.0"):
+            build_anthropic_client(
+                "sk-abc123", base_url="https://api.proxy.example.com"
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            headers = kwargs["default_headers"]
+            assert headers["User-Agent"] == "TestUA/1.0"
+            assert "anthropic-beta" in headers
+            assert "interleaved-thinking-2025-05-14" in headers["anthropic-beta"]
 
 
 class TestReadClaudeCodeCredentials:

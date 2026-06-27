@@ -23,6 +23,7 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from agent.lsp.workspace import nearest_root
@@ -102,6 +103,8 @@ LANGUAGE_BY_EXT: Dict[str, str] = {
     ".zig": "zig",
     ".zon": "zig",
     ".dockerfile": "dockerfile",
+    ".bsl": "bsl",
+    ".os": "bsl",
 }
 
 
@@ -121,6 +124,13 @@ class SpawnSpec:
     env: Dict[str, str] = field(default_factory=dict)
     initialization_options: Dict[str, Any] = field(default_factory=dict)
     seed_diagnostics_on_first_push: bool = False
+    initialize_timeout: float = 45.0
+    diagnostics_document_wait: float = 5.0
+
+
+# BSL LS: JVM boot + first-pass analysis on large 1C trees is slow.
+_BSL_INITIALIZE_TIMEOUT = 120.0
+_BSL_DIAGNOSTICS_DOCUMENT_WAIT = 180.0
 
 
 @dataclass
@@ -143,6 +153,8 @@ class ServerDef:
     build_spawn: Callable[[str, "ServerContext"], Optional[SpawnSpec]]
     seed_first_push: bool = False
     description: str = ""
+    initialize_timeout: float = 45.0
+    diagnostics_document_wait: float = 5.0
 
     def matches(self, file_path: str) -> bool:
         """Return True iff this server handles ``file_path``."""
@@ -684,6 +696,87 @@ def _resolve_override(ctx: ServerContext, server_id: str) -> Optional[str]:
     return None
 
 
+def _resolve_override_command(
+    ctx: ServerContext, server_id: str
+) -> Optional[List[str]]:
+    """Return a full spawn command from config when the user passed multiple args."""
+    override = ctx.binary_overrides.get(server_id)
+    if not override or len(override) < 2:
+        return None
+    exe = override[0]
+    if os.path.isfile(exe) or (os.path.isabs(exe) and os.path.exists(exe)):
+        return list(override)
+    if _which(exe):
+        return list(override)
+    # Accept when a later arg is an existing file (e.g. java -jar /path/to.jar).
+    for part in override[1:]:
+        if part.endswith(".jar") and os.path.isfile(part):
+            return list(override)
+    return None
+
+
+def _find_bsl_jar() -> Optional[str]:
+    """Locate ``bsl-language-server.jar`` (manual install only)."""
+    env_jar = os.environ.get("BSL_LANGUAGE_SERVER_JAR")
+    if env_jar and os.path.isfile(env_jar):
+        return env_jar
+    for dir_entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not dir_entry:
+            continue
+        candidate = os.path.join(dir_entry, "bsl-language-server.jar")
+        if os.path.isfile(candidate):
+            return candidate
+    try:
+        from agent.lsp.install import hermes_lsp_bin_dir
+
+        staged = hermes_lsp_bin_dir() / "bsl-language-server.jar"
+        if staged.is_file():
+            return str(staged)
+    except OSError:
+        pass
+    return None
+
+
+def _spawn_bsl_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    env = ctx.env_overrides.get("bsl-language-server", {})
+    init_opts = ctx.init_overrides.get("bsl-language-server", {})
+    init_timeout = _BSL_INITIALIZE_TIMEOUT
+    diag_wait = _BSL_DIAGNOSTICS_DOCUMENT_WAIT
+
+    override_cmd = _resolve_override_command(ctx, "bsl-language-server")
+    if override_cmd is not None:
+        return SpawnSpec(
+            command=override_cmd,
+            workspace_root=root,
+            cwd=root,
+            env=env,
+            initialization_options=init_opts,
+            initialize_timeout=init_timeout,
+            diagnostics_document_wait=diag_wait,
+        )
+
+    jar = _resolve_override(ctx, "bsl-language-server") or _find_bsl_jar()
+    if jar is None or not os.path.isfile(jar):
+        return None
+    java = _which("java")
+    if java is None:
+        logger.warning(
+            "bsl-language-server: bsl-language-server.jar found at %s "
+            "but java is not on PATH",
+            jar,
+        )
+        return None
+    return SpawnSpec(
+        command=[java, "-jar", jar, "--lsp"],
+        workspace_root=root,
+        cwd=root,
+        env=env,
+        initialization_options=init_opts,
+        initialize_timeout=init_timeout,
+        diagnostics_document_wait=diag_wait,
+    )
+
+
 # ---------------------------------------------------------------------------
 # root resolvers
 # ---------------------------------------------------------------------------
@@ -821,6 +914,96 @@ def _root_java(file_path: str, workspace: str) -> Optional[str]:
         workspace,
         ["pom.xml", "build.gradle", "build.gradle.kts", ".project", ".classpath", "settings.gradle"],
     )
+
+
+def _nearest_dir_root(
+    start: str,
+    dir_names: Sequence[str],
+    *,
+    ceiling: Optional[str] = None,
+) -> Optional[str]:
+    """Walk up from ``start`` looking for a directory named in ``dir_names``."""
+    start_path = Path(normalize_path(start))
+    try:
+        if start_path.is_file():
+            start_path = start_path.parent
+    except (OSError, RuntimeError, ValueError):
+        return None
+    ceiling_path = Path(normalize_path(ceiling)) if ceiling else None
+
+    cur = start_path
+    for _ in range(64):
+        for name in dir_names:
+            try:
+                if (cur / name).is_dir():
+                    return str(cur)
+            except OSError:
+                continue
+        if ceiling_path is not None and cur == ceiling_path:
+            return None
+        parent = cur.parent
+        if parent == cur:
+            return None
+        cur = parent
+    return None
+
+
+def _root_bsl(file_path: str, workspace: str) -> Optional[str]:
+    """1C:Enterprise / OneScript — Configuration.xml, DT-INF, or BSL LS config."""
+    ceiling = os.path.dirname(workspace) if workspace else None
+    start_abs = normalize_path(file_path)
+    start_path = Path(start_abs)
+    walk_start = start_abs
+    start_kind = "unknown"
+    try:
+        if start_path.is_file():
+            walk_start = str(start_path.parent)
+            start_kind = "file"
+        elif start_path.is_dir():
+            walk_start = str(start_path)
+            start_kind = "dir"
+        else:
+            # New or not yet visible to Python — treat as file path for the walk.
+            walk_start = str(start_path.parent) if start_path.name else start_abs
+            start_kind = "missing"
+    except OSError as e:
+        logger.debug("[bsl root] cannot stat %s: %s", start_abs, e)
+        start_kind = "stat-error"
+
+    logger.debug(
+        "[bsl root] resolve file_path=%r workspace=%r ceiling=%r "
+        "walk_start=%r (%s) abspath_exists=%s process_cwd=%r",
+        file_path,
+        workspace,
+        ceiling,
+        walk_start,
+        start_kind,
+        os.path.exists(start_abs),
+        os.getcwd(),
+    )
+
+    found = nearest_root(
+        file_path,
+        ["Configuration.xml", ".bsl-language-server.json"],
+        ceiling=ceiling,
+    )
+    if found is not None:
+        logger.debug("[bsl root] matched config file marker at %s", found)
+        return found
+
+    found = _nearest_dir_root(file_path, ["DT-INF"], ceiling=ceiling)
+    if found is not None:
+        logger.debug("[bsl root] matched DT-INF directory at %s", found)
+        return found
+
+    logger.debug(
+        "[bsl root] no Configuration.xml, .bsl-language-server.json, or DT-INF "
+        "above %s (ceiling=%s); fallback to git workspace %s",
+        walk_start,
+        ceiling,
+        workspace,
+    )
+    return workspace
 
 
 # ---------------------------------------------------------------------------
@@ -1011,6 +1194,15 @@ SERVERS: List[ServerDef] = [
         resolve_root=_root_java,
         build_spawn=_spawn_jdtls,
         description="Java — Eclipse JDT Language Server",
+    ),
+    ServerDef(
+        server_id="bsl-language-server",
+        extensions=(".bsl", ".os"),
+        resolve_root=_root_bsl,
+        build_spawn=_spawn_bsl_ls,
+        initialize_timeout=_BSL_INITIALIZE_TIMEOUT,
+        diagnostics_document_wait=_BSL_DIAGNOSTICS_DOCUMENT_WAIT,
+        description="1C:Enterprise / OneScript — BSL Language Server",
     ),
 ]
 

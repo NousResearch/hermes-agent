@@ -102,6 +102,12 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # Lua — manual (LuaLS is platform-specific binaries from GitHub
     # releases; complex enough that we punt to the user)
     "lua-language-server": {"strategy": "manual", "pkg": "", "bin": "lua-language-server"},
+    # 1C / OneScript — requires Java and a manually placed bsl-language-server.jar
+    "bsl-language-server": {
+        "strategy": "manual",
+        "pkg": "",
+        "bin": "bsl-language-server.jar",
+    },
 }
 
 

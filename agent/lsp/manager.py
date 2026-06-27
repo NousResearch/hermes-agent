@@ -60,6 +60,8 @@ logger = logging.getLogger("agent.lsp.manager")
 
 DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
 
+_SYNC_SPAWN_SLACK = 5.0
+
 
 class _BackgroundLoop:
     """A daemon thread that owns one asyncio event loop.
@@ -245,6 +247,44 @@ class LSPService:
         """Return True iff this service should be consulted at all."""
         return self._enabled
 
+    def _sync_timeout_budget(self, file_path: str) -> float:
+        """Outer ``_loop.run`` budget when a call may cold-spawn + wait for diags."""
+        srv = find_server_for_file(file_path)
+        init_timeout = srv.initialize_timeout if srv else 45.0
+        diag_wait = srv.diagnostics_document_wait if srv else 5.0
+        return init_timeout + diag_wait + self._wait_timeout + _SYNC_SPAWN_SLACK
+
+    def _client_key_for(self, file_path: str) -> Optional[Tuple[str, str]]:
+        srv = find_server_for_file(file_path)
+        if srv is None:
+            return None
+        ws_root, gated = resolve_workspace_for_file(file_path)
+        if not (ws_root and gated):
+            return None
+        try:
+            per_server_root = srv.resolve_root(file_path, ws_root) or ws_root
+        except Exception:  # noqa: BLE001
+            per_server_root = ws_root
+        return (srv.server_id, per_server_root)
+
+    def _handle_sync_timeout(self, file_path: str, exc: TimeoutError, *, phase: str) -> None:
+        """Outer budget exceeded — do not kill a client that already initialized."""
+        key = self._client_key_for(file_path)
+        if key is None:
+            return
+        with self._state_lock:
+            client = self._clients.get(key)
+        if client is not None and client.is_running:
+            eventlog.log_timeout(key[0], file_path)
+            logger.debug(
+                "LSP %s timed out for %s (client still running, not marking broken): %s",
+                phase,
+                file_path,
+                exc,
+            )
+            return
+        self._mark_broken_for_file(file_path, exc, phase=phase)
+
     def enabled_for(self, file_path: str) -> bool:
         """Return True iff LSP should run for this specific file.
 
@@ -292,11 +332,16 @@ class LSPService:
         if not self.enabled_for(file_path):
             return
         try:
-            diags = self._loop.run(self._snapshot_async(file_path), timeout=8.0)
+            budget = self._sync_timeout_budget(file_path)
+            diags = self._loop.run(self._snapshot_async(file_path), timeout=budget)
             self._delta_baseline[os.path.abspath(file_path)] = diags or []
+        except TimeoutError as e:
+            logger.debug("baseline snapshot timed out for %s: %s", file_path, e)
+            self._handle_sync_timeout(file_path, e, phase="baseline")
+            self._delta_baseline[os.path.abspath(file_path)] = []
         except Exception as e:  # noqa: BLE001
             logger.debug("baseline snapshot failed for %s: %s", file_path, e)
-            self._mark_broken_for_file(file_path, e)
+            self._mark_broken_for_file(file_path, e, phase="baseline")
             self._delta_baseline[os.path.abspath(file_path)] = []
 
     def get_diagnostics_sync(
@@ -341,11 +386,10 @@ class LSPService:
 
         try:
             t = timeout if timeout is not None else self._wait_timeout + 2.0
+            t = max(t, self._sync_timeout_budget(file_path))
             diags = self._loop.run(self._open_and_wait_async(file_path), timeout=t) or []
-        except asyncio.TimeoutError as e:
-            eventlog.log_timeout(server_id, file_path)
-            logger.debug("LSP diagnostics timeout for %s: %s", file_path, e)
-            self._mark_broken_for_file(file_path, e)
+        except TimeoutError as e:
+            self._handle_sync_timeout(file_path, e, phase="diagnostics")
             return []
         except Exception as e:  # noqa: BLE001
             eventlog.log_server_error(server_id, file_path, e)
@@ -383,53 +427,35 @@ class LSPService:
             eventlog.log_clean(server_id, file_path)
         return diags
 
-    def _mark_broken_for_file(self, file_path: str, exc: BaseException) -> None:
-        """Mark the (server_id, workspace_root) pair as broken so subsequent
-        edits skip it instantly instead of re-paying timeout cost.
-
-        Called when the outer ``_loop.run`` timeout cancels an in-flight
-        spawn/initialize that the inner ``_get_or_spawn`` task was still
-        holding open.  Without this, every subsequent write would re-enter
-        the spawn path and re-pay the full ``snapshot_baseline``
-        timeout (8s) until the binary is fixed.
-
-        Also kills any orphan client process that survived the cancelled
-        future, and emits a single eventlog WARNING so the user knows
-        which server gave up.
-
-        ``exc`` is whatever exception the outer wrapper caught — used
-        only for logging, never re-raised.
-        """
-        srv = find_server_for_file(file_path)
-        if srv is None:
+    def _mark_broken_for_file(
+        self, file_path: str, exc: BaseException, *, phase: str = "operation"
+    ) -> None:
+        """Mark the (server_id, workspace_root) pair as broken and tear down the client."""
+        key = self._client_key_for(file_path)
+        if key is None:
             return
-        ws_root, gated = resolve_workspace_for_file(file_path)
-        if not (ws_root and gated):
-            return
-        try:
-            per_server_root = srv.resolve_root(file_path, ws_root) or ws_root
-        except Exception:  # noqa: BLE001
-            per_server_root = ws_root
-        key = (srv.server_id, per_server_root)
         already_broken = key in self._broken
         self._broken.add(key)
 
-        # Kill any client we managed to spawn before the timeout.  The
-        # cancelled future never reached the broken-set add inside
-        # ``_get_or_spawn`` so the client may still be hanging in
-        # ``_clients`` with a half-initialized state.
         with self._state_lock:
             client = self._clients.pop(key, None)
         if client is not None:
             try:
-                # Fire-and-forget shutdown — give it a second to cleanup,
-                # but don't block.  We're already on a slow path.
                 self._loop.run(client.shutdown(), timeout=1.0)
             except Exception:  # noqa: BLE001
                 pass
 
         if not already_broken:
-            eventlog.log_spawn_failed(srv.server_id, per_server_root, exc)
+            if isinstance(exc, TimeoutError):
+                eventlog.log_timeout(key[0], file_path)
+                logger.warning(
+                    "LSP %s timed out for %s during %s (client torn down)",
+                    key[0],
+                    file_path,
+                    phase,
+                )
+            else:
+                eventlog.log_spawn_failed(key[0], key[1], exc)
 
     def shutdown(self) -> None:
         """Tear down all clients and stop the background loop."""
@@ -548,6 +574,8 @@ class LSPService:
                 cwd=spec.cwd,
                 initialization_options=spec.initialization_options,
                 seed_diagnostics_on_first_push=spec.seed_diagnostics_on_first_push or srv.seed_first_push,
+                initialize_timeout=spec.initialize_timeout,
+                diagnostics_document_wait=spec.diagnostics_document_wait,
             )
             try:
                 await client.start()

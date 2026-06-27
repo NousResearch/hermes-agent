@@ -151,6 +151,8 @@ class LSPClient:
         cwd: Optional[str] = None,
         initialization_options: Optional[Dict[str, Any]] = None,
         seed_diagnostics_on_first_push: bool = False,
+        initialize_timeout: float = INITIALIZE_TIMEOUT,
+        diagnostics_document_wait: float = DIAGNOSTICS_DOCUMENT_WAIT,
     ) -> None:
         self.server_id = server_id
         self.workspace_root = workspace_root
@@ -159,6 +161,8 @@ class LSPClient:
         self._cwd = cwd or workspace_root
         self._init_options = initialization_options or {}
         self._seed_first_push = seed_diagnostics_on_first_push
+        self._initialize_timeout = initialize_timeout
+        self._diagnostics_document_wait = diagnostics_document_wait
 
         # Process + streams
         self._proc: Optional[asyncio.subprocess.Process] = None
@@ -372,9 +376,15 @@ class LSPClient:
             },
         }
 
+        logger.debug(
+            "[%s] initialize handshake (timeout=%ss, root=%s)",
+            self.server_id,
+            self._initialize_timeout,
+            self.workspace_root,
+        )
         result = await asyncio.wait_for(
             self._send_request("initialize", params),
-            timeout=INITIALIZE_TIMEOUT,
+            timeout=self._initialize_timeout,
         )
         self._initialize_result = result
         self._sync_kind = self._extract_sync_kind(result.get("capabilities") or {})
@@ -804,7 +814,11 @@ class LSPClient:
         returns silently on timeout.  Does NOT throw if the server
         doesn't support pull diagnostics; we still get the push side.
         """
-        budget = DIAGNOSTICS_FULL_WAIT if mode == "full" else DIAGNOSTICS_DOCUMENT_WAIT
+        budget = (
+            DIAGNOSTICS_FULL_WAIT
+            if mode == "full"
+            else self._diagnostics_document_wait
+        )
         deadline = asyncio.get_event_loop().time() + budget
         abs_path = os.path.abspath(path)
 

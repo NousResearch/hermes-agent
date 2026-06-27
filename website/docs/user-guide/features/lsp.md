@@ -86,6 +86,7 @@ agent sees a syntax-clean file with semantic problems as
 | Prisma | `prisma language-server` | manual |
 | Kotlin | `kotlin-language-server` | manual |
 | Java | `jdtls` | manual |
+| 1C:Enterprise | `bsl-language-server` | manual |
 
 For "manual" entries, install the server through whatever toolchain
 manager makes sense for that language (rustup, ghcup, opam, brew,

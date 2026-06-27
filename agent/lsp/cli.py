@@ -296,4 +296,11 @@ def _backend_warnings() -> list:
             "diagnostics will be empty (apt: shellcheck, brew: shellcheck, "
             "scoop: shellcheck)."
         )
+    from agent.lsp.servers import _find_bsl_jar
+
+    if _find_bsl_jar() and _shutil.which("java") is None:
+        notes.append(
+            "bsl-language-server.jar is configured but java is missing — "
+            "install a JRE/JDK and ensure java is on PATH."
+        )
     return notes

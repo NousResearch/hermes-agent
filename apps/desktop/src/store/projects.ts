@@ -305,7 +305,40 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
 // One filesystem scan per app run: the heavy disk walk happens once, the result
 // is cached in the backend, and later opens read the cache. Desktop-only (needs
 // the native crawler); elsewhere discovery falls back to session-derived repos.
+//
+// Configurable via Hermes `config.yaml` keys under `desktop`:
+//   `desktop.repoScanRoots`    — array of root paths to scan (default: home dir)
+//   `desktop.repoScanExclude`  — array of path prefixes to skip
+//   `desktop.repoScanEnabled`  — set false to disable scan entirely (default true)
+//
+// When none are configured, the scanner defaults to os.homedir() with no
+// exclusions (same behaviour as before), so this is fully backward-compatible.
 let didScanRepos = false
+
+/** @returns config for the repo scan, or undefined if the gateway isn't reachable. */
+async function readRepoScanConfig(): Promise<{ scanRoots?: string[]; excludePaths?: string[]; enabled?: boolean } | undefined> {
+  try {
+    const { getHermesConfig } = await import('@/hermes')
+    const config = await getHermesConfig()
+    const desktop = (config as Record<string, unknown>).desktop as Record<string, unknown> | undefined
+
+    if (!desktop) {
+      return undefined
+    }
+
+    const scanRoots = Array.isArray(desktop.repoScanRoots) ? (desktop.repoScanRoots as string[]).filter(Boolean) : undefined
+    const excludePaths = Array.isArray(desktop.repoScanExclude) ? (desktop.repoScanExclude as string[]).filter(Boolean) : undefined
+    const enabled = typeof desktop.repoScanEnabled === 'boolean' ? desktop.repoScanEnabled : undefined
+
+    if (!scanRoots && !excludePaths && enabled === undefined) {
+      return undefined
+    }
+
+    return { scanRoots, excludePaths, enabled }
+  } catch {
+    return undefined
+  }
+}
 
 export async function scanAndRecordRepos(force = false): Promise<void> {
   const scan = desktopGit()?.scanRepos
@@ -318,7 +351,20 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
   $reposScanning.set(true)
 
   try {
-    const repos = await scan([])
+    // Read user-configured scan roots/exclusions from Hermes backend config.
+    // When unset, the scanner defaults to os.homedir() with no exclusions,
+    // preserving backward compatibility.
+    const scanConfig = await readRepoScanConfig()
+
+    // Short-circuit: scan explicitly disabled via config.
+    if (scanConfig?.enabled === false) {
+      return
+    }
+
+    const repos = await scan([], {
+      scanRoots: scanConfig?.scanRoots,
+      excludePaths: scanConfig?.excludePaths
+    })
     await gatewayRequest('projects.record_repos', { repos })
     // The disk scan may surface new zero-session repos; refold them into the tree.
     await refreshProjectTree()

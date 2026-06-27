@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/hermes'
-import { type I18nConfigClient, I18nProvider } from '@/i18n'
+import { type I18nConfigClient, I18nProvider, setRuntimeI18nLocale } from '@/i18n'
 
 import { LanguageSwitcher } from './language-switcher'
 
@@ -22,6 +22,7 @@ Element.prototype.scrollIntoView = function scrollIntoView() {}
 describe('LanguageSwitcher', () => {
   afterEach(() => {
     cleanup()
+    setRuntimeI18nLocale('en')
     vi.restoreAllMocks()
   })
 
@@ -45,9 +46,9 @@ describe('LanguageSwitcher', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
-    fireEvent.click(screen.getByRole('option', { name: /日本語/i }))
+    fireEvent.click(screen.getByRole('option', { name: /Русский/i }))
 
     await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
-    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ja', skin: 'slate' } })
+    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ru', skin: 'slate' } })
   })
 })

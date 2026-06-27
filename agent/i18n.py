@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu",
+    "af", "ko", "it", "ga", "pt", "ru", "hu", "fa",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -79,6 +79,8 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "russian": "ru", "русский": "ru", "ru-ru": "ru",
     # Hungarian
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
+    # Persian
+    "persian": "fa", "farsi": "fa", "fa-ir": "fa",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}

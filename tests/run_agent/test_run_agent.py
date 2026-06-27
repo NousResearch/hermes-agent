@@ -4465,6 +4465,61 @@ class TestRunConversation:
         assert result["final_response"] == "Done searching"
         mock_print.assert_not_called()
 
+    def test_material_tool_call_content_is_recovered_when_interim_disabled(self, agent):
+        self._setup_agent(agent)
+        agent.platform = "whatsapp"
+        agent.interim_assistant_callback = None
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        hidden_quote = (
+            "Jersey + short + team tee is RM128/set.\n"
+            "4 x RM128 = RM512\n"
+            "Postage = RM7\n"
+            "Total = RM519"
+        )
+        resp1 = _mock_response(
+            content=hidden_quote,
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        resp2 = _mock_response(
+            content="When do you need them by?",
+            finish_reason="stop",
+        )
+        recovered = (
+            "For 4 sets with jersey + short + team tee:\n"
+            "4 x RM128 = RM512\n"
+            "Postage = RM7\n"
+            "Total = RM519\n\n"
+            "When do you need them by?"
+        )
+        resp3 = _mock_response(content=recovered, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2, resp3]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="postage checked"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("how much for 4 sets?")
+
+        assert result["final_response"] == recovered
+        assert result["api_calls"] == 3
+        third_call_messages = (
+            agent.client.chat.completions.create.call_args_list[2]
+            .kwargs["messages"]
+        )
+        assert any(
+            msg.get("role") == "user"
+            and hidden_quote in msg.get("content", "")
+            and "When do you need them by?" in msg.get("content", "")
+            for msg in third_call_messages
+        )
+        assert not any(
+            msg.get("_undelivered_interim_synthetic")
+            for msg in result["messages"]
+        )
+
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)
 

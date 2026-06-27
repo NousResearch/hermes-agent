@@ -5270,9 +5270,7 @@ class AIAgent:
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
-    def _emit_interim_assistant_message(
-        self, assistant_msg: Dict[str, Any]
-    ) -> None:
+    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> bool:
         """Surface a real mid-turn assistant commentary message to the UI layer.
 
         Does NOT set ``_response_was_previewed`` — that flag means "the final
@@ -5282,10 +5280,14 @@ class AIAgent:
         suppress a *different* final summary (e.g. from ``_handle_max_iterations``)
         when the only streamed text was unrelated mid-turn commentary. (#65919
         review: response-loss blocker)
+
+        Returns whether the visible content was already delivered or accepted by
+        the callback. Messaging gateways can disable interim messages entirely,
+        so callers that care about user-visible delivery need this distinction.
         """
         cb = getattr(self, "interim_assistant_callback", None)
-        if cb is None or not isinstance(assistant_msg, dict):
-            return
+        if not isinstance(assistant_msg, dict):
+            return False
         commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
         undelivered_parts: List[str] = []
         pending_keys: set[str] = set()
@@ -5309,8 +5311,10 @@ class AIAgent:
             or visible == "(empty)"
             or self._interim_text_was_delivered(visible)
         ):
-            return
+            return self._interim_content_was_streamed(visible) if visible else False
         already_streamed = self._interim_content_was_streamed(visible)
+        if cb is None:
+            return already_streamed
         try:
             cb(visible, already_streamed=already_streamed)
             if undelivered_parts:
@@ -5318,8 +5322,10 @@ class AIAgent:
                     self._record_delivered_interim_text(part)
             else:
                 self._record_delivered_interim_text(visible)
+            return True
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
+            return already_streamed
 
     def _ensure_stream_writer_state(self) -> None:
         """Lazily create the single-writer guard fields (#65991).

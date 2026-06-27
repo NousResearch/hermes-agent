@@ -136,19 +136,20 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
 
 
 def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]:
-    """Layer enabled MCP servers onto a per-job ``enabled_toolsets`` allowlist.
+    """Apply MCP server allowlist semantics to per-job ``enabled_toolsets``.
 
-    A per-job list scopes the *native* toolsets, but on its own it silently
-    drops every MCP server: ``discover_mcp_tools()`` registers the tools into
-    the global registry, yet ``get_tool_definitions(enabled_toolsets=...)``
-    only keeps toolsets named in the list. The agent then rejects every
-    ``mcp_*`` call with "Unknown tool". This restores parity with
-    ``_get_platform_tools`` MCP semantics:
+    A per-job ``enabled_toolsets`` is the user's explicit allowlist: they get
+    exactly the native toolsets and MCP server names they listed.  Unlike the
+    platform-default path (``_get_platform_tools``), per-job lists do NOT
+    auto-add every globally-enabled MCP server — that would bypass the
+    restrictive intent of ``enabled_toolsets`` and let cron jobs access
+    desktop/browser automation tools the user never opted into (#53416).
 
       * ``no_mcp`` sentinel present  -> no MCP servers (sentinel stripped)
       * one or more MCP server names already listed -> treat as an allowlist,
         add nothing further (the user named exactly the servers they want)
-      * otherwise -> union in every globally-enabled MCP server
+      * otherwise -> no MCP servers added (the list already says everything
+        the user wants)
     """
     result = [t for t in per_job if t != "no_mcp"]
     if "no_mcp" in per_job:
@@ -160,9 +161,8 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     enabled_mcp = enabled_mcp_server_names(cfg)
     if set(result) & enabled_mcp:
         return result
-    for name in sorted(enabled_mcp):
-        if name not in result:
-            result.append(name)
+    # Per-job enabled_toolsets is a restrictive allowlist — do NOT auto-add
+    # all globally-enabled MCP servers. The user gets exactly what they listed.
     return result
 
 

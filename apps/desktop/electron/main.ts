@@ -357,6 +357,10 @@ function pathWithHermesManagedNode(...entries) {
 const ACTIVE_HERMES_ROOT = path.join(HERMES_HOME, 'hermes-agent')
 // VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
 const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
+// SIDECAR_DIR — the hermes-eats-world sidecar (Windows UI-automation engine).
+// The composer's "attach app/window" picker shells out to its CLI. Override
+// with HERMES_SIDECAR_DIR; defaults to ~/hermes-eats-world.
+const SIDECAR_DIR = process.env.HERMES_SIDECAR_DIR || path.join(app.getPath('home'), 'hermes-eats-world')
 // BOOTSTRAP_COMPLETE_MARKER — written by the first-launch bootstrap runner
 // (Phase 1D) after install.ps1 has completed all stages and the user has
 // finished initial configuration. Presence of this marker means the install
@@ -8059,6 +8063,50 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   }
 
   return result.filePaths
+})
+
+ipcMain.handle('hermes:listWindows', async () => {
+  const { execFile } = require('node:child_process')
+  const python = getNoConsoleVenvPython(VENV_ROOT)
+  if (!fileExists(python)) {
+    throw new Error(`Hermes Python environment not found at ${VENV_ROOT}`)
+  }
+  if (!directoryExists(SIDECAR_DIR)) {
+    throw new Error(`Sidecar not found at ${SIDECAR_DIR} (set HERMES_SIDECAR_DIR to override)`)
+  }
+
+  const env = {
+    ...process.env,
+    ...buildDesktopBackendEnv({
+      hermesHome: HERMES_HOME,
+      pythonPathEntries: [SIDECAR_DIR, ...getVenvSitePackagesEntries(VENV_ROOT)],
+      venvRoot: VENV_ROOT
+    })
+  }
+
+  const stdout = await new Promise((resolve, reject) => {
+    execFile(
+      python,
+      ['-m', 'sidecar.service', '--list', '--json'],
+      { cwd: SIDECAR_DIR, env, timeout: 15000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+      (err, out, errOut) => {
+        if (err) {
+          const tail = errOut ? `\n${String(errOut).slice(-500)}` : ''
+          reject(new Error(`Window list failed: ${err.message}${tail}`))
+          return
+        }
+        resolve(String(out || ''))
+      }
+    )
+  })
+
+  let parsed
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    throw new Error('Window list returned non-JSON output')
+  }
+  return Array.isArray(parsed?.windows) ? parsed.windows : []
 })
 
 ipcMain.handle('hermes:writeClipboard', (_event, text) => {

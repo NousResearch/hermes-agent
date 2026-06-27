@@ -77,6 +77,9 @@ declare global {
       readFileDataUrl: (filePath: string) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
+      // List open top-level windows on the desktop (via the hermes-eats-world
+      // sidecar). Powers the composer's "attach app/window" picker.
+      listWindows: () => Promise<HermesWindowInfo[]>
       writeClipboard: (text: string) => Promise<boolean>
       saveImageFromUrl: (url: string) => Promise<boolean>
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
@@ -775,6 +778,17 @@ export interface HermesSelectPathsOptions {
   directories?: boolean
   multiple?: boolean
   filters?: Array<{ name: string; extensions: string[] }>
+}
+
+/** An open top-level window reported by the hermes-eats-world sidecar
+ *  (`--list --json`). Mirrors the sidecar's WindowInfo payload. */
+export interface HermesWindowInfo {
+  name: string
+  class_name: string
+  automation_id: string
+  pid: number
+  bounding_box: { left: number; top: number; width: number; height: number } | null
+  is_enabled: boolean
 }
 
 export interface BackendExit {

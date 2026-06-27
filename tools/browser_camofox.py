@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _DEFAULT_TIMEOUT = 30  # seconds per HTTP request
+_LOCAL_SERVICE_PROXIES = {"http": None, "https": None}
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
@@ -77,7 +78,7 @@ def check_camofox_available() -> bool:
     if not url:
         return False
     try:
-        resp = requests.get(f"{url}/health", timeout=5)
+        resp = requests.get(f"{url}/health", timeout=5, proxies=_LOCAL_SERVICE_PROXIES)
         if resp.status_code == 200 and not _vnc_url_checked:
             try:
                 data = resp.json()
@@ -349,6 +350,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
             "url": url,
         },
         timeout=_DEFAULT_TIMEOUT,
+        proxies=_LOCAL_SERVICE_PROXIES,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -387,7 +389,7 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """POST JSON to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout)
+    resp = requests.post(url, json=body, timeout=timeout, proxies=_LOCAL_SERVICE_PROXIES)
     resp.raise_for_status()
     return resp.json()
 
@@ -395,7 +397,7 @@ def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
 def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """GET from camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, params=params, timeout=timeout, proxies=_LOCAL_SERVICE_PROXIES)
     resp.raise_for_status()
     return resp.json()
 
@@ -403,7 +405,7 @@ def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dic
 def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
     """GET from camofox and return raw response (for binary data)."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, params=params, timeout=timeout, proxies=_LOCAL_SERVICE_PROXIES)
     resp.raise_for_status()
     return resp
 
@@ -411,7 +413,7 @@ def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) ->
 def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """DELETE to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout)
+    resp = requests.delete(url, json=body, timeout=timeout, proxies=_LOCAL_SERVICE_PROXIES)
     resp.raise_for_status()
     return resp.json()
 

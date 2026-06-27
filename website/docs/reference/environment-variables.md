@@ -673,6 +673,8 @@ Context compression is configured exclusively through `config.yaml` — there ar
 compression:
   enabled: true
   threshold: 0.50
+  post_response_enabled: false
+  post_response_threshold: null  # null = use the live compression threshold
   target_ratio: 0.20         # fraction of threshold to preserve as recent tail
   protect_last_n: 20         # minimum recent messages to keep uncompressed
 ```

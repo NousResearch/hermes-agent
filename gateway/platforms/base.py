@@ -34,6 +34,7 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+_POST_DELIVERY_TIMEOUT_ATTR = "_hermes_post_delivery_timeout_seconds"
 
 
 def _platform_name(platform) -> str:
@@ -3677,6 +3678,21 @@ class BasePlatformAdapter(ABC):
                     except Exception:
                         logger.debug("Post-delivery callback failed", exc_info=True)
 
+                _prev_timeout = getattr(
+                    _prev,
+                    _POST_DELIVERY_TIMEOUT_ATTR,
+                    _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                )
+                _new_timeout = getattr(
+                    _new,
+                    _POST_DELIVERY_TIMEOUT_ATTR,
+                    _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                )
+                try:
+                    _chain_timeout = max(float(_prev_timeout), float(_new_timeout))
+                except (TypeError, ValueError):
+                    _chain_timeout = _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+                setattr(_chained, _POST_DELIVERY_TIMEOUT_ATTR, _chain_timeout)
                 callback = _chained
 
         if generation is None:
@@ -4948,10 +4964,12 @@ class BasePlatformAdapter(ABC):
                 try:
                     _post_result = _post_cb()
                     if inspect.isawaitable(_post_result):
-                        await asyncio.wait_for(
-                            _post_result,
-                            timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                        _post_timeout = getattr(
+                            _post_cb,
+                            _POST_DELIVERY_TIMEOUT_ATTR,
+                            _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
                         )
+                        await asyncio.wait_for(_post_result, timeout=_post_timeout)
                 except (asyncio.TimeoutError, Exception):
                     pass
             # Some adapters keep platform-level typing tasks.  If callback

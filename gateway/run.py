@@ -10654,6 +10654,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
+            if not (
+                agent_failed_early
+                or is_context_overflow_failure
+                or agent_result.get("compression_exhausted")
+            ):
+                self._register_post_response_compression(
+                    session_key=session_key,
+                    session_entry=session_entry,
+                    source=source,
+                    agent_result=agent_result,
+                    run_generation=run_generation,
+                )
+
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
             # still persisted in session history so later turns keep normal
@@ -10814,6 +10827,274 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
+
+    def _post_response_compression_settings(self) -> tuple[bool, Optional[float]]:
+        """Return gateway post-response compression settings.
+
+        The feature is opt-in because it can spend the compression-model call
+        even if the user never sends another message.  Preflight compression
+        remains the always-available safety net for the next turn.
+        """
+        try:
+            cfg = _load_gateway_config()
+        except Exception:
+            cfg = {}
+        comp = cfg.get("compression", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(comp, dict):
+            return False, None
+        compression_enabled = str(comp.get("enabled", True)).lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+        post_enabled = str(comp.get("post_response_enabled", False)).lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+        if not compression_enabled or not post_enabled:
+            return False, None
+        raw_threshold = comp.get("post_response_threshold")
+        if raw_threshold in (None, ""):
+            return True, None
+        try:
+            threshold_ratio = float(raw_threshold)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring invalid compression.post_response_threshold=%r; "
+                "using the live compression threshold.",
+                raw_threshold,
+            )
+            return True, None
+        if not (0.0 < threshold_ratio <= 1.0):
+            logger.warning(
+                "Ignoring out-of-range compression.post_response_threshold=%r; "
+                "expected a ratio between 0.0 and 1.0.",
+                raw_threshold,
+            )
+            return True, None
+        return True, threshold_ratio
+
+    def _cached_agent_for_post_response_compression(self, session_key: str):
+        if not session_key:
+            return None
+        cache = getattr(self, "_agent_cache", None)
+        lock = getattr(self, "_agent_cache_lock", None)
+        if cache is None or lock is None:
+            return None
+        with lock:
+            cached = cache.get(session_key)
+            if not isinstance(cached, tuple) or not cached:
+                return None
+            agent = cached[0]
+            if agent is _AGENT_PENDING_SENTINEL:
+                return None
+            return agent
+
+    def _register_post_response_compression(
+        self,
+        *,
+        session_key: str,
+        session_entry: Any,
+        source: Any,
+        agent_result: Dict[str, Any],
+        run_generation: int,
+    ) -> None:
+        enabled, threshold_ratio = self._post_response_compression_settings()
+        if not enabled:
+            return
+        if not session_key or not isinstance(agent_result, dict):
+            return
+        if not agent_result.get("messages"):
+            return
+
+        adapter = (
+            self.adapters.get(source.platform)
+            if getattr(self, "adapters", None)
+            else None
+        )
+        if not adapter or not hasattr(adapter, "register_post_delivery_callback"):
+            logger.debug(
+                "Post-response compression skipped: adapter has no post-delivery callback"
+            )
+            return
+
+        async def _compress_after_delivery() -> None:
+            await self._run_post_response_compression(
+                session_key=session_key,
+                session_entry=session_entry,
+                source=source,
+                agent_result=agent_result,
+                threshold_ratio=threshold_ratio,
+            )
+        # Compression is an auxiliary LLM call and can legitimately exceed the
+        # generic post-delivery callback timeout. Delivery has already happened;
+        # keep the session guard until this finishes so the cached agent and DB
+        # are not mutated concurrently with the next turn.
+        try:
+            setattr(
+                _compress_after_delivery,
+                "_hermes_post_delivery_timeout_seconds",
+                180.0,
+            )
+        except Exception:
+            pass
+
+        try:
+            adapter.register_post_delivery_callback(
+                session_key,
+                _compress_after_delivery,
+                generation=run_generation,
+            )
+        except Exception:
+            logger.debug(
+                "Post-response compression callback registration failed",
+                exc_info=True,
+            )
+
+    async def _run_post_response_compression(
+        self,
+        *,
+        session_key: str,
+        session_entry: Any,
+        source: Any,
+        agent_result: Dict[str, Any],
+        threshold_ratio: Optional[float] = None,
+    ) -> None:
+        """Best-effort gateway compaction after the response is delivered."""
+        try:
+            await self._run_in_executor_with_context(
+                self._run_post_response_compression_sync,
+                session_key,
+                session_entry,
+                source,
+                agent_result,
+                threshold_ratio,
+            )
+        except Exception:
+            logger.warning(
+                "Post-response compression failed for session %s",
+                getattr(session_entry, "session_id", None) or session_key,
+                exc_info=True,
+            )
+
+    def _run_post_response_compression_sync(
+        self,
+        session_key: str,
+        session_entry: Any,
+        source: Any,
+        agent_result: Dict[str, Any],
+        threshold_ratio: Optional[float] = None,
+    ) -> None:
+        agent = self._cached_agent_for_post_response_compression(session_key)
+        if agent is None:
+            logger.debug(
+                "Post-response compression skipped: no cached agent for %s",
+                session_key,
+            )
+            return
+        if not getattr(agent, "compression_enabled", True):
+            return
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor is None:
+            return
+
+        messages = agent_result.get("messages")
+        if not isinstance(messages, list) or len(messages) < 4:
+            return
+
+        from agent.model_metadata import estimate_request_tokens_rough
+
+        system_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+        tools = getattr(agent, "tools", None) or None
+        approx_tokens = estimate_request_tokens_rough(
+            messages,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+        threshold_tokens = int(getattr(compressor, "threshold_tokens", 0) or 0)
+        if threshold_ratio is not None:
+            context_length = int(getattr(compressor, "context_length", 0) or 0)
+            if context_length > 0:
+                threshold_tokens = int(context_length * threshold_ratio)
+        if threshold_tokens <= 0 or approx_tokens < threshold_tokens:
+            logger.debug(
+                "Post-response compression skipped for %s: ~%s tokens below %s",
+                session_key,
+                f"{approx_tokens:,}",
+                f"{threshold_tokens:,}",
+            )
+            return
+
+        old_session_id = getattr(agent, "session_id", None) or getattr(
+            session_entry, "session_id", ""
+        )
+        try:
+            agent._last_compaction_in_place = False
+        except Exception:
+            pass
+
+        logger.info(
+            "Post-response compression: session=%s ~%s tokens >= %s threshold",
+            old_session_id or session_key,
+            f"{approx_tokens:,}",
+            f"{threshold_tokens:,}",
+        )
+        compressed, _ = agent._compress_context(
+            messages,
+            None,
+            approx_tokens=approx_tokens,
+            task_id=old_session_id or session_key,
+        )
+
+        new_session_id = getattr(agent, "session_id", None) or old_session_id
+        rotated = bool(new_session_id and new_session_id != old_session_id)
+        compacted_in_place = bool(getattr(agent, "_last_compaction_in_place", False))
+        if not rotated and not compacted_in_place:
+            logger.info(
+                "Post-response compression made no durable change for session=%s",
+                old_session_id or session_key,
+            )
+            return
+
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return
+
+        if rotated:
+            entry = getattr(store, "_entries", {}).get(session_key, session_entry)
+            if entry is not None:
+                entry.session_id = new_session_id
+            save = getattr(store, "_save", None)
+            if callable(save):
+                save()
+            sync_binding = getattr(self, "_sync_telegram_topic_binding", None)
+            if callable(sync_binding) and entry is not None:
+                sync_binding(source, entry, reason="post-response-compression")
+            # In rotation mode _compress_context creates the continuation
+            # session, but the post-turn gateway path is already over, so write
+            # the compacted live context into the new row here.
+            rewrite = getattr(store, "rewrite_transcript", None)
+            if callable(rewrite):
+                rewrite(new_session_id, compressed)
+        elif compacted_in_place and getattr(agent, "_session_db", None) is None:
+            # With a real SessionDB, _compress_context already called
+            # archive_and_compact(), preserving inactive archived rows. Only
+            # fall back to rewrite when no DB-backed compaction was possible.
+            rewrite = getattr(store, "rewrite_transcript", None)
+            if callable(rewrite):
+                rewrite(new_session_id, compressed)
+
+        update = getattr(store, "update_session", None)
+        if callable(update):
+            update(session_key, last_prompt_tokens=0)
+        self._refresh_agent_cache_message_count(session_key, new_session_id)
+        logger.info(
+            "Post-response compression complete: session=%s messages=%d->%d",
+            new_session_id or session_key,
+            len(messages),
+            len(compressed) if isinstance(compressed, list) else 0,
+        )
 
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.

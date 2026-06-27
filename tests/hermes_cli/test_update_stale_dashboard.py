@@ -112,10 +112,22 @@ class TestFindStaleDashboardPids:
                     _ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119"),
                     _ps_line(12346, "hermes dashboard --port 9120 --no-open"),
                     _ps_line(12347, "python /home/x/hermes_cli/main.py dashboard"),
+                    _ps_line(12348, "/home/u/.hermes/hermes-agent/venv/bin/hermes -p lspchan dashboard --port 19120"),
+                    _ps_line(12349, "/home/u/.hermes/hermes-agent/venv/bin/hermes --profile upchan-bot dashboard --port 19121"),
+                    _ps_line(12350, "python3 /home/u/.hermes/hermes-agent/venv/bin/hermes -p lspchan dashboard --port 19120"),
+                    _ps_line(12351, "python3 /home/u/.hermes/hermes-agent/venv/bin/hermes --profile upchan-bot dashboard --port 19121"),
                 ]) + "\n",
                 stderr="",
             )
-            assert sorted(_find_stale_dashboard_pids()) == [12345, 12346, 12347]
+            assert sorted(_find_stale_dashboard_pids()) == [
+                12345,
+                12346,
+                12347,
+                12348,
+                12349,
+                12350,
+                12351,
+            ]
 
     def test_self_pid_excluded(self):
         with patch("subprocess.run") as mock_run:
@@ -151,6 +163,11 @@ class TestFindStaleDashboardPids:
                     _ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119"),
                     _ps_line(22222, "python3 -m hermes_cli.main chat -q 'rewrite my dashboard'"),
                     _ps_line(33333, "node /opt/grafana/dashboard-server.js"),
+                    _ps_line(44444, "bash -c 'echo hermes -p lspchan dashboard'"),
+                    _ps_line(55555, "hermes chat -q dashboard"),
+                    _ps_line(66666, "python3 /home/u/.hermes/hermes-agent/venv/bin/hermes chat -q dashboard"),
+                    _ps_line(77777, "hermes --oneshot dashboard"),
+                    _ps_line(88888, "python3 -m hermes_cli.main --oneshot dashboard"),
                 ]) + "\n",
                 stderr="",
             )

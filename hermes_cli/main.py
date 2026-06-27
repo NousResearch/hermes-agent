@@ -62,6 +62,7 @@ except ModuleNotFoundError:
     pass
 
 import os
+import shlex
 import sys
 
 
@@ -5697,11 +5698,71 @@ def _find_stale_dashboard_pids(
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-    ]
+    def _is_dashboard_command(command: str) -> bool:
+        """Return True for real Hermes dashboard invocations.
+
+        Match argv shape instead of greedy substrings so profile-scoped
+        dashboards like ``hermes -p lspchan dashboard`` are detected while
+        unrelated chat/bash processes merely mentioning "dashboard" are not.
+        """
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            argv = command.split()
+        if not argv:
+            return False
+
+        value_flags = {
+            "-z",
+            "--oneshot",
+            "--prompt",
+            "-m",
+            "--model",
+            "--provider",
+            "-t",
+            "--toolsets",
+            "--resume",
+            "-r",
+            "--continue",
+            "-c",
+            "--skills",
+            "-s",
+            "--profile",
+            "-p",
+        }
+
+        def _first_cli_command(start: int) -> str | None:
+            i = start
+            while i < len(argv):
+                arg = argv[i]
+                if arg == "--":
+                    return argv[i + 1] if i + 1 < len(argv) else None
+                if arg.startswith("--") and "=" in arg:
+                    i += 1
+                    continue
+                if arg in value_flags:
+                    i += 2
+                    continue
+                if arg.startswith("-"):
+                    i += 1
+                    continue
+                return arg
+            return None
+
+        exe = os.path.basename(argv[0])
+        if exe == "hermes":
+            return _first_cli_command(1) == "dashboard"
+
+        if exe.startswith("python") and len(argv) >= 3:
+            if argv[1] == "-m" and argv[2] == "hermes_cli.main":
+                return _first_cli_command(3) == "dashboard"
+            script = argv[1].replace("\\", "/")
+            if script.endswith("hermes_cli/main.py"):
+                return _first_cli_command(2) == "dashboard"
+            if os.path.basename(script) == "hermes":
+                return _first_cli_command(2) == "dashboard"
+        return False
+
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -5731,10 +5792,7 @@ def _find_stale_dashboard_pids(
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
-                    if (
-                        any(p in current_cmd for p in patterns)
-                        and int(pid_str) != self_pid
-                    ):
+                    if _is_dashboard_command(current_cmd) and int(pid_str) != self_pid:
                         try:
                             dashboard_pids.append(int(pid_str))
                         except ValueError:
@@ -5765,7 +5823,7 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if _is_dashboard_command(command) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

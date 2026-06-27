@@ -225,6 +225,34 @@ def _read_pyproject_version() -> str | None:
     return None
 
 
+def _check_agent_source_consistency(issues: list[str]) -> None:
+    """Detect partial installs where agent modules drift out of sync.
+
+    An interrupted ``git pull`` / ``hermes update`` can leave
+    ``conversation_loop`` importing symbols that ``message_sanitization`` no
+    longer exports, crashing every agent turn with ImportError until a full
+    reinstall and hard process kill.
+    """
+    import importlib
+
+    try:
+        mod = importlib.import_module("agent.message_sanitization")
+        if not callable(getattr(mod, "close_interrupted_tool_sequence", None)):
+            raise ImportError(
+                "agent.message_sanitization missing close_interrupted_tool_sequence"
+            )
+    except ImportError as exc:
+        _fail_and_issue(
+            "Agent core modules out of sync (partial install)",
+            str(exc),
+            "Run `hermes update`, then kill any stale gateway/TUI processes "
+            "(stop/restart may leave old code in memory)",
+            issues,
+        )
+        return
+    check_ok("Agent core imports consistent")
+
+
 def _check_version_consistency(issues: list[str]) -> None:
     """Verify pyproject.toml version matches hermes_cli.__version__.
 
@@ -628,6 +656,7 @@ def run_doctor(args):
     # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
     # (a git conflict resolution can silently revert one but not the other).
     _check_version_consistency(issues)
+    _check_agent_source_consistency(issues)
 
     _section("SSL / CA Certificates")
     check_certificates()

@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { PetGrid } from '../components/petSprite.js'
 
+import { isMissingRpcMethod } from '../lib/rpc.js'
+
 import { useGateway } from './gatewayContext.js'
 import { $overlayState, getOverlayState } from './overlayStore.js'
 import { $petFlash } from './petFlashStore.js'
@@ -107,12 +109,15 @@ export interface PetRender {
  * live. The frame cache is keyed by `slug:state` so a switch re-pulls cleanly.
  */
 export function usePet(): PetRender {
-  const { rpc } = useGateway()
+  const { gw } = useGateway()
   const { write } = useStdout()
   const [enabled, setEnabled] = useState(false)
   const [grid, setGrid] = useState<PetGrid | null>(null)
   const [kitty, setKitty] = useState<KittyView | null>(null)
 
+  // Older gateways (pre-pet.cells) must not spam the transcript via the shared
+  // `rpc` wrapper, which logs every failure to sys().
+  const petCellsSupportedRef = useRef(true)
   const cache = useRef<Map<string, CacheEntry>>(new Map())
   const slugRef = useRef('')
   const scaleRef = useRef(0)
@@ -193,8 +198,12 @@ export function usePet(): PetRender {
   // config, so its `slug`/`enabled` are the source of truth.
   const sync = useCallback(
     async (state: PetState) => {
+      if (!petCellsSupportedRef.current) {
+        return
+      }
+
       try {
-        const res = (await rpc('pet.cells', { graphics: IS_TTY, state })) as PetCellsResult | null
+        const res = await gw.request<PetCellsResult>('pet.cells', { graphics: IS_TTY, state })
 
         if (!res) {
           return
@@ -243,11 +252,20 @@ export function usePet(): PetRender {
         }
 
         setEnabled(true)
-      } catch {
-        // cosmetic — ignore RPC failures
+      } catch (err) {
+        if (isMissingRpcMethod(err)) {
+          petCellsSupportedRef.current = false
+          releaseKitty()
+          slugRef.current = ''
+          cache.current.clear()
+          setGrid(null)
+          setKitty(null)
+          setEnabled(false)
+        }
+        // cosmetic — never surface pet RPC failures in the transcript
       }
     },
-    [rpc, releaseKitty]
+    [gw, releaseKitty]
   )
 
   // Pull frames whenever the state changes (if not already cached for the

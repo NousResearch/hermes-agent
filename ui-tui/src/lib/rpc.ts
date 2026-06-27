@@ -47,3 +47,7 @@ export const asCommandDispatch = (value: unknown): CommandDispatchResponse | nul
 
 export const rpcErrorMessage = (err: unknown) =>
   err instanceof Error && err.message ? err.message : typeof err === 'string' && err.trim() ? err : 'request failed'
+
+/** True when the gateway backend predates a cosmetic RPC (e.g. pet.cells). */
+export const isMissingRpcMethod = (err: unknown) =>
+  /method not found|-32601|unknown method|no such method/i.test(rpcErrorMessage(err))

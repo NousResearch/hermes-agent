@@ -78,6 +78,7 @@ from hermes_cli.config import (
 from gateway.status import (
     derive_gateway_busy,
     derive_gateway_drainable,
+    get_running_pid_cached,
     get_running_pid,
     get_runtime_status_running_pid,
     parse_active_agents,
@@ -2456,7 +2457,7 @@ async def get_status(profile: Optional[str] = None):
         # Try local PID check first (same-host).  If that fails and a remote
         # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
         # dashboard works when the gateway runs in a separate container.
-        gateway_pid = get_running_pid()
+        gateway_pid = get_running_pid_cached()
         gateway_running = gateway_pid is not None
         remote_health_body: dict | None = None
 

@@ -364,6 +364,8 @@ export function ChatBar({
     prevSessionIdRef.current = sessionId
 
     if (prev === sessionId) {
+      setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
+
       return
     }
 

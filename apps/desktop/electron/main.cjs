@@ -3865,32 +3865,49 @@ function sendWindowStateChanged(nextIsFullscreen) {
   webContents.send('hermes:window-state-changed', state)
 }
 
+function isSimplifiedChineseDesktopLocale() {
+  const locale = String(app.getLocale?.() || app.getSystemLocale?.() || '').toLowerCase().replace(/_/g, '-')
+  return locale === 'zh' || locale.startsWith('zh-cn') || locale.startsWith('zh-hans')
+}
+
+function desktopLabel(english, simplifiedChinese) {
+  return isSimplifiedChineseDesktopLocale() ? simplifiedChinese : english
+}
+
+function desktopRole(role, simplifiedChinese, options = {}) {
+  const item = { role, ...options }
+  if (isSimplifiedChineseDesktopLocale()) {
+    item.label = simplifiedChinese
+  }
+  return item
+}
+
 function buildApplicationMenu() {
   const template = []
   const checkForUpdatesItem = {
-    label: 'Check for Updates…',
+    label: desktopLabel('Check for Updates…', '检查更新…'),
     click: () => sendOpenUpdatesRequested()
   }
   if (IS_MAC) {
     template.push({
       label: APP_NAME,
       submenu: [
-        { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
+        { label: desktopLabel(`About ${APP_NAME}`, `关于 ${APP_NAME}`), click: () => showAboutPanelFresh() },
         checkForUpdatesItem,
         { type: 'separator' },
-        { role: 'services' },
+        desktopRole('services', '服务'),
         { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
+        desktopRole('hide', `隐藏 ${APP_NAME}`),
+        desktopRole('hideOthers', '隐藏其他'),
+        desktopRole('unhide', '全部显示'),
         { type: 'separator' },
-        { role: 'quit' }
+        desktopRole('quit', `退出 ${APP_NAME}`)
       ]
     })
   }
 
   template.push({
-    label: 'File',
+    label: desktopLabel('File', '文件'),
     submenu: [
       IS_MAC
         ? {
@@ -3902,40 +3919,40 @@ function buildApplicationMenu() {
                 mainWindow?.close()
               }
             },
-            label: 'Close'
+            label: desktopLabel('Close', '关闭窗口')
           }
-        : { role: 'quit' }
+        : desktopRole('quit', '退出')
     ]
   })
   template.push({
-    label: 'Edit',
+    label: desktopLabel('Edit', '编辑'),
     submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
+      desktopRole('undo', '撤销'),
+      desktopRole('redo', '重做'),
       { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      { role: 'delete' },
-      { role: 'selectAll' }
+      desktopRole('cut', '剪切'),
+      desktopRole('copy', '复制'),
+      desktopRole('paste', '粘贴'),
+      desktopRole('delete', '删除'),
+      desktopRole('selectAll', '全选')
     ]
   })
   template.push({
-    label: 'View',
+    label: desktopLabel('View', '视图'),
     submenu: [
-      { role: 'reload' },
-      { role: 'forceReload' },
-      { role: 'toggleDevTools' },
+      desktopRole('reload', '重新加载'),
+      desktopRole('forceReload', '强制重新加载'),
+      desktopRole('toggleDevTools', '切换开发者工具'),
       { type: 'separator' },
       {
-        label: 'Actual Size',
+        label: desktopLabel('Actual Size', '实际大小'),
         accelerator: 'CommandOrControl+0',
         click: () => {
           setAndPersistZoomLevel(mainWindow, 0)
         }
       },
       {
-        label: 'Zoom In',
+        label: desktopLabel('Zoom In', '放大'),
         accelerator: 'CommandOrControl+Plus',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -3944,7 +3961,7 @@ function buildApplicationMenu() {
         }
       },
       {
-        label: 'Zoom Out',
+        label: desktopLabel('Zoom Out', '缩小'),
         accelerator: 'CommandOrControl+-',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -3953,17 +3970,17 @@ function buildApplicationMenu() {
         }
       },
       { type: 'separator' },
-      { role: 'togglefullscreen' }
+      desktopRole('togglefullscreen', '切换全屏')
     ]
   })
   template.push({
-    label: 'Window',
+    label: desktopLabel('Window', '窗口'),
     submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
+      ? [desktopRole('minimize', '最小化'), desktopRole('zoom', '缩放'), desktopRole('front', '前置全部窗口')]
+      : [desktopRole('minimize', '最小化'), desktopRole('close', '关闭')]
   })
   template.push({
-    label: 'Help',
+    label: desktopLabel('Help', '帮助'),
     role: 'help',
     submenu: [checkForUpdatesItem]
   })
@@ -4081,7 +4098,7 @@ function installContextMenu(window) {
     if (hasImage) {
       template.push(
         {
-          label: 'Open Image',
+          label: desktopLabel('Open Image', '打开图片'),
           click: () => {
             if (params.srcURL && !params.srcURL.startsWith('data:')) {
               openExternalUrl(params.srcURL)
@@ -4090,17 +4107,17 @@ function installContextMenu(window) {
           enabled: !params.srcURL.startsWith('data:')
         },
         {
-          label: 'Copy Image',
+          label: desktopLabel('Copy Image', '复制图片'),
           click: () => {
             void copyImageFromUrl(params.srcURL).catch(error => rememberLog(`Copy image failed: ${error.message}`))
           }
         },
         {
-          label: 'Copy Image Address',
+          label: desktopLabel('Copy Image Address', '复制图片地址'),
           click: () => clipboard.writeText(params.srcURL)
         },
         {
-          label: 'Save Image As...',
+          label: desktopLabel('Save Image As...', '图片另存为…'),
           click: () => {
             void saveImageFromUrl(params.srcURL).catch(error => rememberLog(`Save image failed: ${error.message}`))
           }
@@ -4112,11 +4129,11 @@ function installContextMenu(window) {
       if (template.length) template.push({ type: 'separator' })
       template.push(
         {
-          label: 'Open Link',
+          label: desktopLabel('Open Link', '打开链接'),
           click: () => openExternalUrl(params.linkURL)
         },
         {
-          label: 'Copy Link',
+          label: desktopLabel('Copy Link', '复制链接'),
           click: () => clipboard.writeText(params.linkURL)
         }
       )
@@ -4139,7 +4156,7 @@ function installContextMenu(window) {
 
       template.push({ type: 'separator' })
       template.push({
-        label: 'Add to dictionary',
+        label: desktopLabel('Add to dictionary', '添加到词典'),
         click: () => window.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord)
       })
     }
@@ -4148,19 +4165,19 @@ function installContextMenu(window) {
       if (template.length) template.push({ type: 'separator' })
       if (isEditable) {
         template.push(
-          { role: 'cut', enabled: params.editFlags.canCut },
-          { role: 'copy', enabled: params.editFlags.canCopy },
-          { role: 'paste', enabled: params.editFlags.canPaste },
+          desktopRole('cut', '剪切', { enabled: params.editFlags.canCut }),
+          desktopRole('copy', '复制', { enabled: params.editFlags.canCopy }),
+          desktopRole('paste', '粘贴', { enabled: params.editFlags.canPaste }),
           { type: 'separator' },
-          { role: 'selectAll', enabled: params.editFlags.canSelectAll }
+          desktopRole('selectAll', '全选', { enabled: params.editFlags.canSelectAll })
         )
       } else {
-        template.push({ role: 'copy', enabled: params.editFlags.canCopy })
+        template.push(desktopRole('copy', '复制', { enabled: params.editFlags.canCopy }))
       }
     }
 
     if (!template.length) {
-      template.push({ role: 'selectAll' })
+      template.push(desktopRole('selectAll', '全选'))
     }
 
     Menu.buildFromTemplate(template).popup({ window })

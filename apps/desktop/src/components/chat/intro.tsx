@@ -1,5 +1,7 @@
 import { type CSSProperties, useState } from 'react'
 
+import { useI18n } from '@/i18n'
+
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
 type IntroCopy = {
@@ -38,6 +40,29 @@ const FALLBACK_COPY: IntroCopy[] = [
   {
     headline: 'What needs attention?',
     body: "Send the context you have. I'll help sort it into a plan or a fix."
+  }
+]
+
+const ZH_COPY: IntroCopy[] = [
+  {
+    headline: '准备好了',
+    body: '告诉我目标、贴一段报错，或给我一个文件路径。我会先看清上下文，再把事情推进到可验证的结果。'
+  },
+  {
+    headline: '今天从哪里开始？',
+    body: '可以让我看代码、跑测试、修 bug、整理方案或写文档。把任务说出来就行。'
+  },
+  {
+    headline: 'Hermes Agent 已就绪',
+    body: '描述你想做什么，我会读取相关文件、调用工具，并在需要你确认时停下来。'
+  },
+  {
+    headline: '把问题发给我',
+    body: '一个想法、一个路径、一段错误信息都可以。我会拆解步骤、执行操作，并检查结果。'
+  },
+  {
+    headline: '开始一个任务',
+    body: '说出目标即可：调研、编码、排查、测试、总结都可以从这里开始。'
   }
 ]
 
@@ -144,7 +169,11 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
 
 const WORDMARK = 'HERMES AGENT'
 
-function resolveCopy(personality?: string, seed?: number): IntroCopy {
+function resolveCopy(personality?: string, seed?: number, locale?: string): IntroCopy {
+  if (locale === 'zh') {
+    return pickCopy(ZH_COPY, seed)
+  }
+
   const personalityKey = normalizeKey(personality)
 
   const copies = NEUTRAL_PERSONALITIES.has(personalityKey)
@@ -155,8 +184,9 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 }
 
 export function Intro({ personality, seed }: IntroProps) {
+  const { locale } = useI18n()
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const copy = resolveCopy(personality, mountSeed + (seed ?? 0), locale)
 
   return (
     <div

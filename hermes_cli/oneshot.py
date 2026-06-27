@@ -364,7 +364,17 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    try:
+        return agent.chat(prompt) or ""
+    finally:
+        # Oneshot sessions are one-and-done.  Without this, the session row
+        # stays ended_at=NULL forever and piles up in "active sessions" UIs.
+        sid = getattr(agent, "session_id", None)
+        if session_db and sid:
+            try:
+                session_db.end_session(sid, "oneshot_complete")
+            except Exception:
+                pass
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

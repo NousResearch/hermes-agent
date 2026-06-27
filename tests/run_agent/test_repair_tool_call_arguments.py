@@ -1,6 +1,7 @@
 """Tests for _repair_tool_call_arguments — malformed JSON repair pipeline."""
 
 import json
+import pytest
 
 from run_agent import _repair_tool_call_arguments
 

@@ -2,7 +2,7 @@ import { AlertTriangle, Radio, Wifi, WifiOff } from "lucide-react";
 import type { PlatformStatus } from "@/lib/api";
 import { isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useI18n } from "@/i18n";
 
 export function PlatformsCard({ platforms }: PlatformsCardProps) {
@@ -57,18 +57,18 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
                 />
 
                 <div className="flex flex-col gap-0.5 min-w-0">
-                  <span className="font-mondwest normal-case text-sm font-medium capitalize truncate">
+                  <span className="text-sm font-medium capitalize truncate">
                     {name}
                   </span>
 
                   {info.error_message && (
-                    <span className="font-mondwest normal-case text-xs text-destructive">
+                    <span className="text-xs text-destructive">
                       {info.error_message}
                     </span>
                   )}
 
                   {info.updated_at && (
-                    <span className="font-mondwest normal-case text-xs text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       {t.status.lastUpdate}: {isoTimeAgo(info.updated_at)}
                     </span>
                   )}

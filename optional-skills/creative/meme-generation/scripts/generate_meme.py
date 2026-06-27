@@ -18,6 +18,7 @@ unknown templates get smart default text positioning based on their box_count.
 import json
 import os
 import sys
+import textwrap
 from io import BytesIO
 from pathlib import Path
 
@@ -357,7 +358,7 @@ def generate_meme(template_id: str, texts: list[str], output_path: str) -> str:
     img = _overlay_on_image(img, texts, fields)
 
     output = Path(output_path)
-    if output.suffix.lower() in {".jpg", ".jpeg"}:
+    if output.suffix.lower() in (".jpg", ".jpeg"):
         img = img.convert("RGB")
     img.save(str(output), quality=95)
     return str(output)
@@ -377,7 +378,7 @@ def generate_from_image(
         result = _overlay_on_image(img, texts, fields)
 
     output = Path(output_path)
-    if output.suffix.lower() in {".jpg", ".jpeg"}:
+    if output.suffix.lower() in (".jpg", ".jpeg"):
         result = result.convert("RGB")
     result.save(str(output), quality=95)
     return str(output)

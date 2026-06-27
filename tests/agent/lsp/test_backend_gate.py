@@ -8,6 +8,8 @@ syntax check exactly as if LSP were disabled.
 """
 from __future__ import annotations
 
+import os
+import sys
 from unittest.mock import MagicMock
 
 import pytest

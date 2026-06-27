@@ -7,6 +7,7 @@ Validates Excel DCF models for formula errors and common DCF mistakes
 import sys
 import json
 from pathlib import Path
+from typing import Optional
 
 
 class DCFModelValidator:

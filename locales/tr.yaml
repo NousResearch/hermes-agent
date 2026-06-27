@@ -90,7 +90,6 @@ gateway:
     nothing_to_do:         "Henüz sıkıştırılacak bir şey yok (transkript hâlâ tamamen korunan bağlam)."
     focus_line:            "Odak: \"{topic}\""
     summary_failed:        "⚠️ Özet oluşturma başarısız ({error}). {count} geçmiş mesaj kaldırılıp yer tutucuyla değiştirildi; önceki bağlam artık kurtarılamaz. auxiliary.compression model yapılandırmanızı kontrol edin."
-    aborted:               "⚠️ Sıkıştırma iptal edildi ({error}). Hiçbir mesaj silinmedi — konuşma değişmedi. Tekrar denemek için /compress, temiz bir oturum için /reset komutunu çalıştırın veya auxiliary.compression model yapılandırmanızı kontrol edin."
     aux_failed:            "ℹ️ Yapılandırılmış sıkıştırma modeli `{model}` başarısız oldu ({error}). Ana modelinizle kurtarıldı — bağlam sağlam — ancak config.yaml içindeki `auxiliary.compression.model` öğesini kontrol etmek isteyebilirsiniz."
     failed:                "Sıkıştırma başarısız: {error}"
 
@@ -222,12 +221,9 @@ gateway:
     no_named_sessions:     "Adlandırılmış oturum bulunamadı.\nMevcut oturumu adlandırmak için `/title Oturumum`, daha sonra geri dönmek için `/resume Oturumum` kullanın."
     list_header:           "📋 **Adlandırılmış Oturumlar**\n"
     list_item:             "• **{title}**{preview_part}"
-    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nKullanım: `/resume <oturum adı>`"
-    list_footer_numbered:  "\nKullanım: `/resume <oturum adı>` veya `/resume <numara>` (örn. en yenisi için `/resume 1`)"
     list_failed:           "Oturumlar listelenemedi: {error}"
-    out_of_range:          "Devam endeksi {index} aralık dışında.\nKullanılabilir oturumları görmek için `/resume` komutunu argümansız çalıştırın."
     not_found:             "'**{name}**' ile eşleşen oturum bulunamadı.\nKullanılabilir oturumları görmek için argümansız `/resume` kullanın."
     already_on:            "📌 Zaten **{name}** oturumundasınız."
     switch_failed:         "Oturum değiştirilemedi."
@@ -290,8 +286,7 @@ gateway:
 
   undo:
     nothing:               "Geri alınacak bir şey yok."
-    removed:               "↩️ {turns} tur geri alındı ({count} mesaj).\nYedeklendiği yer: \"{preview}\"\nYukarıdaki metni kopyalayıp/düzenleyip göndererek buradan yeniden sorabilirsiniz."
-    invalid_count:         "Geçersiz sayı \"{arg}\" — /undo veya /undo N kullanın."
+    removed:               "↩️ {count} mesaj geri alındı.\nKaldırıldı: \"{preview}\""
 
   update:
     platform_not_messaging:  "✗ /update yalnızca mesajlaşma platformlarında kullanılabilir. Terminalden `hermes update` komutunu çalıştırın."
@@ -343,8 +338,6 @@ gateway:
     label_off:             "Kapalı (yalnızca metin)"
     label_voice_only:      "Açık (sesli mesajlara sesli yanıt)"
     label_all:             "TTS (tüm mesajlara sesli yanıt)"
-    help:                  "{toggle}\n\n**/voice nasıl çalışır**\n• `/voice on` — sesli mesaj gönderdiğinde sesli yanıt\n• `/voice tts` — *her* mesaja sesli yanıt\n• `/voice off` — yalnızca metin yanıtlarına dön\n• `/voice status` — geçerli modu göster\n• `/voice` (argümansız) — açık ve kapalı arasında hızlı geçiş{channels}"
-    help_channels:         "\n\n**Canlı ses kanalları (Discord)**\n• Önce bir ses kanalına katıl, sonra `/voice channel` — katılırım, dinlerim ve yanıtlarımı sesli söylerim\n• `/voice leave` — ses kanalından ayrıl"
 
   yolo:
     disabled:                   "⚠️ Bu oturumda YOLO modu **KAPALI** — tehlikeli komutlar onay gerektirecek."

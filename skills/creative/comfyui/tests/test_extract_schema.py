@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 
 from extract_schema import (
     extract_schema,
@@ -39,7 +40,7 @@ class TestConnectionTracing:
         }
         # Should hit max_hops without infinite loop
         result = trace_to_node(wf, ["1", 0], max_hops=5)
-        assert result in {"1", "2"}  # any node, just don't hang
+        assert result in ("1", "2")  # any node, just don't hang
 
 
 class TestPositiveNegativeDetection:

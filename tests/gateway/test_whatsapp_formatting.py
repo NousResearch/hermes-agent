@@ -7,11 +7,11 @@ Covers:
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------

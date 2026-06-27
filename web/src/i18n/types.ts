@@ -60,10 +60,6 @@ export interface Translations {
     expand: string;
     general: string;
     messaging: string;
-    // Optional: non-English locales fall back to the English literal in the
-    // component until translated, matching the enriched-profiles keys.
-    gateway?: string;
-    gatewayHint?: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
   };
@@ -149,8 +145,6 @@ export interface Translations {
   // ── Sessions page ──
   sessions: {
     title: string;
-    history: string;
-    overview: string;
     searchPlaceholder: string;
     noSessions: string;
     noMatch: string;
@@ -162,20 +156,6 @@ export interface Translations {
     confirmDeleteMessage: string;
     sessionDeleted: string;
     failedToDelete: string;
-    deleteEmpty: string;
-    deleteEmptyConfirmTitle: string;
-    deleteEmptyConfirmMessage: string;
-    emptySessionsDeleted: string;
-    failedToDeleteEmpty: string;
-    selectSession: string;
-    selectAllOnPage: string;
-    clearSelection: string;
-    selectedCount: string;
-    deleteSelected: string;
-    deleteSelectedConfirmTitle: string;
-    deleteSelectedConfirmMessage: string;
-    selectedSessionsDeleted: string;
-    failedToDeleteSelected: string;
     resumeInChat: string;
     previousPage: string;
     nextPage: string;
@@ -249,40 +229,6 @@ export interface Translations {
     promptPlaceholder: string;
     schedule: string;
     schedulePlaceholder: string;
-    scheduleMode: string;
-    scheduleModes: {
-      interval: string;
-      daily: string;
-      weekly: string;
-      monthly: string;
-      once: string;
-      custom: string;
-      intervalEvery: string;
-      intervalUnit: string;
-      unitMinutes: string;
-      unitHours: string;
-      unitDays: string;
-      timeOfDay: string;
-      weekdays: string;
-      weekdaysShort: [string, string, string, string, string, string, string];
-      dayOfMonth: string;
-      onceAt: string;
-      customLabel: string;
-      customPlaceholder: string;
-      customHint: string;
-      preview: string;
-      previewEmpty: string;
-    };
-    scheduleDescribe: {
-      none: string;
-      everyMinutes: string;
-      everyHours: string;
-      everyDays: string;
-      dailyAt: string;
-      weeklyAt: string;
-      monthlyAt: string;
-      onceAt: string;
-    };
     deliverTo: string;
     scheduledJobs: string;
     noJobs: string;
@@ -297,8 +243,6 @@ export interface Translations {
       discord: string;
       slack: string;
       email: string;
-      needsHomeChannel?: string;
-      noneConfigured?: string;
     };
   };
 
@@ -371,39 +315,6 @@ export interface Translations {
     created: string;
     deleted: string;
     renamed: string;
-    // Optional keys added for the enriched profiles experience. Non-English
-    // locales fall back to the English literal in the component until
-    // translated, so these are optional to avoid churning every locale file.
-    activeProfile?: string;
-    activeBadge?: string;
-    setActive?: string;
-    activeSet?: string;
-    gatewayRunning?: string;
-    gatewayStopped?: string;
-    gatewayRunningWarning?: string;
-    aliasBadge?: string;
-    description?: string;
-    descriptionPlaceholder?: string;
-    noDescription?: string;
-    editDescription?: string;
-    descriptionSaved?: string;
-    reviewBadge?: string;
-    autoGenerate?: string;
-    generating?: string;
-    describeFailed?: string;
-    distribution?: string;
-    advancedOptions?: string;
-    cloneAll?: string;
-    noSkillsOption?: string;
-    descriptionOptional?: string;
-    modelOptional?: string;
-    modelInherit?: string;
-    modelLoading?: string;
-    modelNone?: string;
-    editModel?: string;
-    modelSaved?: string;
-    modelSelect?: string;
-    actions?: string;
   };
 
   // ── Skills page ──
@@ -485,8 +396,6 @@ export interface Translations {
     providersConfigured: string;
     replaceCurrentValue: string;
     showAdvanced: string;
-    showLess: string;
-    showMore: string;
     showValue: string;
   };
 
@@ -757,7 +666,6 @@ export interface Translations {
     columnLabels: {
       triage: string;
       todo: string;
-      scheduled: string;
       ready: string;
       running: string;
       blocked: string;
@@ -767,7 +675,6 @@ export interface Translations {
     columnHelp: {
       triage: string;
       todo: string;
-      scheduled: string;
       ready: string;
       running: string;
       blocked: string;
@@ -777,7 +684,6 @@ export interface Translations {
     confirmDone: string;
     confirmArchive: string;
     confirmBlocked: string;
-    confirmScheduled?: string;
     completionSummary: string;
     completionSummaryRequired: string;
     triagePlaceholder: string;

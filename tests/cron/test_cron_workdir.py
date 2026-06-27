@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -207,23 +208,20 @@ class TestTickWorkdirPartition:
     def test_workdir_jobs_run_sequentially(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
 
-        # Two workdir jobs (both sequential) + one parallel job.
-        workdir_a = {"id": "a", "name": "A", "workdir": str(tmp_path)}
-        workdir_b = {"id": "b", "name": "B", "workdir": str(tmp_path)}
-        parallel_job = {"id": "c", "name": "C", "workdir": None}
+        # Two "jobs" — one with workdir, one without.  get_due_jobs returns both.
+        workdir_job = {"id": "a", "name": "A", "workdir": str(tmp_path)}
+        parallel_job = {"id": "b", "name": "B", "workdir": None}
 
-        monkeypatch.setattr(sched, "get_due_jobs", lambda: [workdir_a, workdir_b, parallel_job])
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [workdir_job, parallel_job])
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
 
         # Record call order / thread context.
         import threading
-        calls: list[tuple[str, str]] = []
-        order_lock = threading.Lock()
+        calls: list[tuple[str, bool]] = []
 
         def fake_run_job(job):
             # Return a minimal tuple matching run_job's signature.
-            with order_lock:
-                calls.append((job["id"], threading.current_thread().name))
+            calls.append((job["id"], threading.current_thread().name))
             return True, "output", "response", None
 
         monkeypatch.setattr(sched, "run_job", fake_run_job)
@@ -234,22 +232,16 @@ class TestTickWorkdirPartition:
         )
 
         n = sched.tick(verbose=False)
-        assert n == 3
+        assert n == 2
 
         ids = [c[0] for c in calls]
-        # Sequential workdir jobs preserve submission order relative to each
-        # other (single-thread pool).
+        # Workdir jobs always come before parallel jobs.
         assert ids.index("a") < ids.index("b")
 
-        # Workdir jobs run on the persistent single-thread cron-seq pool —
-        # NOT the main thread — so a long workdir job never blocks the ticker.
+        # The workdir job must run on the main thread (sequential pass).
         main_thread_name = threading.current_thread().name
-        for jid in ("a", "b"):
-            workdir_thread_name = next(t for j, t in calls if j == jid)
-            assert workdir_thread_name != main_thread_name
-            assert workdir_thread_name.startswith("cron-seq"), workdir_thread_name
-        par_thread_name = next(t for j, t in calls if j == "c")
-        assert par_thread_name.startswith("cron-parallel"), par_thread_name
+        workdir_thread_name = next(t for jid, t in calls if jid == "a")
+        assert workdir_thread_name == main_thread_name
 
 
 # ---------------------------------------------------------------------------

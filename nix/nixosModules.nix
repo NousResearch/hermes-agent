@@ -242,7 +242,7 @@
         type = types.str;
         default = "${cfg.stateDir}/workspace";
         defaultText = literalExpression ''"''${cfg.stateDir}/workspace"'';
-        description = "Working directory for the agent.";
+        description = "Working directory for the agent (MESSAGING_CWD).";
       };
 
       # ── Declarative config ───────────────────────────────────────────────

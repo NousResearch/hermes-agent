@@ -107,7 +107,6 @@ class TestResolveCommand:
         assert resolve_command("gateway").name == "platforms"
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
-        assert resolve_command("codex_runtime").name == "codex-runtime"
         assert resolve_command("tasks").name == "agents"
 
     def test_topic_is_gateway_command(self):
@@ -252,12 +251,6 @@ class TestTelegramBotCommands:
         assert "queue" in names
         assert "steer" in names
 
-    def test_hyphenated_codex_runtime_is_exposed_as_underscore_command(self):
-        """Telegram autocomplete exposes /codex-runtime as /codex_runtime."""
-        names = {name for name, _ in telegram_bot_commands()}
-        assert "codex_runtime" in names
-        assert "codex-runtime" not in names
-
 
 class TestSlackSubcommandMap:
     def test_returns_dict(self):
@@ -336,19 +329,13 @@ class TestSlackNativeSlashes:
             )
 
     def test_includes_aliases_as_first_class_slashes(self):
-        """Aliases (/btw, /bg, /reset) must be registered as standalone
-        slashes — this is the whole point of native-slashes parity.
-
-        Note: Slack's manifest hard-caps slash commands at 50
-        (``_SLACK_MAX_SLASH_COMMANDS``). Canonical names win slots first,
-        then aliases, so the lowest-priority aliases can be clamped off
-        once the registry fills the cap (e.g. ``/q`` once ``/version``
-        landed). The surviving aliases below still prove alias parity;
-        anything dropped remains reachable via ``/hermes <command>``."""
+        """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
+        slashes — this is the whole point of native-slashes parity."""
         names = {n for n, _d, _h in slack_native_slashes()}
         assert "btw" in names
         assert "bg" in names
         assert "reset" in names
+        assert "q" in names
 
     def test_telegram_parity(self):
         """Every Telegram bot command must be registerable on Slack too.
@@ -957,30 +944,6 @@ class TestTelegramMenuCommands:
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
 
-    def test_operational_builtins_survive_thirty_command_cap(self, tmp_path, monkeypatch):
-        (tmp_path / "config.yaml").write_text(
-            "display:\n  tool_progress_command: true\n"
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        menu, hidden = telegram_menu_commands(max_commands=30)
-        names = [name for name, _desc in menu]
-
-        assert len(names) == 30
-        assert hidden > 0
-        for name in (
-            "debug",
-            "restart",
-            "update",
-            "verbose",
-            "commands",
-            "help",
-            "new",
-            "stop",
-            "status",
-        ):
-            assert name in names
-
     def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
         """Telegram menu generation should discover plugin slash commands on first access."""
         from unittest.mock import patch
@@ -1009,7 +972,7 @@ class TestTelegramMenuCommands:
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""
-        from unittest.mock import patch
+        from unittest.mock import patch, MagicMock
 
         # Set up a config with a telegram-specific disabled list
         config_file = tmp_path / "config.yaml"

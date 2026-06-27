@@ -6,8 +6,9 @@ after the agent finishes its current task — not silently dropped.
 """
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from gateway.run import _dequeue_pending_event
 from gateway.platforms.base import (

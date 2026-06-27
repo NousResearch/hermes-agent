@@ -467,13 +467,32 @@ def _referenced_tables(expression) -> tuple[str, ...]:
     return tuple(sorted(tables))
 
 
-def _referenced_columns(expression) -> tuple[str, ...]:
+def _table_aliases(expression) -> dict[str, str]:
+    cte_aliases = _cte_aliases(expression)
+    aliases: dict[str, str] = {}
+    for table in expression.find_all(exp.Table):
+        table_name = table.name.lower() if table.name else ""
+        if not table_name or table_name in cte_aliases:
+            continue
+        aliases[table_name] = table_name
+        if table.alias:
+            aliases[table.alias.lower()] = table_name
+    return aliases
+
+
+def _referenced_columns(
+    expression,
+    *,
+    table_aliases: dict[str, str] | None = None,
+) -> tuple[str, ...]:
+    aliases = table_aliases or {}
     columns = set()
     for column in expression.find_all(exp.Column):
         name = column.name.lower() if column.name else ""
         if not name:
             continue
         table = column.table.lower() if column.table else ""
+        table = aliases.get(table, table)
         columns.add(f"{table}.{name}" if table else name)
     return tuple(sorted(columns))
 
@@ -592,7 +611,7 @@ def validate_read_only_sql(
                 "Query references tables outside the allowlist: " + ", ".join(unknown)
             )
 
-    columns = _referenced_columns(expression)
+    columns = _referenced_columns(expression, table_aliases=_table_aliases(expression))
     if allowed_columns is not None:
         normalized_columns = {
             table.lower(): {column.lower() for column in cols}

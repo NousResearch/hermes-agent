@@ -8,10 +8,6 @@ description: "Complete guide to migrating your OpenClaw / Clawdbot setup to Herm
 
 `hermes claw migrate` imports your OpenClaw (or legacy Clawdbot/Moldbot) setup into Hermes. This guide covers exactly what gets migrated, the config key mappings, and what to verify after migration.
 
-:::tip
-If your OpenClaw setup was multi-provider, `hermes setup --portal` collapses it to one OAuth — 300+ models plus the Tool Gateway in a single login. See [Nous Portal](/integrations/nous-portal).
-:::
-
 ## Quick start
 
 ```bash
@@ -160,7 +156,7 @@ TTS settings are read from **two** OpenClaw config locations with this priority:
 | Browser headless | `browser.headless` | `config.yaml` → `browser.headless` | |
 | Brave search key | `tools.web.search.brave.apiKey` | `.env` → `BRAVE_API_KEY` | Requires `--migrate-secrets` |
 | Gateway auth token | `gateway.auth.token` | `.env` → `HERMES_GATEWAY_TOKEN` | Requires `--migrate-secrets` |
-| Working directory | `agents.defaults.workspace` | `config.yaml` → `terminal.cwd` | Legacy migrations may still emit `MESSAGING_CWD` as a compatibility fallback |
+| Working directory | `agents.defaults.workspace` | `.env` → `MESSAGING_CWD` | |
 
 ### Archived (no direct Hermes equivalent)
 
@@ -173,7 +169,7 @@ These are saved to `~/.hermes/migration/openclaw/<timestamp>/archive/` for manua
 | `HEARTBEAT.md` | `archive/workspace/HEARTBEAT.md` | Use cron jobs for periodic tasks |
 | `BOOTSTRAP.md` | `archive/workspace/BOOTSTRAP.md` | Use context files or skills |
 | Cron jobs | `archive/cron-config.json` | Recreate with `hermes cron create` |
-| Plugins | `archive/plugins-config.json` | See [plugins guide](/user-guide/features/hooks) |
+| Plugins | `archive/plugins-config.json` | See [plugins guide](/docs/user-guide/features/hooks) |
 | Hooks/webhooks | `archive/hooks-config.json` | Use `hermes webhook` or gateway hooks |
 | Memory backend | `archive/memory-backend-config.json` | Configure via `hermes honcho` |
 | Skills registry | `archive/skills-registry-config.json` | Use `hermes skills config` |
@@ -229,7 +225,7 @@ The migration resolves all three formats. For env templates and SecretRef object
 
 5. **Test messaging** — if you migrated platform tokens, restart the gateway: `systemctl --user restart hermes-gateway`
 
-6. **Check session policies** — run `hermes config show` and verify the `session_reset` value matches your expectations.
+6. **Check session policies** — verify `hermes config get session_reset` matches your expectations.
 
 7. **Re-pair WhatsApp** — WhatsApp uses QR code pairing (Baileys), not token migration. Run `hermes whatsapp` to pair.
 

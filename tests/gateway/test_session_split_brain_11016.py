@@ -17,7 +17,7 @@ Covers three layers of the fix:
 """
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -27,7 +27,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
 )
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
 
 
@@ -53,7 +53,6 @@ class _StubAdapter(BasePlatformAdapter):
 def _make_adapter():
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = _StubAdapter(config, Platform.TELEGRAM)
-    adapter._busy_text_mode = ""
     adapter.sent_responses = []
 
     async def _mock_send_retry(chat_id, content, **kwargs):
@@ -397,3 +396,4 @@ class TestOldTaskCannotClobberNewerGuard:
         # default path) still work.
         adapter._release_session_guard(sk)
         assert sk not in adapter._active_sessions
+

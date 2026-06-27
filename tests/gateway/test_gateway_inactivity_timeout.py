@@ -14,7 +14,9 @@ import os
 import sys
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -83,13 +85,13 @@ class TestStagedInactivityWarning:
     def test_warning_fires_once_before_timeout(self):
         """Warning fires when inactivity reaches warning threshold."""
         agent = SlowFakeAgent(
-            run_duration=2.0,
+            run_duration=10.0,
             idle_after=0.1,
             activity_desc="api_call_streaming",
         )
 
         _agent_timeout = 20.0
-        _agent_warning = 0.5
+        _agent_warning = 5.0
         _POLL_INTERVAL = 0.1
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -127,7 +129,7 @@ class TestStagedInactivityWarning:
     def test_warning_disabled_when_zero(self):
         """No warning fires when gateway_timeout_warning is 0."""
         agent = SlowFakeAgent(
-            run_duration=2.0,
+            run_duration=5.0,
             idle_after=0.1,
         )
 
@@ -163,7 +165,7 @@ class TestStagedInactivityWarning:
     def test_warning_fires_only_once(self):
         """Warning fires exactly once even if agent remains idle."""
         agent = SlowFakeAgent(
-            run_duration=2.0,
+            run_duration=10.0,
             idle_after=0.05,
         )
 

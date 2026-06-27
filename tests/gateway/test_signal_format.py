@@ -430,6 +430,7 @@ class TestSignalStreamingPatch:
         """send() returns message_id=None so stream consumer uses no-edit path."""
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         from gateway.platforms.signal import SignalAdapter
+        from gateway.config import PlatformConfig
 
         config = PlatformConfig(enabled=True)
         config.extra = {

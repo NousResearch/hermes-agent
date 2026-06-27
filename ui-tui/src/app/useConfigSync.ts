@@ -1,4 +1,3 @@
-import type { MouseTrackingMode } from '@hermes/ink'
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
@@ -10,8 +9,8 @@ import type {
 } from '../gatewayTypes.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
-  type ParsedVoiceRecordKey,
-  parseVoiceRecordKey
+  parseVoiceRecordKey,
+  type ParsedVoiceRecordKey
 } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -69,57 +68,16 @@ export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
 }
 
 const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])
-const TRUTHY_MOUSE_ALL = new Set(['1', 'true', 'yes', 'on', 'all', 'full', 'any'])
 const hasOwn = (obj: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(obj, key)
 
-// `display.mouse_tracking` accepts boolean (`true` ⇒ all modes, `false` ⇒ off)
-// for back-compat, plus the string presets `off|wheel|buttons|all` (aliases:
-// `on`/`full`/`any`/`1`/`true`/... → `all`; `0`/`false`/`no`/`off` → `off`).
-// `wheel` enables 1000+1006 — scroll wheel + click only, no drag or hover,
-// which silences tmux's "No image in clipboard" spam over the prompt row.
-// `buttons` adds 1002 so terminal-side text selection drags still register.
-// Legacy `tui_mouse` is honored only if `mouse_tracking` is absent.
-export const normalizeMouseTracking = (display: {
-  mouse_tracking?: unknown
-  tui_mouse?: unknown
-}): MouseTrackingMode => {
+export const normalizeMouseTracking = (display: { mouse_tracking?: unknown; tui_mouse?: unknown }): boolean => {
   const raw = hasOwn(display, 'mouse_tracking') ? display.mouse_tracking : display.tui_mouse
 
   if (raw === false || raw === 0) {
-    return 'off'
+    return false
   }
 
-  if (raw === true || raw === undefined || raw === null) {
-    return 'all'
-  }
-
-  if (typeof raw === 'number') {
-    return 'all'
-  }
-
-  if (typeof raw !== 'string') {
-    return 'all'
-  }
-
-  const v = raw.trim().toLowerCase()
-
-  if (FALSEY_MOUSE.has(v)) {
-    return 'off'
-  }
-
-  if (TRUTHY_MOUSE_ALL.has(v)) {
-    return 'all'
-  }
-
-  if (v === 'wheel' || v === 'scroll') {
-    return 'wheel'
-  }
-
-  if (v === 'buttons' || v === 'button' || v === 'click') {
-    return 'buttons'
-  }
-
-  return 'all'
+  return typeof raw === 'string' ? !FALSEY_MOUSE.has(raw.trim().toLowerCase()) : true
 }
 
 const MTIME_POLL_MS = 5000
@@ -142,28 +100,6 @@ const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceR
   return raw ? parseVoiceRecordKey(raw) : DEFAULT_VOICE_RECORD_KEY
 }
 
-const _pasteCollapseLinesFromConfig = (cfg: ConfigFullResponse | null): number => {
-  if (!cfg?.config) return 5
-  const raw = cfg.config.paste_collapse_threshold
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return Math.round(raw)
-  if (typeof raw === 'string') {
-    const n = parseInt(raw, 10)
-    if (Number.isFinite(n) && n >= 0) return n
-  }
-  return 5
-}
-
-const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number => {
-  if (!cfg?.config) return 2000
-  const raw = cfg.config.paste_collapse_char_threshold
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return Math.round(raw)
-  if (typeof raw === 'string') {
-    const n = parseInt(raw, 10)
-    if (Number.isFinite(n) && n >= 0) return n
-  }
-  return 2000
-}
-
 /** Fetch ``config.get full`` and fan the result through ``applyDisplay``.
  *
  * Extracted so the mtime-reload path can be exercised by the test
@@ -178,7 +114,6 @@ export async function hydrateFullConfig(
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
   applyDisplay(cfg, setBell, setVoiceRecordKey)
-
   return cfg
 }
 
@@ -190,7 +125,6 @@ export const applyDisplay = (
   const d = cfg?.config?.display ?? {}
 
   setBell(!!d.bell_on_complete)
-
   // Only push the voice record key when the RPC actually returned a
   // config payload. ``quietRpc()`` collapses failures to ``null``; if we
   // reset the cached shortcut on every null we would clobber a custom
@@ -201,7 +135,6 @@ export const applyDisplay = (
   if (setVoiceRecordKey && cfg) {
     setVoiceRecordKey(_voiceRecordKeyFromConfig(cfg))
   }
-
   patchUiState({
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
@@ -210,8 +143,6 @@ export const applyDisplay = (
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: normalizeMouseTracking(d),
-    pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
-    pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
     sections: resolveSections(d.sections),
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,

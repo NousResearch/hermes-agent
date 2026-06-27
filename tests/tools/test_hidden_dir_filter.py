@@ -7,7 +7,8 @@ This caused quarantined skills (.hub/quarantine/) to appear as installed.
 Now uses Path.parts which is platform-independent.
 """
 
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 def _old_filter_matches(path_str: str) -> bool:
@@ -23,7 +24,7 @@ def _new_filter_matches(path: Path) -> bool:
 
     Returns True when the path SHOULD be filtered out.
     """
-    return any(part in {'.git', '.github', '.hub'} for part in path.parts)
+    return any(part in ('.git', '.github', '.hub') for part in path.parts)
 
 
 class TestOldFilterBrokenOnWindows:

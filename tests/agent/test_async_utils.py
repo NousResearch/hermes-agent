@@ -8,6 +8,7 @@ import warnings
 from concurrent.futures import Future
 from unittest.mock import patch
 
+import pytest
 
 from agent.async_utils import safe_schedule_threadsafe
 

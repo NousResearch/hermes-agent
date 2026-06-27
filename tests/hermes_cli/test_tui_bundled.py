@@ -1,3 +1,4 @@
+from pathlib import Path
 
 
 def test_tui_finds_bundled_entry_js(tmp_path):

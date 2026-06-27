@@ -4,7 +4,8 @@ import asyncio
 import base64
 import io
 import tarfile
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 

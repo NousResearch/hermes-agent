@@ -14,6 +14,7 @@ import pytest
 from tools.environments.local import (
     LocalEnvironment,
     _prepend_shell_init,
+    _read_terminal_shell_init_config,
     _resolve_shell_init_files,
 )
 

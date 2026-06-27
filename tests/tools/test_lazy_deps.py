@@ -12,6 +12,7 @@ call is mocked — we never actually shell out during unit tests.
 
 from __future__ import annotations
 
+from typing import Iterator
 
 import pytest
 

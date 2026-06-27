@@ -90,7 +90,6 @@ gateway:
     nothing_to_do:         "Niks om saam te pers nie (die transkripsie is steeds heeltemal beskermde konteks)."
     focus_line:            "Fokus: \"{topic}\""
     summary_failed:        "⚠️ Opsomming kon nie gegenereer word nie ({error}). {count} historiese boodskap(pe) is verwyder en met 'n plekhouer vervang; vroeëre konteks kan nie meer herstel word nie. Oorweeg om jou auxiliary.compression-modelopstelling na te gaan."
-    aborted:               "⚠️ Kompressie gestaak ({error}). Geen boodskappe is laat val nie — die gesprek is onveranderd. Voer /compress uit om weer te probeer, /reset vir 'n skoon sessie, of kyk na jou auxiliary.compression-modelkonfigurasie."
     aux_failed:            "ℹ️ Opgestelde saamperseringsmodel `{model}` het misluk ({error}). Herstel met jou hoofmodel — konteks is intakt — maar jy mag dalk `auxiliary.compression.model` in config.yaml wil nagaan."
     failed:                "Saampersing het misluk: {error}"
 
@@ -222,12 +221,9 @@ gateway:
     no_named_sessions:     "Geen benoemde sessies gevind nie.\nGebruik `/title My Sessie` om jou huidige sessie 'n naam te gee, en dan `/resume My Sessie` om later daarheen terug te keer."
     list_header:           "📋 **Benoemde Sessies**\n"
     list_item:             "• **{title}**{preview_part}"
-    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nGebruik: `/resume <session name>`"
-    list_footer_numbered:  "\nGebruik: `/resume <sessienaam>` of `/resume <nommer>` (bv. `/resume 1` vir die mees onlangse)"
     list_failed:           "Kon nie sessies lys nie: {error}"
-    out_of_range:          "Hervat-indeks {index} is buite bereik.\nGebruik `/resume` sonder argumente om beskikbare sessies te sien."
     not_found:             "Geen sessie gevind wat by '**{name}**' pas nie.\nGebruik `/resume` sonder argumente om beskikbare sessies te sien."
     already_on:            "📌 Reeds op sessie **{name}**."
     switch_failed:         "Kon nie sessie verander nie."
@@ -255,7 +251,7 @@ gateway:
     title:                 "**Titel:** {title}"
     created:               "**Geskep:** {timestamp}"
     last_activity:         "**Laaste aktiwiteit:** {timestamp}"
-    tokens:                "**Kumulatiewe API-tokens (elke oproep weer gestuur):** {tokens}"
+    tokens:                "**Tokens:** {tokens}"
     agent_running:         "**Agent loop:** {state}"
     state_yes:             "Ja ⚡"
     state_no:              "Nee"
@@ -290,8 +286,7 @@ gateway:
 
   undo:
     nothing:               "Niks om ongedaan te maak nie."
-    removed:               "↩️ {turns} beurt(e) ongedaan gemaak ({count} boodskap(pe)).\nGerugsteun na: \"{preview}\"\nKopieer/wysig die teks hierbo en stuur dit om van hier af weer te vra."
-    invalid_count:         "Ongeldige getal \"{arg}\" — gebruik /undo of /undo N."
+    removed:               "↩️ {count} boodskap(pe) ongedaan gemaak.\nVerwyder: \"{preview}\""
 
   update:
     platform_not_messaging:  "✗ /update is slegs beskikbaar vanaf boodskapplatforms. Voer `hermes update` vanaf die terminale uit."
@@ -343,8 +338,6 @@ gateway:
     label_off:             "Af (slegs teks)"
     label_voice_only:      "Aan (stemantwoord op stemboodskappe)"
     label_all:             "TTS (stemantwoord op alle boodskappe)"
-    help:                  "{toggle}\n\n**Hoe /voice werk**\n• `/voice on` — stemantwoord wanneer jy 'n stemboodskap stuur\n• `/voice tts` — stemantwoord op *elke* boodskap\n• `/voice off` — terug na slegs-teks antwoorde\n• `/voice status` — wys die huidige modus\n• `/voice` (geen argument) — wissel vinnig tussen aan en af{channels}"
-    help_channels:         "\n\n**Lewendige stemkanale (Discord)**\n• Sluit eers by 'n stemkanaal aan, dan `/voice channel` — ek sluit aan, luister en praat my antwoorde\n• `/voice leave` — ontkoppel van die stemkanaal"
 
   yolo:
     disabled:                   "⚠️ YOLO-modus **AF** vir hierdie sessie — gevaarlike opdragte sal goedkeuring vereis."

@@ -9,24 +9,13 @@ TERMINAL_SETUP_AUTH_METHOD_ID = "hermes-setup"
 
 
 def detect_provider() -> Optional[str]:
-    """Resolve the active Hermes runtime provider, or None if unavailable.
-
-    Treats a ``Callable`` ``api_key`` (Azure Foundry Entra ID bearer
-    token provider — see :mod:`agent.azure_identity_adapter`) as a valid
-    credential. Without this, ACP sessions for Entra-configured Foundry
-    deployments silently default to ``"openrouter"`` and the ACP auth
-    handshake rejects the legitimate provider.
-    """
+    """Resolve the active Hermes runtime provider, or None if unavailable."""
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider()
         api_key = runtime.get("api_key")
         provider = runtime.get("provider")
-        if not isinstance(provider, str) or not provider.strip():
-            return None
-        is_string_key = isinstance(api_key, str) and api_key.strip()
-        is_callable_provider = callable(api_key) and not isinstance(api_key, str)
-        if is_string_key or is_callable_provider:
+        if isinstance(api_key, str) and api_key.strip() and isinstance(provider, str) and provider.strip():
             return provider.strip().lower()
     except Exception:
         return None

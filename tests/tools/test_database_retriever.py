@@ -188,6 +188,27 @@ def test_read_only_validator_rejects_table_outside_allowlist():
         validate_read_only_sql("SELECT * FROM secrets", allowed_tables={"users"})
 
 
+def test_read_only_validator_rejects_aliased_column_outside_allowlist():
+    with pytest.raises(DatabaseRetrievalError, match="users.secret"):
+        validate_read_only_sql(
+            "SELECT u.secret FROM users AS u",
+            allowed_tables={"users"},
+            allowed_columns={"users": {"id", "name"}},
+        )
+
+
+def test_read_only_validator_allows_aliased_column_inside_allowlist():
+    result = validate_read_only_sql(
+        "SELECT u.id FROM users AS u",
+        allowed_tables={"users"},
+        allowed_columns={"users": {"id", "name"}},
+        max_rows=5,
+    )
+
+    assert result.referenced_columns == ("users.id",)
+    assert result.sql == "SELECT u.id FROM users AS u LIMIT 5"
+
+
 def test_sqlite_retrieve_executes_read_only_query(tmp_path):
     db_path = tmp_path / "sample.db"
     conn = sqlite3.connect(db_path)

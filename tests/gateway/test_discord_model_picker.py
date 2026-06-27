@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from plugins.platforms.discord.adapter import ModelPickerView
+from gateway.platforms.discord import ModelPickerView
 
 
 @pytest.mark.asyncio

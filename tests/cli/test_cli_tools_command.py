@@ -1,6 +1,6 @@
 """Tests for /tools slash command handler in the interactive CLI."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 from cli import HermesCLI
 

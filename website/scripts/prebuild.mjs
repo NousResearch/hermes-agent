@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Runs website/scripts/extract-skills.py and generate-llms-txt.py before
 // docusaurus build/start so that:
-//   - website/static/api/skills.json (lazy-fetched by src/pages/skills/index.tsx)
-//   - website/static/api/skills-meta.json (sidecar metadata for the Skills Hub)
+//   - website/src/data/skills.json (imported by src/pages/skills/index.tsx)
 //   - website/static/llms.txt (agent-friendly short docs index)
 //   - website/static/llms-full.txt (full docs concat for LLM context)
 // all exist without contributors remembering to run Python scripts manually.
@@ -16,7 +15,7 @@
 // deploys get real data.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -82,64 +81,6 @@ function runPython(script, label) {
   }
   return true;
 }
-
-async function ensureUnifiedIndex() {
-  // If we have a recent copy on disk, trust it.
-  if (existsSync(unifiedIndexFile)) {
-    try {
-      const age = Date.now() - statSync(unifiedIndexFile).mtimeMs;
-      if (age < UNIFIED_INDEX_MAX_AGE_MS) {
-        return true;
-      }
-      console.log(
-        `[prebuild] skills-index.json is ${(age / 3600000).toFixed(1)}h old; ` +
-          `refreshing from ${UNIFIED_INDEX_URL}`,
-      );
-    } catch {
-      // fall through to re-fetch
-    }
-  }
-
-  try {
-    const resp = await fetch(UNIFIED_INDEX_URL, {
-      headers: { accept: "application/json" },
-    });
-    if (!resp.ok) {
-      console.warn(
-        `[prebuild] skills-index.json fetch returned HTTP ${resp.status}; ` +
-          `using local copy if any`,
-      );
-      return existsSync(unifiedIndexFile);
-    }
-    const text = await resp.text();
-    // Sanity check: must be valid JSON with a skills array
-    try {
-      const parsed = JSON.parse(text);
-      if (!parsed || !Array.isArray(parsed.skills)) {
-        console.warn(
-          "[prebuild] skills-index.json from live site has no skills array; ignoring",
-        );
-        return existsSync(unifiedIndexFile);
-      }
-    } catch (e) {
-      console.warn(`[prebuild] skills-index.json from live site is not valid JSON: ${e}`);
-      return existsSync(unifiedIndexFile);
-    }
-    mkdirSync(dirname(unifiedIndexFile), { recursive: true });
-    writeFileSync(unifiedIndexFile, text);
-    console.log(
-      `[prebuild] downloaded skills-index.json from ${UNIFIED_INDEX_URL} ` +
-        `(${(text.length / 1024).toFixed(0)} KB)`,
-    );
-    return true;
-  } catch (e) {
-    console.warn(`[prebuild] skills-index.json fetch failed: ${e}`);
-    return existsSync(unifiedIndexFile);
-  }
-}
-
-// 0) Pull unified index if we don't have a fresh one.
-await ensureUnifiedIndex();
 
 // 1) skills.json — required for the Skills Hub page.
 if (!existsSync(extractScript)) {

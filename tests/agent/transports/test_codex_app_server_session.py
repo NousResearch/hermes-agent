@@ -7,18 +7,17 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
+import threading
 import time
-from unittest.mock import patch
 from typing import Any, Optional
 
 import pytest
 
-import agent.transports.codex_app_server_session as session_mod
 from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
+    TurnResult,
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
-    _coerce_turn_input_text,
 )
 
 
@@ -127,15 +126,6 @@ class TestApprovalChoiceMapping:
         assert _approval_choice_to_codex_decision(choice) == expected
 
 
-class TestTurnInputCoercion:
-    def test_list_content_keeps_text_and_marks_images(self):
-        text = _coerce_turn_input_text([
-            {"type": "text", "text": "caption"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
-        ])
-        assert text == "caption\n\n[image attached]"
-
-
 # ---- lifecycle ----
 
 class TestLifecycle:
@@ -196,35 +186,6 @@ class TestRunTurn:
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
 
-    def test_rich_content_turn_is_collapsed_to_text_payload(self):
-        client = FakeClient()
-        client.queue_notification(
-            "turn/completed",
-            threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-        s = make_session(client)
-        r = s.run_turn(
-            [
-                {
-                    "type": "text",
-                    "text": "look at this\n\n[Image attached at: /tmp/a.png]",
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,abc"},
-                },
-            ],
-            turn_timeout=2.0,
-        )
-        assert r.error is None
-        method, params = next(req for req in client.requests if req[0] == "turn/start")
-        assert method == "turn/start"
-        text = params["input"][0]["text"]
-        assert isinstance(text, str)
-        assert "[Image attached at: /tmp/a.png]" in text
-        assert "[image attached]" in text
-
     def test_tool_iteration_counter_ticks(self):
         client = FakeClient()
         # Two completed exec items + one final agent message
@@ -273,9 +234,8 @@ class TestRunTurn:
     def test_turn_start_failure_attaches_redacted_stderr_tail(self):
         """When codex stderr has content (non-OAuth), the tail gets attached
         to the user-facing error so config/provider problems are debuggable
-        instead of just 'Internal error'. Credential-shaped values in stderr
-        are redacted via agent.redact(force=True); web-URL query params pass
-        through (see fix(redact): pass web URLs through unchanged)."""
+        instead of just 'Internal error'. Secrets in stderr are redacted
+        via agent.redact(force=True)."""
         client = FakeClient()
         client.set_stderr_tail([
             "ERROR: provider auth failed",
@@ -298,8 +258,9 @@ class TestRunTurn:
         # Stderr tail attached
         assert "codex stderr" in r.error
         assert "provider auth failed" in r.error
-        # Credential-shaped values still redacted (sk- prefix + Bearer header)
+        # Secrets redacted
         assert "sk-live-deadbeefdeadbeef" not in r.error
+        assert "querysecret12345" not in r.error
         # Non-OAuth → should NOT retire (subprocess JSON-RPC is still healthy).
         assert r.should_retire is False
 
@@ -380,23 +341,6 @@ class TestRunTurn:
         s = make_session(client)
         r = s.run_turn("never finishes", turn_timeout=0.05,
                        notification_poll_timeout=0.01)
-        assert r.interrupted is True
-        assert r.error and "timed out" in r.error
-
-    def test_deadline_uses_monotonic_clock(self):
-        client = FakeClient()
-        s = make_session(client)
-        monotonic_values = iter([1000.0, 999.0, 999.0, 1001.0])
-        with patch.object(
-            session_mod.time,
-            "monotonic",
-            side_effect=lambda: next(monotonic_values),
-        ):
-            r = s.run_turn(
-                "never finishes",
-                turn_timeout=0.1,
-                notification_poll_timeout=0.0,
-            )
         assert r.interrupted is True
         assert r.error and "timed out" in r.error
 
@@ -721,35 +665,6 @@ class TestSessionRetirement:
         assert r.error and "silent" in r.error
         # Confirm we issued turn/interrupt to free codex compute
         assert any(method == "turn/interrupt" for (method, _) in client.requests)
-
-    def test_post_tool_watchdog_uses_monotonic_clock(self):
-        client = FakeClient()
-        client.queue_notification(
-            "item/completed",
-            item={
-                "type": "commandExecution", "id": "ex1",
-                "command": "echo hi", "cwd": "/tmp",
-                "status": "completed", "aggregatedOutput": "hi",
-                "exitCode": 0, "commandActions": [],
-            },
-            threadId="t", turnId="tu1",
-        )
-        s = make_session(client)
-        monotonic_values = iter([1000.0, 999.0, 999.0, 999.0, 1000.2])
-        with patch.object(
-            session_mod.time,
-            "monotonic",
-            side_effect=lambda: next(monotonic_values),
-        ):
-            r = s.run_turn(
-                "tool then silence",
-                turn_timeout=5.0,
-                notification_poll_timeout=0.0,
-                post_tool_quiet_timeout=0.15,
-            )
-        assert r.interrupted is True
-        assert r.should_retire is True
-        assert r.error and "silent" in r.error
 
     def test_post_tool_watchdog_resets_on_further_activity(self):
         """A tool completion followed by an agent message should NOT trip

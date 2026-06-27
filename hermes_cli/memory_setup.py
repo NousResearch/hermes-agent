@@ -7,13 +7,13 @@ the provider's config schema. Writes config to config.yaml + .env.
 
 from __future__ import annotations
 
+import getpass
 import os
 import sys
 import shlex
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +39,12 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     """Prompt for a value with optional default and secret masking."""
     suffix = f" [{default}]" if default else ""
     if secret:
-        val = masked_secret_prompt(f"  {label}{suffix}: ")
+        sys.stdout.write(f"  {label}{suffix}: ")
+        sys.stdout.flush()
+        if sys.stdin.isatty():
+            val = getpass.getpass(prompt="")
+        else:
+            val = sys.stdin.readline().strip()
     else:
         sys.stdout.write(f"  {label}{suffix}: ")
         sys.stdout.flush()
@@ -97,25 +102,16 @@ def _install_dependencies(provider_name: str) -> None:
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
     import shutil
-
     uv_path = shutil.which("uv")
-    if uv_path:
-        install_cmd = [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing
-        manual_cmd = f"uv pip install --python {sys.executable} {' '.join(missing)}"
-    else:
-        pip_cmd = shutil.which("pip3") or shutil.which("pip")
-        if not pip_cmd:
-            print(f"  ⚠ uv not found — cannot install dependencies")
-            print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
-            print(f"  Then re-run: hermes memory setup")
-            return
-        print(f"  ⚠ uv not found. Falling back to standard pip...")
-        install_cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + missing
-        manual_cmd = f"{sys.executable} -m pip install {' '.join(missing)}"
+    if not uv_path:
+        print(f"  ⚠ uv not found — cannot install dependencies")
+        print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
+        print(f"  Then re-run: hermes memory setup")
+        return
 
     try:
         subprocess.run(
-            install_cmd,
+            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
             check=True, timeout=120,
             capture_output=True,
         )
@@ -125,10 +121,10 @@ def _install_dependencies(provider_name: str) -> None:
         stderr = (e.stderr or b"").decode()[:200]
         if stderr:
             print(f"    {stderr}")
-        print(f"  Run manually: {manual_cmd}")
+        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: {manual_cmd}")
+        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
@@ -461,11 +457,7 @@ def memory_command(args) -> None:
     """Route memory subcommands."""
     sub = getattr(args, "memory_command", None)
     if sub == "setup":
-        provider = getattr(args, "provider", None)
-        if provider:
-            cmd_setup_provider(provider)
-        else:
-            cmd_setup(args)
+        cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
     else:

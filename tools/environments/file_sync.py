@@ -9,7 +9,6 @@ view) and don't need this.
 import hashlib
 import logging
 import os
-import posixpath
 import shlex
 import shutil
 import signal
@@ -88,7 +87,7 @@ def quoted_mkdir_command(dirs: list[str]) -> str:
 
 def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
     """Extract sorted unique parent directories from (host, remote) pairs."""
-    return sorted({posixpath.dirname(remote) for _, remote in files})
+    return sorted({str(Path(remote).parent) for _, remote in files})
 
 
 def _sha256_file(path: str) -> str:
@@ -290,10 +289,7 @@ class FileSyncManager:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             self._sync_back_impl()
         finally:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
 
     def _sync_back_impl(self) -> None:

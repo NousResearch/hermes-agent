@@ -14,8 +14,10 @@ differences) Windows.
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 from unittest.mock import patch
 
 import pytest

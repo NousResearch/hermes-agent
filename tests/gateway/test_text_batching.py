@@ -9,7 +9,8 @@ Telegram and Feishu.
 """
 
 import asyncio
-from unittest.mock import AsyncMock
+import os
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -40,7 +41,7 @@ def _make_event(
 
 def _make_discord_adapter():
     """Create a minimal DiscordAdapter for testing text batching."""
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from gateway.platforms.discord import DiscordAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(DiscordAdapter)

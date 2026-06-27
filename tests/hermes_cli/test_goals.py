@@ -525,6 +525,7 @@ class TestGoalStateSubgoalsBackcompat:
     def test_old_state_meta_row_loads_without_subgoals(self):
         """A goal serialized BEFORE the subgoals field existed must
         round-trip with an empty list, not crash."""
+        import json
         from hermes_cli.goals import GoalState
 
         legacy = json.dumps({
@@ -646,7 +647,7 @@ class TestJudgeGoalWithSubgoals:
         We don't actually call the model — we patch the aux client to
         capture the prompt that would be sent.
         """
-        from unittest.mock import patch
+        from unittest.mock import patch, MagicMock
         from hermes_cli import goals
 
         captured = {}

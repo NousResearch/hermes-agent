@@ -17,7 +17,10 @@ Fix: _exec() now prefers the LIVE ``env.cwd`` over the init-time
 
 from __future__ import annotations
 
+import os
+import tempfile
 
+import pytest
 
 from tools.file_operations import ShellFileOperations
 

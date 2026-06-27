@@ -17,8 +17,10 @@ Merging is what lets new models (e.g. ``mimo-v2.5-pro`` on opencode-go)
 appear in ``/model`` without a Hermes release.
 """
 
+import os
 from unittest.mock import patch
 
+import pytest
 
 from hermes_cli.models import (
     _MODELS_DEV_PREFERRED,

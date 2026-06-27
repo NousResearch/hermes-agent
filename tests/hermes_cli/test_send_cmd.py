@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
 import pytest
 
@@ -165,19 +166,6 @@ def test_missing_message(fake_tool, capsys, monkeypatch):
 def test_file_not_found_is_usage_error(fake_tool, capsys, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     args = _parse(["--to", "telegram", "--file", "/nonexistent/does-not-exist.txt"])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert "cannot read" in err.lower()
-
-
-def test_file_decode_error_is_usage_error(fake_tool, capsys, monkeypatch, tmp_path):
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    bad = tmp_path / "bad-bytes.bin"
-    bad.write_bytes(b"\xff\xfe\x00")
-
-    args = _parse(["--to", "telegram", "--file", str(bad)])
     with pytest.raises(SystemExit) as exc:
         send_cmd.cmd_send(args)
     assert exc.value.code == 2

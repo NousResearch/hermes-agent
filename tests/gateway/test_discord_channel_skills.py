@@ -1,10 +1,11 @@
 """Tests for Discord channel_skill_bindings auto-skill resolution."""
 from unittest.mock import MagicMock
+import pytest
 
 
 def _make_adapter():
     """Create a minimal DiscordAdapter with mocked config."""
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from gateway.platforms.discord import DiscordAdapter
     adapter = object.__new__(DiscordAdapter)
     adapter.config = MagicMock()
     adapter.config.extra = {}

@@ -1,10 +1,13 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
+import asyncio
 import json
+import os
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -279,17 +282,6 @@ class TestTeamsAdapterInit:
         monkeypatch.setenv("TEAMS_PORT", "5000")
         adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
         assert adapter._port == 5000
-
-    def test_invalid_port_from_extra_falls_back_to_default(self):
-        adapter = TeamsAdapter(
-            _make_config(client_id="id", client_secret="secret", tenant_id="tenant", port="abc")
-        )
-        assert adapter._port == 3978
-
-    def test_invalid_port_from_env_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("TEAMS_PORT", "abc")
-        adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
-        assert adapter._port == 3978
 
     def test_platform_value(self):
         adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
@@ -760,7 +752,7 @@ def _install_fake_aiohttp(monkeypatch, session):
     """Replace ``aiohttp`` in ``sys.modules`` so ``import aiohttp as _aiohttp``
     inside ``_standalone_send`` picks up our fake."""
     fake_aiohttp = types.SimpleNamespace(
-        ClientSession=lambda timeout=None, **kwargs: session,
+        ClientSession=lambda timeout=None: session,
         ClientTimeout=lambda total=None: None,
     )
     monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)

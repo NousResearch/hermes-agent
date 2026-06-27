@@ -228,9 +228,6 @@ class HonchoMemoryProvider(MemoryProvider):
         self._session_initialized = False
         self._lazy_init_kwargs: Optional[dict] = None
         self._lazy_init_session_id: Optional[str] = None
-        self._init_thread: Optional[threading.Thread] = None
-        self._init_lock = threading.Lock()
-        self._init_error = ""
 
         # Port #4053: cron guard — when True, plugin is fully inactive
         self._cron_skipped = False
@@ -252,7 +249,6 @@ class HonchoMemoryProvider(MemoryProvider):
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/honcho.json (Honcho SDK native format)."""
         import json
-        import os
         from pathlib import Path
         config_path = Path(hermes_home) / "honcho.json"
         existing = {}
@@ -262,8 +258,7 @@ class HonchoMemoryProvider(MemoryProvider):
             except Exception:
                 pass
         existing.update(values)
-        from utils import atomic_json_write
-        atomic_json_write(config_path, existing, mode=0o600)
+        config_path.write_text(json.dumps(existing, indent=2))
 
     def get_config_schema(self):
         return [
@@ -288,7 +283,7 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- Port #4053: cron guard -----
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
-            if agent_context in {"cron", "flush"} or platform == "cron":
+            if agent_context in ("cron", "flush") or platform == "cron":
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
                 self._cron_skipped = True
@@ -326,93 +321,33 @@ class HonchoMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Honcho cost-awareness config parse error: %s", e)
 
-            # aiPeer comes from honcho.json (host block or root) only.
-            # SOUL.md is persona content, not identity config.
+            # ----- Port #1969: aiPeer sync from SOUL.md — REMOVED -----
+            # SOUL.md is persona content, not identity config. aiPeer should
+            # only come from honcho.json (host block or root) or the default.
+            # See scratch/memory-plugin-ux-specs.md #10 for rationale.
 
-            self._lazy_init_kwargs = dict(kwargs)
-            self._lazy_init_session_id = session_id
-            self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
-
-            # Network-backed session creation can block on Honcho service or DB
-            # outages. Startup must fail open for context/hybrid modes, where
-            # Honcho is initialized only to enrich prompts. Tools-only mode has
-            # an explicit contract: init_on_session_start=False stays lazy until
-            # the first tool call, while init_on_session_start=True remains an
-            # eager, ready-on-return initialization path.
+            # ----- Port #1957: lazy session init for tools-only mode -----
             if self._recall_mode == "tools":
                 if cfg.init_on_session_start:
-                    self._ensure_session()
+                    # Eager init even in tools mode (opt-in)
+                    self._do_session_init(cfg, session_id, **kwargs)
                     return
+                # Defer actual session creation until first tool call
+                self._lazy_init_kwargs = kwargs
+                self._lazy_init_session_id = session_id
+                # Still need a client reference for _ensure_session
+                self._config = cfg
                 logger.debug("Honcho tools-only mode — deferring session init until first tool call")
                 return
 
-            self._start_session_init_background(wait_timeout=0.1)
+            # ----- Eager init (context or hybrid mode) -----
+            self._do_session_init(cfg, session_id, **kwargs)
 
         except ImportError:
             logger.debug("honcho-ai package not installed — plugin inactive")
         except Exception as e:
             logger.warning("Honcho init failed: %s", e)
             self._manager = None
-
-    def _resolve_session_key(self, cfg, session_id: str, **kwargs) -> str:
-        """Resolve the Honcho session key without touching the network."""
-        session_title = kwargs.get("session_title")
-        gateway_session_key = kwargs.get("gateway_session_key")
-        return (
-            cfg.resolve_session_name(
-                session_title=session_title,
-                session_id=session_id,
-                gateway_session_key=gateway_session_key,
-            )
-            or session_id
-            or "hermes-default"
-        )
-
-    def _start_session_init_background(self, *, wait_timeout: float = 0.0) -> None:
-        """Start Honcho session initialization in a daemon thread.
-
-        This keeps Hermes CLI/gateway startup responsive when Honcho is down,
-        slow, or its database is unhealthy. The thread may still take the SDK
-        timeout path, but it cannot block agent construction or first prompt
-        assembly. ``wait_timeout`` lets fast/mock initializations finish before
-        returning while still failing open for slow backends.
-        """
-        if self._cron_skipped or self._session_initialized:
-            return
-        if not self._config or self._lazy_init_kwargs is None:
-            return
-
-        with self._init_lock:
-            if self._cron_skipped or self._session_initialized:
-                return
-            if self._init_thread and self._init_thread.is_alive():
-                return
-            if not self._config or self._lazy_init_kwargs is None:
-                return
-
-            cfg = self._config
-            init_kwargs = dict(self._lazy_init_kwargs)
-            init_session_id = self._lazy_init_session_id or "hermes-default"
-
-            def _run() -> None:
-                try:
-                    self._do_session_init(cfg, init_session_id, **init_kwargs)
-                    self._lazy_init_kwargs = None
-                    self._lazy_init_session_id = None
-                    self._init_error = ""
-                except Exception as e:
-                    self._init_error = str(e)
-                    self._manager = None
-                    logger.warning("Honcho background session init failed: %s", e)
-
-            self._init_thread = threading.Thread(
-                target=_run,
-                daemon=True,
-                name="honcho-session-init",
-            )
-            self._init_thread.start()
-            if wait_timeout > 0:
-                self._init_thread.join(timeout=wait_timeout)
 
     def _do_session_init(self, cfg, session_id: str, **kwargs) -> None:
         """Shared session initialization logic for both eager and lazy paths."""
@@ -425,19 +360,25 @@ class HonchoMemoryProvider(MemoryProvider):
             config=cfg,
             context_tokens=cfg.context_tokens,
             runtime_user_peer_name=kwargs.get("user_id") or None,
-            runtime_user_peer_name_alt=kwargs.get("user_id_alt") or None,
         )
 
         # ----- B3: resolve_session_name -----
-        self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
+        session_title = kwargs.get("session_title")
+        gateway_session_key = kwargs.get("gateway_session_key")
+        self._session_key = (
+            cfg.resolve_session_name(
+                session_title=session_title,
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+            )
+            or session_id
+            or "hermes-default"
+        )
         logger.debug("Honcho session key resolved: %s", self._session_key)
 
-        # Create the remote session before running startup-only migration and
-        # prewarm work. Do not mark the provider ready until this method's
-        # synchronous setup has finished; background startup sets _manager before
-        # get_or_create()/migration/prewarm are complete, and lifecycle hooks must
-        # not treat that partially initialized state as usable.
+        # Create session eagerly
         session = self._manager.get_or_create(self._session_key)
+        self._session_initialized = True
 
         # ----- B6: Memory file migration (one-time, for new sessions) -----
         # Skip under per-session strategy: every Hermes run creates a fresh
@@ -463,7 +404,7 @@ class HonchoMemoryProvider(MemoryProvider):
         # pop_context_result() in prefetch(). Dialectic prewarm runs the
         # full configured depth and writes into _prefetch_result so turn 1
         # consumes the result directly.
-        if self._recall_mode in {"context", "hybrid"}:
+        if self._recall_mode in ("context", "hybrid"):
             try:
                 self._manager.prefetch_context(self._session_key)
             except Exception as e:
@@ -492,14 +433,11 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._dialectic_empty_streak += 1
 
             self._prefetch_thread_started_at = time.monotonic()
-            prewarm_thread = threading.Thread(
+            self._prefetch_thread = threading.Thread(
                 target=_prewarm_dialectic, daemon=True, name="honcho-prewarm-dialectic"
             )
-            prewarm_thread.start()
-            self._prefetch_thread = prewarm_thread
+            self._prefetch_thread.start()
             logger.debug("Honcho pre-warm started for session: %s", self._session_key)
-
-        self._session_initialized = True
 
     def _ensure_session(self) -> bool:
         """Lazily initialize the Honcho session (for tools-only mode).
@@ -510,9 +448,7 @@ class HonchoMemoryProvider(MemoryProvider):
             return True
         if self._cron_skipped:
             return False
-        if self._init_thread and self._init_thread.is_alive():
-            return False
-        if not self._config or self._lazy_init_kwargs is None:
+        if not self._config or not self._lazy_init_kwargs:
             return False
 
         try:
@@ -526,25 +462,8 @@ class HonchoMemoryProvider(MemoryProvider):
             self._lazy_init_session_id = None
             return self._manager is not None
         except Exception as e:
-            self._manager = None
-            self._session_initialized = False
             logger.warning("Honcho lazy session init failed: %s", e)
             return False
-
-    def _session_ready(self) -> bool:
-        """Return whether a manager/session key can be used safely.
-
-        Background initialization sets ``_manager`` before the blocking
-        get-or-create call completes, so ``_session_initialized`` guards real
-        async startup. Tests and legacy direct construction may inject a ready
-        manager/session key without setting that flag; allow that only when no
-        init thread is currently in flight.
-        """
-        if not self._manager or not self._session_key:
-            return False
-        if self._session_initialized:
-            return True
-        return not (self._init_thread and self._init_thread.is_alive())
 
     def _format_first_turn_context(self, ctx: dict) -> str:
         """Format the prefetch context dict into a readable system prompt block."""
@@ -585,8 +504,14 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._cron_skipped:
             return ""
         if not self._manager or not self._session_key:
-            if not self._config:
-                return ""
+            # tools-only mode without session yet still returns a minimal block
+            if self._recall_mode == "tools" and self._config:
+                return (
+                    "# Honcho Memory\n"
+                    "Active (tools-only mode). Use honcho_profile, honcho_search, "
+                    "honcho_reasoning, honcho_context, and honcho_conclude tools to access user memory."
+                )
+            return ""
 
         # ----- B1: adapt text based on recall_mode -----
         if self._recall_mode == "context":
@@ -637,10 +562,6 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._recall_mode == "tools":
             return ""
 
-        if not self._session_ready():
-            self._start_session_init_background()
-            return ""
-
         # B5: injection_frequency — if "first-turn" and past first turn, return empty.
         # _turn_count is 1-indexed (first user message = 1), so > 1 means "past first".
         if self._injection_frequency == "first-turn" and self._turn_count > 1:
@@ -653,17 +574,18 @@ class HonchoMemoryProvider(MemoryProvider):
         parts = []
 
         # ----- Layer 1: Base context (representation + card) -----
-        # First fetch is asynchronous: a slow Honcho backend must not block the
-        # first response. Serve empty context now and consume the background
-        # result on a later turn.
+        # On first call, fetch synchronously so turn 1 isn't empty.
+        # After that, serve from cache and refresh in background on cadence.
         with self._base_context_lock:
             if self._base_context_cache is None:
-                self._base_context_cache = ""
-                self._last_context_turn = self._turn_count
+                # First call — synchronous fetch
                 try:
-                    self._manager.prefetch_context(self._session_key, query or None)
+                    ctx = self._manager.get_prefetch_context(self._session_key)
+                    self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
+                    self._last_context_turn = self._turn_count
                 except Exception as e:
-                    logger.debug("Honcho base context prefetch failed: %s", e)
+                    logger.debug("Honcho base context fetch failed: %s", e)
+                    self._base_context_cache = ""
             base_context = self._base_context_cache
 
         # Check if background context prefetch has a fresher result
@@ -718,11 +640,10 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._dialectic_empty_streak += 1
 
             self._prefetch_thread_started_at = time.monotonic()
-            first_turn_thread = threading.Thread(
+            self._prefetch_thread = threading.Thread(
                 target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
             )
-            first_turn_thread.start()
-            self._prefetch_thread = first_turn_thread
+            self._prefetch_thread.start()
             self._prefetch_thread.join(timeout=_first_turn_timeout)
             if self._prefetch_thread.is_alive():
                 logger.debug(
@@ -787,12 +708,11 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
-        # B1: tools-only mode — no prefetch
-        if self._recall_mode == "tools":
+        if not self._manager or not self._session_key or not query:
             return
 
-        if not self._session_ready() or not query:
-            self._start_session_init_background()
+        # B1: tools-only mode — no prefetch
+        if self._recall_mode == "tools":
             return
 
         # Trivial prompts don't warrant either a context refresh or a dialectic call.
@@ -848,11 +768,10 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._dialectic_empty_streak += 1
 
         self._prefetch_thread_started_at = time.monotonic()
-        prefetch_thread = threading.Thread(
+        self._prefetch_thread = threading.Thread(
             target=_run, daemon=True, name="honcho-prefetch"
         )
-        prefetch_thread.start()
-        self._prefetch_thread = prefetch_thread
+        self._prefetch_thread.start()
 
     # ----- Dialectic depth: multi-pass .chat() with cold/warm prompts -----
 
@@ -1206,10 +1125,7 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
-        if self._recall_mode == "tools" and not self._session_ready():
-            return
-        if not self._session_ready():
-            self._start_session_init_background()
+        if not self._manager or not self._session_key:
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
@@ -1252,10 +1168,7 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         if self._cron_skipped:
             return
-        if self._recall_mode == "tools" and not self._session_ready():
-            return
-        if not self._session_ready():
-            self._start_session_init_background()
+        if not self._manager or not self._session_key:
             return
 
         def _write():
@@ -1272,8 +1185,6 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._cron_skipped:
             return
         if not self._manager:
-            return
-        if not self._session_initialized and self._init_thread and self._init_thread.is_alive():
             return
         # Wait for pending sync
         if self._sync_thread and self._sync_thread.is_alive():
@@ -1301,8 +1212,6 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Port #1957: ensure session is initialized for tools-only mode
         if not self._session_initialized:
-            if self._init_thread and self._init_thread.is_alive():
-                return tool_error("Honcho session is still initializing; try again shortly.")
             if not self._ensure_session():
                 return tool_error("Honcho session could not be initialized.")
 
@@ -1403,7 +1312,7 @@ class HonchoMemoryProvider(MemoryProvider):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         # Flush any remaining messages
-        if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
+        if self._manager:
             try:
                 self._manager.flush_all()
             except Exception:

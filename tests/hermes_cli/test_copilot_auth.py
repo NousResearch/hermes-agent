@@ -1,7 +1,8 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
+import os
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 
 class TestTokenValidation:

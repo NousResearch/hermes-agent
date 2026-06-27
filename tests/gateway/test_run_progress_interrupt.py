@@ -8,6 +8,7 @@ of tool-progress bubbles for calls that were already parsed from the LLM
 response — making the interrupt feel ignored.
 """
 
+import asyncio
 import importlib
 import sys
 import time

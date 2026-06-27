@@ -457,7 +457,12 @@ class SessionManager:
             else:
                 # Update model_config (contains cwd) if changed.
                 try:
-                    db.update_session_meta(state.session_id, cwd_json, model_str)
+                    with db._lock:
+                        db._conn.execute(
+                            "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
+                            (cwd_json, model_str, state.session_id),
+                        )
+                        db._conn.commit()
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 

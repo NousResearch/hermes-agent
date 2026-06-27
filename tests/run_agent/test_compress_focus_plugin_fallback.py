@@ -9,6 +9,7 @@ on older plugins.
 
 from unittest.mock import MagicMock
 
+import pytest
 
 from run_agent import AIAgent
 

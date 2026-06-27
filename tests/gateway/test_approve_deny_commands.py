@@ -8,6 +8,7 @@ Supports multiple concurrent approvals (parallel subagents, execute_code)
 via a per-session queue.
 """
 
+import asyncio
 import os
 import threading
 import time
@@ -18,7 +19,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionSource
+from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -628,13 +629,8 @@ class TestFallbackNoCallback:
         _clear_approval_state()
 
     def test_no_callback_returns_approval_required(self):
-        """Without a registered callback, the fallback returns pending_approval.
-
-        PR #6d495d9e7 renamed the LLM-visible status from ``approval_required``
-        to ``pending_approval`` to make the state distinguishable from a
-        failed tool call.
-        """
-        from tools.approval import check_all_command_guards
+        """Without a registered callback, the old approval_required path is used."""
+        from tools.approval import check_all_command_guards, _pending
 
         os.environ["HERMES_EXEC_ASK"] = "1"
         os.environ["HERMES_SESSION_KEY"] = "no-callback-test"
@@ -645,5 +641,4 @@ class TestFallbackNoCallback:
             os.environ.pop("HERMES_SESSION_KEY", None)
 
         assert result["approved"] is False
-        assert result.get("status") == "pending_approval"
-        assert result.get("approval_pending") is True
+        assert result.get("status") == "approval_required"

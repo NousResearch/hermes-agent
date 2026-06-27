@@ -6,6 +6,7 @@ is auto-suspended on startup so the user gets a clean slate.
 """
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest

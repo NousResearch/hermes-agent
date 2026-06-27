@@ -128,7 +128,6 @@ class SmsAdapter(BasePlatformAdapter):
         await site.start()
         self._http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
         )
         self._running = True
 
@@ -170,7 +169,6 @@ class SmsAdapter(BasePlatformAdapter):
 
         session = self._http_session or aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
         )
         try:
             for chunk in chunks:

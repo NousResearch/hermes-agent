@@ -2,7 +2,9 @@
 
 import importlib
 import socket
+from unittest.mock import patch, MagicMock
 
+import pytest
 
 
 def _reload_constants():

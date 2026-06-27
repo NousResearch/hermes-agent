@@ -126,10 +126,10 @@ class CompressionConfig:
     def from_yaml(cls, yaml_path: str) -> "CompressionConfig":
         """Load configuration from YAML file."""
         with open(yaml_path, 'r', encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-
+            data = yaml.safe_load(f)
+        
         config = cls()
-
+        
         # Tokenizer
         if 'tokenizer' in data:
             config.tokenizer_name = data['tokenizer'].get('name', config.tokenizer_name)

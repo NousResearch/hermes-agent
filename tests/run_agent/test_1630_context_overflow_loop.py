@@ -8,6 +8,8 @@ Verifies that:
 3. Context-overflow failures produce helpful error messages suggesting /compact.
 """
 
+import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 

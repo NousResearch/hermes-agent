@@ -40,7 +40,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
 
 class FakeTree:

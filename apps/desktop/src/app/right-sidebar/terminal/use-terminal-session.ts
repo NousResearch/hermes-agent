@@ -246,6 +246,9 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
   const activeTheme = useMemo(() => terminalTheme(renderedMode, ansiPalette), [renderedMode, ansiPalette])
   const initialThemeRef = useRef(activeTheme)
   const hostRef = useRef<HTMLDivElement | null>(null)
+  // CWD is a launch parameter. Do not restart the PTY every time the active
+  // chat/session cwd changes; closing and reopening the pane picks up a new cwd.
+  const launchCwdRef = useRef(cwd)
   const termRef = useRef<Terminal | null>(null)
   const webglRef = useRef<WebglAddon | null>(null)
   const sessionIdRef = useRef<string | null>(null)
@@ -557,7 +560,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     const startSession = () =>
       void terminalApi
-        .start({ cols: term.cols, cwd, rows: term.rows })
+        .start({ cols: term.cols, cwd: launchCwdRef.current, rows: term.rows })
         .then(session => {
           if (disposed) {
             void terminalApi.dispose(session.id)
@@ -654,7 +657,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       selectionRef.current = ''
       selectionLabelRef.current = ''
     }
-  }, [addSelectionToChat, cwd])
+  }, [addSelectionToChat])
 
   useEffect(() => {
     const term = termRef.current

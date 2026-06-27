@@ -624,6 +624,22 @@ class TestSubprocessCompatHelpers:
         assert fallback & 0x00000008, "fallback missing DETACHED_PROCESS"
         assert fallback & 0x08000000, "fallback missing CREATE_NO_WINDOW"
 
+    def test_local_terminal_windows_timeout_kills_process_tree(self):
+        """Windows terminal cleanup must not leave shell descendants behind."""
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tools" / "environments" / "local.py").read_text(encoding="utf-8")
+
+        assert "def _terminate_windows_process_tree" in source
+        assert '["taskkill", "/PID", str(proc.pid), "/T", "/F"]' in source
+        assert "_terminate_windows_process_tree(proc)" in source
+
+    def test_background_terminal_windows_kill_uses_tree_termination(self):
+        """terminal(background=True) kill must target the Windows process tree."""
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tools" / "process_registry.py").read_text(encoding="utf-8")
+
+        assert "self._terminate_host_pid(session.process.pid, session.host_start_time)" in source
+
 
 # ---------------------------------------------------------------------------
 # tui_gateway/entry.py signal installation survives absent POSIX signals

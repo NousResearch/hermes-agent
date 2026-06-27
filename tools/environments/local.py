@@ -337,6 +337,31 @@ def _find_shell() -> str:
     return _find_bash()
 
 
+def _terminate_windows_process_tree(proc: subprocess.Popen) -> None:
+    """Hard-kill a Windows process tree, not just the shell wrapper."""
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=windows_hide_flags(),
+            stdin=subprocess.DEVNULL,
+        )
+        try:
+            proc.wait(timeout=1)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        try:
+            proc.terminate()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
 # Standard PATH entries for environments with minimal PATH.
 _SANE_PATH = (
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
@@ -780,7 +805,7 @@ class LocalEnvironment(BaseEnvironment):
 
         try:
             if _IS_WINDOWS:
-                proc.terminate()
+                _terminate_windows_process_tree(proc)
             else:
                 try:
                     pgid = os.getpgid(proc.pid)

@@ -9,7 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.environments.file_sync import FileSyncManager, _FORCE_SYNC_ENV, iter_sync_files
+from tools.environments.file_sync import (
+    FileSyncManager,
+    _FORCE_SYNC_ENV,
+    iter_sync_files,
+    remote_parent_dir,
+)
 
 
 @pytest.fixture
@@ -365,3 +370,21 @@ class TestBulkUpload:
         mgr.sync(force=True)
         bulk_upload.assert_called_once()
         assert len(bulk_upload.call_args[0][0]) == 3
+
+
+class TestRemoteParentDir:
+    """Remote sandbox parent dirs must stay POSIX even on a Windows host."""
+
+    def test_posix_path_parent(self):
+        assert remote_parent_dir("/home/user/.hermes/skills/a.py") == "/home/user/.hermes/skills"
+
+    def test_nested_posix_path_parent(self):
+        assert remote_parent_dir("/root/.hermes/credentials/b.json") == "/root/.hermes/credentials"
+
+    def test_not_host_os_dependent(self):
+        # posixpath.dirname must NOT collapse to a backslash path regardless of
+        # the host OS. The remote path is always POSIX; str(Path(...).parent)
+        # would mangle it on Windows. This asserts the separators are preserved.
+        result = remote_parent_dir("/home/user/.hermes/skills/a.py")
+        assert "\\" not in result
+        assert result.startswith("/")

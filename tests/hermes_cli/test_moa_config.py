@@ -76,6 +76,24 @@ def test_normalize_moa_config_tolerates_non_numeric_values():
     assert preset["aggregator_temperature"] == 0.4
 
 
+def test_normalize_moa_config_tolerates_non_list_reference_models():
+    """A hand-edited scalar reference_models must degrade to defaults instead of
+    crashing normalize_moa_config with TypeError (symmetric with the non-numeric
+    scalar-field tolerance)."""
+    cfg = normalize_moa_config(
+        {"presets": {"broken": {"reference_models": 2}}}
+    )
+    assert cfg["presets"]["broken"]["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+
+
+def test_normalize_moa_config_wraps_bare_dict_reference_models():
+    """A single reference slot written without the list wrapper is rescued."""
+    cfg = normalize_moa_config(
+        {"presets": {"p": {"reference_models": {"provider": "openai", "model": "gpt-4o"}}}}
+    )
+    assert cfg["presets"]["p"]["reference_models"] == [{"provider": "openai", "model": "gpt-4o"}]
+
+
 def test_normalize_moa_config_coerces_numeric_strings():
     """Valid numeric strings (e.g. from YAML round-trip) must coerce correctly."""
     cfg = normalize_moa_config({"max_tokens": "8192", "reference_temperature": "0.9"})

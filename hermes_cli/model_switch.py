@@ -2277,6 +2277,26 @@ def list_authenticated_providers(
     return results
 
 
+def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = "") -> List[dict]:
+    """Add the virtual MoA provider row used by interactive model pickers.
+
+    ``list_authenticated_providers()`` only returns real/auth-backed providers.
+    The CLI model inventory adds MoA separately so named presets appear next to
+    normal providers; gateway pickers call ``list_picker_providers()`` directly,
+    so they need the same virtual row here. Reuse the inventory's single row
+    builder so the row shape stays defined in one place.
+    """
+    try:
+        from hermes_cli.inventory import _moa_provider_row
+
+        moa_row = _moa_provider_row(current_provider)
+        if moa_row is None:
+            return providers
+        return [moa_row] + [p for p in providers if str(p.get("slug", "")).lower() != "moa"]
+    except Exception:
+        return providers
+
+
 def list_picker_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -2284,6 +2304,7 @@ def list_picker_providers(
     custom_providers: list | None = None,
     max_models: int | None = None,
     current_model: str = "",
+    include_moa: bool = False,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -2314,6 +2335,8 @@ def list_picker_providers(
         max_models=max_models,
         current_model=current_model,
     )
+    if include_moa:
+        providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
     filtered: List[dict] = []
     for p in providers:

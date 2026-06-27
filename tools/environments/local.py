@@ -192,6 +192,18 @@ def _build_provider_env_blocklist() -> frozenset:
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
+# Active-virtualenv markers that must NOT leak into terminal subprocesses.
+# The gateway runs inside its own venv, so its process environment carries
+# VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
+# agent runs against OTHER Python projects, tools like ``uv``/``poetry`` treat
+# the inherited value as the active environment and build/sync that other
+# project's dependencies into the Hermes venv path instead of the project's own
+# ``.venv`` — silently clobbering the Hermes environment (e.g. a project pinned
+# to a different Python version overwrites it and breaks the gateway). The
+# Hermes venv stays reachable via PATH (its bin dir is first), so stripping
+# these markers is safe and only prevents the cross-project clobber (#23473).
+_ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
+
 
 def _inject_context_hermes_home(env: dict) -> None:
     """Bridge the context-local Hermes home override into subprocess env."""
@@ -231,6 +243,9 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(sanitized)
+
+    for _marker in _ACTIVE_VENV_MARKER_VARS:
+        sanitized.pop(_marker, None)
 
     return sanitized
 
@@ -527,6 +542,9 @@ def _make_run_env(env: dict) -> dict:
                 run_env[var_name] = value
     except Exception:
         pass
+
+    for _marker in _ACTIVE_VENV_MARKER_VARS:
+        run_env.pop(_marker, None)
 
     return run_env
 

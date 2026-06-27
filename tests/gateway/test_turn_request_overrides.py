@@ -89,3 +89,52 @@ def test_resolve_runtime_agent_kwargs_carries_request_overrides(monkeypatch):
     )
     rk = gateway_run._resolve_runtime_agent_kwargs()
     assert rk["request_overrides"] == PROVIDER_OVERRIDES
+
+
+# --- /model session-override follow-up: request_overrides must survive a switch ---
+
+def test_session_override_applies_request_overrides():
+    """A /model switch to a custom provider carries its extra_body into runtime."""
+    runner = object.__new__(GatewayRunner)
+    runner._session_model_overrides = {
+        "sess1": {
+            "model": "thinkmodel",
+            "provider": "custom",
+            "api_key": "k",
+            "base_url": "http://10.0.0.1:8000/v1",
+            "api_mode": "chat_completions",
+            "request_overrides": PROVIDER_OVERRIDES,
+        }
+    }
+    rk = _runtime_kwargs()  # default resolution carried no overrides
+    model, out = runner._apply_session_model_override("sess1", "oldmodel", rk)
+    assert model == "thinkmodel"
+    assert out["request_overrides"] == PROVIDER_OVERRIDES
+
+
+def test_session_override_clears_stale_request_overrides():
+    """Switching to a provider with no overrides clears a stale value."""
+    runner = object.__new__(GatewayRunner)
+    runner._session_model_overrides = {
+        "sess1": {
+            "model": "plain",
+            "provider": "openrouter",
+            "api_key": "k",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+            "request_overrides": None,
+        }
+    }
+    rk = _runtime_kwargs(request_overrides=PROVIDER_OVERRIDES)  # stale, from default
+    _, out = runner._apply_session_model_override("sess1", "old", rk)
+    assert out.get("request_overrides") is None
+
+
+def test_session_override_absent_is_noop():
+    """No override for the session leaves runtime_kwargs untouched."""
+    runner = object.__new__(GatewayRunner)
+    runner._session_model_overrides = {}
+    rk = _runtime_kwargs(request_overrides=PROVIDER_OVERRIDES)
+    model, out = runner._apply_session_model_override("nope", "keepme", rk)
+    assert model == "keepme"
+    assert out["request_overrides"] == PROVIDER_OVERRIDES

@@ -2185,6 +2185,22 @@ def switch_model(
     if hermes_warn:
         warnings.append(hermes_warn)
 
+    # Carry the switched provider's request_overrides (e.g. a custom_providers
+    # ``extra_body`` such as chat_template_kwargs) so a ``/model`` switch to a
+    # custom provider applies it on the gateway, matching the default-provider
+    # path. resolve_runtime_provider surfaces these for named custom providers.
+    request_overrides = None
+    try:
+        from hermes_cli.runtime_provider import (
+            _get_named_custom_provider,
+            _custom_provider_request_overrides,
+        )
+        _cp_for_ro = _get_named_custom_provider(target_provider)
+        if _cp_for_ro:
+            request_overrides = _custom_provider_request_overrides(_cp_for_ro) or None
+    except Exception:
+        request_overrides = None
+
     # --- Build result ---
     return ModelSwitchResult(
         success=True,

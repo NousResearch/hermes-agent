@@ -20,6 +20,15 @@ import pytest
 from tests.tools.conftest import register_all_web_providers
 
 
+@pytest.fixture(autouse=True)
+def _reset_brave_free_throttle():
+    from plugins.web.brave_free import provider
+
+    provider._reset_throttle_for_tests()
+    yield
+    provider._reset_throttle_for_tests()
+
+
 # ---------------------------------------------------------------------------
 # BraveFreeWebSearchProvider unit tests
 # ---------------------------------------------------------------------------
@@ -184,6 +193,103 @@ class TestBraveFreeProviderSearch:
         result = BraveFreeWebSearchProvider().search("q", limit=5)
         assert result["success"] is False
         assert "BRAVE_SEARCH_API_KEY" in result["error"]
+
+    def test_config_loader_uses_readonly_fast_path(self, monkeypatch):
+        from hermes_cli import config
+        from plugins.web.brave_free import provider
+
+        monkeypatch.setattr(
+            config,
+            "load_config_readonly",
+            lambda: {"web": {"brave_free": {"min_request_interval_seconds": 0.25}}},
+        )
+        monkeypatch.setattr(
+            config,
+            "load_config",
+            lambda: pytest.fail("Brave free hot path should not deepcopy config"),
+        )
+
+        assert provider._load_brave_free_config() == {"min_request_interval_seconds": 0.25}
+
+    def test_default_throttles_consecutive_calls_to_1_5_second_gap(self, monkeypatch):
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from plugins.web.brave_free import provider
+
+        monkeypatch.setattr(provider, "_load_brave_free_config", lambda: {})
+
+        with (
+            patch("httpx.get", return_value=self._mock_resp({"web": {"results": []}})),
+            patch.object(provider.time, "monotonic", side_effect=[100.0, 100.1, 101.5]),
+            patch.object(provider.time, "sleep") as sleep_mock,
+        ):
+            search_provider = provider.BraveFreeWebSearchProvider()
+            search_provider.search("first", limit=5)
+            search_provider.search("second", limit=5)
+
+        sleep_mock.assert_called_once_with(pytest.approx(1.4))
+
+    def test_custom_config_interval_is_respected(self, monkeypatch):
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from plugins.web.brave_free import provider
+
+        monkeypatch.setattr(
+            provider,
+            "_load_brave_free_config",
+            lambda: {"min_request_interval_seconds": 2.25},
+        )
+
+        with (
+            patch("httpx.get", return_value=self._mock_resp({"web": {"results": []}})),
+            patch.object(provider.time, "monotonic", side_effect=[10.0, 10.75, 12.25]),
+            patch.object(provider.time, "sleep") as sleep_mock,
+        ):
+            search_provider = provider.BraveFreeWebSearchProvider()
+            search_provider.search("first", limit=5)
+            search_provider.search("second", limit=5)
+
+        sleep_mock.assert_called_once_with(pytest.approx(1.5))
+
+    def test_zero_config_interval_disables_sleep(self, monkeypatch):
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from plugins.web.brave_free import provider
+
+        monkeypatch.setattr(
+            provider,
+            "_load_brave_free_config",
+            lambda: {"min_request_interval_seconds": 0},
+        )
+
+        with (
+            patch("httpx.get", return_value=self._mock_resp({"web": {"results": []}})),
+            patch.object(provider.time, "sleep") as sleep_mock,
+        ):
+            search_provider = provider.BraveFreeWebSearchProvider()
+            search_provider.search("first", limit=5)
+            search_provider.search("second", limit=5)
+
+        sleep_mock.assert_not_called()
+
+    @pytest.mark.parametrize("bad_value", ["not-a-number", float("inf"), None])
+    def test_invalid_config_interval_falls_back_to_default(self, monkeypatch, bad_value):
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from plugins.web.brave_free import provider
+
+        monkeypatch.setattr(
+            provider,
+            "_load_brave_free_config",
+            lambda: {"min_request_interval_seconds": bad_value},
+        )
+
+        with (
+            patch("httpx.get", return_value=self._mock_resp({"web": {"results": []}})),
+            patch.object(provider.time, "monotonic", side_effect=[20.0, 20.25, 21.5]),
+            patch.object(provider.time, "sleep") as sleep_mock,
+        ):
+            search_provider = provider.BraveFreeWebSearchProvider()
+            search_provider.search("first", limit=5)
+            search_provider.search("second", limit=5)
+
+        sleep_mock.assert_called_once_with(pytest.approx(1.25))
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,8 @@ Config keys this provider responds to::
     web:
       search_backend: "brave-free"     # explicit per-capability
       backend: "brave-free"            # shared fallback
+      brave_free:
+        min_request_interval_seconds: 1.5
 
 Auth env var::
 
@@ -20,7 +22,10 @@ Auth env var::
 from __future__ import annotations
 
 import logging
+import math
 import os
+import threading
+import time
 from typing import Any, Dict
 
 from agent.web_search_provider import WebSearchProvider
@@ -28,6 +33,61 @@ from agent.web_search_provider import WebSearchProvider
 logger = logging.getLogger(__name__)
 
 _BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 1.5
+_THROTTLE_LOCK = threading.Lock()
+_last_request_monotonic: float | None = None
+
+
+def _load_brave_free_config() -> Dict[str, Any]:
+    """Read ``web.brave_free`` from config.yaml without deepcopying it."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        web_section = cfg.get("web") if isinstance(cfg, dict) else None
+        brave_section = web_section.get("brave_free") if isinstance(web_section, dict) else None
+        return brave_section if isinstance(brave_section, dict) else {}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not load web.brave_free config: %s", exc)
+        return {}
+
+
+def _min_request_interval_seconds() -> float:
+    value = _load_brave_free_config().get(
+        "min_request_interval_seconds",
+        _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
+    )
+    try:
+        interval = float(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS
+    if not math.isfinite(interval):
+        return _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS
+    return max(0.0, interval)
+
+
+def _throttle_brave_request() -> None:
+    """Serialize Brave API requests and enforce the configured process-local gap."""
+    global _last_request_monotonic
+
+    interval = _min_request_interval_seconds()
+    if interval <= 0:
+        return
+
+    with _THROTTLE_LOCK:
+        now = time.monotonic()
+        if _last_request_monotonic is not None:
+            wait_seconds = interval - (now - _last_request_monotonic)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+                now = time.monotonic()
+        _last_request_monotonic = now
+
+
+def _reset_throttle_for_tests() -> None:
+    global _last_request_monotonic
+    with _THROTTLE_LOCK:
+        _last_request_monotonic = None
 
 
 class BraveFreeWebSearchProvider(WebSearchProvider):
@@ -73,6 +133,7 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
         count = max(1, min(int(limit), 20))
 
         try:
+            _throttle_brave_request()
             resp = httpx.get(
                 _BRAVE_ENDPOINT,
                 params={"q": query, "count": count},

@@ -1687,26 +1687,33 @@ Environment scrubbing (strips `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, 
 
 ## Web Search Backends
 
-The `web_search` and `web_extract` tools support five backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
+The `web_search` and `web_extract` tools support eight backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | searxng | parallel | tavily | exa
+  backend: firecrawl    # firecrawl | searxng | brave-free | ddgs | parallel | tavily | exa | xai
 
   # Or use per-capability keys to mix providers (e.g. free search + paid extract):
-  search_backend: "searxng"
+  search_backend: "brave-free"
   extract_backend: "firecrawl"
+
+  # Brave free-tier requests are process-throttled by default for its 1 QPS limit.
+  brave_free:
+    min_request_interval_seconds: 1.5   # Set 0 to disable
 ```
 
 | Backend | Env Var | Search | Extract |
 |---------|---------|--------|---------|
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — |
+| **Brave** (free tier) | `BRAVE_SEARCH_API_KEY` | ✔ | — |
+| **DuckDuckGo** (ddgs) | _(none)_ | ✔ | — |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ |
+| **xAI** | `XAI_API_KEY` | ✔ | — |
 
-**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `SEARXNG_URL` is set, SearXNG is used. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
+**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys and local packages. Use `web.search_backend` / `web.extract_backend` when you want an explicit provider or a search-only provider (SearXNG, Brave, DuckDuckGo, xAI) paired with a separate extraction backend.
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 

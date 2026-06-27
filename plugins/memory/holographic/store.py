@@ -205,7 +205,17 @@ class MemoryStore:
             if not query:
                 return []
 
-            params: list = [query, min_trust]
+            # Sanitize FTS5 query: wrap each token in double quotes to
+            # neutralize FTS5 operators (AND, OR, NOT, NEAR, *, etc.)
+            # that could cause injection or crash.
+            safe_tokens = []
+            for token in query.split():
+                token = token.replace('"', '')
+                if token:
+                    safe_tokens.append(f'"{token}"')
+            safe_query = " ".join(safe_tokens) if safe_tokens else query
+
+            params: list = [safe_query, min_trust]
             category_clause = ""
             if category is not None:
                 category_clause = "AND f.category = ?"
@@ -435,18 +445,20 @@ class MemoryStore:
 
         Returns the entity_id.
         """
-        # Exact name match
+        # Exact name match (case-insensitive via COLLATE NOCASE, not LIKE
+        # which treats % and _ as wildcards in entity names).
         row = self._conn.execute(
-            "SELECT entity_id FROM entities WHERE name LIKE ?", (name,)
+            "SELECT entity_id FROM entities WHERE name = ? COLLATE NOCASE", (name,)
         ).fetchone()
         if row is not None:
             return int(row["entity_id"])
 
-        # Search aliases — aliases stored as comma-separated; use LIKE with % boundaries
+        # Search aliases — use INSTR for exact substring matching instead of
+        # LIKE which treats % and _ in entity names as wildcards.
         alias_row = self._conn.execute(
             """
             SELECT entity_id FROM entities
-            WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%'
+            WHERE INSTR(',' || LOWER(aliases) || ',', ',' || LOWER(?) || ',') > 0
             """,
             (name,),
         ).fetchone()

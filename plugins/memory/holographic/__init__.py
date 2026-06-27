@@ -251,6 +251,11 @@ class HolographicMemoryProvider(MemoryProvider):
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
+        if self._store:
+            try:
+                self._store.close()
+            except Exception:
+                pass
         self._store = None
         self._retriever = None
 

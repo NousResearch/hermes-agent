@@ -11841,6 +11841,7 @@ def _try_termux_fast_cli_launch() -> bool:
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                output_format=getattr(args, "output_format", "text"),
             )
         )
 
@@ -13248,6 +13249,7 @@ def main():
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                output_format=getattr(args, "output_format", "text"),
             )
         )
 

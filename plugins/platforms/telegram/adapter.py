@@ -5695,7 +5695,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not chat:
             return False
         chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
-        return chat_type in {"group", "supergroup"}
+        return chat_type in {"group", "supergroup", "channel"}
 
     def _is_reply_to_bot(self, message: Message) -> bool:
         if not self._bot or not getattr(message, "reply_to_message", None):

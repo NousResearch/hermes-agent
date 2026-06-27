@@ -1289,3 +1289,81 @@ def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
         assert "program.exe" in message["content"]
 
     asyncio.run(_run())
+
+
+# --- Channel post gating regression tests (#53674) ---
+
+
+def _channel_message(
+    text="hello",
+    *,
+    chat_id=-200,
+    from_user_id=111,
+    from_user_name="Alice Example",
+    thread_id=None,
+    reply_to_bot=False,
+    entities=None,
+    caption=None,
+    caption_entities=None,
+):
+    reply_to_message = None
+    if reply_to_bot:
+        reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999), message_id=10, text="previous bot reply", caption=None)
+    return SimpleNamespace(
+        message_id=50,
+        text=text,
+        caption=caption,
+        entities=entities or [],
+        caption_entities=caption_entities or [],
+        message_thread_id=thread_id,
+        is_topic_message=thread_id is not None,
+        chat=SimpleNamespace(id=chat_id, type="channel", title="Test Channel", is_forum=False),
+        from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0]),
+        reply_to_message=reply_to_message,
+        date=None,
+    )
+
+
+def test_channel_post_blocked_when_not_in_allowed_chats():
+    """Channel posts outside allowed_chats must be dropped (#53674)."""
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-100"])
+
+    assert adapter._should_process_message(_channel_message("breaking news", chat_id=-200)) is False
+
+
+def test_channel_post_allowed_when_in_allowed_chats():
+    """Channel posts inside allowed_chats should be accepted when require_mention is off."""
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-200"])
+
+    assert adapter._should_process_message(_channel_message("breaking news", chat_id=-200)) is True
+
+
+def test_channel_post_allowed_in_allowed_chats_with_mention():
+    """Channel posts in allowed_chats pass with require_mention when bot is mentioned."""
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-200"])
+
+    text = "hello @hermes_bot"
+    assert adapter._should_process_message(
+        _channel_message(text, chat_id=-200, entities=[_mention_entity(text)])
+    ) is True
+
+
+def test_channel_post_respects_require_mention():
+    """Channel posts must respect require_mention when no allowed_chats is set."""
+    adapter = _make_adapter(require_mention=True)
+
+    # Unmentioned channel post should be dropped
+    assert adapter._should_process_message(_channel_message("hello")) is False
+
+    # Mentioned channel post should be accepted
+    text = "hello @hermes_bot"
+    assert adapter._should_process_message(
+        _channel_message(text, entities=[_mention_entity(text)])
+    ) is True
+
+
+def test_channel_post_open_when_require_mention_disabled():
+    """Channel posts pass freely when require_mention is disabled and no allowed_chats."""
+    adapter = _make_adapter(require_mention=False)
+
+    assert adapter._should_process_message(_channel_message("any message")) is True

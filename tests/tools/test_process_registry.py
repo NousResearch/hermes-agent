@@ -1546,8 +1546,17 @@ class TestSigkillEscalation:
         gone/alive partition, which mis-partitioned across a parent/child tree
         and left survivors un-killed (flaky — sometimes the parent lived,
         sometimes a child). The escalation now re-probes every target directly.
+
+        The dead-pid probe swallows ``psutil.NoSuchProcess`` because once a
+        PID is reaped the kernel can immediately reuse the slot for an
+        unrelated process; calling ``psutil.Process(p)`` against the
+        re-allocated slot then raises even though the original SIGTERM-ignoring
+        tree is in fact fully dead.  We treat the raised NoSuchProcess as
+        "alive probe returned: dead" (race-resolved in favor of the test's
+        intent).
         """
         import psutil
+        from psutil import NoSuchProcess as _NoSuchProcess
         monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
                             staticmethod(lambda: 1.0))
         # Parent spawns 2 children; all trap SIGTERM. Parent prints child pids
@@ -1568,10 +1577,18 @@ class TestSigkillEscalation:
         try:
             ProcessRegistry._terminate_host_pid(parent.pid)
 
+            def _proc_alive_safely(p):
+                try:
+                    return ProcessRegistry._proc_alive(psutil.Process(p))
+                except _NoSuchProcess:
+                    # PID reaped and possibly re-allocated. The original
+                    # SIGTERM target is no longer alive regardless of which
+                    # process now owns the slot - report "dead".
+                    return False
+
             def _all_dead():
                 return not any(
-                    psutil.pid_exists(p)
-                    and ProcessRegistry._proc_alive(psutil.Process(p))
+                    psutil.pid_exists(p) and _proc_alive_safely(p)
                     for p in all_pids
                 )
 

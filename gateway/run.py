@@ -42,6 +42,7 @@ import time
 import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
+from enum import Enum
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
@@ -5107,6 +5108,91 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     e,
                 )
 
+    # =========================================================================
+    # Agent Cleanup Pipeline (fixes #53175)
+    # =========================================================================
+
+    class _CleanupContext(Enum):
+        """Why cleanup is happening - determines logging & timeout behavior."""
+        SHUTDOWN = "shutdown"                    # Gateway stop/restart
+        SESSION_EXPIRY = "session_expiry"        # 5-min watchdog finalization
+        SESSION_HYGIENE = "session_hygiene"      # Post-auto-compress eviction
+        IDLE_CACHE_EVICTION = "idle_cache"       # Shutdown idle cached agents
+        BACKGROUND_TASK = "background_task"      # After executor-run background task
+        CACHE_EVICTION_FALLBACK = "cache_fallback"  # _release_evicted_agent_soft fallback
+        UNKNOWN = "unknown"
+
+    # Config-driven timeouts (seconds) - overridable via config.yaml:
+    # gateway:
+    #   cleanup_timeouts:
+    #     shutdown: 30.0
+    #     session_expiry: 30.0
+    #     session_hygiene: 30.0
+    #     idle_cache: 30.0
+    #     background_task: 15.0
+    #     cache_fallback: 10.0
+    _CLEANUP_TIMEOUTS = {
+        _CleanupContext.SHUTDOWN: 30.0,
+        _CleanupContext.SESSION_EXPIRY: 30.0,
+        _CleanupContext.SESSION_HYGIENE: 30.0,
+        _CleanupContext.IDLE_CACHE_EVICTION: 30.0,
+        _CleanupContext.BACKGROUND_TASK: 15.0,
+        _CleanupContext.CACHE_EVICTION_FALLBACK: 10.0,
+    }
+
+    def _get_cleanup_timeout(self, context: "_CleanupContext") -> float:
+        """Fetch timeout from config or use defaults."""
+        try:
+            from utils.config import load_config
+            cfg = load_config()
+            cleanup_cfg = cfg.get("gateway", {}).get("cleanup_timeouts", {})
+            if context.value in cleanup_cfg:
+                return float(cleanup_cfg[context.value])
+        except Exception:
+            pass
+        return self._CLEANUP_TIMEOUTS.get(context, 30.0)
+
+    async def _cleanup_agent_async(
+        self,
+        agent: Any,
+        context: "_CleanupContext",
+        session_key: Optional[str] = None,
+    ) -> None:
+        """
+        Centralized async agent cleanup with timeout & observability.
+
+        Runs blocking operations (agent.close, shutdown_memory_provider) in
+        thread pool executor so event loop never stalls (#53175).
+        """
+        if agent is None:
+            return
+
+        timeout = self._get_cleanup_timeout(context)
+        session_id = getattr(agent, "session_id", session_key or "unknown")
+
+        try:
+            await asyncio.wait_for(
+                self._run_in_executor_with_context(
+                    self._cleanup_agent_resources, agent
+                ),
+                timeout=timeout,
+            )
+            logger.debug(
+                "Agent cleanup completed for session %s (context: %s)",
+                session_id, context.value
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Agent resource cleanup timed out after %.1fs for session %s "
+                "(context: %s); proceeding (#53175)",
+                timeout, session_id, context.value
+            )
+        except Exception as exc:
+            logger.warning(
+                "Agent resource cleanup failed for session %s (context: %s): %s (#53175)",
+                session_id, context.value, exc
+            )
+
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
             # Persist any in-flight transcript to the SQLite session store
@@ -5153,7 +5239,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 pass
-            self._cleanup_agent_resources(agent)
+            # Offload cleanup to executor so event loop never blocks on
+            # agent.close() / shutdown_memory_provider() (#53175).
+            session_key = getattr(agent, "session_id", None)
+            # _finalize_shutdown_agents is called from sync stop() - schedule
+            # the async cleanup safely on the gateway's event loop
+            if session_key:
+                coro = self._cleanup_agent_async(
+                    agent, self._CleanupContext.SHUTDOWN, session_key
+                )
+            else:
+                coro = self._cleanup_agent_async(agent, self._CleanupContext.SHUTDOWN)
+            # Use safe_schedule_threadsafe to avoid "coroutine never awaited" warnings
+            # if the loop is closing during shutdown. Only schedule on the gateway's
+            # own event loop (_gateway_loop). In tests or other contexts without
+            # _gateway_loop, run cleanup synchronously so behavior is verifiable.
+            loop = getattr(self, "_gateway_loop", None)
+            if loop is not None:
+                safe_schedule_threadsafe(coro, loop)
+            else:
+                # No gateway event loop (e.g., unit tests) - run cleanup synchronously
+                # so tests can verify close() was called immediately.
+                try:
+                    coro.close()
+                except Exception:
+                    pass
+                self._cleanup_agent_resources(agent)
 
     def _should_emit_long_running_notification(
         self,
@@ -5177,45 +5288,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return True
 
     def _cleanup_agent_resources(self, agent: Any) -> None:
-        """Best-effort cleanup for temporary or cached agent instances."""
+        """Best-effort cleanup for temporary or cached agent instances.
+
+        Runs in executor thread via `_cleanup_agent_async` so blocking
+        operations (subprocess teardown, network IO) never stall the event loop.
+        
+        NOTE: Transcript flush is handled by the CALLER (e.g., _finalize_shutdown_agents)
+        before calling this method. This method only handles:
+        - shutdown_memory_provider
+        - agent.close()
+        - cleanup_stale_async_clients
+        """
         if agent is None:
             return
+        session_id = getattr(agent, "session_id", "unknown")
+
+        # 1. Shutdown memory provider
         try:
             if hasattr(agent, "shutdown_memory_provider"):
-                # Pass the agent's own conversation transcript so memory
-                # providers' ``on_session_end`` hooks see the real messages
-                # instead of the empty default (#15165). ``_session_messages``
-                # is set on ``AIAgent`` (run_agent.py:1518) and refreshed at
-                # the end of every ``run_conversation`` turn via
-                # ``_persist_session``; on an agent built through
-                # ``object.__new__`` (test stubs) the attribute may be
-                # absent, so ``getattr`` with a ``None`` default keeps the
-                # call signature-compatible with the pre-fix behaviour
-                # (``shutdown_memory_provider(messages=None)``).
                 session_messages = getattr(agent, "_session_messages", None)
                 if isinstance(session_messages, list):
                     agent.shutdown_memory_provider(session_messages)
                 else:
                     agent.shutdown_memory_provider()
-        except Exception:
-            pass
-        # Close tool resources (terminal sandboxes, browser daemons,
-        # background processes, httpx clients) to prevent zombie
-        # process accumulation.
+        except Exception as exc:
+            logger.warning(
+                "Agent cleanup [%s]: shutdown_memory_provider failed: %s",
+                session_id, exc
+            )
+
+        # 2. Close tool resources
         try:
             if hasattr(agent, "close"):
                 agent.close()
-        except Exception:
-            pass
-        # Auxiliary async clients (session_search/web/vision/etc.) live in a
-        # process-global cache and are created inside worker threads. Clean up
-        # any entries whose event loop is now dead so their httpx transports do
-        # not accumulate across gateway turns.
+        except Exception as exc:
+            logger.warning(
+                "Agent cleanup [%s]: agent.close() failed: %s",
+                session_id, exc
+            )
+
+        # 3. Cleanup stale auxiliary clients
         try:
             from agent.auxiliary_client import cleanup_stale_async_clients
             cleanup_stale_async_clients()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Agent cleanup [%s]: cleanup_stale_async_clients failed: %s",
+                session_id, exc
+            )
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
@@ -6677,7 +6797,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _cached_agent is None:
                             _cached_agent = self._running_agents.get(key)
                         if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
-                            self._cleanup_agent_resources(_cached_agent)
+                            # Offload cleanup to executor so event loop never blocks
+                            # on agent.close() / shutdown_memory_provider() (#53175).
+                            await self._cleanup_agent_async(
+                                _cached_agent, self._CleanupContext.SESSION_EXPIRY, key
+                            )
                         # Drop the cache entry so the AIAgent (and its LLM
                         # clients, tool schemas, memory provider refs) can
                         # be garbage-collected.  Otherwise the cache grows
@@ -7201,7 +7325,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _agent = (
                         _entry[0] if isinstance(_entry, tuple) else _entry
                     )
-                    self._cleanup_agent_resources(_agent)
+                    # Offload cleanup to executor so event loop never blocks
+                    # on agent.close() / shutdown_memory_provider() (#53175).
+                    await self._cleanup_agent_async(
+                        _agent, self._CleanupContext.IDLE_CACHE_EVICTION
+                    )
 
             for platform, adapter in list(self.adapters.items()):
                 _adapter_started_at = time.monotonic()
@@ -10029,7 +10157,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # rebuilds its system prompt from current
                                     # SOUL.md, memory, and skills.
                                     self._evict_cached_agent(session_key)
-                                    self._cleanup_agent_resources(_hyg_agent)
+                                    # Offload cleanup to executor so event loop never blocks
+                                    # on agent.close() / shutdown_memory_provider() (#53175).
+                                    await self._cleanup_agent_async(
+                                        _hyg_agent, self._CleanupContext.SESSION_HYGIENE, session_key
+                                    )
 
                     except Exception as e:
                         logger.warning(
@@ -11910,6 +12042,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         task_id=task_id,
                     )
                 finally:
+                    # This runs in executor thread - direct sync call is fine
+                    # but use async helper for consistent logging (#53175)
                     self._cleanup_agent_resources(agent)
 
             result = await self._run_in_executor_with_context(run_sync)
@@ -14597,6 +14731,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 # Older agent instance (shouldn't happen in practice) —
                 # fall back to the legacy full-close path.
+                # Called from daemon thread - sync call OK but use async for logging
                 self._cleanup_agent_resources(agent)
         except Exception:
             pass

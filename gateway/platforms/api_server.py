@@ -571,11 +571,22 @@ else:
     cors_middleware = None  # type: ignore[assignment]
 
 
+def _redact_error(text) -> str:
+    """Strip credential-bearing text from error messages before they
+    cross the HTTP boundary.  See issue #37733."""
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(str(text))
+    except Exception:
+        # If redaction is unavailable, return a generic message.
+        return "Internal server error (details redacted)"
+
+
 def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
     """OpenAI-style error envelope."""
     return {
         "error": {
-            "message": message,
+            "message": _redact_error(message),
             "type": err_type,
             "param": param,
             "code": code,
@@ -2744,10 +2755,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 if agent_final and not final_response_text:
                     final_response_text = agent_final
                 if isinstance(result, dict) and result.get("error") and not final_response_text:
-                    agent_error = result["error"]
+                    agent_error = _redact_error(result["error"])
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
-                agent_error = str(e)
+                agent_error = _redact_error(e)
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
@@ -2906,7 +2917,7 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 failed_env = _envelope("failed")
                 failed_env["output"] = list(emitted_items)
-                failed_env["error"] = {"message": str(_exc)[:500], "type": "server_error"}
+                failed_env["error"] = {"message": _redact_error(_exc)[:500], "type": "server_error"}
                 failed_env["usage"] = {
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
@@ -3151,7 +3162,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         final_response = result.get("final_response", "")
         if not final_response:
-            final_response = result.get("error", "(No response generated)")
+            final_response = _redact_error(result.get("error", "(No response generated)"))
 
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())

@@ -1281,6 +1281,202 @@ class TestCheckForSkillUpdates:
 
         assert results[0]["status"] == "up_to_date"
 
+    def test_bad_env_github_token_falls_back_to_anonymous_source(self, monkeypatch):
+        """A stale env token must not make public skills look unavailable.
+
+        Hermes loads ~/.hermes/.env at CLI startup. If that file contains a
+        revoked GITHUB_TOKEN, GitHub returns 401 for otherwise-public skill
+        repos. Public skill update checks should retry without auth before
+        reporting the upstream bundle unavailable.
+        """
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_revoked")
+        source = GitHubSource(auth=GitHubAuth())
+        seen_auth_headers = []
+
+        def fake_get(*args, **kwargs):
+            seen_auth_headers.append((kwargs.get("headers") or {}).get("Authorization"))
+            if len(seen_auth_headers) == 1:
+                return httpx.Response(401, json={"message": "Bad credentials"})
+            return httpx.Response(200, json={"ok": True})
+
+        with (
+            patch.object(source.auth, "_try_gh_cli", return_value=None),
+            patch.object(source.auth, "_try_github_app", return_value=None),
+            patch("tools.skills_hub.httpx.get", side_effect=fake_get),
+        ):
+            result = source._github_get("https://api.github.com/repos/acme/skills")
+
+        assert result is not None
+        assert result.status_code == 200
+        assert seen_auth_headers == ["token ghp_revoked", None]
+        assert source.auth._disabled_tokens == {"ghp_revoked"}
+
+    def test_bad_github_token_falls_back_to_gh_token(self, monkeypatch):
+        """A bad GITHUB_TOKEN should not mask a valid GH_TOKEN."""
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_revoked")
+        monkeypatch.setenv("GH_TOKEN", "github_pat_valid")
+        source = GitHubSource(auth=GitHubAuth())
+        seen_auth_headers = []
+
+        def fake_get(*args, **kwargs):
+            seen_auth_headers.append((kwargs.get("headers") or {}).get("Authorization"))
+            if len(seen_auth_headers) == 1:
+                return httpx.Response(401, json={"message": "Bad credentials"})
+            return httpx.Response(200, json={"ok": True})
+
+        with patch("tools.skills_hub.httpx.get", side_effect=fake_get):
+            result = source._github_get("https://api.github.com/repos/acme/private-skills")
+
+        assert result is not None
+        assert result.status_code == 200
+        assert seen_auth_headers == ["token ghp_revoked", "token github_pat_valid"]
+        assert source.auth._disabled_tokens == {"ghp_revoked"}
+
+    def test_bad_env_token_retry_preserves_custom_accept_header(self, monkeypatch):
+        """401 retry must not drop raw Contents API Accept headers."""
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_revoked")
+        source = GitHubSource(auth=GitHubAuth())
+        seen_headers = []
+
+        def fake_get(*args, **kwargs):
+            headers = kwargs.get("headers") or {}
+            seen_headers.append(dict(headers))
+            if len(seen_headers) == 1:
+                return httpx.Response(401, json={"message": "Bad credentials"})
+            return httpx.Response(200, text="---\nname: demo\n---\n")
+
+        with (
+            patch.object(source.auth, "_try_gh_cli", return_value=None),
+            patch.object(source.auth, "_try_github_app", return_value=None),
+            patch("tools.skills_hub.httpx.get", side_effect=fake_get),
+        ):
+            result = source._github_get(
+                "https://api.github.com/repos/acme/skills/contents/demo/SKILL.md",
+                headers={
+                    "Accept": "application/vnd.github.v3.raw",
+                    "Authorization": "token ghp_revoked",
+                },
+            )
+
+        assert result is not None
+        assert result.status_code == 200
+        assert seen_headers == [
+            {
+                "Accept": "application/vnd.github.v3.raw",
+                "Authorization": "token ghp_revoked",
+            },
+            {"Accept": "application/vnd.github.v3.raw"},
+        ]
+
+    def test_bad_gh_cli_token_falls_back_to_anonymous_source(self, monkeypatch):
+        """A bad gh-cli token should not block anonymous public repo access."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        source = GitHubSource(auth=GitHubAuth())
+        seen_auth_headers = []
+
+        def fake_get(*args, **kwargs):
+            seen_auth_headers.append((kwargs.get("headers") or {}).get("Authorization"))
+            if len(seen_auth_headers) == 1:
+                return httpx.Response(401, json={"message": "Bad credentials"})
+            return httpx.Response(200, json={"ok": True})
+
+        with (
+            patch.object(source.auth, "_try_gh_cli", return_value="gho_revoked"),
+            patch.object(source.auth, "_try_github_app", return_value=None),
+            patch("tools.skills_hub.httpx.get", side_effect=fake_get),
+        ):
+            result = source._github_get("https://api.github.com/repos/acme/skills")
+
+        assert result is not None
+        assert result.status_code == 200
+        assert seen_auth_headers == ["token gho_revoked", None]
+        assert source.auth._disabled_tokens == {"gho_revoked"}
+
+    def test_bad_env_token_matching_gh_cli_still_falls_back_anonymous(self, monkeypatch):
+        """A disabled env token must not re-enter through gh-cli fallback."""
+        monkeypatch.setenv("GITHUB_TOKEN", "gho_same_revoked")
+        source = GitHubSource(auth=GitHubAuth())
+        seen_auth_headers = []
+
+        def fake_get(*args, **kwargs):
+            seen_auth_headers.append((kwargs.get("headers") or {}).get("Authorization"))
+            if len(seen_auth_headers) == 1:
+                return httpx.Response(401, json={"message": "Bad credentials"})
+            return httpx.Response(200, json={"ok": True})
+
+        with (
+            patch.object(source.auth, "_try_gh_cli", return_value="gho_same_revoked"),
+            patch.object(source.auth, "_try_github_app", return_value=None),
+            patch("tools.skills_hub.httpx.get", side_effect=fake_get),
+        ):
+            result = source._github_get("https://api.github.com/repos/acme/skills")
+
+        assert result is not None
+        assert result.status_code == 200
+        assert seen_auth_headers == ["token gho_same_revoked", None]
+        assert source.auth._disabled_tokens == {"gho_same_revoked"}
+
+    def test_multiple_bad_credentials_still_fall_back_anonymous(self, monkeypatch):
+        """Auth fallback should not consume the transient retry budget."""
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_revoked")
+        monkeypatch.setenv("GH_TOKEN", "github_pat_revoked")
+        source = GitHubSource(auth=GitHubAuth())
+        seen_auth_headers = []
+
+        def fake_get(*args, **kwargs):
+            seen_auth_headers.append((kwargs.get("headers") or {}).get("Authorization"))
+            if len(seen_auth_headers) < 4:
+                return httpx.Response(401, json={"message": "Bad credentials"})
+            return httpx.Response(200, json={"ok": True})
+
+        with (
+            patch.object(source.auth, "_try_gh_cli", return_value="gho_revoked"),
+            patch.object(source.auth, "_try_github_app", return_value=None),
+            patch("tools.skills_hub.httpx.get", side_effect=fake_get),
+        ):
+            result = source._github_get("https://api.github.com/repos/acme/skills")
+
+        assert result is not None
+        assert result.status_code == 200
+        assert seen_auth_headers == [
+            "token ghp_revoked",
+            "token github_pat_revoked",
+            "token gho_revoked",
+            None,
+        ]
+        assert source.auth._disabled_tokens == {
+            "ghp_revoked",
+            "github_pat_revoked",
+            "gho_revoked",
+        }
+
+    def test_repo_tree_lookup_recovers_from_bad_env_github_token(self, monkeypatch):
+        """Tree-cache path must share the same bad-token recovery as file fetches."""
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_revoked")
+        source = GitHubSource(auth=GitHubAuth())
+        seen_auth_headers = []
+
+        def fake_get(url, *args, **kwargs):
+            seen_auth_headers.append((kwargs.get("headers") or {}).get("Authorization"))
+            if len(seen_auth_headers) == 1:
+                return httpx.Response(401, json={"message": "Bad credentials"})
+            if url.endswith("/repos/acme/skills"):
+                return httpx.Response(200, json={"default_branch": "main"})
+            return httpx.Response(200, json={"tree": [
+                {"type": "blob", "path": "demo-skill/SKILL.md"},
+            ]})
+
+        with (
+            patch.object(source.auth, "_try_gh_cli", return_value=None),
+            patch.object(source.auth, "_try_github_app", return_value=None),
+            patch("tools.skills_hub.httpx.get", side_effect=fake_get),
+        ):
+            tree = source._get_repo_tree("acme/skills")
+
+        assert tree is not None
+        assert seen_auth_headers == ["token ghp_revoked", None, None]
+
 
 class TestCreateSourceRouter:
     def test_includes_skills_sh_source(self):

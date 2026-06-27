@@ -247,6 +247,24 @@ class GitHubAuth:
         self._cached_token: Optional[str] = None
         self._cached_method: Optional[str] = None
         self._app_token_expiry: float = 0
+        self._disabled_tokens: set[str] = set()
+
+    def mark_bad_credentials(self, authorization_header: Optional[str] = None) -> None:
+        """Forget a token that GitHub rejected so fallback auth can run.
+
+        A stale GITHUB_TOKEN in ~/.hermes/.env should not permanently mask a
+        valid GH_TOKEN, gh-cli token, or anonymous access to public skill
+        repositories.
+        """
+        token = ""
+        if authorization_header:
+            parts = authorization_header.split(None, 1)
+            token = parts[1].strip() if len(parts) == 2 else ""
+        if token:
+            self._disabled_tokens.add(token)
+        if not token or token == self._cached_token:
+            self._cached_token = None
+            self._cached_method = None
 
     def get_headers(self) -> Dict[str, str]:
         """Return authorization headers for GitHub API requests."""
@@ -266,27 +284,27 @@ class GitHubAuth:
 
     def _resolve_token(self) -> Optional[str]:
         # Return cached token if still valid
-        if self._cached_token:
+        if self._cached_token and self._cached_token not in self._disabled_tokens:
             if self._cached_method != "github-app" or time.time() < self._app_token_expiry:
                 return self._cached_token
 
         # 1. Environment variable
-        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-        if token:
-            self._cached_token = token
-            self._cached_method = "pat"
-            return token
+        for token in (os.environ.get("GITHUB_TOKEN"), os.environ.get("GH_TOKEN")):
+            if token and token not in self._disabled_tokens:
+                self._cached_token = token
+                self._cached_method = "pat"
+                return token
 
         # 2. gh CLI
         token = self._try_gh_cli()
-        if token:
+        if token and token not in self._disabled_tokens:
             self._cached_token = token
             self._cached_method = "gh-cli"
             return token
 
         # 3. GitHub App
         token = self._try_github_app()
-        if token:
+        if token and token not in self._disabled_tokens:
             self._cached_token = token
             self._cached_method = "github-app"
             self._app_token_expiry = time.time() + 3500  # ~58 min (tokens last 1 hour)
@@ -297,11 +315,16 @@ class GitHubAuth:
 
     def _try_gh_cli(self) -> Optional[str]:
         """Try to get a token from the gh CLI."""
+        env = os.environ.copy()
+        for key in ("GITHUB_TOKEN", "GH_TOKEN"):
+            if env.get(key) in self._disabled_tokens:
+                env.pop(key, None)
         try:
             result = subprocess.run(
                 ["gh", "auth", "token"],
                 capture_output=True, text=True, timeout=5,
                 stdin=subprocess.DEVNULL,
+                env=env,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
@@ -660,32 +683,34 @@ class GitHubSource(SkillSource):
 
         # Resolve default branch
         try:
-            resp = httpx.get(
+            resp = self._github_get(
                 f"https://api.github.com/repos/{repo}",
-                headers=headers, timeout=15, follow_redirects=True,
+                headers=headers, timeout=15,
             )
-            if resp.status_code != 200:
-                self._check_rate_limit_response(resp)
+            if resp is None or resp.status_code != 200:
+                if resp is not None:
+                    self._check_rate_limit_response(resp)
                 return None
             default_branch = resp.json().get("default_branch", "main")
-        except (httpx.HTTPError, ValueError):
+        except ValueError:
             return None
 
         # Fetch recursive tree
         try:
-            resp = httpx.get(
+            resp = self._github_get(
                 f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
                 params={"recursive": "1"},
-                headers=headers, timeout=30, follow_redirects=True,
+                timeout=30,
             )
-            if resp.status_code != 200:
-                self._check_rate_limit_response(resp)
+            if resp is None or resp.status_code != 200:
+                if resp is not None:
+                    self._check_rate_limit_response(resp)
                 return None
             tree_data = resp.json()
             if tree_data.get("truncated"):
                 logger.debug("Git tree truncated for %s, cannot cache", repo)
                 return None
-        except (httpx.HTTPError, ValueError):
+        except ValueError:
             return None
 
         entries = tree_data.get("tree", [])
@@ -732,7 +757,9 @@ class GitHubSource(SkillSource):
         hdrs = headers if headers is not None else self.auth.get_headers()
         backoff = 1.0
         last_resp: Optional["httpx.Response"] = None
-        for attempt in range(max_retries):
+        attempt = 0
+        auth_fallbacks_remaining = 4  # env GITHUB_TOKEN, GH_TOKEN, gh CLI, app/anonymous
+        while attempt < max_retries:
             try:
                 resp = httpx.get(
                     url, params=params, headers=hdrs,
@@ -742,6 +769,7 @@ class GitHubSource(SkillSource):
                 logger.debug("GitHub GET %s failed (attempt %d/%d): %s",
                              url, attempt + 1, max_retries, e)
                 if attempt < max_retries - 1:
+                    attempt += 1
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 30.0)
                     continue
@@ -750,6 +778,27 @@ class GitHubSource(SkillSource):
             last_resp = resp
             if resp.status_code == 200:
                 return resp
+
+            # A stale/revoked credential should not make public repositories
+            # look unavailable. Drop that credential and retry using the next
+            # auth source (GH_TOKEN / gh CLI / GitHub App / anonymous). These
+            # auth fallbacks are separate from transient retry budget.
+            if (
+                resp.status_code == 401
+                and hdrs.get("Authorization")
+                and auth_fallbacks_remaining > 0
+            ):
+                self.auth.mark_bad_credentials(hdrs.get("Authorization"))
+                fresh_headers = self.auth.get_headers()
+                if fresh_headers.get("Authorization") != hdrs.get("Authorization"):
+                    merged_headers = dict(hdrs)
+                    if fresh_headers.get("Authorization"):
+                        merged_headers["Authorization"] = fresh_headers["Authorization"]
+                    else:
+                        merged_headers.pop("Authorization", None)
+                    hdrs = merged_headers
+                    auth_fallbacks_remaining -= 1
+                    continue
 
             # Rate-limited: honor the reset header when present, else back off.
             if resp.status_code in (403, 429):
@@ -769,6 +818,7 @@ class GitHubSource(SkillSource):
                         "GitHub rate limited on %s, waiting %.1fs (attempt %d/%d)",
                         url, wait, attempt + 1, max_retries,
                     )
+                    attempt += 1
                     time.sleep(wait)
                     backoff = min(backoff * 2, 30.0)
                     continue
@@ -778,6 +828,7 @@ class GitHubSource(SkillSource):
 
             # 5xx — retry; 4xx (other than rate limit) — return immediately.
             if 500 <= resp.status_code < 600 and attempt < max_retries - 1:
+                attempt += 1
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
                 continue

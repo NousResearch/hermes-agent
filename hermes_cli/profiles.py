@@ -27,9 +27,10 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
@@ -644,16 +645,33 @@ def _check_gateway_running(profile_dir: Path) -> bool:
         return False
 
 
+# ``_count_skills`` walks the whole ``skills/`` tree with ``rglob``. With 100+
+# installed skills this can block for seconds, and ``list_profiles`` is reached
+# from synchronous web-server handlers running on the asyncio event-loop thread
+# (``list_cron_jobs`` -> ``_cron_profile_dicts`` -> ``list_profiles``). On a
+# slow/large filesystem that stall trips the ws-write watchdog ("loop stalled
+# >10s"), drops the WebSocket, and restarts the gateway (#53461). The skill
+# inventory changes rarely, so memoize the count per skills dir with a short
+# TTL: the first call pays the scan, repeated calls within the window are O(1).
+_skill_count_cache: Dict[Path, Tuple[float, int]] = {}
+_SKILL_COUNT_CACHE_TTL = 300.0  # seconds
+
+
 def _count_skills(profile_dir: Path) -> int:
-    """Count installed skills in a profile."""
+    """Count installed skills in a profile (memoized with a short TTL)."""
     skills_dir = profile_dir / "skills"
     if not skills_dir.is_dir():
         return 0
+    now = time.monotonic()
+    cached = _skill_count_cache.get(skills_dir)
+    if cached is not None and now - cached[0] < _SKILL_COUNT_CACHE_TTL:
+        return cached[1]
     count = 0
     for md in skills_dir.rglob("SKILL.md"):
         if is_excluded_skill_path(md):
             continue
         count += 1
+    _skill_count_cache[skills_dir] = (now, count)
     return count
 
 

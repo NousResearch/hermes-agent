@@ -90,7 +90,6 @@ from typing import Any, Iterable, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
-from hermes_cli import _subprocess_compat
 
 _log = logging.getLogger(__name__)
 
@@ -5208,7 +5207,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 def _git_toplevel(path: Path) -> Optional[Path]:
     """Return the git toplevel containing ``path``, or ``None`` if not in a repo."""
     try:
-        result = _subprocess_compat.run(
+        result = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
@@ -5230,7 +5229,7 @@ def _git_toplevel(path: Path) -> Optional[Path]:
 
 def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
     try:
-        result = _subprocess_compat.run(
+        result = subprocess.run(
             ["git", "-C", str(repo_root), "show-ref", "--verify", f"refs/heads/{branch_name}"],
             capture_output=True,
             text=True,
@@ -5244,7 +5243,7 @@ def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
 
 def _git_common_dir(path: Path) -> Optional[Path]:
     try:
-        result = _subprocess_compat.run(
+        result = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True,
             text=True,
@@ -5263,7 +5262,7 @@ def _git_common_dir(path: Path) -> Optional[Path]:
 
 def _git_dir(path: Path) -> Optional[Path]:
     try:
-        result = _subprocess_compat.run(
+        result = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-dir"],
             capture_output=True,
             text=True,
@@ -5282,7 +5281,7 @@ def _git_dir(path: Path) -> Optional[Path]:
 
 def _git_current_branch(path: Path) -> Optional[str]:
     try:
-        result = _subprocess_compat.run(
+        result = subprocess.run(
             ["git", "-C", str(path), "branch", "--show-current"],
             capture_output=True,
             text=True,

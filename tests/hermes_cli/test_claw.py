@@ -725,9 +725,8 @@ class TestDetectOpenclawProcesses:
     def test_returns_match_on_windows_when_openclaw_exe_running(self):
         with patch.object(claw_mod, "sys") as mock_sys:
             mock_sys.platform = "win32"
-            # Windows scans go through the hidden-spawn primitive (no console flash).
-            with patch("hermes_cli._subprocess_compat.run") as mock_run:
-                mock_run.side_effect = [
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
                     MagicMock(returncode=0, stdout="openclaw.exe                 1234 Console    1     45,056 K\n"),
                 ]
                 result = claw_mod._detect_openclaw_processes()
@@ -737,8 +736,8 @@ class TestDetectOpenclawProcesses:
     def test_returns_match_on_windows_when_node_exe_has_openclaw_in_cmdline(self):
         with patch.object(claw_mod, "sys") as mock_sys:
             mock_sys.platform = "win32"
-            with patch("hermes_cli._subprocess_compat.run") as mock_run:
-                mock_run.side_effect = [
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
                     MagicMock(returncode=0, stdout=""),  # tasklist openclaw.exe
                     MagicMock(returncode=0, stdout=""),  # tasklist clawd.exe
                     MagicMock(returncode=0, stdout="1234\n"),  # PowerShell
@@ -750,8 +749,8 @@ class TestDetectOpenclawProcesses:
     def test_returns_empty_on_windows_when_nothing_found(self):
         with patch.object(claw_mod, "sys") as mock_sys:
             mock_sys.platform = "win32"
-            with patch("hermes_cli._subprocess_compat.run") as mock_run:
-                mock_run.side_effect = [
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
                     MagicMock(returncode=0, stdout=""),
                     MagicMock(returncode=0, stdout=""),
                     MagicMock(returncode=0, stdout=""),

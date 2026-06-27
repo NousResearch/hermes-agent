@@ -1565,16 +1565,17 @@ function readVenvHome(venvRoot) {
 function getNoConsoleVenvPython(venvRoot) {
   if (!IS_WINDOWS) return getVenvPython(venvRoot)
 
-  // uv venv launchers can re-exec console python.exe, which allocates conhost /
-  // Windows Terminal. Use base pythonw directly and provide imports via env.
+  // Prefer the venv's own pythonw shim — it carries pyvenv.cfg / site-packages
+  // wiring. Falling back to the base uv/python.org pythonw.exe skips the venv
+  // and breaks imports (yaml, hermes_cli, …) even when PYTHONPATH is patched.
+  const venvPythonw = path.join(venvRoot, 'Scripts', 'pythonw.exe')
+  if (fileExists(venvPythonw)) return venvPythonw
+
   const baseHome = readVenvHome(venvRoot)
   if (baseHome) {
     const basePythonw = path.join(baseHome, 'pythonw.exe')
     if (fileExists(basePythonw)) return basePythonw
   }
-
-  const venvPythonw = path.join(venvRoot, 'Scripts', 'pythonw.exe')
-  if (fileExists(venvPythonw)) return venvPythonw
 
   return venvPythonw
 }
@@ -2796,7 +2797,7 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
+      pythonPathEntries: [root],
       venvRoot
     }),
     root,
@@ -2820,7 +2821,7 @@ function createActiveBackend(dashboardArgs) {
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
+      pythonPathEntries: [ACTIVE_HERMES_ROOT],
       venvRoot: VENV_ROOT
     }),
     root: ACTIVE_HERMES_ROOT,

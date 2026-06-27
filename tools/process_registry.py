@@ -42,7 +42,6 @@ import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
-from hermes_cli import _subprocess_compat
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -570,11 +569,12 @@ class ProcessRegistry:
             return
         if _IS_WINDOWS:
             try:
-                _subprocess_compat.run(
+                subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
                     text=True,
                     timeout=10,
+                    creationflags=windows_hide_flags(),
                     stdin=subprocess.DEVNULL,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):

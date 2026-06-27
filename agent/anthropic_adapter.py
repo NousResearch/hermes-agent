@@ -1274,7 +1274,7 @@ def run_oauth_setup_token() -> Optional[str]:
     # concern does not apply to an interactive login the user explicitly
     # invokes.  noqa: subprocess-stdin
     try:
-        subprocess.run([claude_path, "setup-token"])  # windows-footgun: ok — claude setup-token is interactive OAuth
+        subprocess.run([claude_path, "setup-token"])
     except (KeyboardInterrupt, EOFError):
         return None
 

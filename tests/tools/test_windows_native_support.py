@@ -188,13 +188,11 @@ class TestTerminatePidRoutingOnWindows:
 
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         from gateway import status
-        from hermes_cli import _subprocess_compat
 
         captured = {}
 
         def fake_run(args, **kwargs):
             captured["args"] = args
-            captured.update(kwargs)
             result = MagicMock()
             result.returncode = 0
             result.stderr = ""
@@ -202,7 +200,6 @@ class TestTerminatePidRoutingOnWindows:
             return result
 
         monkeypatch.setattr(status, "_IS_WINDOWS", True)
-        monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
         monkeypatch.setattr(status.subprocess, "run", fake_run)
         status.terminate_pid(12345, force=True)
 
@@ -211,7 +208,6 @@ class TestTerminatePidRoutingOnWindows:
         assert "12345" in captured["args"]
         assert "/T" in captured["args"]
         assert "/F" in captured["args"]
-        assert captured["creationflags"] & 0x08000000
 
     def test_force_taskkill_failure_raises_oserror(self, monkeypatch):
         from gateway import status

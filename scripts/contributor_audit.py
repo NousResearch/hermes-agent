@@ -97,7 +97,7 @@ def gh_pr_list():
     Returns an empty list if gh is not available or the call fails.
     """
     try:
-        result = subprocess.run(  # windows-footgun: ok — dev-only contributor-audit script
+        result = subprocess.run(
             [
                 "gh", "pr", "list",
                 "--repo", "NousResearch/hermes-agent",

@@ -23,7 +23,6 @@ import sys
 from pathlib import Path
 
 from hermes_constants import agent_browser_runnable
-from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -153,7 +152,6 @@ def ensure_dependency(
     result = subprocess.run(
         cmd,
         env=run_env,
-        creationflags=windows_hide_flags(),
     )
     if result.returncode != 0:
         return False

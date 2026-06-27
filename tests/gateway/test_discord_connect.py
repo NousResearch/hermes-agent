@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -989,3 +990,92 @@ async def test_safe_sync_detects_contexts_drift():
     fake_http.edit_global_command.assert_not_awaited()
     fake_http.delete_global_command.assert_awaited_once_with(999, 77)
     fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_logs_cap_error_with_distinct_message(tmp_path, monkeypatch):
+    """A 30032 cap error raised inside _safe_sync_slash_commands must be
+    caught at the inner except, produce a distinct 'cap reached' log line,
+    and NOT propagate to the outer 'Slash command sync failed' branch
+    (which would hide the actual cause under a stack trace).
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {"name": "status", "description": "Show Hermes status", "type": 1, "options": []}
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+        application_id=4242,
+        user=SimpleNamespace(id=4242),
+    )
+
+    class _CapHTTPException(Exception):
+        code = 30032
+        response = SimpleNamespace(status=400, status_code=400)
+        text = "Maximum number of application commands reached (100)."
+
+        def __str__(self):
+            return self.text
+
+    sync = AsyncMock(side_effect=_CapHTTPException("cap"))
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+
+    captured = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record):
+            captured.append(record.getMessage())
+
+    cap_logger = logging.getLogger("plugins.platforms.discord.adapter")
+    cap_logger.addHandler(_CaptureHandler())
+    prev_level = cap_logger.level
+    cap_logger.setLevel(logging.WARNING)
+    try:
+        # Must NOT raise — the inner cap-detection must absorb it cleanly.
+        await adapter._run_post_connect_initialization()
+    finally:
+        cap_logger.setLevel(prev_level)
+        cap_logger.removeHandler(cap_logger.handlers[-1])
+
+    sync.assert_awaited_once()
+    assert any("cap reached" in msg for msg in captured), (
+        f"expected cap-specific log line, got: {captured!r}"
+    )
+    assert not any("Slash command sync failed" in msg for msg in captured), (
+        f"cap error fell through to generic 'sync failed' branch: {captured!r}"
+    )
+
+
+def test_is_discord_command_cap_error_detects_30032():
+    """Unit test for the helper that distinguishes 30032 cap errors from
+    generic 400s. False positives here would mask unrelated bugs; false
+    negatives would route cap errors through the generic 'sync failed'
+    branch and bury the real cause under a stack trace.
+    """
+    class _CapErr:
+        code = 30032
+        response = SimpleNamespace(status=400, status_code=400)
+        text = "Maximum number of application commands reached (100)."
+
+    class _Generic400Err:
+        code = 50035
+        response = SimpleNamespace(status=400, status_code=400)
+        text = "Invalid Form Body"
+
+    class _RateLimitErr:
+        response = SimpleNamespace(status=429, status_code=429)
+        text = "Too Many Requests"
+
+    assert DiscordAdapter._is_discord_command_cap_error(_CapErr()) is True
+    assert DiscordAdapter._is_discord_command_cap_error(_Generic400Err()) is False
+    assert DiscordAdapter._is_discord_command_cap_error(_RateLimitErr()) is False
+
+    # Fallback path: no ``code`` attr but text matches → still detected.
+    class _LegacyCapErr:
+        response = SimpleNamespace(status=400, status_code=400)
+        text = "Maximum number of application commands reached (100)."
+
+    assert DiscordAdapter._is_discord_command_cap_error(_LegacyCapErr()) is True

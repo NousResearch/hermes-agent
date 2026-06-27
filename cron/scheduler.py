@@ -1504,10 +1504,58 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     if delivery_errors:
         return "; ".join(delivery_errors)
+
+    # Bridge: update task manifest when cron job completes successfully.
+    _bridge_cron_to_task_manifest(job, True, content[:200] if content else "")
     return None
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
+
+
+# --- Task manifest bridge ---------------------------------------------------
+_TASK_ID_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_任务\d+)")
+
+
+def _bridge_cron_to_task_manifest(
+    job: dict, success: bool, result_preview: str = ""
+) -> None:
+    """Update task manifest when cron job completes.
+
+    Called from _deliver_result after successful delivery.
+    Matches job_name against task ID pattern and updates manifest
+    so the task list stays in sync with cron completions.
+    """
+    job_name = job.get("name", job.get("id", ""))
+    match = _TASK_ID_RE.match(job_name)
+    if not match:
+        return
+
+    task_id = match.group(1)
+    manifest_path = os.path.expanduser("~/.hermes/agents/task_manifest.json")
+
+    try:
+        if os.path.exists(manifest_path):
+            with open(manifest_path, "r") as f:
+                manifest = json.load(f)
+        else:
+            manifest = {"tasks": {}}
+
+        tasks = manifest.get("tasks", {})
+        if task_id in tasks:
+            tasks[task_id]["status"] = "completed" if success else "failed"
+            tasks[task_id]["completed_at"] = _hermes_now().isoformat()
+            if result_preview:
+                tasks[task_id]["result_preview"] = result_preview
+            manifest["tasks"] = tasks
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+            logger.debug(
+                "Bridged cron completion to task manifest: %s (success=%s)",
+                task_id, success,
+            )
+    except Exception as e:
+        logger.warning("Failed to bridge cron to task manifest: %s", e)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 

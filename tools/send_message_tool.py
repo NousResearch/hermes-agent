@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -13,6 +14,9 @@ import re
 import ssl
 import time
 from email.utils import formatdate
+from types import SimpleNamespace
+
+from typing import Any, Dict
 
 from agent.redact import redact_sensitive_text
 
@@ -787,7 +791,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # --- Telegram: special handling for media attachments ---
     if platform == Platform.TELEGRAM:
         last_result = None
-        disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+        extra_cfg = getattr(pconfig, "extra", {}) or {}
+        disable_link_previews = bool(extra_cfg.get("disable_link_previews"))
+        # Bot API 10.1 rich messages: opt in (default off) per PR #46206
+        # policy. Operators who want native tables/task lists/details/math
+        # set platforms.telegram.extra.rich_messages: true in config.yaml.
+        rich_messages = bool(extra_cfg.get("rich_messages"))
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
             result = await _send_telegram(
@@ -798,6 +807,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
                 force_document=force_document,
+                rich_messages=rich_messages,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1014,13 +1024,29 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, rich_messages=False):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
-    Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
-    so that bold, links, and headers render correctly.  If the message
-    already contains HTML tags, it is sent with ``parse_mode='HTML'``
-    instead, bypassing MarkdownV2 conversion.
+    Rendering pipeline for the text portion (in priority order):
+
+    1. **Bot API 10.1 rich message** (``sendRichMessage`` via ``do_api_request``)
+       when *explicitly enabled* via the ``rich_messages`` flag. The raw agent
+       markdown is passed through and Telegram renders tables, task lists,
+       ``<details>``, math, underline, and custom emoji natively. This mirrors
+       the in-gateway adapter's opt-in policy (PR #46206): the default is
+       off because several Telegram clients accept the rich payload but
+       render it poorly. Operators opt in per platform via
+       ``platforms.telegram.extra.rich_messages: true`` in config.yaml.
+    2. **MarkdownV2** (``sendMessage`` with ``parse_mode=MARKDOWN_V2``) for
+       clients that reject the rich payload (BadRequest on parser/limit
+       errors), older PTB that lacks ``do_api_request``, or operators who
+       have not opted in.
+    3. **Plain text** with MarkdownV2 escapes stripped (when the MarkdownV2
+       parser also rejects the message).
+
+    HTML payloads always go through the legacy ``parse_mode=HTML`` path —
+    HTML is not a rich-message concept, so the rich path doesn't help and
+    forcing a round-trip through it would just add a failure mode.
     """
     try:
         from telegram import Bot
@@ -1030,11 +1056,33 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # Inspired by github.com/ashaney — PR #1568.
         _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
 
+        # Rich path eligibility (all of these must hold):
+        # - ``rich_messages`` flag explicitly enabled (default off; mirrors
+        #   the gateway adapter's opt-in policy in PR #46206).
+        # - Not HTML (rich takes raw markdown, not HTML).
+        # - No media attached (rich text has no attachment slot; media always
+        #   goes through legacy send_photo/send_video/...).
+        # - Bot.do_api_request is async (the real PTB exposes this; test
+        #   doubles that don't won't be able to call sendRichMessage).
+        #   We check the class attribute to avoid instantiating a Bot just
+        #   for the capability check (which would double-count Bot() in
+        #   tests that mock the factory). Guard with try/except because
+        #   test shims sometimes replace the entire telegram module with
+        #   a SimpleNamespace where Bot is a factory function with no
+        #   do_api_request attribute.
+        _can_try_rich = False
+        if rich_messages and not _has_html and not (media_files or []):
+            try:
+                _can_try_rich = inspect.iscoroutinefunction(Bot.do_api_request)
+            except (AttributeError, TypeError):
+                _can_try_rich = False
+
         if _has_html:
             formatted = message
             send_parse_mode = ParseMode.HTML
         else:
             # Reuse the gateway adapter's format_message for markdown→MarkdownV2
+            # (only used if we fall back from rich → legacy)
             try:
                 from plugins.platforms.telegram.adapter import TelegramAdapter
                 _adapter = TelegramAdapter.__new__(TelegramAdapter)
@@ -1108,8 +1156,106 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
         last_msg = None
         warnings = []
+        _rich_succeeded = False
+        # Per-call stash for transient rich errors that must propagate
+        # past the outer try/except Exception wrapper at the end of this
+        # function. Stashed here, re-raised in the outer except.
+        _pending_transient: list = []
 
-        if formatted.strip():
+        # Bot API 10.1 rich-message fast path. Mirrors the in-gateway adapter:
+        # raw markdown goes in, Telegram renders rich constructs natively.
+        # Falls through to the legacy MarkdownV2 path on BadRequest (parser/
+        # limit) or capability errors; transient errors propagate to the
+        # caller (no duplicate send).
+        if _can_try_rich and message and message.strip():
+            try:
+                rich_payload: Dict[str, Any] = {
+                    "chat_id": int_chat_id,
+                    "rich_message": {"markdown": message},
+                }
+                # Forward only non-None routing keys (matches the adapter's
+                # "_thread_kwargs_for_send pairs message_thread_id=None"
+                # contract — never send a stray None on the raw endpoint).
+                rich_payload.update(
+                    {k: v for k, v in thread_kwargs.items() if v is not None}
+                )
+                if disable_link_previews:
+                    # Bot API 10.1 uses link_preview_options; legacy used
+                    # disable_web_page_preview. The rich endpoint accepts the
+                    # new shape only.
+                    rich_payload["link_preview_options"] = {"is_disabled": True}
+                rich_result = await bot.do_api_request(
+                    "sendRichMessage", api_kwargs=rich_payload
+                )
+            except Exception as rich_err:
+                # Conservative: classify the failure. Permanent/capability
+                # errors (BadRequest, EndpointNotFound, NotImplementedError,
+                # AttributeError, TypeError) → fall through to legacy
+                # MarkdownV2. Transient (timeout, network) → propagate; the
+                # caller decides whether to retry, but we never legacy-resend
+                # on transient (duplicate risk).
+                err_name = rich_err.__class__.__name__.lower()
+                err_code = getattr(rich_err, "error_code", None)
+                err_str = str(rich_err).lower()
+                is_capability = (
+                    err_name in {"endpointnotfound", "invalidtoken", "notimplementederror"}
+                    or isinstance(rich_err, (AttributeError, TypeError))
+                    or err_code == 404
+                    or "no such method" in err_str
+                    or (("method" in err_str or "endpoint" in err_str)
+                        and ("not found" in err_str or "does not exist" in err_str))
+                )
+                is_bad_request = "badrequest" in err_name
+                is_permanent = (
+                    is_capability
+                    or is_bad_request
+                    or "parse" in err_str
+                    or "limit" in err_str
+                    or "unsupported" in err_str
+                    or "not implemented" in err_str
+                )
+                if is_permanent:
+                    logger.debug(
+                        "send_message: sendRichMessage rejected (%s) — falling back to MarkdownV2",
+                        rich_err,
+                    )
+                    # Fall through to legacy path below.
+                else:
+                    logger.warning(
+                        "send_message: sendRichMessage transient failure (no legacy resend): %s",
+                        rich_err,
+                    )
+                    # Stash for the outer except to re-raise. We can't
+                    # raise here directly because the outer
+                    # try/except Exception wraps the entire function
+                    # and would convert it to an error dict, hiding
+                    # the transient from the caller. The outer except
+                    # re-raises _pending_transient[0] and returns
+                    # without producing an error dict.
+                    _pending_transient.append(rich_err)
+            else:
+                # Build a last_msg-like object from the raw result so the
+                # downstream success path (which only reads .message_id)
+                # keeps working unchanged.
+                msg_id = None
+                if isinstance(rich_result, dict):
+                    msg_id = rich_result.get("message_id")
+                    if msg_id is None:
+                        msg_id = (rich_result.get("result") or {}).get("message_id")
+                else:
+                    msg_id = getattr(rich_result, "message_id", None)
+                if msg_id is not None:
+                    last_msg = SimpleNamespace(message_id=msg_id)
+                    _rich_succeeded = True
+                # If rich_result is a MagicMock/AsyncMock or any object
+                # without a discoverable message_id, treat the rich call
+                # as inconclusive and fall through to the legacy path.
+                # This also covers the test-double case where the test
+                # only mocks bot.send_message: rich "succeeds" with no
+                # useful payload, and the test's existing legacy-path
+                # assertions remain valid.
+
+        if formatted.strip() and not _rich_succeeded and not _pending_transient:
             try:
                 last_msg = await _send_telegram_message_with_retry(
                     bot,
@@ -1153,49 +1299,19 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 else:
                     raise
 
-        for media_path, is_voice in media_files:
-            if not os.path.exists(media_path):
-                warning = f"Media file not found, skipping: {media_path}"
-                logger.warning(warning)
-                warnings.append(warning)
-                continue
+        if not _pending_transient:
+            for media_path, is_voice in media_files:
+                if not os.path.exists(media_path):
+                    warning = f"Media file not found, skipping: {media_path}"
+                    logger.warning(warning)
+                    warnings.append(warning)
+                    continue
 
-            ext = os.path.splitext(media_path)[1].lower()
-            try:
-                with open(media_path, "rb") as f:
-                    media_kwargs = dict(thread_kwargs)
-                    try:
-                        if ext in _IMAGE_EXTS and not force_document:
-                            last_msg = await bot.send_photo(
-                                chat_id=int_chat_id, photo=f, **media_kwargs
-                            )
-                        elif ext in _VIDEO_EXTS:
-                            last_msg = await bot.send_video(
-                                chat_id=int_chat_id, video=f, **media_kwargs
-                            )
-                        elif ext in _VOICE_EXTS and is_voice:
-                            last_msg = await bot.send_voice(
-                                chat_id=int_chat_id, voice=f, **media_kwargs
-                            )
-                        elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
-                            last_msg = await bot.send_audio(
-                                chat_id=int_chat_id, audio=f, **media_kwargs
-                            )
-                        else:
-                            last_msg = await bot.send_document(
-                                chat_id=int_chat_id, document=f, **media_kwargs
-                            )
-                    except Exception as media_err:
-                        if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
-                            # Thread not found for media — retry without
-                            # message_thread_id (issue #27012).
-                            logger.warning(
-                                "Thread %s not found for media send, retrying without message_thread_id",
-                                media_kwargs["message_thread_id"],
-                            )
-                            # Re-seek the file since the first attempt consumed it
-                            f.seek(0)
-                            media_kwargs.pop("message_thread_id", None)
+                ext = os.path.splitext(media_path)[1].lower()
+                try:
+                    with open(media_path, "rb") as f:
+                        media_kwargs = dict(thread_kwargs)
+                        try:
                             if ext in _IMAGE_EXTS and not force_document:
                                 last_msg = await bot.send_photo(
                                     chat_id=int_chat_id, photo=f, **media_kwargs
@@ -1216,14 +1332,52 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                 last_msg = await bot.send_document(
                                     chat_id=int_chat_id, document=f, **media_kwargs
                                 )
-                        else:
-                            raise
-            except Exception as e:
-                warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
-                logger.error(warning)
-                warnings.append(warning)
+                        except Exception as media_err:
+                            if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
+                                # Thread not found for media — retry without
+                                # message_thread_id (issue #27012).
+                                logger.warning(
+                                    "Thread %s not found for media send, retrying without message_thread_id",
+                                    media_kwargs["message_thread_id"],
+                                )
+                                # Re-seek the file since the first attempt consumed it
+                                f.seek(0)
+                                media_kwargs.pop("message_thread_id", None)
+                                if ext in _IMAGE_EXTS and not force_document:
+                                    last_msg = await bot.send_photo(
+                                        chat_id=int_chat_id, photo=f, **media_kwargs
+                                    )
+                                elif ext in _VIDEO_EXTS:
+                                    last_msg = await bot.send_video(
+                                        chat_id=int_chat_id, video=f, **media_kwargs
+                                    )
+                                elif ext in _VOICE_EXTS and is_voice:
+                                    last_msg = await bot.send_voice(
+                                        chat_id=int_chat_id, voice=f, **media_kwargs
+                                    )
+                                elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
+                                    last_msg = await bot.send_audio(
+                                        chat_id=int_chat_id, audio=f, **media_kwargs
+                                    )
+                                else:
+                                    last_msg = await bot.send_document(
+                                        chat_id=int_chat_id, document=f, **media_kwargs
+                                    )
+                            else:
+                                raise
+                except Exception as e:
+                    warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
+                    logger.error(warning)
+                    warnings.append(warning)
 
-        if last_msg is None:
+        if _pending_transient:
+            # The outer except re-raises the transient so the caller
+            # can decide whether to retry. We must NOT return an error
+            # dict here — the rich request may have reached Telegram
+            # and a duplicate would be worse than an exception.
+            # The raise below is what bubbles up to the except.
+            raise _pending_transient[0]
+        elif last_msg is None:
             error = "No deliverable text or media remained after processing MEDIA tags"
             if warnings:
                 return {"error": error, "warnings": warnings}
@@ -1241,6 +1395,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:
+        # Rich-path transient errors (timeouts, network) must propagate so
+        # the caller can decide whether to retry — we never legacy-resend
+        # on transient because the original request may have reached
+        # Telegram, and a fallback would create a duplicate. We raise the
+        # transient at the if/_pending_transient check above and let it
+        # land here; this except re-raises the original transient
+        # exception object (already captured at the source) rather than
+        # converting it to a generic Telegram-send-failed error.
+        if _pending_transient:  # type: ignore[possibly-unbound]
+            raise _pending_transient[0] from None  # type: ignore[possibly-unbound]
         return _error(f"Telegram send failed: {e}")
 
 

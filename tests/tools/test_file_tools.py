@@ -513,3 +513,207 @@ class TestPatchSchemaShape:
         params = PATCH_SCHEMA["parameters"]
         assert params["required"] == ["mode"]
         assert "anyOf" not in params and "oneOf" not in params
+
+
+# ---------------------------------------------------------------------------
+# Negative-result cache tests
+#
+# Without this cache, a typo'd path retried 13 times (observed in the wild)
+# spawned 13 wc -c subprocesses + 13 ls walks for the "did you mean..." hint.
+# The cache returns the same error JSON immediately and skips both shells.
+# ---------------------------------------------------------------------------
+
+class TestNotFoundCache:
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_caches_file_not_found_and_skips_subprocess_on_retry(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = None
+        # Shape returned by ShellFileOperations._suggest_similar_files
+        result_obj.to_dict.return_value = {
+            "error": "File not found: /tmp/does-not-exist-neg-1.txt",
+            "similar_files": [],
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool, _read_tracker
+        # Use a unique task_id so we don't collide with other tests.
+        tid = "neg-cache-read-1"
+        _read_tracker.pop(tid, None)
+
+        # First call: subprocess runs, error returned, cache populated.
+        first = json.loads(read_file_tool("/tmp/does-not-exist-neg-1.txt", task_id=tid))
+        assert "File not found" in first["error"]
+        assert mock_ops.read_file.call_count == 1
+
+        # Second call: same path → cache hit → no new subprocess call.
+        second = json.loads(read_file_tool("/tmp/does-not-exist-neg-1.txt", task_id=tid))
+        assert "File not found" in second["error"]
+        assert mock_ops.read_file.call_count == 1, (
+            "Negative cache hit must skip the subprocess on retry"
+        )
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_cache_isolated_per_task(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "error": "File not found: /tmp/does-not-exist-neg-2.txt",
+            "similar_files": [],
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool, _read_tracker
+        for tid in ("neg-cache-iso-A", "neg-cache-iso-B"):
+            _read_tracker.pop(tid, None)
+
+        read_file_tool("/tmp/does-not-exist-neg-2.txt", task_id="neg-cache-iso-A")
+        read_file_tool("/tmp/does-not-exist-neg-2.txt", task_id="neg-cache-iso-B")
+        # Each task gets its own miss; B doesn't reuse A's cache entry.
+        assert mock_ops.read_file.call_count == 2
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_cache_populated_only_for_not_found(self, mock_get):
+        # A successful read must NOT populate the negative cache.
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "x"
+        result_obj.to_dict.return_value = {"content": "x", "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool, _read_tracker
+        tid = "neg-cache-success-only"
+        _read_tracker.pop(tid, None)
+
+        read_file_tool("/tmp/exists-or-mocked.txt", task_id=tid)
+        nf = _read_tracker[tid].get("not_found", {})
+        assert all(k[0] != "read" or "exists-or-mocked" not in k[1] for k in nf), (
+            "Successful reads must not poison the negative cache"
+        )
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_caches_path_not_found_and_skips_subprocess_on_retry(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.matches = []
+        result_obj.to_dict.return_value = {
+            "error": "Path not found: /tmp/does-not-exist-search-3",
+            "total_count": 0,
+        }
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool, _read_tracker
+        tid = "neg-cache-search-3"
+        _read_tracker.pop(tid, None)
+
+        first = json.loads(search_tool("foo", path="/tmp/does-not-exist-search-3", task_id=tid))
+        assert "Path not found" in first["error"]
+        assert mock_ops.search.call_count == 1
+
+        second = json.loads(search_tool("foo", path="/tmp/does-not-exist-search-3", task_id=tid))
+        assert "Path not found" in second["error"]
+        assert mock_ops.search.call_count == 1, (
+            "Search negative cache hit must skip the subprocess on retry"
+        )
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_and_search_caches_are_namespaced(self, mock_get):
+        # A read that misses must NOT serve a subsequent search call's miss
+        # (different error JSON shapes).
+        mock_ops = MagicMock()
+
+        read_obj = MagicMock()
+        read_obj.to_dict.return_value = {
+            "error": "File not found: /tmp/does-not-exist-namespace-4",
+        }
+        mock_ops.read_file.return_value = read_obj
+
+        search_obj = MagicMock()
+        search_obj.matches = []
+        search_obj.to_dict.return_value = {
+            "error": "Path not found: /tmp/does-not-exist-namespace-4",
+            "total_count": 0,
+        }
+        mock_ops.search.return_value = search_obj
+
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool, search_tool, _read_tracker
+        tid = "neg-cache-namespace-4"
+        _read_tracker.pop(tid, None)
+
+        read_file_tool("/tmp/does-not-exist-namespace-4", task_id=tid)
+        search_tool("foo", path="/tmp/does-not-exist-namespace-4", task_id=tid)
+        # Both ops must hit their own caller (namespacing prevents read's
+        # error JSON from being returned to search).
+        assert mock_ops.read_file.call_count == 1
+        assert mock_ops.search.call_count == 1
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_invalidates_read_negative_cache(self, mock_get):
+        # After write_file on a path, a subsequent read must hit disk,
+        # not return the cached "not found" stub.
+        mock_ops = MagicMock()
+
+        not_found_obj = MagicMock()
+        not_found_obj.to_dict.return_value = {
+            "error": "File not found: /tmp/will-be-created-neg-5.txt",
+        }
+        present_obj = MagicMock()
+        present_obj.content = "after write"
+        present_obj.to_dict.return_value = {"content": "after write", "total_lines": 1}
+
+        # First read → not found; second read (after write) → present.
+        mock_ops.read_file.side_effect = [not_found_obj, present_obj]
+        write_result_obj = MagicMock()
+        write_result_obj.to_dict.return_value = {"status": "ok"}
+        mock_ops.write_file.return_value = write_result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool, write_file_tool, _read_tracker
+        tid = "neg-cache-write-invalidate-5"
+        _read_tracker.pop(tid, None)
+
+        first = json.loads(read_file_tool("/tmp/will-be-created-neg-5.txt", task_id=tid))
+        assert "File not found" in first["error"]
+
+        write_file_tool("/tmp/will-be-created-neg-5.txt", "after write", task_id=tid)
+
+        second = json.loads(read_file_tool("/tmp/will-be-created-neg-5.txt", task_id=tid))
+        assert second.get("content") == "after write", (
+            "write_file must invalidate the negative cache so the next read "
+            "hits the now-existing file instead of returning a stale stub"
+        )
+        assert mock_ops.read_file.call_count == 2
+
+    def test_not_found_ttl_expires(self):
+        # A cache entry older than _NOT_FOUND_TTL_SECONDS must be discarded.
+        from tools.file_tools import (
+            _check_not_found_cache,
+            _record_not_found,
+            _read_tracker,
+            _NOT_FOUND_TTL_SECONDS,
+        )
+        import tools.file_tools as ft
+
+        tid = "neg-cache-ttl-6"
+        _read_tracker.pop(tid, None)
+        _record_not_found("read", "/tmp/ttl-test", tid, '{"error":"x"}')
+        # Fresh entry: cache hit.
+        assert _check_not_found_cache("read", "/tmp/ttl-test", tid) is not None
+
+        # Backdate the entry past the TTL.
+        with ft._read_tracker_lock:
+            entry = _read_tracker[tid]["not_found"][("read", "/tmp/ttl-test")]
+            ft._read_tracker[tid]["not_found"][("read", "/tmp/ttl-test")] = (
+                entry[0] - _NOT_FOUND_TTL_SECONDS - 1.0,
+                entry[1],
+            )
+        # Stale entry: cache miss, also evicted.
+        assert _check_not_found_cache("read", "/tmp/ttl-test", tid) is None
+        with ft._read_tracker_lock:
+            assert ("read", "/tmp/ttl-test") not in _read_tracker[tid].get("not_found", {})

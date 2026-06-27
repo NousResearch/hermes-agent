@@ -379,6 +379,9 @@ class TestDraftFallbackOnFailure:
             edit_interval=0.01, buffer_threshold=5, cursor="",
         )
         consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        consumer._use_draft_streaming = True
+        consumer._draft_id = 1
+        return consumer, adapter
 
         consumer.on_delta("Hello world")
         task = asyncio.create_task(consumer.run())

@@ -222,8 +222,11 @@ class WhatsAppBehaviorMixin:
             return False
         if self._group_policy == "allowlist":
             return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
-        # "open" — all groups allowed
-        return True
+        if self._group_policy == "pairing":
+            return False
+        if self._group_policy == "open":
+            return True
+        return False
 
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")

@@ -261,6 +261,18 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/zip"]
 
     @pytest.mark.asyncio
+    async def test_stl_document_cached(self, adapter):
+        """A .stl upload should survive the document allowlist and cache flow."""
+        doc = _make_document(file_name="part.stl", mime_type="model/stl", file_size=100)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls and event.media_urls[0].endswith("part.stl")
+        assert event.media_types == ["model/stl"]
+
+    @pytest.mark.asyncio
     async def test_png_document_is_routed_as_image(self, adapter):
         """Telegram documents that are really PNGs should use the image path."""
         file_obj = _make_file_obj(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)

@@ -836,6 +836,7 @@ def main(argv: list[str]) -> int:
         roots = [
             REPO_ROOT / "hermes_cli",
             REPO_ROOT / "gateway",
+            REPO_ROOT / "tui_gateway",
             REPO_ROOT / "tools",
             REPO_ROOT / "cron",
             REPO_ROOT / "agent",

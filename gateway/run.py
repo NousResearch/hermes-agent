@@ -9020,16 +9020,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
-            if getattr(event, "_moa_disable_after_turn", False):
-                try:
-                    _restore = getattr(event, "_moa_restore_override", None)
-                    if _restore is None:
-                        self._session_model_overrides.pop(_quick_key, None)
-                    else:
-                        self._session_model_overrides[_quick_key] = _restore
-                    self._evict_cached_agent(_quick_key)
-                except Exception:
-                    pass
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -9060,13 +9050,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
         finally:
-            # Unconditional release covers every exit path. _release_running_agent_state
-            # is idempotent (pop-on-absent is harmless) and, called without a
-            # run_generation guard, always clears the slot regardless of which
-            # generation it holds. This evicts the zombie left when session_reset
-            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
-            # inside _run_agent returns False, and the old sentinel-only check here
-            # missed the leftover real agent — locking the session out forever (#28686).
+            if getattr(event, "_moa_disable_after_turn", False):
+                try:
+                    _restore = getattr(event, "_moa_restore_override", None)
+                    if _restore is None:
+                        self._session_model_overrides.pop(_quick_key, None)
+                    else:
+                        self._session_model_overrides[_quick_key] = _restore
+                    self._evict_cached_agent(_quick_key)
+                except Exception:
+                    pass
             self._release_running_agent_state(_quick_key)
 
     async def _prepare_inbound_message_text(

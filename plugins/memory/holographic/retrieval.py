@@ -7,11 +7,25 @@ Jaccard similarity reranking and trust-weighted scoring.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .store import MemoryStore
+
+# FTS5 query sanitization — wraps bare hyphenated tokens in double quotes.
+# Without this, FTS5's default unicode61 tokenizer treats "-" as a separator,
+# so "pve-01" is parsed as a column restriction "pve" against column "01",
+# raising "no such column" errors.  Phrase-quoted tokens (e.g. '"pve-01"')
+# are treated as a single literal token by FTS5, which is the desired behaviour.
+_HYPHENATED_TOKEN = re.compile(r'\b\w[\w]*-[\w\w]+\b')
+
+
+def _sanitize_fts5_query(query: str) -> str:
+    """Wrap bare hyphenated tokens in double quotes for FTS5 MATCH safety."""
+    return _HYPHENATED_TOKEN.sub(r'"\g<0>"', query)
+
 
 try:
     from . import holographic as hrr
@@ -496,7 +510,7 @@ class FactRetriever:
         # We need to join facts_fts with facts to get all columns
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        params.append(_sanitize_fts5_query(query))
 
         if category:
             where_clauses.append("f.category = ?")

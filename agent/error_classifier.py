@@ -1214,6 +1214,14 @@ def _classify_by_message(
             should_fallback=True,
         )
 
+    # Overloaded / server-busy patterns — must come BEFORE rate_limit check
+    # so that "overloaded" messages don't incorrectly trigger credential rotation.
+    if any(p in error_msg for p in ("overloaded", "temporarily overloaded", "service is temporarily overloaded")):
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+        )
+
     # Billing patterns
     if any(p in error_msg for p in _BILLING_PATTERNS):
         return result_fn(

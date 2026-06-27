@@ -18542,7 +18542,7 @@ def main():
     # so systemd Restart=on-failure will retry on transient errors (e.g. DNS)
     success = asyncio.run(start_gateway(config))
     if not success:
-        sys.exit(1)
+        sys.exit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
 
 
 if __name__ == "__main__":

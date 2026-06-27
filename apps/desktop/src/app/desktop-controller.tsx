@@ -52,6 +52,7 @@ import {
   setPetOverlayScaleHandler,
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
+import { requestVoiceConversationStart } from '../store/composer'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -105,7 +106,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
-import { requestComposerFocus, requestComposerInsert, requestVoiceStart } from './chat/composer/focus'
+import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -746,7 +747,7 @@ export function DesktopController() {
     (event: Parameters<typeof handleDesktopGatewayEvent>[0]) => {
       if (event.type === 'wake.detected') {
         startFreshSessionDraft()
-        requestVoiceStart()
+        requestVoiceConversationStart()
         return
       }
       handleDesktopGatewayEvent(event)

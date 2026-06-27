@@ -52,6 +52,27 @@ class TestHermesApiServerToolset:
         tools = resolve_toolset("hermes-api-server")
         assert "send_message" not in tools
 
+    def test_messaging_toolset_can_opt_in_send_message(self, monkeypatch):
+        """API deployments can opt in to outbound messaging explicitly."""
+        from hermes_cli.tools_config import _get_platform_tools
+        from model_tools import get_tool_definitions
+        from tools.registry import invalidate_check_fn_cache
+
+        config = {
+            "platform_toolsets": {
+                "api_server": ["hermes-api-server", "messaging"],
+            }
+        }
+
+        toolsets = _get_platform_tools(config, "api_server")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
+        invalidate_check_fn_cache()
+        tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+        tool_names = {tool["function"]["name"] for tool in tools}
+
+        assert "messaging" in toolsets
+        assert "send_message" in tool_names
+
     def test_toolset_excludes_text_to_speech(self):
         tools = resolve_toolset("hermes-api-server")
         assert "text_to_speech" not in tools
@@ -124,3 +145,31 @@ class TestApiServerAdapterToolset:
             call_kwargs = mock_agent_cls.call_args
             toolsets = call_kwargs.kwargs.get("enabled_toolsets")
             assert sorted(toolsets) == ["terminal", "web"]
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_create_agent_allows_explicit_messaging_opt_in(self):
+        """send_message reaches API-created agents only when messaging is configured."""
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_gateway_model") as mock_model, \
+             patch("gateway.run._load_gateway_config") as mock_config, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+
+            mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
+                                        "provider": None, "api_mode": None,
+                                        "command": None, "args": []}
+            mock_model.return_value = "test/model"
+            mock_config.return_value = {
+                "platform_toolsets": {"api_server": ["hermes-api-server", "messaging"]}
+            }
+            mock_agent_cls.return_value = MagicMock()
+
+            adapter._create_agent()
+
+            mock_agent_cls.assert_called_once()
+            toolsets = mock_agent_cls.call_args.kwargs.get("enabled_toolsets")
+            assert "messaging" in toolsets

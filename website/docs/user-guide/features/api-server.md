@@ -394,6 +394,21 @@ Configure the key via `API_SERVER_KEY` env var. If you need a browser to call He
 The API server gives full access to hermes-agent's toolset, **including terminal commands**. `API_SERVER_KEY` is **required for every deployment**, including the default loopback bind on `127.0.0.1`. Keep `API_SERVER_CORS_ORIGINS` narrow to control browser access when you explicitly allow browser callers.
 :::
 
+## Tool Access
+
+API-created agents use the `hermes-api-server` toolset by default. That toolset keeps normal non-interactive tools such as web, files, terminal, memory, browser automation, delegation, and cron, but it intentionally leaves out interactive or outbound user-contact tools such as `clarify`, `text_to_speech`, and `send_message`.
+
+If you run a trusted API deployment that should be able to send messages through Hermes's connected gateway platforms, opt in explicitly with `platform_toolsets.api_server`:
+
+```yaml
+platform_toolsets:
+  api_server:
+    - hermes-api-server
+    - messaging
+```
+
+Treat this as a real security boundary. Any client with API access can then cause an API-created agent to call `send_message`, subject to the normal gateway configuration and target checks.
+
 ## Configuration
 
 ### Environment Variables
@@ -410,8 +425,11 @@ The API server gives full access to hermes-agent's toolset, **including terminal
 ### config.yaml
 
 ```yaml
-# Not yet supported — use environment variables.
-# config.yaml support coming in a future release.
+# API server network/auth/model settings use API_SERVER_* environment variables.
+# Shared agent settings such as platform_toolsets still live in config.yaml.
+platform_toolsets:
+  api_server:
+    - hermes-api-server
 ```
 
 ## Security Headers

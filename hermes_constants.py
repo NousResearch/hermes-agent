@@ -9,6 +9,7 @@ import shutil
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
+import re
 from pathlib import Path
 
 
@@ -913,3 +914,46 @@ FINISH_REASON_LENGTH = "length"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
+
+# ─── Profile Normalization ────────────────────────────────────────────────
+
+# Standard (non-isolated) profile names.  All three are treated identically
+# for gating and filtering purposes.  Named profiles (e.g. "ai-expert")
+# are anything *not* in this tuple.
+STANDARD_PROFILES: tuple[str, ...] = ("main", "default")
+
+
+_VALID_PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def normalize_profile(name: str | None) -> str:
+    """Canonicalize a profile name.  Never raises.
+
+    Returns ``"main"`` for all standard/empty profiles so that downstream
+    code only needs to compare against a single value.  Named profiles
+    are returned as-is (lowercased, stripped).
+    """
+    if not name or name.strip().lower() in STANDARD_PROFILES:
+        return "main"
+    return name.strip().lower()
+
+
+def validate_profile_name(name: str | None) -> str:
+    """Validate and canonicalize.  Raises ValueError for invalid names.
+
+    Use at config parse boundaries.  normalize_profile() is the safe
+    runtime version that never raises.
+    """
+    result = normalize_profile(name)
+    if result == "main":
+        return result
+    if not _VALID_PROFILE_RE.match(result):
+        raise ValueError(
+            f"Invalid profile name: {name!r} (must match [a-z0-9][a-z0-9_-]*)"
+        )
+    return result
+
+
+def is_standard_profile(name: str | None) -> bool:
+    """Return True for default/main/None/empty — the unscoped profile."""
+    return not name or name.strip().lower() in STANDARD_PROFILES

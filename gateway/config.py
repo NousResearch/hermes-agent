@@ -553,6 +553,11 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Profile-based routing: route specific guilds/channels/threads to
+    # different profiles. See gateway/profile_routing.py. Each entry is a
+    # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
+    profile_routes: list = field(default_factory=list)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -657,6 +662,7 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "profile_routes": self.profile_routes,
         }
     
     @classmethod
@@ -726,6 +732,10 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        # Parse profile routes (validated by gateway.profile_routing)
+        from gateway.profile_routing import parse_profile_routes
+        profile_routes = parse_profile_routes(data.get("profile_routes") or [])
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -746,6 +756,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            profile_routes=profile_routes,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -854,6 +865,17 @@ def load_gateway_config() -> GatewayConfig:
             # other session-scope flags above).
             if "multiplex_profiles" in yaml_cfg:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
+
+            # Profile-based routing rules: accept either top-level
+            # ``profile_routes`` or the nested ``gateway.profile_routes`` form
+            # (matching the multiplex_profiles parity above).
+            _pr = yaml_cfg.get("profile_routes")
+            if _pr is None:
+                _gw_section = yaml_cfg.get("gateway")
+                if isinstance(_gw_section, dict):
+                    _pr = _gw_section.get("profile_routes")
+            if isinstance(_pr, list):
+                gw_data["profile_routes"] = _pr
 
             gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:

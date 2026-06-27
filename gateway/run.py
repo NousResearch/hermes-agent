@@ -5244,27 +5244,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 coro = self._cleanup_agent_async(agent, self._CleanupContext.SHUTDOWN)
             # Use safe_schedule_threadsafe to avoid "coroutine never awaited" warnings
-            # if the loop is closing during shutdown. In tests with no loop, fall back
-            # to synchronous cleanup so unit tests can verify behavior.
+            # if the loop is closing during shutdown. Only schedule on the gateway's
+            # own event loop (_gateway_loop). In tests or other contexts without
+            # _gateway_loop, run cleanup synchronously so behavior is verifiable.
             loop = getattr(self, "_gateway_loop", None)
             if loop is not None:
                 safe_schedule_threadsafe(coro, loop)
             else:
-                # No event loop (e.g., unit tests) - run cleanup synchronously
-                # by executing the coroutine directly. This preserves test behavior.
+                # No gateway event loop (e.g., unit tests) - run cleanup synchronously
+                # so tests can verify close() was called immediately.
                 try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    loop = None
-                if loop is None:
-                    # Synchronous fallback for tests
-                    try:
-                        coro.close()
-                    except Exception:
-                        pass
-                    self._cleanup_agent_resources(agent)
-                else:
-                    safe_schedule_threadsafe(coro, loop)
+                    coro.close()
+                except Exception:
+                    pass
+                self._cleanup_agent_resources(agent)
 
     def _should_emit_long_running_notification(
         self,

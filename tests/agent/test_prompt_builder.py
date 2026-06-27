@@ -1053,6 +1053,23 @@ class TestPromptBuilderConstants:
         # Local media delivery guidance must remain intact.
         assert "include MEDIA:" in hint
 
+    def test_telegram_hint_contains_mobile_response_contract(self):
+        """Telegram/mobile sessions need direct, action-first replies.
+
+        Regression guard for PRO-50: when the user has already approved a
+        concrete recommendation, the agent should execute it instead of asking
+        the user to choose between internal artifacts such as skills/docs.
+        """
+        hint = PLATFORM_HINTS["telegram"]
+        lowered = hint.lower()
+
+        assert "telegram/mobile communication contract" in lowered
+        assert "concise answer or action status first" in lowered
+        assert "act on the user's current instruction" in lowered
+        assert "do not ask" in lowered
+        assert "internal artifacts such as skills" in lowered
+        assert "preserve session and tool continuity" in lowered
+
     def test_platform_hints_mattermost(self):
         hint = PLATFORM_HINTS["mattermost"]
         assert "Mattermost" in hint

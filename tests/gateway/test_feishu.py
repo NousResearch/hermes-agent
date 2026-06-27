@@ -2841,6 +2841,101 @@ class TestAdapterBehavior(unittest.TestCase):
             [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
         )
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_post_for_markdown_tables(self):
+        """Markdown tables must route through post+tag:md, not be downgraded to text.
+
+        Regression for the historic _MARKDOWN_TABLE_RE workaround that force-downgraded
+        the entire message to msg_type: text whenever a GFM table appeared. Feishu's
+        post + tag:md element renders GFM tables natively now.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "| 名称 | 重要度 |\n| --- | --- |\n| RAG | 极高 |"
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        elements = payload["zh_cn"]["content"][0]
+        self.assertEqual(elements, [{"tag": "md", "text": content}])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_falls_back_to_post_when_text_update_rejected(self):
+        """Text edit can fail when streaming sent the first chunk as 'post' but
+        the final content now routes to 'text'. Feishu does not allow changing
+        msg_type on update, so we retry as post with markdown rendering."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["calls"].append(request)
+                # First call (text update) fails — simulates msg_type mismatch
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(success=lambda: False, code=230002, msg="msg type not match")
+                # Second call (post fallback) succeeds
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content="plain text content without markdown",
+                )
+            )
+
+        self.assertTrue(result.success)
+        # First attempt: text
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "text")
+        # Fallback: post
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "post")
+
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestHydrateBotIdentity(unittest.TestCase):

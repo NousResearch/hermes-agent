@@ -865,6 +865,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    on_failure: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -909,6 +910,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        on_failure: Optional no_agent failure policy. ``None``/``off`` keeps
+                classic zero-token failure alerts. ``repair_only`` runs one
+                agent triage pass to repair the script. ``rerun_once`` also
+                reruns the script once after a successful repair.
 
     Returns:
         The created job dict
@@ -941,6 +946,8 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_on_failure = str(on_failure).strip() if isinstance(on_failure, str) else None
+    normalized_on_failure = normalized_on_failure or None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1007,6 +1014,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "on_failure": normalized_on_failure,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the

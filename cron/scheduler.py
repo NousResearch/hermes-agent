@@ -45,6 +45,100 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+_NO_AGENT_FAILURE_POLICIES = {
+    "off": "off",
+    "none": "off",
+    "": "off",
+    "repair_only": "repair_only",
+    "agent_triage": "repair_only",
+    "agent_repair": "repair_only",
+    "rerun_once": "rerun_once",
+    "agent_rerun_once": "rerun_once",
+    "self_heal_rerun_once": "rerun_once",
+}
+
+
+def _normalize_no_agent_failure_policy(job: dict) -> str:
+    """Return the opt-in no-agent failure recovery policy for a job.
+
+    Default is deliberately off so classic no-agent jobs stay zero-token unless
+    the job author explicitly chooses recovery. Accepted aliases are kept small
+    and descriptive for hand-written jobs.json compatibility.
+    """
+    raw = (
+        job.get("on_failure")
+        or job.get("failure_policy")
+        or job.get("no_agent_failure_policy")
+        or "off"
+    )
+    if isinstance(raw, dict):
+        raw = raw.get("action") or raw.get("policy") or "off"
+    key = str(raw or "off").strip().lower().replace("-", "_")
+    return _NO_AGENT_FAILURE_POLICIES.get(key, "off")
+
+
+def _build_no_agent_failure_recovery_prompt(
+    job: dict,
+    script_path: str,
+    failure_output: str,
+    policy: str,
+) -> str:
+    """Build the agent prompt used to repair a failed no-agent script."""
+    job_name = str(job.get("name") or job.get("id") or "cron job")
+    job_id = str(job.get("id") or "")
+    action = (
+        "If you safely repair the script, do NOT run the original action yourself; "
+        "the scheduler will rerun the script once after you finish."
+        if policy == "rerun_once"
+        else "Repair the script for future runs only. Do not run the original action."
+    )
+    return f"""A no-agent Hermes cron job failed. Diagnose and repair only safe, local causes.
+
+Job: {job_name}
+Job ID: {job_id}
+Script: {script_path}
+Failure policy: {policy}
+
+Failure output:
+```text
+{failure_output[:12000]}
+```
+
+Rules:
+- This is an autonomous cron recovery run; no user is present.
+- Do not ask questions or schedule more cron jobs.
+- Do not read or print secrets.
+- Only edit the job script or small local helper scripts needed by it.
+- Do not perform production deploys, destructive commands, purchases, HA control, or messages to real people.
+- Safe/idempotent CC tmux resume/nudge fixes are allowed when the script itself is intended to send one nudge.
+- Verify the repair with syntax checks or a dry/local check where possible.
+- {action}
+
+Return a short recovery report with: root cause, changed files, verification, and whether the scheduler should rerun.
+"""
+
+
+def _run_no_agent_failure_recovery(
+    job: dict,
+    script_path: str,
+    failure_output: str,
+    policy: str,
+) -> tuple[bool, str, str, Optional[str]]:
+    """Run an opt-in agent recovery pass for a failed no-agent job."""
+    recovery_job = dict(job)
+    recovery_job["id"] = f"{job.get('id', 'job')}_recovery"
+    recovery_job["name"] = f"{job.get('name') or job.get('id') or 'cron job'} recovery"
+    recovery_job["no_agent"] = False
+    recovery_job["script"] = None
+    recovery_job["prompt"] = _build_no_agent_failure_recovery_prompt(
+        job, script_path, failure_output, policy
+    )
+    recovery_job["enabled_toolsets"] = job.get("recovery_enabled_toolsets") or [
+        "terminal",
+        "file",
+    ]
+    return _run_job_impl(recovery_job)
+
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
@@ -2025,9 +2119,76 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
         if not ok:
-            # Script crashed / timed out / exited non-zero.  Deliver the
-            # error so the user knows the watchdog itself broke — silent
-            # failure for an alerting job is the worst-case outcome.
+            # Script crashed / timed out / exited non-zero. Keep the technical
+            # detail in the saved cron output/error, but do not leak raw stack
+            # traces, filesystem paths, or scheduler wording to the end user.
+            recovery_policy = _normalize_no_agent_failure_policy(job)
+            if recovery_policy != "off":
+                recovery_ok, recovery_doc, recovery_response, recovery_error = (
+                    _run_no_agent_failure_recovery(
+                        job, script_path, output, recovery_policy
+                    )
+                )
+                rerun_ok = False
+                rerun_output = ""
+                rerun_error = None
+                if recovery_ok and recovery_policy == "rerun_once":
+                    rerun_ok, rerun_output = _run_job_script(script_path)
+                    if not rerun_ok:
+                        rerun_error = rerun_output
+
+                recovery_status = "recovered" if recovery_ok else "recovery failed"
+                if recovery_policy == "rerun_once":
+                    if recovery_ok and rerun_ok:
+                        final_response = (
+                            f"✅ Kontrola ‘{job_name}’ selhala, ale self-heal ji opravil "
+                            f"a původní akci zkusil znovu.\n\n{rerun_output or '(rerun bez výstupu)'}"
+                        )
+                    elif recovery_ok:
+                        final_response = (
+                            f"⚠️ Kontrola ‘{job_name}’ selhala. Self-heal opravu provedl, "
+                            f"ale opakovaný běh skriptu selhal. Detail je v cron logu."
+                        )
+                    else:
+                        final_response = (
+                            f"⚠️ Kontrola ‘{job_name}’ selhala a self-heal ji nedokázal opravit. "
+                            f"Detail je v cron logu."
+                        )
+                else:
+                    final_response = (
+                        f"✅ Kontrola ‘{job_name}’ selhala, ale self-heal opravil skript pro příště."
+                        if recovery_ok
+                        else f"⚠️ Kontrola ‘{job_name}’ selhala a self-heal ji nedokázal opravit. Detail je v cron logu."
+                    )
+
+                doc = (
+                    f"# Cron Job: {job_name}\n\n"
+                    f"**Job ID:** {job_id}\n"
+                    f"**Run Time:** {now_iso}\n"
+                    f"**Mode:** no_agent (script)\n"
+                    f"**Status:** script failed; self-heal {recovery_status}\n"
+                    f"**Failure policy:** {recovery_policy}\n\n"
+                    f"## Original failure\n\n{output}\n\n"
+                    f"## Self-heal result\n\n"
+                    f"success={recovery_ok}\n"
+                    f"error={recovery_error or ''}\n\n"
+                    f"{recovery_response or ''}\n\n"
+                    f"## Self-heal transcript\n\n{recovery_doc or ''}\n"
+                )
+                if recovery_policy == "rerun_once":
+                    doc += (
+                        f"\n## Rerun once result\n\n"
+                        f"success={rerun_ok}\n"
+                        f"error={rerun_error or ''}\n\n"
+                        f"{rerun_output}\n"
+                    )
+                return (
+                    recovery_ok and (recovery_policy != "rerun_once" or rerun_ok),
+                    doc,
+                    final_response,
+                    None if recovery_ok and (recovery_policy != "rerun_once" or rerun_ok) else (rerun_error or recovery_error or output),
+                )
+
             alert = (
                 f"⚠ Cron watchdog '{job_name}' script failed\n\n"
                 f"{output}\n\n"

@@ -518,6 +518,10 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("profile"):
+        result["profile"] = job["profile"]
+    if job.get("on_failure"):
+        result["on_failure"] = job["on_failure"]
     return result
 
 
@@ -587,6 +591,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    on_failure: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -654,6 +659,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                on_failure=_normalize_optional_job_value(on_failure),
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -826,6 +832,8 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if on_failure is not None:
+                updates["on_failure"] = _normalize_optional_job_value(on_failure) or None
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -944,6 +952,15 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
                 ),
             },
+            "on_failure": {
+                "type": "string",
+                "description": (
+                    "Optional failure policy for no_agent jobs. Default/off keeps classic no-token failure alerts. "
+                    "Use 'repair_only' to run one agent triage pass that may safely repair the local script/helper for future runs. "
+                    "Use 'rerun_once' only for safe/idempotent jobs (for example CC tmux resume/nudge): after a successful repair the scheduler reruns the script exactly once. "
+                    "On update, pass empty string to clear."
+                ),
+            },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1025,6 +1042,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        on_failure=args.get("on_failure"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

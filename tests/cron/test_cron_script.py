@@ -27,6 +27,8 @@ def cron_env(tmp_path, monkeypatch):
     (hermes_home / "cron").mkdir()
     (hermes_home / "cron" / "output").mkdir()
     (hermes_home / "scripts").mkdir()
+    for _name in ("monitor.py", "some_script.py", "data_collector.py", "new_script.py"):
+        (hermes_home / "scripts" / _name).write_text('print("ok")\n')
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     # Clear cached module-level paths
@@ -565,3 +567,106 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+class TestNoAgentFailureRecovery:
+    """Opt-in no-agent self-heal policies."""
+
+    def test_default_no_agent_failure_does_not_wake_agent(self, cron_env, monkeypatch):
+        from cron import scheduler
+
+        recovery_called = []
+        monkeypatch.setattr(
+            scheduler,
+            "_run_job_script",
+            lambda script: (False, "can't find pane: =task-17"),
+        )
+        monkeypatch.setattr(
+            scheduler,
+            "_run_no_agent_failure_recovery",
+            lambda *args: recovery_called.append(args) or (True, "", "", None),
+        )
+
+        ok, doc, final, err = scheduler._run_job_impl({
+            "id": "job1",
+            "name": "cc nudge",
+            "no_agent": True,
+            "script": "nudge.sh",
+        })
+
+        assert ok is False
+        assert recovery_called == []
+        assert "technickou chybou" in final
+        assert "can't find pane" in doc
+        assert err is not None
+        assert "can't find pane" in err
+
+    def test_no_agent_rerun_once_repairs_then_retries_script(self, cron_env, monkeypatch):
+        from cron import scheduler
+
+        script_calls = []
+
+        def fake_run_script(script):
+            script_calls.append(script)
+            if len(script_calls) == 1:
+                return False, "can't find pane: =task-17"
+            return True, "Odesláno do tmux task-17:0.0: pokračuj"
+
+        recovery_calls = []
+
+        def fake_recovery(job, script_path, output, policy):
+            recovery_calls.append((job, script_path, output, policy))
+            return True, "recovery transcript", "fixed tmux target", None
+
+        monkeypatch.setattr(scheduler, "_run_job_script", fake_run_script)
+        monkeypatch.setattr(scheduler, "_run_no_agent_failure_recovery", fake_recovery)
+
+        ok, doc, final, err = scheduler._run_job_impl({
+            "id": "job2",
+            "name": "cc-task-17-pokracuj-opravit-host",
+            "no_agent": True,
+            "script": "cc_task_17_pokracuj_0500.sh",
+            "on_failure": "rerun_once",
+        })
+
+        assert ok is True
+        assert err is None
+        assert script_calls == ["cc_task_17_pokracuj_0500.sh", "cc_task_17_pokracuj_0500.sh"]
+        assert recovery_calls[0][3] == "rerun_once"
+        assert "původní akci zkusil znovu" in final
+        assert "Odesláno do tmux" in final
+        assert "Self-heal result" in doc
+        assert "Rerun once result" in doc
+
+    def test_no_agent_recovery_prompt_for_rerun_leaves_action_to_scheduler(self):
+        from cron.scheduler import _build_no_agent_failure_recovery_prompt
+
+        prompt = _build_no_agent_failure_recovery_prompt(
+            {"id": "job3", "name": "cc nudge"},
+            "nudge.sh",
+            "can't find pane: =task-17",
+            "rerun_once",
+        )
+
+        assert "scheduler will rerun the script once" in prompt
+        assert "Do not ask questions" in prompt
+        assert "Safe/idempotent CC tmux resume/nudge fixes" in prompt
+        assert "can't find pane" in prompt
+
+    def test_cronjob_tool_stores_on_failure_policy(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        script = cron_env / "scripts" / "nudge.sh"
+        script.write_text("#!/usr/bin/env bash\necho ok\n")
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            script="nudge.sh",
+            no_agent=True,
+            on_failure="rerun_once",
+        ))
+
+        assert result["success"] is True
+        assert result["job"]["on_failure"] == "rerun_once"

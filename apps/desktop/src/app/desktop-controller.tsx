@@ -81,6 +81,7 @@ import {
   getRememberedSessionId,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
+  rebindComposerState,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -778,6 +779,7 @@ export function DesktopController() {
     lastGatewayProfileRef.current = activeGatewayProfile
     // Force: the new profile has its own default, so reseed even if the composer
     // already shows the previous profile's model.
+    rebindComposerState()
     void refreshCurrentModel(true)
     void refreshActiveProfile()
   }, [activeGatewayProfile, refreshCurrentModel])

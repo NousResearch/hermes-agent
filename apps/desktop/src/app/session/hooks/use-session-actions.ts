@@ -29,6 +29,7 @@ import {
   $messages,
   $sessions,
   $yoloActive,
+  rebindComposerState,
   sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
@@ -484,6 +485,7 @@ export function useSessionActions({
         // a backend resolves its own launch profile to None (_profile_home).
         const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
         await ensureGatewayProfile(newChatProfile)
+        rebindComposerState()
         const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
         // The composer's model/effort/fast is sticky UI state ($currentModel,
         // $currentProvider, $currentReasoningEffort, $currentFastMode). Ship it

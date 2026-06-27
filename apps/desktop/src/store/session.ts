@@ -43,6 +43,31 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
 
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
 
+function composerStateKey(base: string, connection: HermesConnection | null = $connection.get()): string {
+  const profile = (connection?.profile || 'default').trim() || 'default'
+
+  if (profile === 'default' && connection?.mode !== 'remote') {
+    return base
+  }
+
+  const mode = connection?.mode === 'remote' ? 'remote' : 'local'
+  const baseUrl = connection?.mode === 'remote' ? `.${encodeURIComponent(connection.baseUrl || 'remote')}` : ''
+
+  return `${base}.${mode}${baseUrl}.${encodeURIComponent(profile)}`
+}
+
+function readComposerString(base: string, connection: HermesConnection | null = $connection.get()): string {
+  return storedString(composerStateKey(base, connection)) ?? ''
+}
+
+function readComposerBoolean(
+  base: string,
+  fallback: boolean,
+  connection: HermesConnection | null = $connection.get()
+): boolean {
+  return storedBoolean(composerStateKey(base, connection), fallback)
+}
+
 export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
 
 export async function syncConfiguredDefaultProjectDir(): Promise<string> {
@@ -260,11 +285,11 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 // clears it and resets the retry counter. Null whenever the active route has a
 // healthy, in-flight, or still-auto-retrying resume.
 export const $resumeExhaustedSessionId = atom<string | null>(null)
-export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
-export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
-export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
+export const $currentModel = atom(readComposerString(COMPOSER_MODEL_KEY))
+export const $currentProvider = atom(readComposerString(COMPOSER_PROVIDER_KEY))
+export const $currentReasoningEffort = atom(readComposerString(COMPOSER_EFFORT_KEY))
 export const $currentServiceTier = atom('')
-export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
+export const $currentFastMode = atom(readComposerBoolean(COMPOSER_FAST_KEY, false))
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
@@ -311,24 +336,31 @@ export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($await
 
 export const setCurrentModel = (next: Updater<string>) => {
   updateAtom($currentModel, next)
-  persistString(COMPOSER_MODEL_KEY, $currentModel.get() || null)
+  persistString(composerStateKey(COMPOSER_MODEL_KEY), $currentModel.get() || null)
 }
 
 export const setCurrentProvider = (next: Updater<string>) => {
   updateAtom($currentProvider, next)
-  persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
+  persistString(composerStateKey(COMPOSER_PROVIDER_KEY), $currentProvider.get() || null)
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
-  persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
+  persistString(composerStateKey(COMPOSER_EFFORT_KEY), $currentReasoningEffort.get() || null)
 }
 
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 
 export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)
-  persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
+  persistBoolean(composerStateKey(COMPOSER_FAST_KEY), $currentFastMode.get())
+}
+
+export function rebindComposerState(connection: HermesConnection | null = $connection.get()): void {
+  $currentModel.set(readComposerString(COMPOSER_MODEL_KEY, connection))
+  $currentProvider.set(readComposerString(COMPOSER_PROVIDER_KEY, connection))
+  $currentReasoningEffort.set(readComposerString(COMPOSER_EFFORT_KEY, connection))
+  $currentFastMode.set(readComposerBoolean(COMPOSER_FAST_KEY, false, connection))
 }
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)

@@ -5,7 +5,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages } from '@/hermes'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
-import { $currentCwd, $messages, $resumeFailedSessionId, setMessages, setResumeFailedSessionId } from '@/store/session'
+import {
+  $currentCwd,
+  $messages,
+  $resumeFailedSessionId,
+  setCurrentModel,
+  setCurrentProvider,
+  setMessages,
+  setResumeFailedSessionId
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -84,6 +92,8 @@ describe('createBackendSessionForSend profile routing', () => {
     cleanup()
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
+    setCurrentModel('')
+    setCurrentProvider('')
     vi.restoreAllMocks()
   })
 
@@ -116,6 +126,23 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ profile: 'default' })
+  })
+
+  it('does not carry the previous profile composer model into a fresh chat on another profile', async () => {
+    // Simulate the renderer still holding profile A's sticky composer pick while
+    // the user starts a brand-new chat on profile B. The session.create payload
+    // must bind to B's composer scope immediately rather than shipping A's
+    // model/provider override into the new runtime.
+    const params = await createWith(() => {
+      setCurrentModel('anthropic/claude-sonnet-4.6')
+      setCurrentProvider('anthropic')
+      $activeGatewayProfile.set('analyst')
+      $newChatProfile.set('analyst')
+    })
+
+    expect(params).toMatchObject({ profile: 'analyst' })
+    expect(params).not.toHaveProperty('model')
+    expect(params).not.toHaveProperty('provider')
   })
 })
 

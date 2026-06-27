@@ -35,6 +35,7 @@ def _bare_agent():
     # providers that cache per-session state can update it mid-process
     # (see #6672).
     agent.session_id = "test_session_001"
+    agent._user_id = ""
     return agent
 
 
@@ -85,10 +86,12 @@ class TestSyncExternalMemoryForTurn:
         agent._memory_manager.sync_all.assert_called_once_with(
             "What's the weather in Paris?", "It's sunny and 22°C.",
             session_id="test_session_001",
+            user_id="",
         )
         agent._memory_manager.queue_prefetch_all.assert_called_once_with(
             "What's the weather in Paris?",
             session_id="test_session_001",
+            user_id="",
         )
 
     # --- Edge cases (pre-existing behaviour preserved) ------------------

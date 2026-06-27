@@ -103,19 +103,27 @@ class MemoryProvider(ABC):
         """
         return ""
 
-    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+    def queue_prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> None:
         """Queue a background recall for the NEXT turn.
 
         Called after each turn completes. The result will be consumed
         by prefetch() on the next turn. Default is no-op — providers
         that do background prefetching should override this.
+
+        user_id is provided for gateway providers that serve multiple users
+        on a shared AIAgent instance so each turn's prefetch is scoped to
+        the correct user's memory namespace.
         """
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", user_id: str = "") -> None:
         """Persist a completed turn to the backend.
 
         Called after each turn. Should be non-blocking — queue for
         background processing if the backend has latency.
+
+        user_id is provided for gateway providers that serve multiple users
+        on a shared AIAgent instance so each turn is written to the correct
+        user's memory namespace.
         """
 
     @abstractmethod

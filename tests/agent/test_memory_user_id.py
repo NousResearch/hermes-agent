@@ -43,7 +43,7 @@ class RecordingProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         return ""
 
-    def sync_turn(self, user_content, assistant_content, *, session_id=""):
+    def sync_turn(self, user_content, assistant_content, *, session_id="", user_id=""):
         pass
 
     def get_tool_schemas(self):

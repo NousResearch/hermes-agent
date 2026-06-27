@@ -560,7 +560,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             logger.debug("Supermemory prefetch failed", exc_info=True)
             return ""
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", user_id: str = "") -> None:
         if not self._active or not self._auto_capture or not self._write_enabled or not self._client:
             return
 

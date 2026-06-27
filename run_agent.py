@@ -2044,10 +2044,12 @@ class AIAgent:
             self._memory_manager.sync_all(
                 original_user_message, final_response,
                 session_id=self.session_id or "",
+                user_id=getattr(self, "_user_id", "") or "",
             )
             self._memory_manager.queue_prefetch_all(
                 original_user_message,
                 session_id=self.session_id or "",
+                user_id=getattr(self, "_user_id", "") or "",
             )
         except Exception:
             pass

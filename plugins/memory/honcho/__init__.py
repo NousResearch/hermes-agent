@@ -699,7 +699,7 @@ class HonchoMemoryProvider(MemoryProvider):
             truncated = truncated[:last_space]
         return truncated + " …"
 
-    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+    def queue_prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> None:
         """Fire background prefetch threads for the upcoming turn.
 
         B5: Checks cadence independently for dialectic and context refresh.
@@ -1117,7 +1117,7 @@ class HonchoMemoryProvider(MemoryProvider):
             ),
         }
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", user_id: str = "") -> None:
         """Record the conversation turn in Honcho (non-blocking).
 
         Messages exceeding the Honcho API limit (default 25k chars) are

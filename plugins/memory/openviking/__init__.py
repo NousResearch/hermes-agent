@@ -529,7 +529,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return ""
         return f"## OpenViking Context\n{result}"
 
-    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+    def queue_prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> None:
         """Fire a background search to pre-load relevant context."""
         if not self._client or not query:
             return
@@ -565,7 +565,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         )
         self._prefetch_thread.start()
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", user_id: str = "") -> None:
         """Record the conversation turn in OpenViking's session (non-blocking)."""
         if not self._client:
             return

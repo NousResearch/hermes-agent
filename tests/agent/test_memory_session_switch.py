@@ -38,13 +38,13 @@ class _RecordingProvider(MemoryProvider):
     def get_tool_schemas(self):
         return []
 
-    def sync_turn(self, user_content, assistant_content, *, session_id=""):
+    def sync_turn(self, user_content, assistant_content, *, session_id="", user_id=""):
         self.sync_calls.append(
-            {"user": user_content, "asst": assistant_content, "session_id": session_id}
+            {"user": user_content, "asst": assistant_content, "session_id": session_id, "user_id": user_id}
         )
 
-    def queue_prefetch(self, query, *, session_id=""):
-        self.queue_calls.append({"query": query, "session_id": session_id})
+    def queue_prefetch(self, query, *, session_id="", user_id=""):
+        self.queue_calls.append({"query": query, "session_id": session_id, "user_id": user_id})
 
     def on_session_switch(
         self,
@@ -181,7 +181,7 @@ def test_sync_all_propagates_session_id_to_providers():
     mm.add_provider(p)
     mm.sync_all("hello", "world", session_id="sess-42")
     assert p.sync_calls == [
-        {"user": "hello", "asst": "world", "session_id": "sess-42"}
+        {"user": "hello", "asst": "world", "session_id": "sess-42", "user_id": ""}
     ]
 
 
@@ -190,7 +190,7 @@ def test_queue_prefetch_all_propagates_session_id_to_providers():
     p = _RecordingProvider()
     mm.add_provider(p)
     mm.queue_prefetch_all("next query", session_id="sess-42")
-    assert p.queue_calls == [{"query": "next query", "session_id": "sess-42"}]
+    assert p.queue_calls == [{"query": "next query", "session_id": "sess-42", "user_id": ""}]
 
 
 # ---------------------------------------------------------------------------

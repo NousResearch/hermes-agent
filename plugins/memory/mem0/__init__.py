@@ -244,7 +244,7 @@ class Mem0MemoryProvider(MemoryProvider):
             return ""
         return f"## Mem0 Memory\n{result}"
 
-    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+    def queue_prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> None:
         if self._is_breaker_open():
             return
 
@@ -269,7 +269,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="mem0-prefetch")
         self._prefetch_thread.start()
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", user_id: str = "") -> None:
         """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
         if self._is_breaker_open():
             return

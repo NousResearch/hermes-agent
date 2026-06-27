@@ -301,9 +301,11 @@ class MemGatewayProvider(MemoryProvider):
             self._prefetch_result = ''
             self._prefetch_gen += 1
 
-    def queue_prefetch(self, query: str, *, session_id: str = '') -> None:
+    def queue_prefetch(self, query: str, *, session_id: str = '', user_id: str = '') -> None:
         if self._is_breaker_open() or self._prefetch_method == 'off' or not query:
             return
+
+        scope = self._user_scope(user_id)
 
         with self._prefetch_lock:
             self._prefetch_gen += 1
@@ -313,11 +315,11 @@ class MemGatewayProvider(MemoryProvider):
             try:
                 client = self._get_client()
                 if self._prefetch_method == 'reflect':
-                    payload = client.call_tool('reflect', {'query': query, **self._user_scope()})
+                    payload = client.call_tool('reflect', {'query': query, **scope})
                     text = self._format_reflect(payload)
                 else:
                     payload = client.call_tool(
-                        'recall', {'query': query, 'limit': self._recall_limit, **self._user_scope()}
+                        'recall', {'query': query, 'limit': self._recall_limit, **scope}
                     )
                     text = self._format_recall(payload)
                 if text:
@@ -350,29 +352,36 @@ class MemGatewayProvider(MemoryProvider):
 
     # -- user scoping --------------------------------------------------------
 
-    def _user_scope(self) -> dict:
+    def _user_scope(self, user_id: str = '') -> dict:
         """Return user scoping metadata for multi-user gateway sessions."""
-        if self._user_id:
-            return {'user_id': self._user_id}
+        uid = user_id or self._user_id
+        if uid:
+            return {'user_id': uid}
         return {}
 
     # -- writes --------------------------------------------------------------
 
-    def _retain(self, content: str, title: str, memory_type: str = 'memory') -> dict:
+    def _retain(self, content: str, title: str, memory_type: str = 'memory', *, user_id: str = '') -> dict:
         client = self._get_client()
         return client.call_tool(
-            'write', {'content': content, 'title': title, 'memory_type': memory_type, **self._user_scope()}
+            'write', {'content': content, 'title': title, 'memory_type': memory_type, **self._user_scope(user_id)}
         )
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = '') -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = '', user_id: str = '') -> None:
         if self._is_breaker_open() or not user_content.strip():
             return
+
+        scope = self._user_scope(user_id)
 
         def _sync():
             try:
                 title = user_content.strip().splitlines()[0][:120]
                 content = f'User: {user_content}\n\nAssistant: {assistant_content}'
-                self._retain(content[:4000], title or 'conversation turn', 'memory')
+                client = self._get_client()
+                client.call_tool(
+                    'write',
+                    {'content': content[:4000], 'title': title or 'conversation turn', 'memory_type': 'memory', **scope},
+                )
                 self._record_success()
             except Exception as e:
                 self._record_failure()

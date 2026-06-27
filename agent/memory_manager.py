@@ -355,11 +355,11 @@ class MemoryManager:
                 )
         return "\n\n".join(parts)
 
-    def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
+    def queue_prefetch_all(self, query: str, *, session_id: str = "", user_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn."""
         for provider in self._providers:
             try:
-                provider.queue_prefetch(query, session_id=session_id)
+                provider.queue_prefetch(query, session_id=session_id, user_id=user_id)
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
@@ -368,11 +368,11 @@ class MemoryManager:
 
     # -- Sync ----------------------------------------------------------------
 
-    def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "", user_id: str = "") -> None:
         """Sync a completed turn to all providers."""
         for provider in self._providers:
             try:
-                provider.sync_turn(user_content, assistant_content, session_id=session_id)
+                provider.sync_turn(user_content, assistant_content, session_id=session_id, user_id=user_id)
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' sync_turn failed: %s",

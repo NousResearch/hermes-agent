@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -169,7 +169,7 @@ export function SidebarCronJobsSection({
         </button>
       </div>
       {open && (
-        <SidebarGroupContent className="flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
+        <SidebarGroupContent className="flex max-h-72 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
           {shown.map(job => (
             <CronJobSidebarRow
               expanded={peekJobId === job.id}
@@ -294,23 +294,25 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
   const c = t.cron
   const selectedSessionId = useStore($selectedStoredSessionId)
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
+  const [error, setError] = useState<string | null>(null)
+  const cancelledRef = useRef(false)
+
+  const load = useCallback(async () => {
+    cancelledRef.current = false
+    try {
+      const result = await getCronJobRuns(jobId, PEEK_RUN_LIMIT)
+      if (!cancelledRef.current) {
+        setRuns(result)
+        setError(null)
+      }
+    } catch (err) {
+      if (!cancelledRef.current) {
+        setError(err instanceof Error ? err.message : 'Failed to load runs')
+      }
+    }
+  }, [jobId])
 
   useEffect(() => {
-    let cancelled = false
-
-    const load = () =>
-      getCronJobRuns(jobId, PEEK_RUN_LIMIT)
-        .then(result => {
-          if (!cancelled) {
-            setRuns(result)
-          }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setRuns(prev => prev ?? [])
-          }
-        })
-
     void load()
 
     const intervalId = window.setInterval(() => {
@@ -320,22 +322,28 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
     }, PEEK_POLL_INTERVAL_MS)
 
     return () => {
-      cancelled = true
+      cancelledRef.current = true
       window.clearInterval(intervalId)
     }
-  }, [jobId])
+  }, [load])
 
   return (
     <div className="mb-1 ml-[1.375rem] flex flex-col gap-px">
-      {runs === null ? (
+      {runs === null && !error ? (
         <div className="flex items-center gap-1.5 py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">
           <GlyphSpinner ariaLabel={c.loading} className="text-[0.75rem]" />
         </div>
-      ) : runs.length === 0 ? (
+      ) : error && (!runs || runs.length === 0) ? (
+        <div className="py-1 pl-1 text-[0.6875rem] text-destructive">
+          <button className="underline hover:text-destructive/80" onClick={() => void load()} type="button">
+            {t.common.retry}
+          </button>
+        </div>
+      ) : runs !== null && runs.length === 0 ? (
         <div className="py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">{c.noRuns}</div>
       ) : (
         <>
-          {runs.map(run => (
+          {runs?.map(run => (
             <button
               className={cn(
                 'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',

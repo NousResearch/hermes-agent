@@ -1081,6 +1081,14 @@ _TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
 _TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
 _PLANNED_STOP_MARKER_FILENAME = ".gateway-planned-stop.json"
 _PLANNED_STOP_MARKER_TTL_S = 60
+# When a marker's ``target_start_time`` is unavailable on either side we fall
+# back to PID equality (see ``_pid_marker_matches_self``). PID reuse can then
+# let a marker written for a dead predecessor match a freshly booted gateway
+# that inherited the recycled PID. As a second line of defence we reject any
+# marker written *before* this process started — a legitimate stop of a running
+# gateway is always requested after it booted. The slack absorbs clock
+# granularity / same-instant boots so a genuine stop is never dropped.
+_MARKER_BOOT_SLACK_S = 5.0
 
 
 def _get_takeover_marker_path() -> Path:
@@ -1102,6 +1110,89 @@ def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
         return age > ttl_s
     except (TypeError, ValueError):
         return True
+
+
+def _safe_stopper_argv() -> list:
+    """Best-effort snapshot of THIS process's argv, for stop diagnostics.
+
+    Recorded in the marker so the gateway can name *which command* stopped it
+    even after the stopper has exited — which is the common case. The shutdown
+    forensics' ``parent_cmdline`` reads ``(unknown)`` precisely because the
+    process that wrote the marker is already gone by the time the gateway acts
+    on it. ``sys.argv`` needs no psutil and is always available. Capped so a
+    pathological argv can't bloat the marker.
+    """
+    try:
+        return [str(a) for a in sys.argv[:12]]
+    except Exception:
+        return []
+
+
+def _get_process_create_epoch(pid: int) -> Optional[float]:
+    """Return ``pid``'s creation time as float epoch seconds, or ``None``.
+
+    Unlike :func:`_get_process_start_time` (an opaque, platform-specific
+    fingerprint meant only for equality checks), this is a wall-clock epoch
+    directly comparable to a marker's ISO ``written_at``. psutil is a hard
+    dependency and exposes ``create_time`` on every platform, so this is the
+    reliable cross-platform "when did this process start" used by the
+    boot-time staleness guard.
+    """
+    try:
+        import psutil  # type: ignore
+
+        return float(psutil.Process(pid).create_time())
+    except Exception:
+        return None
+
+
+def _marker_predates_process(written_at: str, pid: int) -> bool:
+    """True when ``written_at`` is safely *before* ``pid`` started.
+
+    A marker written before this process existed can never legitimately name
+    it — it belongs to a predecessor that happened to share the recycled PID.
+    Conservative by design: returns ``False`` whenever the timestamp can't be
+    parsed or the process create-time is unavailable, so a real stop is never
+    misclassified as stale.
+    """
+    try:
+        written_dt = datetime.fromisoformat(written_at)
+    except (TypeError, ValueError):
+        return False
+    create_epoch = _get_process_create_epoch(pid)
+    if create_epoch is None:
+        return False
+    try:
+        return written_dt.timestamp() < (create_epoch - _MARKER_BOOT_SLACK_S)
+    except (OverflowError, OSError, ValueError):
+        return False
+
+
+def _pid_marker_matches_self(
+    target_pid: int,
+    target_start_time: Optional[int],
+    written_at: str,
+) -> bool:
+    """Shared identity check for planned-stop / takeover markers.
+
+    Used by both the authoritative consume and the watcher's non-destructive
+    probe so they can never disagree about whether a marker targets us.
+
+    A marker matches when it names our PID *and* either:
+      * both start-times are known and equal (exact identity), or
+      * a start-time is unavailable on either side (psutil hiccup / older
+        marker) AND the marker was not written before we booted.
+
+    The boot-time clause is what makes PID reuse safe when start-time matching
+    is unavailable — see ``_MARKER_BOOT_SLACK_S``.
+    """
+    our_pid = os.getpid()
+    if target_pid != our_pid:
+        return False
+    our_start_time = _get_process_start_time(our_pid)
+    if target_start_time is not None and our_start_time is not None:
+        return target_start_time == our_start_time
+    return not _marker_predates_process(written_at, our_pid)
 
 
 def _consume_pid_marker_for_self(
@@ -1133,26 +1224,19 @@ def _consume_pid_marker_for_self(
             pass
         return False
 
-    our_pid = os.getpid()
-    our_start_time = _get_process_start_time(our_pid)
-    # Start-time is a PID-reuse guard. It is only meaningful when both
-    # sides actually have it: ``_get_process_start_time`` returns None on
-    # platforms without ``/proc`` (macOS, native Windows — the very
-    # platform the planned-stop watcher exists for). Requiring a non-None
-    # match there would make every consume return False, so a legitimate
-    # ``hermes gateway stop`` on Windows would be misclassified as an
-    # unexpected ``UNKNOWN`` exit (exit 1) and revived by the service
-    # manager. So: when both start_times are known they must match; when
-    # either is unknown, fall back to PID equality alone (bounded by the
-    # marker's short TTL). This mirrors ``planned_stop_marker_targets_self``
-    # so the watcher's non-destructive probe and this authoritative
-    # consume agree on every platform (issue #34597).
-    if target_pid != our_pid:
-        matches = False
-    elif target_start_time is not None and our_start_time is not None:
-        matches = target_start_time == our_start_time
-    else:
-        matches = True
+    # Start-time is a PID-reuse guard. It is only meaningful when both sides
+    # actually have it: ``_get_process_start_time`` returns None when psutil
+    # can't read a process (and historically on platforms without ``/proc``).
+    # Requiring a non-None match there would make every consume return False,
+    # so a legitimate ``hermes gateway stop`` on Windows would be misclassified
+    # as an unexpected ``UNKNOWN`` exit (exit 1) and revived by the service
+    # manager. So: when both start_times are known they must match; when either
+    # is unknown, fall back to PID equality — but reject markers written before
+    # we booted so a recycled PID can't resurrect a predecessor's marker. This
+    # shares ``_pid_marker_matches_self`` with ``planned_stop_marker_targets_self``
+    # so the watcher's non-destructive probe and this authoritative consume
+    # agree on every platform (issues #34597, #33778).
+    matches = _pid_marker_matches_self(target_pid, target_start_time, written_at)
 
     try:
         path.unlink(missing_ok=True)
@@ -1179,6 +1263,7 @@ def write_takeover_marker(target_pid: int) -> bool:
             "target_pid": target_pid,
             "target_start_time": target_start_time,
             "replacer_pid": os.getpid(),
+            "stopper_argv": _safe_stopper_argv(),
             "written_at": _utc_now_iso(),
         }
         _write_json_file(_get_takeover_marker_path(), record)
@@ -1227,6 +1312,7 @@ def write_planned_stop_marker(target_pid: int) -> bool:
             "target_pid": target_pid,
             "target_start_time": target_start_time,
             "stopper_pid": os.getpid(),
+            "stopper_argv": _safe_stopper_argv(),
             "written_at": _utc_now_iso(),
         }
         _write_json_file(_get_planned_stop_marker_path(), record)
@@ -1255,11 +1341,11 @@ def planned_stop_marker_targets_self() -> bool:
     the authoritative consume on its own thread.
 
     It *does* clean up markers that can never apply to this process:
-    malformed markers and markers older than the TTL are unlinked so a
-    stale file left behind by a previous gateway instance cannot wedge
-    the new one. Markers naming a different PID/start_time are left in
-    place (they may still be consumed legitimately by the process they
-    name) but report False here.
+    malformed markers, markers older than the TTL, and markers that name our
+    own PID but were written before we booted (a recycled PID from a dead
+    predecessor) are unlinked so a stale file cannot wedge the new gateway.
+    Markers naming a different live PID are left in place (they may still be
+    consumed legitimately by the process they name) but report False here.
 
     Returns False (without raising) on any read/parse error.
     """
@@ -1289,22 +1375,101 @@ def planned_stop_marker_targets_self() -> bool:
             pass
         return False
 
-    our_pid = os.getpid()
-    if target_pid != our_pid:
-        return False
+    # Shared identity check (see ``_pid_marker_matches_self``): same PID plus
+    # either a start-time match or, when start-time is unavailable, a marker
+    # written after we booted. The probe is non-destructive on a match — the
+    # shutdown handler does the authoritative consume on the loop thread.
+    if _pid_marker_matches_self(target_pid, target_start_time, written_at):
+        return True
 
-    # Start-time is a PID-reuse guard. It is only meaningful when both
-    # sides actually have it: ``_get_process_start_time`` returns None on
-    # platforms without ``/proc`` (macOS, native Windows — the very
-    # platform this watcher exists for). Requiring a non-None match there
-    # would make the watcher never fire and re-break the #33778 Windows
-    # session-resume path. So: when both start_times are known they must
-    # match; when either is unknown, fall back to PID equality alone
-    # (the marker is short-lived under a 60s TTL, bounding reuse risk).
-    our_start_time = _get_process_start_time(our_pid)
-    if target_start_time is not None and our_start_time is not None:
-        return target_start_time == our_start_time
-    return True
+    # Self-heal: a marker that names OUR PID but doesn't match us belongs to a
+    # dead predecessor whose PID we recycled (start-time mismatch, or it
+    # predates our boot). Nobody will ever consume it legitimately, so unlink
+    # it rather than let it linger until the TTL. Foreign-PID markers are left
+    # alone — they may belong to the live process they name.
+    if target_pid == os.getpid():
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return False
+
+
+def _describe_stop_marker_record(record: dict) -> str:
+    """Format a planned-stop marker into a one-line "who stopped us" summary.
+
+    Surfaces the recorded ``stopper_pid`` and ``stopper_argv`` (captured when
+    the marker was written, so they survive the stopper exiting) plus the
+    marker age and a best-effort live lookup of the stopper process. This is
+    the single most useful line for diagnosing "the gateway keeps dying":
+    it names the exact command that asked the gateway to stop.
+    """
+    parts = [f"target_pid={record.get('target_pid')}"]
+    stopper_pid = record.get("stopper_pid")
+    if stopper_pid is not None:
+        parts.append(f"stopper_pid={stopper_pid}")
+    argv = record.get("stopper_argv")
+    if isinstance(argv, list) and argv:
+        try:
+            cmd = shlex.join(str(a) for a in argv)
+        except Exception:
+            cmd = " ".join(str(a) for a in argv)
+        parts.append(f"stopper_cmd={cmd!r}")
+    written_at = record.get("written_at")
+    if written_at:
+        parts.append(f"written_at={written_at}")
+        try:
+            age = (
+                datetime.now(timezone.utc) - datetime.fromisoformat(written_at)
+            ).total_seconds()
+            parts.append(f"age={age:.1f}s")
+        except (TypeError, ValueError):
+            pass
+    live = _resolve_live_process(stopper_pid)
+    parts.append(f"stopper_live={live or 'gone'}")
+    return " ".join(parts)
+
+
+def _resolve_live_process(pid: Any) -> Optional[str]:
+    """Return ``name(cmdline)`` for a live ``pid``, or None if gone/unreadable.
+
+    Best-effort and bounded — the stopper is usually already gone by the time
+    we look (which is exactly why the marker records argv at write time).
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    try:
+        import psutil  # type: ignore
+
+        proc = psutil.Process(pid)
+        name = proc.name()
+        try:
+            cmd = " ".join(proc.cmdline())
+        except Exception:
+            cmd = ""
+        if cmd:
+            return f"{name}({cmd[:200]})"
+        return name
+    except Exception:
+        return None
+
+
+def describe_planned_stop_marker() -> Optional[str]:
+    """One-line description of who wrote the live planned-stop marker.
+
+    Non-destructive. Used by the watcher and shutdown handler to log *which
+    process* asked the gateway to stop. Returns None when there is no readable
+    marker.
+    """
+    record = _read_json_file(_get_planned_stop_marker_path())
+    if not record:
+        return None
+    try:
+        return _describe_stop_marker_record(record)
+    except Exception:
+        return None
 
 
 def clear_planned_stop_marker() -> None:

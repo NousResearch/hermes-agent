@@ -1282,6 +1282,113 @@ class TestPlannedStopMarker:
         assert result is False
 
 
+class TestPlannedStopBootTimeGuard:
+    """Boot-time staleness guard for the PID-only fallback (Windows PID reuse).
+
+    When ``target_start_time`` is unavailable on either side we fall back to
+    PID equality. PID reuse can then let a marker written for a dead predecessor
+    match a freshly booted gateway that inherited the recycled PID. The guard
+    rejects any marker written *before* this process started.
+    """
+
+    def test_write_marker_records_stopper_argv(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+        monkeypatch.setattr(status.sys, "argv", ["hermes", "gateway", "stop"])
+
+        assert status.write_planned_stop_marker(target_pid=12345) is True
+
+        payload = json.loads((tmp_path / ".gateway-planned-stop.json").read_text())
+        assert payload["stopper_argv"] == ["hermes", "gateway", "stop"]
+
+    def test_consume_rejects_marker_written_before_boot(self, tmp_path, monkeypatch):
+        """PID-reuse defence: a marker predating our boot must not match.
+
+        Both start_times are unavailable (the Windows fallback), the PID
+        matches, and the TTL is fresh — but the marker was written before this
+        process started, so it belongs to a dead predecessor with the same PID.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        # We "started" 100s after the marker was written.
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).timestamp()
+        monkeypatch.setattr(status, "_get_process_create_epoch", lambda pid: now + 100)
+
+        assert status.write_planned_stop_marker(target_pid=os.getpid()) is True
+
+        assert status.consume_planned_stop_marker_for_self() is False
+        assert not (tmp_path / ".gateway-planned-stop.json").exists()
+
+    def test_consume_matches_marker_written_after_boot(self, tmp_path, monkeypatch):
+        """The fallback still accepts a legit stop issued after we booted."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).timestamp()
+        # We started well before the marker was written.
+        monkeypatch.setattr(status, "_get_process_create_epoch", lambda pid: now - 100)
+
+        assert status.write_planned_stop_marker(target_pid=os.getpid()) is True
+
+        assert status.consume_planned_stop_marker_for_self() is True
+
+    def test_targets_self_unlinks_stale_pid_reuse_marker(self, tmp_path, monkeypatch):
+        """The watcher probe self-heals a same-PID marker for a dead predecessor.
+
+        Both start_times are known but DIFFER (PID reuse), so the marker can't
+        be ours. It names our PID, so nobody else will consume it — the probe
+        unlinks it rather than leaving it to wedge us until the TTL.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker_path = tmp_path / ".gateway-planned-stop.json"
+        # Marker captured start_time 111; our live start_time is 222.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 111)
+        status.write_planned_stop_marker(target_pid=os.getpid())
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 222)
+
+        assert status.planned_stop_marker_targets_self() is False
+        assert not marker_path.exists(), "stale same-PID marker should self-heal"
+
+    def test_targets_self_leaves_foreign_pid_marker(self, tmp_path, monkeypatch):
+        """A marker naming a DIFFERENT live PID is left in place."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker_path = tmp_path / ".gateway-planned-stop.json"
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 111)
+        status.write_planned_stop_marker(target_pid=os.getpid() + 9999)
+
+        assert status.planned_stop_marker_targets_self() is False
+        assert marker_path.exists(), "foreign-PID marker must not be unlinked"
+
+    def test_describe_planned_stop_marker_names_stopper(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+        monkeypatch.setattr(status.sys, "argv", ["hermes", "gateway", "stop"])
+        status.write_planned_stop_marker(target_pid=4321)
+
+        desc = status.describe_planned_stop_marker()
+
+        assert desc is not None
+        assert "target_pid=4321" in desc
+        assert f"stopper_pid={os.getpid()}" in desc
+        assert "gateway" in desc and "stop" in desc
+
+    def test_describe_planned_stop_marker_returns_none_when_absent(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert status.describe_planned_stop_marker() is None
+
+    def test_marker_predates_process_is_conservative(self, monkeypatch):
+        # Unparseable timestamp → never treat as stale.
+        assert status._marker_predates_process("not-a-date", os.getpid()) is False
+        # Unknown create time → never treat as stale.
+        monkeypatch.setattr(status, "_get_process_create_epoch", lambda pid: None)
+        from datetime import datetime, timezone
+        old = (datetime(2000, 1, 1, tzinfo=timezone.utc)).isoformat()
+        assert status._marker_predates_process(old, os.getpid()) is False
+
+
 class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 

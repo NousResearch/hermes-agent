@@ -744,7 +744,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // Only scroll when the user was already near the bottom, to
         // avoid yanking their position while reading history.
         const buf = term.buffer.active;
-        if (buf.ydisp <= 2) {
+        if (buf.viewportY <= 2) {
           term.scrollToBottom();
         }
       });

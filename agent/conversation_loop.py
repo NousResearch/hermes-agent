@@ -339,6 +339,43 @@ def _is_stale_copilot_credential_error(status_code: Optional[int], error_message
     ))
 
 
+def _looks_like_material_interim_content(text: str) -> bool:
+    """Return True for mid-turn text that is likely more than progress narration."""
+    if not isinstance(text, str):
+        return False
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) < 20:
+        return False
+    if len(normalized) >= 160:
+        return True
+    if "\n" in text and len(normalized) >= 60:
+        return True
+    if re.search(r"https?://|```|^\s*[-*]\s+", text, re.MULTILINE):
+        return True
+    if re.search(
+        r"(?i)\b(total|subtotal|price|quote|cost|shipping|postage|"
+        r"deposit|terms|refund|deadline|delivery|eta)\b",
+        normalized,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"(?i)(?:\bRM\s*\d|\$\s*\d|\b\d+\s*x\s*(?:RM|\$)|"
+            r"\b\d+(?:\.\d+)?\s*(?:usd|eur|gbp)\b)",
+            normalized,
+        )
+    )
+
+
+def _final_response_covers_interim_content(
+    final_response: str,
+    interim_content: str,
+) -> bool:
+    final_norm = re.sub(r"\s+", " ", final_response or "").strip().lower()
+    interim_norm = re.sub(r"\s+", " ", interim_content or "").strip().lower()
+    return bool(final_norm and interim_norm and interim_norm in final_norm)
+
+
 def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
     """Floor the ROUGH pre-API pressure estimate at the last REAL prompt size.
 

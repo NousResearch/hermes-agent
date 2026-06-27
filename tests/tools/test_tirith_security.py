@@ -1324,6 +1324,53 @@ class TestSpawnWarningDedup:
         assert len(none_warnings) == 1
 
 
+class TestCircuitBreakerFailClosed:
+    """When the circuit breaker is open, the breaker branch must still honor
+    ``tirith_fail_open``. Every other failure path in check_command_security
+    (path-None, OSError spawn, timeout, unknown exit) blocks when fail_open is
+    False; the breaker branch must do the same instead of allowing
+    unconditionally (sibling of #20733)."""
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_circuit_breaker_fail_closed(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": False,
+        }
+        mock_run.side_effect = FileNotFoundError("No such file: tirith")
+
+        # Drive _CRASH_LIMIT consecutive spawn failures to open the breaker.
+        for _ in range(_tirith_mod._CRASH_LIMIT):
+            check_command_security("echo hi")
+        assert _tirith_mod._circuit_open is True
+
+        # The next call short-circuits in the breaker branch. With
+        # fail_open=False it must block (fail-closed), not allow.
+        result = check_command_security("echo hi")
+        assert result["action"] == "block"
+        assert "fail-closed" in result["summary"]
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_circuit_breaker_fail_open_unchanged(self, mock_cfg, mock_run):
+        """With the default fail_open=True the breaker still allows — the
+        #41400 hang-prevention behavior must be untouched."""
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": True,
+        }
+        mock_run.side_effect = FileNotFoundError("No such file: tirith")
+
+        for _ in range(_tirith_mod._CRASH_LIMIT):
+            check_command_security("echo hi")
+        assert _tirith_mod._circuit_open is True
+
+        result = check_command_security("echo hi")
+        assert result["action"] == "allow"
+        assert "circuit breaker" in result["summary"]
+
+
 # ---------------------------------------------------------------------------
 # .app TLD suppression (issue #24461)
 # ---------------------------------------------------------------------------

@@ -1223,3 +1223,208 @@ describe('uploadComposerAttachment remote read failures', () => {
     ).rejects.toThrow('ENOENT: no such file')
   })
 })
+
+// Slash commands typed mid-turn used to be silently dropped with a dead
+// "session busy" note (issue #44978). They are now re-routed by intent so the
+// user gets an action: /interrupt and /stop hit session.interrupt, /steer
+// hits session.steer, and other commands at least render a useful "held"
+// note in the transcript instead of going silent.
+describe('usePromptActions slash commands while busy', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('fires session.interrupt (with the runtime id) when /interrupt is typed mid-turn, with transcript feedback', async () => {
+    const busyRef = { current: true }
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    // The user typed the slash command into the composer while a turn was
+    // running. Before the fix this was dropped; now it must reach the gateway.
+    await handle!.submitText('/interrupt')
+
+    // Routed through the live-turn interrupt path with the runtime session id
+    // (NOT the slash worker, NOT the action cancelRun which is the Stop button
+    // path — typing /interrupt is its own user-facing surface).
+    expect(calls).toContainEqual({
+      method: 'session.interrupt',
+      params: { session_id: RUNTIME_SESSION_ID }
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+  })
+
+  it('routes /steer with the typed argument through session.steer mid-turn and reports a "steered:" transcript note', async () => {
+    const busyRef = { current: true }
+    const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
+    const lastState: { messages: { id: string; role: string; parts: { text?: string }[] }[] } = {
+      messages: []
+    }
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onSeedState={state => {
+          lastState.messages = (state.messages as { id: string; role: string; parts: { text?: string }[] }[]) ?? []
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/steer  stop after the next file read  ')
+
+    // Steer is a live-turn rider — it never starts a new turn.
+    expect(requestGateway).toHaveBeenCalledWith('session.steer', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'stop after the next file read'
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+
+    // And the user must see a transcript note, not a silent drop.
+    await waitFor(() => {
+      const note = lastState.messages
+        .filter(m => m.role === 'system')
+        .map(m => m.parts.map(p => p.text ?? '').join(''))
+        .join('\n')
+      expect(note).toContain('slash:/steer')
+      expect(note).toMatch(/steered:.*stop after the next file read/)
+    })
+  })
+
+  it('routes /STOP (case-insensitive) through session.interrupt and treats /Interrupt the same way', async () => {
+    // Slash command names from the composer come in mixed case; the re-routing
+    // must be case-insensitive so the user can type either spelling.
+    const busyRef = { current: true }
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/STOP')
+    await handle!.submitText('/Interrupt')
+
+    const interrupts = requestGateway.mock.calls.filter(
+      call => (call as unknown as [string, { session_id: string } | undefined])[0] === 'session.interrupt' &&
+        (call as unknown as [string, { session_id: string } | undefined])[1]?.session_id === RUNTIME_SESSION_ID
+    )
+    expect(interrupts).toHaveLength(2)
+  })
+
+  it('renders a useful transcript "held" note for non-turn-control slash commands instead of silently dropping', async () => {
+    // /save is a backend exec command with no live-turn control. Before the
+    // fix it fell through to runExec, hit the busy block, and the user saw
+    // "session busy — /interrupt the current turn before sending this command"
+    // with no signal that the typed command was even received. The new busy
+    // block re-words this so the user at least knows the command is held and
+    // can interrupt to flush it.
+    const busyRef = { current: true }
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return method === 'slash.exec' ? ({ output: 'saved ok' } as never) : ({} as never)
+    })
+
+    const lastState: { messages: { id: string; role: string; parts: { text?: string }[] }[] } = {
+      messages: []
+    }
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onSeedState={state => {
+          lastState.messages = (state.messages as { id: string; role: string; parts: { text?: string }[] }[]) ?? []
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/save')
+
+    // /save resolves to the exec surface and runs slash.exec fine — the user
+    // gets their output. The busy re-route is for slash commands whose intent
+    // is to send a fresh prompt (skill dispatches, /queue, etc). To prove the
+    // re-route, simulate one of those by hitting runExec's busy branch through
+    // an exec command whose dispatch returns a message to submit.
+    expect(calls.some(c => c.method === 'slash.exec')).toBe(true)
+
+    // Now exercise the inner runExec busy path: a command that resolves to
+    // runExec, fails slash.exec, falls to command.dispatch returning a skill
+    // payload, and then would have submitted. The new busy block must render
+    // "held" rather than the old silent drop.
+    const lastState2: { messages: { id: string; role: string; parts: { text?: string }[] }[] } = {
+      messages: []
+    }
+    const requestGateway2 = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('not in exec surface')
+      }
+
+      if (method === 'command.dispatch') {
+        return { type: 'skill', name: 'demo-skill', message: 'inline skill payload' }
+      }
+
+      return {}
+    }) as unknown as <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+    let handle2: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle2 = h)}
+        onSeedState={state => {
+          lastState2.messages = (state.messages as { id: string; role: string; parts: { text?: string }[] }[]) ?? []
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway2}
+      />
+    )
+
+    // /queue is registered as exec(); the harness's runExec will try
+    // slash.exec (fails), then command.dispatch (returns the skill payload),
+    // then hit the inner busy block. This is the exact code path #44978.
+    await handle2!.submitText('/queue')
+
+    // Critical: prompt.submit must NOT be called — the typed text is held, not
+    // re-submitted (which would 4009 the gateway and bounce).
+    expect(requestGateway2).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+
+    // And the user gets a transcript note explaining the hold.
+    await waitFor(() => {
+      const note = lastState2.messages
+        .filter(m => m.role === 'system')
+        .map(m => m.parts.map(p => p.text ?? '').join(''))
+        .join('\n')
+      expect(note).toContain('held')
+      expect(note).toContain('slash:/queue')
+    })
+  })
+})

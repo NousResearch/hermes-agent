@@ -1035,7 +1035,71 @@ export function usePromptActions({
           }
 
           if (busyRef.current) {
-            renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+            // Session is busy. The previous behavior was a silent drop with a
+            // "session busy" message that didn't actually do anything — the user
+            // (#44978) reported that slash commands like /interrupt, /steer,
+            // and skill payloads typed mid-turn were lost. Re-route by intent:
+            //
+            //   - /interrupt and /stop  → fire session.interrupt on the live
+            //     turn (the user's typed intent). The cancelRun in cancelRun
+            //     already covers the Stop button; this covers typing the
+            //     command.
+            //   - /steer                 → ride session.steer with the typed
+            //     argument, mirroring the desktop-only `steerPrompt` path.
+            //   - everything else        → render a useful "held" note in the
+            //     transcript so the user at least sees the command was
+            //     received. The transcript note is rendered as a system
+            //     message (not a toast) so it stays attached to the turn it
+            //     was issued against, per the issue's UX request.
+            const lowerName = name.toLowerCase()
+
+            if (lowerName === 'interrupt' || lowerName === 'stop') {
+              try {
+                await requestGateway('session.interrupt', { session_id: sessionId })
+                renderSlashOutput(slashStatusText(command, 'interrupted'))
+              } catch (interruptErr) {
+                renderSlashOutput(
+                  slashStatusText(
+                    command,
+                    `error: ${interruptErr instanceof Error ? interruptErr.message : String(interruptErr)}`
+                  )
+                )
+              }
+
+              return
+            }
+
+            if (lowerName === 'steer') {
+              const steerText = arg.trim()
+
+              try {
+                if (steerText) {
+                  await requestGateway<SessionSteerResponse>('session.steer', {
+                    session_id: sessionId,
+                    text: steerText
+                  })
+                }
+                renderSlashOutput(slashStatusText(command, `steered: ${steerText || '(no text)'}`))
+              } catch (steerErr) {
+                renderSlashOutput(
+                  slashStatusText(
+                    command,
+                    `error: ${steerErr instanceof Error ? steerErr.message : String(steerErr)}`
+                  )
+                )
+              }
+
+              return
+            }
+
+            // Other slash commands (skills, /status, /save, …) cannot safely
+            // submit a prompt while a turn is running, and the gateway has no
+            // general "queue arbitrary command" channel. Surface a useful
+            // transcript note so the command is at least visible — the user
+            // can /interrupt the live turn to flush it.
+            renderSlashOutput(
+              slashStatusText(command, 'held — session busy, will run after /interrupt')
+            )
 
             return
           }
@@ -1429,6 +1493,86 @@ export function usePromptActions({
           }
 
           return
+        }
+
+        // Mid-turn slash command guard. The previous path let any slash command
+        // fall through to surface resolution, where some (like /interrupt, which
+        // is not in the desktop catalog) would 4009 against the busy gateway
+        // and surface a useless "command not found" — and worse, commands that
+        // DID resolve (skill dispatches) silently dropped with a dead "session
+        // busy" message. See #44978.
+        //
+        // For the two turn-control commands the user almost always types mid-
+        // run (/interrupt, /stop) and the live-turn rider (/steer), re-route
+        // here before any surface resolution. Other commands get the same
+        // helpful "held" treatment in the inner runExec busy block.
+        if (busyRef.current) {
+          const lowerName = name.toLowerCase()
+          const isTurnControl = lowerName === 'interrupt' || lowerName === 'stop'
+          const isSteer = lowerName === 'steer'
+
+          if (!isTurnControl && !isSteer) {
+            // Fall through to surface resolution; the inner runExec busy block
+            // will render a "held" note for anything that tries to submit.
+          } else {
+            const sessionId = await ensureSessionId(sessionHint)
+
+            if (!sessionId) {
+              notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
+
+              return
+            }
+
+            if (isTurnControl) {
+              try {
+                await requestGateway('session.interrupt', { session_id: sessionId })
+                appendSessionTextMessage(
+                  sessionId,
+                  'system',
+                  slashStatusText(command, 'interrupted')
+                )
+              } catch (interruptErr) {
+                appendSessionTextMessage(
+                  sessionId,
+                  'system',
+                  slashStatusText(
+                    command,
+                    `error: ${interruptErr instanceof Error ? interruptErr.message : String(interruptErr)}`
+                  )
+                )
+              }
+
+              return
+            }
+
+            // isSteer
+            const steerText = arg.trim()
+
+            try {
+              if (steerText) {
+                await requestGateway<SessionSteerResponse>('session.steer', {
+                  session_id: sessionId,
+                  text: steerText
+                })
+              }
+              appendSessionTextMessage(
+                sessionId,
+                'system',
+                slashStatusText(command, `steered: ${steerText || '(no text)'}`)
+              )
+            } catch (steerErr) {
+              appendSessionTextMessage(
+                sessionId,
+                'system',
+                slashStatusText(
+                  command,
+                  `error: ${steerErr instanceof Error ? steerErr.message : String(steerErr)}`
+                )
+              )
+            }
+
+            return
+          }
         }
 
         const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }

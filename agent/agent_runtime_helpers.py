@@ -1432,6 +1432,29 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
+def _apply_switched_provider_request_overrides(agent, new_provider):
+    """Re-derive the switched-to provider's ``request_overrides`` onto a live agent.
+
+    A ``custom_providers`` entry can carry an ``extra_body`` (e.g.
+    ``chat_template_kwargs`` to toggle a local model's thinking). The gateway
+    rebuild path carries this via ``request_overrides``; an *in-place* swap
+    (CLI / TUI ``/model``) must re-derive it for the new provider, otherwise the
+    previous provider's ``extra_body`` lingers. Non-provider overrides
+    (``service_tier`` / ``speed`` from ``/fast``) are preserved.
+    """
+    from hermes_cli.runtime_provider import (
+        _get_named_custom_provider,
+        _custom_provider_request_overrides,
+    )
+    cp = _get_named_custom_provider(new_provider)
+    new_ro = _custom_provider_request_overrides(cp) if cp else None
+    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    overrides.pop("extra_body", None)
+    if new_ro and new_ro.get("extra_body"):
+        overrides["extra_body"] = new_ro["extra_body"]
+    agent.request_overrides = overrides
+
+
 def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
     """Switch the model/provider in-place for a live agent.
 
@@ -1716,6 +1739,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         ]
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
+
+    # Apply the switched-to provider's request_overrides (custom_providers
+    # extra_body, e.g. chat_template_kwargs). See helper for rationale.
+    try:
+        _apply_switched_provider_request_overrides(agent, new_provider)
+    except Exception:
+        logger.debug("switch_model: request_overrides re-derivation failed", exc_info=True)
 
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",

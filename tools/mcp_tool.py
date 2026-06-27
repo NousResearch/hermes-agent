@@ -3390,7 +3390,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             try:
                 parsed = json.loads(result)
                 if "error" in parsed:
-                    _bump_server_error(server_name)
+                    # Don't bump circuit breaker for tool-level errors.
+                    # The MCP transport worked fine — the tool just reported
+                    # a business error (API validation, rate limit, etc.).
+                    # Only real transport exceptions (timeout, connection
+                    # refused) should trip the circuit breaker below.
+                    pass
                 else:
                     _reset_server_error(server_name)  # success — reset
             except (json.JSONDecodeError, TypeError):

@@ -53,15 +53,15 @@ export const zh: Translations = {
       startingHermesDesktop: '正在启动 ApexNodes 桌面版…'
     },
     errors: {
-      backgroundExited: 'Hermes 后台进程已退出。',
-      backgroundExitedDuringStartup: 'Hermes 后台进程在启动期间退出。',
+      backgroundExited: 'ApexNodes 后台进程已退出。',
+      backgroundExitedDuringStartup: 'ApexNodes 后台进程在启动期间退出。',
       backendStopped: '后端已停止',
       desktopBootFailed: '桌面启动失败',
       gatewaySignInRequired: '需要登录网关',
       ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
     },
     failure: {
-      title: 'Hermes 无法启动',
+      title: 'ApexNodes 无法启动',
       description: '后台网关没有启动。请尝试下面的恢复步骤；这里不会删除你的对话或设置。',
       remoteTitle: '需要重新登录远程网关',
       remoteDescription: '你的远程网关会话已过期。请重新登录以恢复连接。这些操作不会删除你的对话或设置。',
@@ -80,7 +80,13 @@ export const zh: Translations = {
       signInFailed: '登录失败',
       signInToRemoteGateway: '登录远程网关',
       signInWithProvider: provider => `使用 ${provider} 登录`,
-      identityProvider: '你的身份提供方'
+      identityProvider: '你的身份提供方',
+      errorMap: {
+        cancelled: '安装已取消',
+        prerequisites: '无法准备所需环境。请尝试修复安装，或查看下方日志。',
+        network: '安装过程中出现网络问题。请检查网络连接后重试。',
+        unknown: 'ApexNodes 未能完成启动。请尝试下面的恢复步骤。'
+      }
     }
   },
 
@@ -1620,7 +1626,30 @@ export const zh: Translations = {
       skipped: '已跳过',
       failed: '失败'
     },
-    oneTimeTitle: 'Hermes 需要一次性安装',
+    stageLabels: {
+      prerequisites: '前置环境',
+      uv: '前置环境',
+      python: '前置环境',
+      git: '前置环境',
+      node: '前置环境',
+      'system-packages': '前置环境',
+      repository: '拉取程序',
+      venv: 'Python 环境',
+      'python-deps': 'Python 依赖',
+      dependencies: 'Python 依赖',
+      'node-deps': 'Node 依赖',
+      desktop: '桌面应用',
+      path: '配置路径',
+      config: '写入配置',
+      'config-templates': '写入配置',
+      'platform-sdks': '写入配置',
+      setup: '初始化',
+      configure: '初始化',
+      gateway: '启动网关',
+      complete: '完成',
+      'bootstrap-marker': '完成'
+    },
+    oneTimeTitle: 'ApexNodes 需要一次性安装',
     unsupportedDesc: platform =>
       `${platform} 暂不支持自动首次启动安装。请打开终端并运行下面的命令，然后重新启动此应用。之后启动会跳过此步骤。`,
     installCommand: '安装命令',
@@ -1632,8 +1661,8 @@ export const zh: Translations = {
     settingUpTitle: '正在设置 ApexNodes',
     finishingTitle: '正在收尾',
     failedDesc:
-      '某个安装步骤失败。在 Windows 上，如果另一个 Hermes CLI 或桌面实例正在运行，可能会出现这种情况。请停止正在运行的 Hermes 实例后重试。可查看下面的详情或 desktop 日志中的完整记录。',
-    activeDesc: '这是一次性设置。Hermes 安装器正在下载依赖并配置你的机器。之后启动会跳过此步骤。',
+      '某个安装步骤失败。在 Windows 上，如果另一个 ApexNodes CLI 或桌面实例正在运行，可能会出现这种情况。请停止正在运行的 ApexNodes 实例后重试。可查看下面的详情或 desktop 日志中的完整记录。',
+    activeDesc: '这是一次性设置。安装器正在下载依赖并配置你的机器。之后启动会跳过此步骤。',
     progress: (completed, total) => `${completed}/${total} 个步骤已完成`,
     currentStage: stage => ` -- 当前：${stage}`,
     fetchingManifest: '正在获取安装器 manifest...',

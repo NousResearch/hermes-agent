@@ -13,6 +13,7 @@ import { $desktopOnboarding } from '@/store/onboarding'
 
 import type { RemoteReauth } from './boot-failure-reauth'
 import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
+import { friendlyBootError } from './boot-install-format'
 
 type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
 
@@ -165,6 +166,12 @@ export function BootFailureOverlay() {
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
   const copy = t.boot.failure
+  // Show a friendly, localized summary as the primary message instead of the
+  // raw bootstrap transcript (e.g. "Error invoking remote method
+  // 'hermes:connection': … cancelled by user. Check …/desktop.log"). The raw
+  // string is preserved verbatim in the "show recent logs" expander below so
+  // nothing is lost for debugging.
+  const friendlyError = friendlyBootError(boot.error, copy.errorMap)
 
   const label = signInLabel(remoteReauth, {
     identityProvider: copy.identityProvider,
@@ -189,7 +196,7 @@ export function BootFailureOverlay() {
 
         <div className="grid gap-4 p-5">
           <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-            {boot.error}
+            {friendlyError ?? boot.error}
           </div>
 
           <div className="grid gap-2">
@@ -225,7 +232,7 @@ export function BootFailureOverlay() {
             </p>
           </div>
 
-          {logs.length > 0 ? (
+          {logs.length > 0 || (friendlyError && boot.error) ? (
             <div className="grid gap-2">
               <Button
                 className="-ml-2 self-start font-medium"
@@ -236,7 +243,15 @@ export function BootFailureOverlay() {
               >
                 {showLogs ? copy.hideRecentLogs : copy.showRecentLogs}
               </Button>
-              {showLogs ? <LogView className="max-h-48">{logs.slice(-40).join('')}</LogView> : null}
+              {showLogs ? (
+                <LogView className="max-h-48">
+                  {/* Keep the raw bootstrap error verbatim even when we showed a
+                      friendly summary above, so the transcript isn't lost. */}
+                  {[friendlyError && boot.error ? boot.error : '', logs.slice(-40).join('')]
+                    .filter(Boolean)
+                    .join('\n')}
+                </LogView>
+              ) : null}
             </div>
           ) : null}
         </div>

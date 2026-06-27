@@ -14,6 +14,8 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import { stageLabel } from './boot-install-format'
+
 /**
  * DesktopInstallOverlay
  *
@@ -50,18 +52,6 @@ interface StageRowProps {
   result: DesktopBootstrapStageResult | undefined
   isCurrent: boolean
   now: number
-}
-
-function formatStageName(name: string): string {
-  // 'system-packages' -> 'System packages'; 'uv' stays 'uv'
-  if (name.length <= 3) {
-    return name
-  }
-
-  return name
-    .split('-')
-    .map((word, i) => (i === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word))
-    .join(' ')
 }
 
 function formatDuration(ms: number | null | undefined): string {
@@ -141,7 +131,7 @@ function StageRow({ descriptor, result, isCurrent, now }: StageRowProps) {
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
           <span className={cn('truncate text-sm font-medium', state === 'pending' && 'text-muted-foreground')}>
-            {formatStageName(descriptor.name)}
+            {stageLabel(descriptor.name, copy.stageLabels)}
           </span>
           <span className="flex-shrink-0 text-xs tabular-nums text-muted-foreground">
             {state === 'running'
@@ -431,7 +421,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
                 <span>
                   {copy.progress(completedCount, totalCount)}
-                  {currentStage && copy.currentStage(formatStageName(currentStage))}
+                  {currentStage && copy.currentStage(stageLabel(currentStage, copy.stageLabels))}
                   {currentElapsed && ` (${currentElapsed})`}
                 </span>
                 <span className="tabular-nums">{progressPct}%</span>

@@ -53,15 +53,15 @@ export const zhHant = defineLocale({
       startingHermesDesktop: '正在啟動 ApexNodes Desktop…'
     },
     errors: {
-      backgroundExited: 'Hermes 背景程序已結束。',
-      backgroundExitedDuringStartup: 'Hermes 背景程序在啟動期間結束。',
+      backgroundExited: 'ApexNodes 背景程序已結束。',
+      backgroundExitedDuringStartup: 'ApexNodes 背景程序在啟動期間結束。',
       backendStopped: '後端已停止',
       desktopBootFailed: '桌面啟動失敗',
       gatewaySignInRequired: '需要閘道登入',
       ipcBridgeUnavailable: '桌面 IPC 橋接器不可用。'
     },
     failure: {
-      title: 'Hermes 無法啟動',
+      title: 'ApexNodes 無法啟動',
       description: '背景閘道未啟動。請嘗試下面的復原步驟。這裡的操作不會刪除您的聊天或設定。',
       remoteTitle: '需要重新登入遠端閘道',
       remoteDescription: '您的遠端閘道工作階段已過期。請重新登入以重新連線。這裡的操作不會刪除您的聊天或設定。',
@@ -80,7 +80,13 @@ export const zhHant = defineLocale({
       signInFailed: '登入失敗',
       signInToRemoteGateway: '登入遠端閘道',
       signInWithProvider: provider => `使用 ${provider} 登入`,
-      identityProvider: '您的身分提供方'
+      identityProvider: '您的身分提供方',
+      errorMap: {
+        cancelled: '安裝已取消',
+        prerequisites: '無法準備所需環境。請嘗試修復安裝，或查看下方記錄。',
+        network: '安裝過程中出現網路問題。請檢查網路連線後重試。',
+        unknown: 'ApexNodes 未能完成啟動。請嘗試下面的復原步驟。'
+      }
     }
   },
 
@@ -1515,7 +1521,30 @@ export const zhHant = defineLocale({
       skipped: '已略過',
       failed: '失敗'
     },
-    oneTimeTitle: 'Hermes 需要一次性安裝',
+    stageLabels: {
+      prerequisites: '前置環境',
+      uv: '前置環境',
+      python: '前置環境',
+      git: '前置環境',
+      node: '前置環境',
+      'system-packages': '前置環境',
+      repository: '拉取程式',
+      venv: 'Python 環境',
+      'python-deps': 'Python 相依套件',
+      dependencies: 'Python 相依套件',
+      'node-deps': 'Node 相依套件',
+      desktop: '桌面應用程式',
+      path: '設定路徑',
+      config: '寫入設定',
+      'config-templates': '寫入設定',
+      'platform-sdks': '寫入設定',
+      setup: '初始化',
+      configure: '初始化',
+      gateway: '啟動閘道',
+      complete: '完成',
+      'bootstrap-marker': '完成'
+    },
+    oneTimeTitle: 'ApexNodes 需要一次性安裝',
     unsupportedDesc: platform =>
       `${platform} 暫不支援自動首次啟動安裝。請開啟終端機並執行下面的指令，然後重新啟動此應用程式。之後啟動會略過此步驟。`,
     installCommand: '安裝指令',
@@ -1527,8 +1556,8 @@ export const zhHant = defineLocale({
     settingUpTitle: '正在設定 ApexNodes',
     finishingTitle: '正在收尾',
     failedDesc:
-      '某個安裝步驟失敗。在 Windows 上，如果另一個 Hermes CLI 或桌面執行個體正在執行，可能會出現這種情況。請停止正在執行的 Hermes 執行個體後重試。可查看下方的詳細資訊或 desktop 記錄中的完整記錄。',
-    activeDesc: '這是一次性設定。Hermes 安裝程式正在下載相依套件並設定您的電腦。之後啟動會略過此步驟。',
+      '某個安裝步驟失敗。在 Windows 上，如果另一個 ApexNodes CLI 或桌面執行個體正在執行，可能會出現這種情況。請停止正在執行的 ApexNodes 執行個體後重試。可查看下方的詳細資訊或 desktop 記錄中的完整記錄。',
+    activeDesc: '這是一次性設定。安裝程式正在下載相依套件並設定您的電腦。之後啟動會略過此步驟。',
     progress: (completed, total) => `${completed}/${total} 個步驟已完成`,
     currentStage: stage => ` -- 目前：${stage}`,
     fetchingManifest: '正在取得安裝程式 manifest...',

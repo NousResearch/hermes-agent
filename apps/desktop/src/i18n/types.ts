@@ -96,6 +96,15 @@ export interface Translations {
       signInToRemoteGateway: string
       signInWithProvider: (provider: string) => string
       identityProvider: string
+      // Friendly, user-facing replacements for common raw bootstrap errors
+      // (the raw transcript stays available behind the "show recent logs"
+      // expander). `unknown` is the generic fallback when no pattern matches.
+      errorMap: {
+        cancelled: string
+        prerequisites: string
+        network: string
+        unknown: string
+      }
     }
   }
 
@@ -1073,6 +1082,10 @@ export interface Translations {
 
   install: {
     stageStates: Record<string, string>
+    // Localized labels for the installer's known stage ids (Prerequisites,
+    // Repository, Venv, …). Keyed by the raw stage name from the bootstrap
+    // protocol; unknown ids fall back to formatStageName() in the overlay.
+    stageLabels: Record<string, string>
     oneTimeTitle: string
     unsupportedDesc: (platform: string) => string
     installCommand: string

@@ -53,15 +53,15 @@ export const ja = defineLocale({
       startingHermesDesktop: 'ApexNodes Desktop を起動中…'
     },
     errors: {
-      backgroundExited: 'Hermes バックグラウンドプロセスが終了しました。',
-      backgroundExitedDuringStartup: '起動中に Hermes バックグラウンドプロセスが終了しました。',
+      backgroundExited: 'ApexNodes バックグラウンドプロセスが終了しました。',
+      backgroundExitedDuringStartup: '起動中に ApexNodes バックグラウンドプロセスが終了しました。',
       backendStopped: 'バックエンドが停止しました',
       desktopBootFailed: 'デスクトップの起動に失敗しました',
       gatewaySignInRequired: 'ゲートウェイへのサインインが必要です',
       ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。'
     },
     failure: {
-      title: 'Hermes を起動できませんでした',
+      title: 'ApexNodes を起動できませんでした',
       description:
         'バックグラウンドゲートウェイが起動しませんでした。以下の回復手順をお試しください。チャットや設定は削除されません。',
       remoteTitle: 'リモートゲートウェイへのサインインが必要です',
@@ -83,7 +83,13 @@ export const ja = defineLocale({
       signInFailed: 'サインインに失敗しました',
       signInToRemoteGateway: 'リモートゲートウェイにサインイン',
       signInWithProvider: provider => `${provider} でサインイン`,
-      identityProvider: 'ID プロバイダー'
+      identityProvider: 'ID プロバイダー',
+      errorMap: {
+        cancelled: 'インストールをキャンセルしました。',
+        prerequisites: '必要な環境を準備できませんでした。インストールを修復するか、下のログを確認してください。',
+        network: 'インストール中にネットワークの問題が発生しました。接続を確認してから再試行してください。',
+        unknown: 'ApexNodes の起動を完了できませんでした。以下の回復手順をお試しください。'
+      }
     }
   },
 
@@ -1564,7 +1570,30 @@ export const ja = defineLocale({
       skipped: 'スキップ',
       failed: '失敗'
     },
-    oneTimeTitle: 'Hermes には一度限りのインストールが必要です',
+    stageLabels: {
+      prerequisites: '前提環境',
+      uv: '前提環境',
+      python: '前提環境',
+      git: '前提環境',
+      node: '前提環境',
+      'system-packages': '前提環境',
+      repository: 'プログラム取得',
+      venv: 'Python 環境',
+      'python-deps': 'Python 依存関係',
+      dependencies: 'Python 依存関係',
+      'node-deps': 'Node 依存関係',
+      desktop: 'デスクトップアプリ',
+      path: 'パス設定',
+      config: '設定の書き込み',
+      'config-templates': '設定の書き込み',
+      'platform-sdks': '設定の書き込み',
+      setup: '初期化',
+      configure: '初期化',
+      gateway: 'ゲートウェイ起動',
+      complete: '完了',
+      'bootstrap-marker': '完了'
+    },
+    oneTimeTitle: 'ApexNodes には一度限りのインストールが必要です',
     unsupportedDesc: platform =>
       `${platform} では自動の初回インストールはまだ利用できません。ターミナルを開いて以下のコマンドを実行し、このアプリを再起動してください。以降の起動ではこの手順はスキップされます。`,
     installCommand: 'インストールコマンド',
@@ -1576,9 +1605,9 @@ export const ja = defineLocale({
     settingUpTitle: 'ApexNodes を設定中',
     finishingTitle: '仕上げ中',
     failedDesc:
-      'インストール手順のいずれかが失敗しました。Windows では、別の Hermes CLI またはデスクトップインスタンスが実行中の場合に発生することがあります。実行中の Hermes インスタンスをすべて停止してから再試行してください。詳細は以下またはデスクトップログで確認できます。',
+      'インストール手順のいずれかが失敗しました。Windows では、別の ApexNodes CLI またはデスクトップインスタンスが実行中の場合に発生することがあります。実行中の ApexNodes インスタンスをすべて停止してから再試行してください。詳細は以下またはデスクトップログで確認できます。',
     activeDesc:
-      'これは一回限りのセットアップです。Hermes インストーラーが依存関係をダウンロードしてマシンを設定しています。以降の起動ではこの手順はスキップされます。',
+      'これは一回限りのセットアップです。インストーラーが依存関係をダウンロードしてマシンを設定しています。以降の起動ではこの手順はスキップされます。',
     progress: (completed, total) => `${total} ステップ中 ${completed} 完了`,
     currentStage: stage => ` — 現在: ${stage}`,
     fetchingManifest: 'インストーラーマニフェストを取得中...',

@@ -53,15 +53,15 @@ export const en: Translations = {
       startingHermesDesktop: 'Starting ApexNodes Desktop…'
     },
     errors: {
-      backgroundExited: 'Hermes background process exited.',
-      backgroundExitedDuringStartup: 'Hermes background process exited during startup.',
+      backgroundExited: 'ApexNodes background process exited.',
+      backgroundExitedDuringStartup: 'ApexNodes background process exited during startup.',
       backendStopped: 'Backend stopped',
       desktopBootFailed: 'Desktop boot failed',
       gatewaySignInRequired: 'Gateway sign-in required',
       ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
     },
     failure: {
-      title: "Hermes couldn't start",
+      title: "ApexNodes couldn't start",
       description:
         "The background gateway didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.",
       remoteTitle: 'Remote gateway sign-in required',
@@ -82,7 +82,13 @@ export const en: Translations = {
       signInFailed: 'Sign-in failed',
       signInToRemoteGateway: 'Sign in to remote gateway',
       signInWithProvider: provider => `Sign in with ${provider}`,
-      identityProvider: 'your identity provider'
+      identityProvider: 'your identity provider',
+      errorMap: {
+        cancelled: 'Install cancelled.',
+        prerequisites: "Couldn't set up the required environment. Repair the install or check the logs below.",
+        network: 'Network issue during install. Check your connection, then retry.',
+        unknown: "ApexNodes couldn't finish starting. Try the recovery steps below."
+      }
     }
   },
 
@@ -1434,7 +1440,35 @@ export const en: Translations = {
       skipped: 'Skipped',
       failed: 'Failed'
     },
-    oneTimeTitle: 'Hermes needs a one-time install',
+    // Keyed by the raw bootstrap stage id (covers both the install.ps1 and
+    // install.sh naming schemes). Unknown ids fall back to formatStageName.
+    stageLabels: {
+      // prerequisites (posix single stage + windows sub-stages)
+      prerequisites: 'Prerequisites',
+      uv: 'Prerequisites',
+      python: 'Prerequisites',
+      git: 'Prerequisites',
+      node: 'Prerequisites',
+      'system-packages': 'Prerequisites',
+      // install
+      repository: 'Repository',
+      venv: 'Virtual env',
+      'python-deps': 'Python deps',
+      dependencies: 'Python deps',
+      'node-deps': 'Node deps',
+      desktop: 'Desktop app',
+      // finalize / config
+      path: 'Path',
+      config: 'Config',
+      'config-templates': 'Config',
+      'platform-sdks': 'Config',
+      setup: 'Setup',
+      configure: 'Setup',
+      gateway: 'Gateway',
+      complete: 'Complete',
+      'bootstrap-marker': 'Complete'
+    },
+    oneTimeTitle: 'ApexNodes needs a one-time install',
     unsupportedDesc: platform =>
       `Automated first-launch install isn’t available on ${platform} yet. Open Terminal and run the command below, then relaunch this app. Subsequent launches will skip this step.`,
     installCommand: 'Install command',
@@ -1446,9 +1480,9 @@ export const en: Translations = {
     settingUpTitle: 'Setting up ApexNodes',
     finishingTitle: 'Finishing up',
     failedDesc:
-      'One of the install steps failed. On Windows, this can happen if another Hermes CLI or desktop instance is running. Stop any running Hermes instances, then retry. Check the details below or the desktop log for the full transcript.',
+      'One of the install steps failed. On Windows, this can happen if another ApexNodes CLI or desktop instance is running. Stop any running ApexNodes instances, then retry. Check the details below or the desktop log for the full transcript.',
     activeDesc:
-      'This is a one-time setup. The Hermes installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.',
+      'This is a one-time setup. The installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.',
     progress: (completed, total) => `${completed} of ${total} steps complete`,
     currentStage: stage => ` -- now: ${stage}`,
     fetchingManifest: 'Fetching installer manifest...',

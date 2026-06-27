@@ -98,7 +98,11 @@ describe('I18nProvider', () => {
     expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
-  it('keeps English usable when config loading fails', async () => {
+  it('keeps the shell default (zh) when config loading fails', async () => {
+    // The boot-failure path: the backend HTTP API is down, so getConfig()
+    // rejects. The shell is Chinese-first (initialLocale="zh"), so the overlay
+    // must stay Chinese rather than downgrading to the universal en fallback —
+    // this is the boot-failure-renders-in-English bug.
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockRejectedValue(new Error('config unavailable')),
       saveConfig: vi.fn()
@@ -106,6 +110,27 @@ describe('I18nProvider', () => {
 
     render(
       <I18nProvider configClient={configClient} initialLocale="zh">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(screen.getByTestId('label').textContent).toBe('语言')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('falls back to en when config loading fails with no shell preference', async () => {
+    // Without an explicit initialLocale the shell has no preference, so a failed
+    // config load still resolves to the universal en baseline.
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockRejectedValue(new Error('config unavailable')),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
         <LanguageProbe />
       </I18nProvider>
     )

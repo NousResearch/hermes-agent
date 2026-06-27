@@ -32,7 +32,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, ANY
 
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig, ensure_closed_code_fences
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -340,37 +340,92 @@ class TestStreamConsumerFinalSendGap:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  I. What the fix should do
+#  I. ensure_closed_code_fences — triple-backtick fence balancing
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestFixStub:
-    """If a _ensure_closed_code_fences() helper were added, these tests
-    should pass."""
+class TestEnsureClosedCodeFences:
+    """Unit tests for the standalone ensure_closed_code_fences helper."""
 
-    @staticmethod
-    def _ensure_closed_fences(text: str) -> str:
-        """Stub: append closing ``` if odd count and text doesn't already
-        end with a closing fence on its own line."""
-        if _odd_fences(text):
-            return text.rstrip() + "\n```"
-        return text
+    # ── triple backtick ──────────────────────────────────────────────
 
-    def test_closes_unclosed(self):
-        assert not _odd_fences(self._ensure_closed_fences(
+    def test_closes_unclosed_triple(self):
+        """Unclosed ``` gets a closing fence appended."""
+        assert not _odd_fences(ensure_closed_code_fences(
             "💭 **Reasoning:**\n```\ncut off"
         ))
 
-    def test_noop_balanced(self):
+    def test_noop_balanced_triple(self):
+        """Already-balanced ``` blocks are unchanged."""
         t = "```\nblock\n```\ncontent"
-        assert self._ensure_closed_fences(t) == t
+        assert ensure_closed_code_fences(t) == t
 
     def test_noop_no_fence(self):
+        """Plain text without fences passes through."""
         t = "plain text"
-        assert self._ensure_closed_fences(t) == t
+        assert ensure_closed_code_fences(t) == t
 
     def test_noop_already_ends_with_close(self):
+        """Text ending with a balanced ``` is unchanged."""
         t = "```\nblock\n```"
-        assert self._ensure_closed_fences(t) == t
+        assert ensure_closed_code_fences(t) == t
+
+    def test_closes_unclosed_mid_message(self):
+        """``` in the middle (not at end) still gets closed when odd."""
+        t = "before\n```\nunclosed block\nmore text here"
+        result = ensure_closed_code_fences(t)
+        assert not _odd_fences(result)
+        assert result.endswith("\n```")
+
+    # ── single backtick ──────────────────────────────────────────────
+
+    def test_closes_unclosed_single(self):
+        """Orphaned single backtick gets a closing backtick appended."""
+        result = ensure_closed_code_fences("Here is `inline code")
+        assert result == "Here is `inline code`"
+
+    def test_noop_balanced_single(self):
+        """Paired single backticks are unchanged."""
+        t = "Here is `inline code` and more text."
+        assert ensure_closed_code_fences(t) == t
+
+    def test_single_inside_triple_ignored(self):
+        """Backticks inside ``` regions are NOT counted for single-bt parity."""
+        t = "```\n`code` inside\n```\noutside `text`"
+        # outside has paired `text` → balanced, triple-blocks are balanced → no change
+        assert ensure_closed_code_fences(t) == t
+
+    def test_single_outside_unclosed_after_triple(self):
+        """Unclosed single backtick outside ``` blocks gets fixed."""
+        t = "```\nblock\n```\noutside `text"
+        result = ensure_closed_code_fences(t)
+        assert result == "outside `text`" or result.endswith("`")
+
+    def test_both_triple_and_single_unclosed(self):
+        """Both ``` and ` unclosed → both get closed."""
+        result = ensure_closed_code_fences("```\ncode\nstill open `inline")
+        assert result.endswith("`")
+        assert "```\ncode\nstill open `inline`\n```" in result or result.count("```") % 2 == 0
+
+    def test_noop_empty_or_none(self):
+        """Empty/None returns unchanged."""
+        assert ensure_closed_code_fences("") == ""
+        assert ensure_closed_code_fences(None) is None
+
+    def test_single_inline_code_in_prose(self):
+        """Realistic prose with `handle: \"...\"` inline code."""
+        # `handle: "abc"` is open – unbalanced single backtick
+        t = (
+            'LLM 看到 `_headroom.retrieval.handle` 的值，就是它要傳給'
+            ' `headroom_retrieve(hash="125f4ae286e24ad8c0816907"` 的那個字串。'
+        )
+        result = ensure_closed_code_fences(t)
+        # After fix: the last unclosed ` gets closed at the end
+        assert result.count("`") % 2 == 0
+
+    def test_multiple_single_backtick_pairs(self):
+        """Multiple correctly-paired single backtick spans are unchanged."""
+        t = "Use `cmd1` for X and `cmd2` for Y."
+        assert ensure_closed_code_fences(t) == t
 
 
 # ═══════════════════════════════════════════════════════════════════════════

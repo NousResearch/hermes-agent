@@ -42,15 +42,18 @@ _COMMENTARY = object()
 
 
 def ensure_closed_code_fences(text: str) -> str:
-    """Append a closing `` ``` `` fence if the text has an odd number of
-    triple-backtick markers.
+    """Append a closing `` ``` `` fence and/or `` ` `` if the text has
+    orphaned code-block or inline-code markers.
 
     When model output is truncated mid-code-block (e.g. by token limits
     or a finish_reason="length"), the resulting message has an unclosed
     code fence.  On Discord, Slack, and other platforms this causes
     everything after the orphaned fence to render as a single code block.
+    The same problem applies to inline-code spans closed by a single
+    backtick: an orphaned `` ` `` makes the remainder of the message
+    render as inline code.
 
-    The fix is trivial: count `` ``` `` occurrences.  If odd, append a
+    Triple-backtick: count `` ``` `` occurrences.  If odd, append a
     closing fence on its own line.  This is safe because nested
     triple-backtick fences (e.g. a literal `` ``` `` inside a code block)
     are exceedingly rare in model output and, when they do appear, the
@@ -58,14 +61,35 @@ def ensure_closed_code_fences(text: str) -> str:
     of the message — far less harmful than the entire message being one
     giant code block.
 
+    Single backtick: after balancing triple-backtick fences, strip all
+    complete `` ```…``` `` regions and count remaining standalone `` ` ``.
+    If odd, append a closing inline-code backtick.  Same trade-off: a
+    stray closing backtick may produce a brief empty inline-code span,
+    which is far less harmful than the rest of the message being rendered
+    as inline code.
+
     Returns:
-        The input text with a closing fence appended if needed, or the
+        The input text with closing markers appended if needed, or the
         input text unchanged.
     """
     if not isinstance(text, str) or not text:
         return text
+
+    # Step 1: fix triple-backtick code-block fences (existing logic)
     if text.count("```") % 2 == 1:
-        return text.rstrip("\n") + "\n```"
+        text = text.rstrip("\n") + "\n```"
+
+    # Step 2: fix single-backtick inline-code spans
+    # Remove complete ```…``` regions so their internal backticks don't
+    # pollute the standalone count.  Also remove any trailing unclosed
+    # ``` that leaks through (defence in depth).
+    import re
+    without_fences = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    without_fences = re.sub(r"```[^`]*$", "", without_fences)
+
+    if without_fences.count("`") % 2 == 1:
+        text = text + "`"
+
     return text
 
 

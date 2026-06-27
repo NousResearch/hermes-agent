@@ -220,8 +220,24 @@ class TestDraftFallbackOnFailure:
         assert consumer._use_draft_streaming is True
 
     @pytest.mark.asyncio
+    async def test_two_consecutive_failures_do_not_disable_drafts(self):
+        """Two consecutive failures must NOT reach the threshold (which is 3)."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=False, error="hard_error")
+        )
+
+        await consumer._send_draft_frame("frame0")
+        await consumer._send_draft_frame("frame1")
+
+        assert consumer._draft_failures == 2
+        assert consumer._use_draft_streaming is True
+
+    @pytest.mark.asyncio
     async def test_three_consecutive_failures_disable_drafts(self):
-        """Three consecutive failures must disable draft streaming."""
+        """Exactly three consecutive failures must disable draft streaming."""
         from gateway.platforms.base import SendResult
 
         consumer, adapter = self._make_consumer_for_direct_call()
@@ -232,7 +248,7 @@ class TestDraftFallbackOnFailure:
         for i in range(3):
             await consumer._send_draft_frame(f"frame{i}")
 
-        assert consumer._draft_failures >= consumer._MAX_DRAFT_FAILURES
+        assert consumer._draft_failures == consumer._MAX_DRAFT_FAILURES
         assert consumer._use_draft_streaming is False
 
     @pytest.mark.asyncio
@@ -272,6 +288,40 @@ class TestDraftFallbackOnFailure:
 
         assert consumer._draft_failures == 0
         assert consumer._use_draft_streaming is True
+
+    @pytest.mark.asyncio
+    async def test_draft_failure_falls_back_and_delivers_final_via_send(self):
+        """When draft frames fail, the consumer must NOT drop the message — it
+        must fall back to the edit/send path and deliver the final answer via
+        adapter.send.  This is the integration companion to the unit tests
+        above: it verifies that the fallback path actually completes, not just
+        that internal state variables are set correctly.
+
+        Note: in the run loop, a single draft failure causes the first frame to
+        fall through to adapter.send(), which sets _message_id.  Subsequent
+        frames skip the draft check because _message_id is already set.  So
+        _use_draft_streaming stays True (only 1 failure, below the 3-failure
+        threshold), but the end-to-end behavior is correct: draft was attempted,
+        failed, and the final message was delivered via the regular path.
+        """
+        adapter = _make_draft_capable_adapter(draft_succeeds=False)
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Hello world")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # Draft was attempted at least once (the flag was True and text was queued).
+        assert len(adapter.draft_calls) >= 1
+        # Final message was delivered — no silent drop.
+        adapter.send.assert_awaited()
+        assert consumer.final_response_sent is True
 
 
 class TestDraftIdLifecycle:
@@ -661,3 +711,45 @@ class TestTryStripCursor:
         await consumer._try_strip_cursor()
 
         adapter.delete_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_edit_sentinel_is_a_noop(self):
+        """The '__no_edit__' sentinel signals the message must not be edited;
+        _try_strip_cursor must return without touching delete_message."""
+        consumer, adapter = self._make_consumer(message_id="__no_edit__")
+
+        await consumer._try_strip_cursor()
+
+        adapter.delete_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_flood_edit_failure_skips_delete(self):
+        """A non-flood edit failure (e.g. 'message not found') must NOT
+        trigger delete_message — _is_flood_error must reject it."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(
+            return_value=SendResult(success=False, error="message_not_found")
+        )
+
+        await consumer._try_strip_cursor()
+
+        # 'message_not_found' contains neither 'flood', 'rate', nor 'retry after',
+        # so _is_flood_error must return False and delete must not be called.
+        adapter.delete_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_message_raises_is_swallowed(self):
+        """If delete_message itself raises (network error, permissions), the
+        exception must be silently swallowed — _try_strip_cursor is best-effort."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(
+            return_value=SendResult(success=False, error="flood_control:260")
+        )
+        adapter.delete_message = AsyncMock(side_effect=RuntimeError("network error"))
+
+        # Must not raise even though delete_message throws.
+        await consumer._try_strip_cursor()

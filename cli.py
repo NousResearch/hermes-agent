@@ -3636,6 +3636,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # rebuild the agent when provider / model / base_url changes across
         # turns (e.g. after /model or credential rotation).
         self._active_agent_route_signature = None
+        self._worktree_info: Optional[Dict[str, str]] = None
 
         # Agent will be initialized on first use
         self.agent: Optional[Any] = None
@@ -4150,6 +4151,122 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
+    def _format_worktree_status_label(info: Optional[Dict[str, str]]) -> str:
+        """Return a compact label for the active CLI worktree, if any."""
+        if not info:
+            return ""
+        try:
+            path = str(info.get("path") or "").strip()
+            branch = str(info.get("branch") or "").strip()
+            path_name = Path(path).name if path else ""
+            branch_name = branch.split("/", 1)[1] if branch.startswith("hermes/") else branch
+            label = path_name or branch_name
+            if branch_name and path_name and branch_name != path_name:
+                label = f"{branch_name}@{path_name}"
+            return f"🌿 {label}" if label else ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _path_is_relative_to(path: str, root: str) -> bool:
+        try:
+            Path(path).resolve(strict=False).relative_to(Path(root).resolve(strict=False))
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _detect_git_worktree_info(cwd: str) -> Optional[Dict[str, str]]:
+        """Return metadata when *cwd* is inside a linked git worktree.
+
+        This detects worktrees that predate the Hermes session (or become the
+        terminal cwd later) by comparing the checkout's toplevel with git's
+        common repo dir. In a normal checkout both point at the same repo root;
+        in a linked worktree the toplevel is the worktree path and the common
+        git dir belongs to the main repository.
+        """
+        if not cwd:
+            return None
+        try:
+            import subprocess
+
+            cwd_path = Path(cwd).expanduser()
+            if not cwd_path.exists():
+                return None
+
+            def _git(*args: str) -> str:
+                result = subprocess.run(
+                    ["git", "-C", str(cwd_path), *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                return result.stdout.strip() if result.returncode == 0 else ""
+
+            worktree_root = _normalize_git_bash_path(_git("rev-parse", "--show-toplevel"))
+            common_git_dir = _normalize_git_bash_path(
+                _git("rev-parse", "--path-format=absolute", "--git-common-dir")
+            )
+            if not worktree_root or not common_git_dir:
+                return None
+
+            common_git_path = Path(common_git_dir).resolve(strict=False)
+            common_root = common_git_path.parent if common_git_path.name == ".git" else common_git_path
+            worktree_path = Path(worktree_root).resolve(strict=False)
+            if worktree_path == common_root.resolve(strict=False):
+                return None
+
+            branch = _git("branch", "--show-current") or _git("rev-parse", "--short", "HEAD")
+            return {
+                "path": str(worktree_path),
+                "branch": branch,
+                "repo_root": str(common_root),
+            }
+        except Exception:
+            return None
+
+    def _get_status_bar_worktree_info(self) -> Optional[Dict[str, str]]:
+        """Return the active worktree for the CLI status bar.
+
+        Prefer the live terminal environment cwd because shell ``cd`` commands
+        update that object without mutating process-global ``TERMINAL_CWD``.
+        Fall back to ``TERMINAL_CWD`` / ``os.getcwd()`` for fresh sessions and
+        surfaces that have not created a terminal environment yet.
+        """
+        try:
+            cwd = ""
+            try:
+                from tools.terminal_tool import get_active_env
+
+                active_env = get_active_env(getattr(getattr(self, "agent", None), "_current_task_id", "") or "default")
+                live_cwd = getattr(active_env, "cwd", "") if active_env is not None else ""
+                if isinstance(live_cwd, str) and live_cwd.strip():
+                    cwd = live_cwd.strip()
+            except Exception:
+                cwd = ""
+            if not cwd:
+                cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+        except Exception:
+            cwd = ""
+
+        known = getattr(self, "_worktree_info", None) or _active_worktree
+        known_path = (known or {}).get("path") if known else ""
+        if cwd and known_path and self._path_is_relative_to(cwd, known_path):
+            return known
+
+        now = time.time()
+        cache_cwd = getattr(self, "_worktree_status_cache_cwd", None)
+        cache_at = getattr(self, "_worktree_status_cache_at", 0.0)
+        if cwd == cache_cwd and now - cache_at < 5.0:
+            return getattr(self, "_worktree_status_cache_info", None)
+
+        detected = self._detect_git_worktree_info(cwd)
+        self._worktree_status_cache_cwd = cwd
+        self._worktree_status_cache_at = now
+        self._worktree_status_cache_info = detected
+        return detected
+
+    @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
         """Format per-prompt elapsed time for the status bar.
 
@@ -4242,6 +4359,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
+            "worktree_label": self._format_worktree_status_label(self._get_status_bar_worktree_info()),
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -4726,6 +4844,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                if snapshot.get("worktree_label"):
+                    parts.append(snapshot["worktree_label"])
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -4752,6 +4872,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            if snapshot.get("worktree_label"):
+                parts.append(snapshot["worktree_label"])
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -4815,6 +4937,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    if snapshot.get("worktree_label"):
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-strong", snapshot["worktree_label"]))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -4858,6 +4983,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    if snapshot.get("worktree_label"):
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", snapshot["worktree_label"]))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -15186,6 +15314,7 @@ def main(
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
     )
+    cli._worktree_info = wt_info
 
     if parsed_skills:
         skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(

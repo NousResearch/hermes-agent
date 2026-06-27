@@ -1,3 +1,4 @@
+import subprocess
 import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -81,6 +82,132 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_active_worktree_shown_in_status_bar_text(self, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._worktree_info = {
+            "path": "/repo/.worktrees/hermes-1234abcd",
+            "branch": "hermes/hermes-1234abcd",
+            "repo_root": "/repo",
+        }
+        monkeypatch.setenv("TERMINAL_CWD", "/repo/.worktrees/hermes-1234abcd")
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "🌿 hermes-1234abcd" in text
+
+    def test_active_worktree_shown_in_status_bar_fragments(self, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+        cli_obj._worktree_info = {
+            "path": "/repo/.worktrees/hermes-1234abcd",
+            "branch": "hermes/hermes-1234abcd",
+            "repo_root": "/repo",
+        }
+        monkeypatch.setenv("TERMINAL_CWD", "/repo/.worktrees/hermes-1234abcd")
+        with patch.object(cli_obj, "_get_tui_terminal_width", return_value=120):
+            frags = cli_obj._get_status_bar_fragments()
+
+        assert ("class:status-bar-strong", "🌿 hermes-1234abcd") in frags
+
+    def test_existing_linked_worktree_from_terminal_cwd_shown_in_status_bar(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        def git(*args, cwd=repo):
+            return subprocess.run(
+                ["git", *args],
+                cwd=cwd,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        git("init")
+        git("config", "user.email", "test@example.com")
+        git("config", "user.name", "Test User")
+        (repo / "README.md").write_text("hello\n")
+        git("add", "README.md")
+        git("commit", "-m", "init")
+        worktree = repo / ".worktrees" / "existing-feature"
+        git("worktree", "add", "-b", "feature/existing", str(worktree))
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        monkeypatch.setenv("TERMINAL_CWD", str(worktree))
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "🌿 feature/existing@existing-feature" in text
+
+    def test_status_bar_uses_live_terminal_env_cwd_after_cd_to_another_worktree(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        def git(*args, cwd=repo):
+            return subprocess.run(
+                ["git", *args],
+                cwd=cwd,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        git("init")
+        git("config", "user.email", "test@example.com")
+        git("config", "user.name", "Test User")
+        (repo / "README.md").write_text("hello\n")
+        git("add", "README.md")
+        git("commit", "-m", "init")
+        original = repo / ".worktrees" / "request-handling"
+        switched = repo / ".worktrees" / "ticket-workflow"
+        git("worktree", "add", "-b", "worktree-request-handling", str(original))
+        git("worktree", "add", "-b", "worktree-ticket-workflow", str(switched))
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._worktree_info = {
+            "path": str(original),
+            "branch": "worktree-request-handling",
+            "repo_root": str(repo),
+        }
+        monkeypatch.setenv("TERMINAL_CWD", str(original))
+        monkeypatch.setattr("tools.terminal_tool.get_active_env", lambda _task_id: SimpleNamespace(cwd=str(switched)))
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "🌿 worktree-ticket-workflow@ticket-workflow" in text
+        assert "request-handling" not in text
 
     def test_post_compression_sentinel_does_not_render_negative(self):
         """Right after a compression, last_prompt_tokens is parked at the -1

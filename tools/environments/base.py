@@ -306,7 +306,7 @@ class BaseEnvironment(ABC):
         LocalEnvironment overrides this on platforms like Termux where ``/tmp``
         may be missing and ``TMPDIR`` is the portable writable location.
         """
-        return os.environ.get("TMPDIR", "/tmp")
+        return "/tmp"
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd

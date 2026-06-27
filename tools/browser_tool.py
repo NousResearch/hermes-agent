@@ -1158,7 +1158,7 @@ def _socket_safe_tmpdir() -> str:
     (symlink to ``/private/tmp``, sticky-bit protected, always available).
     """
     if sys.platform == "darwin":
-        return os.environ.get("TMPDIR", "/tmp")
+        return "/tmp"
     return tempfile.gettempdir()
 
 

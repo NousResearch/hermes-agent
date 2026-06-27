@@ -674,59 +674,65 @@ def _partition_pre_by_comp_kept(
     return kept_pre, folded
 
 
-def _read_engine_b_partition(engine, messages, *, generation=None):
-    """Option B: read the engine's AUTHORITATIVE kept-tail partition record.
+_PROVENANCE_KEY = "_src_idx"
 
-    The LCM engine records, at the single-pass kept-tail slice site, the indices
-    into the ORIGINAL ``messages`` that became the kept tail (pre-side, before the
-    in-context sanitize) — see ``LCMEngine`` ``_last_compaction_kept_pre_indices``.
-    The transform from ``messages`` to the engine's ``working_messages`` is
-    position-preserving 1:1 (``quarantine_suspicious_assistant_messages`` is a 1:1
-    list comprehension) AND the record is written ONLY on a single-pass compaction
-    (``leaf_passes == 1``), so the recorded indices map back to ``messages`` exactly.
 
-    Returns ``kept_pre_indices`` (a list[int]) when the record is present, fresh
-    (generation matches) and consistent (``pre_len == len(messages)``); else
-    ``None`` → caller falls to the A-floor. This is ground truth, not inference —
-    no replay, no alignment guessing.
+def harvest_provenance_partition(messages, kept_rows):
+    """Option B: read the EXACT pre-side kept partition off provenance-stamped rows.
+
+    The LCM engine stamps ``_src_idx`` (index into the original ``messages``) onto
+    each tail row it hands to ``_assemble_context`` on a **single-pass** compaction.
+    The pipeline's shallow-copies (``dict(msg)`` / ``msg.copy()``) carry the key
+    through every drop / strip / content-rewrite stage by construction; synthetic
+    tool stubs are freshly built and therefore lack it. So the kept region of the
+    returned ``compressed`` splits cleanly into:
+
+      * ``kept_pre_indices``  — origins of the surviving real kept rows (the EXACT
+        pre-side kept set; no inference, no replay).
+      * ``stub_count``        — kept rows WITHOUT ``_src_idx`` (engine-synthesized
+        placeholders; sourced independently from the rows themselves, NOT derived
+        as ``comp_count − kept_pre`` — a genuine independent count).
+
+    Returns ``(kept_pre_indices, stub_count)`` when provenance is present + valid
+    (every index in range, no duplicates), else ``None`` → caller falls to the
+    A-floor. Validity is checked here so a malformed stamp can never produce a
+    confidently-wrong split. Caller MUST strip ``_src_idx`` from ``compressed``
+    after harvest (it must not reach the wire/cache).
     """
-    if engine is None:
-        return None
-    idx = getattr(engine, "_last_compaction_kept_pre_indices", None)
-    if idx is None:
-        return None
-    rec_gen = getattr(engine, "_last_compaction_generation", None)
-    rec_pre_len = getattr(engine, "_last_compaction_pre_len", None)
-    if generation is not None and rec_gen != generation:
-        return None  # stale record from an earlier compaction generation
-    if rec_pre_len is not None and rec_pre_len != len(messages):
-        return None  # messages re-listed/shifted since compaction → unsafe
     n = len(messages)
-    if not all(isinstance(i, int) and 0 <= i < n for i in idx):
-        return None
-    return list(idx)
+    kept_pre_indices = []
+    stub_count = 0
+    seen = set()
+    any_stamped = False
+    for m in kept_rows:
+        if not isinstance(m, dict) or _PROVENANCE_KEY not in m:
+            stub_count += 1
+            continue
+        any_stamped = True
+        idx = m.get(_PROVENANCE_KEY)
+        if not isinstance(idx, int) or idx < 0 or idx >= n or idx in seen:
+            return None  # malformed/duplicate provenance → unsafe, fall to A-floor
+        seen.add(idx)
+        kept_pre_indices.append(idx)
+    if not any_stamped:
+        return None  # no provenance present at all (not a stamped single-pass LCM
+        #              compaction, or a non-B caller) → fall to replay / A-floor
+    return kept_pre_indices, stub_count
 
 
-def _engine_in_context_sanitize(engine, anchor_rows, summary_rows, kept_pre_rows):
-    """Re-run the engine's IN-CONTEXT sanitize over the assembled context.
+def strip_provenance(messages) -> int:
+    """Remove ``_src_idx`` from every row in-place; return how many were stripped.
 
-    The ground-truth gate (below) must reproduce the engine's kept tail the SAME
-    way the engine produced it: by sanitizing the *assembled* context
-    ``[anchor] + [summaries] + kept_pre_rows`` (the adjacency the engine used),
-    then taking the kept region of the result — NOT a standalone
-    ``sanitize(kept_pre_rows)``, which would reintroduce the exact
-    in-context-vs-standalone divergence that broke whole-tail replay and would make
-    the gate false-reject on every real heavy shape. Returns the sanitized kept
-    region (rows that are neither the leading anchor system row nor summary rows),
-    or ``None`` if the engine lacks the sanitizer.
+    Load-bearing (the only thing keeping the internal provenance key off the
+    wire/cache). Idempotent. Callers run this on ``compressed`` immediately after
+    harvest, before the list flows onward.
     """
-    san = getattr(engine, "_sanitize_active_context_messages", None)
-    if san is None:
-        return None
-    assembled = list(anchor_rows) + list(summary_rows) + list(kept_pre_rows)
-    out = san(assembled)
-    n_head = len(anchor_rows) + len(summary_rows)
-    return out[n_head:]
+    stripped = 0
+    for m in messages:
+        if isinstance(m, dict) and _PROVENANCE_KEY in m:
+            del m[_PROVENANCE_KEY]
+            stripped += 1
+    return stripped
 
 
 def _is_tool_message(m) -> bool:
@@ -931,40 +937,59 @@ def build_inturn_stats(
     post_messages = len(comp)               # MEASURED, not derived (no tautology)
 
     # ── Pre-side partition: folded | kept_pre (the PRE identity) ──
-    # Prefer whole-tail replay alignment when the real sanitizer + fresh_tail are
-    # available (handles strip/drop/stub correctly). Fall back to the comp-kept
-    # complement otherwise. ``kept_pre_*`` stay None on the fallback path (legacy /
-    # non-sanitizing) so the _kept_pre_* property defaults to comp-side.
+    # Precedence: (B) provenance harvest off _src_idx-stamped kept rows — EXACT,
+    # the engine told us the origins; → (replay) whole-tail alignment — exact when
+    # it aligns; → (A-floor) exhaustive single-walk partition — reconciles-always,
+    # signature-approximate. ``kept_pre_*`` stay None only on legacy/non-sanitizing
+    # paths where the _kept_pre_* property defaults to comp-side.
     kept_pre_messages = None
     kept_pre_tokens = None
     approx_attribution = False
     raw_tail_tokens = None
+    b_engaged = False
     cut = None
-    if sanitize is not None and fresh_tail_count:
-        cut = find_inturn_kept_cut(pre_msgs, kept_rows, sanitize, fresh_tail_count)
-    if cut is not None:
-        kept_pre_rows = pre_msgs[cut:]
-        fold_rows = pre_msgs[:cut]
+
+    # (B) Option B — provenance partition (exact, no inference). The kept rows carry
+    # ``_src_idx`` (origin index into ``pre_msgs``) when the engine stamped a
+    # single-pass compaction; synthetic stubs lack it. kept_pre = the stamped
+    # origins; fold = pre rows whose index is NOT a kept origin. Exact attribution.
+    _b = harvest_provenance_partition(pre_msgs, kept_rows)
+    if _b is not None:
+        _kept_idx, _stub_count = _b
+        _kept_idx_set = set(_kept_idx)
+        kept_pre_rows = [pre_msgs[i] for i in _kept_idx]
+        fold_rows = [m for i, m in enumerate(pre_msgs) if i not in _kept_idx_set]
         kept_pre_messages = len(kept_pre_rows)
         kept_pre_tokens = int(estimator(kept_pre_rows)) if kept_pre_rows else 0
         folded_count = len(fold_rows)
-    else:
-        # A-floor: exhaustive single-walk pre-side partition. When whole-tail
-        # alignment can't reproduce the in-context-sanitized comp tail (the real
-        # heavy-session failure mode), partition ``pre`` ONCE into (kept_pre, folded)
-        # against the comp-kept multiset. Both buckets are measured pre-side over a
-        # disjoint exhaustive partition, so ``folded_tokens + kept_pre_tokens ==
-        # pre_tokens`` BY CONSTRUCTION (within estimator rounding) — validate()
-        # reconciles instead of re-exhibiting the old mixed pre/comp-side gap. The
-        # kept/folded *attribution* is signature-approximate (bounded by the kept-tail
-        # fraction, which is a small contiguous suffix — the folded bulk is a prefix
-        # and always classifies correctly), so totals are exact and only the split is
-        # approximate. ``approx_attribution`` flags the caller to label + watch it.
-        kept_pre_rows, fold_rows = _partition_pre_by_comp_kept(pre_msgs, kept_rows)
-        kept_pre_messages = len(kept_pre_rows)
-        kept_pre_tokens = int(estimator(kept_pre_rows)) if kept_pre_rows else 0
-        folded_count = len(fold_rows)
-        approx_attribution = True
+        b_engaged = True
+
+    if not b_engaged:
+        if sanitize is not None and fresh_tail_count:
+            cut = find_inturn_kept_cut(pre_msgs, kept_rows, sanitize, fresh_tail_count)
+        if cut is not None:
+            kept_pre_rows = pre_msgs[cut:]
+            fold_rows = pre_msgs[:cut]
+            kept_pre_messages = len(kept_pre_rows)
+            kept_pre_tokens = int(estimator(kept_pre_rows)) if kept_pre_rows else 0
+            folded_count = len(fold_rows)
+        else:
+            # A-floor: exhaustive single-walk pre-side partition. When whole-tail
+            # alignment can't reproduce the in-context-sanitized comp tail (the real
+            # heavy-session failure mode), partition ``pre`` ONCE into (kept_pre, folded)
+            # against the comp-kept multiset. Both buckets are measured pre-side over a
+            # disjoint exhaustive partition, so ``folded_tokens + kept_pre_tokens ==
+            # pre_tokens`` BY CONSTRUCTION (within estimator rounding) — validate()
+            # reconciles instead of re-exhibiting the old mixed pre/comp-side gap. The
+            # kept/folded *attribution* is signature-approximate (bounded by the kept-tail
+            # fraction, which is a small contiguous suffix — the folded bulk is a prefix
+            # and always classifies correctly), so totals are exact and only the split is
+            # approximate. ``approx_attribution`` flags the caller to label + watch it.
+            kept_pre_rows, fold_rows = _partition_pre_by_comp_kept(pre_msgs, kept_rows)
+            kept_pre_messages = len(kept_pre_rows)
+            kept_pre_tokens = int(estimator(kept_pre_rows)) if kept_pre_rows else 0
+            folded_count = len(fold_rows)
+            approx_attribution = True
         # RAW kept-tail upper bound for the caller's gross-error guard: the raw
         # (pre-sanitize) size of the tail region the engine keeps. Match- AND
         # sanitize-independent (computed from the raw suffix), so a heavily-stripped

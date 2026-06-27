@@ -1162,10 +1162,50 @@ class LCMEngine(ContextEngine):
         leading_anchor_count = self._leading_anchor_count(working_messages)
         anchor_leading_count = self._leading_anchor_count(anchor_source_messages)
         self._pending_context_anchor_messages = anchor_source_messages[anchor_leading_count:]
+        # ── Option B provenance stamp (single-pass only) ──────────────────────────
+        # Stamp each fresh-tail row handed to _assemble_context with `_src_idx` = its
+        # index into the ORIGINAL `messages`, so the in-turn compaction-stats consumer
+        # can read the EXACT pre-side kept partition off the returned `compressed` (the
+        # rows' shallow-copies carry the key through every sanitize/trim/rewrite stage
+        # by construction; synthetic stubs lack it). The fresh tail is a SUFFIX of the
+        # original `messages` — single-pass leaf-fold only removes a chunk from the
+        # FRONT (between anchor and tail), never the trailing rows — so a tail row at
+        # offset `off` maps to `messages[len(messages) - (len(tail) - off)]` regardless
+        # of how much the front shrank (this is why we index from the END, not by the
+        # working_messages position, which Greptile #110 correctly flagged would never
+        # engage post-fold). Guarded to single-pass + a per-row identity check so a
+        # mis-mapped index is never stamped. The consumer harvests then STRIPS
+        # `_src_idx` before `compressed` flows onward; `_`-prefixed = transport-stripped
+        # as a backstop.
+        tail_rows = working_messages[leading_anchor_count:]
+        if leaf_passes == 1 and tail_rows and len(tail_rows) <= len(messages):
+            n_msgs = len(messages)
+            n_tail = len(tail_rows)
+            stamped_tail = []
+            for off, row in enumerate(tail_rows):
+                src_idx = n_msgs - (n_tail - off)
+                # The fresh tail is a suffix of `messages` (1:1 order-preserving
+                # ingest + front-only fold), so the suffix index is structurally
+                # correct. ingest SHALLOW-COPIES rows, so an `is` identity check would
+                # never match (Greptile #110): guard instead on a cheap role match
+                # (content may be quarantine-rewritten). The consumer is the real
+                # gate — harvest validates indices in-range + the reconcile check
+                # falls to the A-floor if anything is off, so a wrong stamp can never
+                # ship a confidently-wrong split.
+                if (
+                    isinstance(row, dict)
+                    and 0 <= src_idx < n_msgs
+                    and isinstance(messages[src_idx], dict)
+                    and messages[src_idx].get("role") == row.get("role")
+                ):
+                    row = dict(row)
+                    row["_src_idx"] = src_idx
+                stamped_tail.append(row)
+            tail_rows = stamped_tail
         try:
             compressed = self._assemble_context(
                 working_messages[0] if leading_anchor_count else None,
-                working_messages[leading_anchor_count:],
+                tail_rows,
                 assembly_cap_override=recovery_assembly_cap,
             )
         finally:

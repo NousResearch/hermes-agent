@@ -1292,6 +1292,22 @@ def compress_context(
     except Exception:
         logger.debug("compaction announce skipped (non-fatal)", exc_info=True)
 
+    # ── Option B provenance strip (load-bearing, MUST NOT be skipped) ──────────
+    # The engine stamps ``_src_idx`` on kept rows so build_inturn_stats (above) can
+    # read the EXACT pre-side partition. It MUST NOT reach the wire / prompt cache /
+    # transcript (``compressed`` becomes the new session transcript), so strip it
+    # here — the single point on the only path where ``compressed`` carries it (the
+    # early abort/noop returns return the original ``messages``, never stamped).
+    # Done inline (no import that could fail and silently leave the key — Greptile
+    # #110); idempotent; the transport sanitizer also drops ``_``-prefixed keys as a
+    # defense-in-depth backstop.
+    for _m in compressed:
+        if isinstance(_m, dict) and "_src_idx" in _m:
+            try:
+                del _m["_src_idx"]
+            except Exception:
+                _m.pop("_src_idx", None)
+
     # Release the lock on the OLD session_id only AFTER rotation completed
     # and all post-rotation bookkeeping (memory manager, context engine,
     # file dedup) ran. A concurrent path that wakes up the moment we

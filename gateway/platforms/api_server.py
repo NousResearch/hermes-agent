@@ -1389,7 +1389,8 @@ class APIServerAdapter(BasePlatformAdapter):
             "id", "source", "user_id", "model", "title", "started_at", "ended_at",
             "end_reason", "message_count", "tool_call_count", "input_tokens",
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
-            "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
+            "reasoning_tokens", "estimated_cost_usd", "estimated_cost_currency",
+            "actual_cost_usd",
             "api_call_count", "parent_session_id", "last_active", "preview",
             "_lineage_root_id",
         )

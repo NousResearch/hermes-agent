@@ -23,6 +23,7 @@ CostSource = Literal[
     "official_docs_snapshot",
     "user_override",
     "custom_contract",
+    "raw_response",
     "none",
 ]
 
@@ -73,6 +74,7 @@ class CostResult:
     status: CostStatus
     source: CostSource
     label: str
+    currency: str = "USD"
     fetched_at: Optional[datetime] = None
     pricing_version: Optional[str] = None
     notes: tuple[str, ...] = ()
@@ -589,6 +591,17 @@ def resolve_billing_route(
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
+
+    # Profiled aggregator fallback: any provider with a registered ProviderProfile
+    # (Polza, Novita, etc.) gets official_models_api billing and keeps the
+    # full model name intact so fetch_endpoint_model_metadata can find it.
+    try:
+        from providers import get_provider_profile as _get_pp
+        if provider_name and _get_pp(provider_name) is not None:
+            return BillingRoute(provider=provider_name, model=model, base_url=base_url or "", billing_mode="official_models_api")
+    except Exception:
+        pass
+
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
 
 
@@ -806,7 +819,36 @@ def normalize_usage(
         cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens,
         reasoning_tokens=reasoning_tokens,
+        raw_usage=response_usage.model_dump() if hasattr(response_usage, "model_dump") else None,
     )
+
+
+def _extract_raw_cost_and_currency(raw_usage: dict[str, Any] | None) -> tuple[Decimal | None, str]:
+    """Extract exact cost and currency from raw API response usage.
+
+    Returns (cost, currency). Providers like Polza return usage.cost_rub
+    with the precise RUB amount billed per request. Other providers may
+    return usage.cost in USD.
+
+    When no raw cost data is found, returns (None, "USD").
+    """
+    if not raw_usage:
+        return None, "USD"
+    # Polza: usage.cost_rub — precise RUB cost per request
+    cost_rub = raw_usage.get("cost_rub")
+    if cost_rub is not None:
+        try:
+            return Decimal(str(cost_rub)), "RUB"
+        except Exception:
+            pass
+    # Generic: usage.cost — some proxies return total cost directly
+    cost = raw_usage.get("cost")
+    if cost is not None:
+        try:
+            return Decimal(str(cost)), "USD"
+        except Exception:
+            pass
+    return None, "USD"
 
 
 def estimate_usage_cost(
@@ -825,6 +867,19 @@ def estimate_usage_cost(
             source="none",
             label="included",
             pricing_version="included-route",
+        )
+
+    # If the provider returned exact cost in raw usage (e.g. Polza cost_rub),
+    # use it directly — it's more accurate than catalog-based estimation.
+    raw_cost, raw_currency = _extract_raw_cost_and_currency(usage.raw_usage)
+    if raw_cost is not None:
+        return CostResult(
+            amount_usd=raw_cost,
+            currency=raw_currency,
+            status="estimated",
+            source="raw_response",
+            label="actual",
+            pricing_version="provider-raw-cost",
         )
 
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)

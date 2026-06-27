@@ -6,6 +6,8 @@ profile switcher can target any profile's HERMES_HOME. These tests pin:
 reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
+import re
+
 import pytest
 import yaml
 
@@ -48,6 +50,59 @@ def client(monkeypatch, isolated_profiles):
 
 def _cfg(home):
     return yaml.safe_load((home / "config.yaml").read_text()) or {}
+
+
+def test_dashboard_plugin_endpoints_are_profile_scoped():
+    """The dashboard plugin APIs must use the same profile-aware fetch path
+    as other profile-scoped management endpoints."""
+    from pathlib import Path
+
+    api_src = Path(__file__).resolve().parents[2] / "web/src/lib/api.ts"
+    text = api_src.read_text(encoding="utf-8")
+
+    prefix_match = re.search(r"const\s+PROFILE_SCOPED_PREFIXES\s*=\s*\[(?P<body>.*?)\];", text, re.S)
+    assert prefix_match is not None
+
+    prefix_block = prefix_match.group("body")
+    assert '"/api/dashboard/plugins"' in prefix_block
+    assert '"/api/dashboard/agent-plugins"' in prefix_block
+    assert '"/api/dashboard/plugin-providers"' in prefix_block
+
+
+def test_dashboard_plugins_endpoint_respects_selected_profile(client, isolated_profiles, monkeypatch):
+    """The plugin manifest list must resolve inside the requested profile scope."""
+    from hermes_constants import get_hermes_home
+
+    seen = {}
+
+    def fake_discover():
+        seen["home"] = str(get_hermes_home())
+        return []
+
+    monkeypatch.setattr("hermes_cli.web_server._discover_dashboard_plugins", fake_discover)
+
+    resp = client.get("/api/dashboard/plugins", params={"profile": "worker_beta"})
+
+    assert resp.status_code == 200
+    assert seen["home"] == str(isolated_profiles["worker_beta"])
+
+
+def test_dashboard_plugins_hub_respects_selected_profile(client, isolated_profiles, monkeypatch):
+    """The plugins hub must also resolve config and plugin state inside the selected profile."""
+    from hermes_constants import get_hermes_home
+
+    seen = {}
+
+    def fake_merged():
+        seen["home"] = str(get_hermes_home())
+        return {"plugins": [], "orphan_dashboard_plugins": [], "providers": {}}
+
+    monkeypatch.setattr("hermes_cli.web_server._merged_plugins_hub", fake_merged)
+
+    resp = client.get("/api/dashboard/plugins/hub", params={"profile": "worker_beta"})
+
+    assert resp.status_code == 200
+    assert seen["home"] == str(isolated_profiles["worker_beta"])
 
 
 class TestProfileScopedConfig:

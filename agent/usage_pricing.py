@@ -542,6 +542,38 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         pricing_version="minimax-pricing-2026-04",
     ),
+    # ── Qwen (Alibaba) ──────────────────────────────────────────────────────
+    # Source: https://openrouter.ai/qwen/qwen3.6-35b-a3b
+    (
+        "qwen",
+        "qwen3.6-35b-a3b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("1.00"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/qwen/qwen3.6-35b-a3b",
+        pricing_version="openrouter-qwen-pricing-2026-06",
+    ),
+    (
+        "qwen",
+        "qwen3.6-35b-large",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("1.00"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/qwen/qwen3.6-35b-a3b",
+        pricing_version="openrouter-qwen-pricing-2026-06",
+    ),
+    (
+        "qwen",
+        "qwen3.6-35b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("1.00"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/qwen/qwen3.6-35b-a3b",
+        pricing_version="openrouter-qwen-pricing-2026-06",
+    ),
 }
 
 
@@ -587,6 +619,8 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name == "qwen":
+        return BillingRoute(provider="qwen", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")

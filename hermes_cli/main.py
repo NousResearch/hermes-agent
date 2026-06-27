@@ -10252,6 +10252,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         launchd_restart,
                         get_launchd_label,
                         get_launchd_plist_path,
+                        _probe_launchd_service_running,
                     )
 
                     plist_path = get_launchd_plist_path()
@@ -10265,7 +10266,70 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         if check.returncode == 0:
                             try:
                                 launchd_restart()
-                                restarted_services.append(get_launchd_label())
+                                # Verify the gateway actually came back.
+                                # launchctl kickstart returns 0 even when
+                                # launchd defers the respawn (e.g. GUI
+                                # domain in on-demand-only mode during
+                                # display sleep).  Poll for up to 10 s,
+                                # mirroring the systemd path's
+                                # _wait_for_service_active() pattern.
+                                import time as _time
+
+                                _deadline = _time.monotonic() + 10.0
+                                while _time.monotonic() < _deadline:
+                                    if _probe_launchd_service_running():
+                                        break
+                                    _time.sleep(1.0)
+                                if _probe_launchd_service_running():
+                                    restarted_services.append(
+                                        get_launchd_label()
+                                    )
+                                else:
+                                    # Retry once — launchd may have
+                                    # deferred the initial kickstart
+                                    # because the GUI domain was
+                                    # inactive (display sleep / screen
+                                    # lock).  A second kickstart after
+                                    # the old process has fully exited
+                                    # often succeeds.
+                                    label = get_launchd_label()
+                                    print(
+                                        f"  ⚠ {label} not running after"
+                                        " restart, retrying..."
+                                    )
+                                    subprocess.run(
+                                        [
+                                            "launchctl",
+                                            "kickstart",
+                                            "-k",
+                                            f"gui/{os.getuid()}/{label}",
+                                        ],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=30,
+                                    )
+                                    _deadline2 = _time.monotonic() + 10.0
+                                    while _time.monotonic() < _deadline2:
+                                        if _probe_launchd_service_running():
+                                            break
+                                        _time.sleep(1.0)
+                                    if _probe_launchd_service_running():
+                                        restarted_services.append(label)
+                                        print(
+                                            f"  ✓ {label} recovered on"
+                                            " retry"
+                                        )
+                                    else:
+                                        print(
+                                            f"  ✗ {label} failed to stay"
+                                            " running after restart.\n"
+                                            "    Check logs: log show"
+                                            " --predicate 'process =="
+                                            ' "launchd"\' --last 5m\n'
+                                            "    Recover manually:"
+                                            f" launchctl kickstart -k"
+                                            f" gui/{os.getuid()}/{label}"
+                                        )
                             except subprocess.CalledProcessError as e:
                                 stderr = (getattr(e, "stderr", "") or "").strip()
                                 print(f"  ⚠ Gateway restart failed: {stderr}")

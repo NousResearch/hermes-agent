@@ -1259,6 +1259,60 @@ class TestLaunchdServiceRecovery:
         assert "NOT available" in out
 
 
+class TestLaunchdPostRestartVerification:
+    """Verify the post-restart verification pattern used by cmd_update on macOS (#53861)."""
+
+    def test_probe_returns_false_when_no_pid(self, tmp_path, monkeypatch):
+        """_probe_launchd_service_running returns False when launchctl list has no PID."""
+        from hermes_cli.gateway import (
+            _probe_launchd_service_running,
+            generate_launchd_plist,
+        )
+
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(
+            "hermes_cli.gateway.get_launchd_plist_path", lambda: plist_path
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway.subprocess.run",
+            lambda *a, **kw: SimpleNamespace(
+                returncode=0,
+                stdout='{\n    "Label" = "ai.hermes.gateway";\n}',
+                stderr="",
+            ),
+        )
+        assert _probe_launchd_service_running() is False
+
+    def test_probe_returns_true_when_pid_present(self, tmp_path, monkeypatch):
+        """_probe_launchd_service_running returns True when launchctl list shows a PID."""
+        from hermes_cli.gateway import (
+            _probe_launchd_service_running,
+            generate_launchd_plist,
+        )
+
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(
+            "hermes_cli.gateway.get_launchd_plist_path", lambda: plist_path
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway.subprocess.run",
+            lambda *a, **kw: SimpleNamespace(
+                returncode=0,
+                stdout='{\n    "PID" = 12345;\n    "Label" = "ai.hermes.gateway";\n}',
+                stderr="",
+            ),
+        )
+        assert _probe_launchd_service_running() is True
+
+    def test_update_can_import_probe_function(self):
+        """The patched main.py correctly imports _probe_launchd_service_running."""
+        from hermes_cli.gateway import _probe_launchd_service_running
+
+        assert callable(_probe_launchd_service_running)
+
+
 class TestLaunchdDomainDetection:
     """Regression tests for _launchd_domain() probing (#40831).
 

@@ -1162,6 +1162,20 @@ DEFAULT_CONFIG = {
         # website/docs/developer-guide/browser-supervisor.md.
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
+        "exit_recovery": {
+            # Safe IP/exit failover for network/proxy/tunnel/DNS/TLS failures.
+            # Disabled by default; also settable via HERMES_BROWSER_AUTO_EXIT_RECOVERY.
+            # Never used for CAPTCHA, bot walls, bans, rate limits, or access
+            # controls.
+            "auto_recover": False,
+            # Optional executable hermes-control.sh path. If empty, Hermes looks
+            # for ~/.hermes/bin/hermes-control.sh and Ian's shared VPS ops path.
+            "controller": "",
+            "preferred_exit": "residential",
+            "fallback_exits": ["residential", "surfshark"],
+            "allow_direct_fallback": False,
+            "timeout_s": 45,
+        },
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server maps it to a persistent Firefox profile automatically.
@@ -3498,6 +3512,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Browser engine (auto/lightpanda/chrome)",
         "url": "https://github.com/vercel-labs/agent-browser",
         "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_BROWSER_AUTO_EXIT_RECOVERY": {
+        "description": "Enable safe browser exit recovery for network/proxy/DNS/TLS failures only",
+        "prompt": "Auto recover browser exit on network failures (true/false)",
+        "tools": ["browser_navigate", "browser_exit_recover"],
         "password": False,
         "category": "tool",
         "advanced": True,

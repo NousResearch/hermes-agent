@@ -354,6 +354,7 @@ def cmd_send(args: argparse.Namespace) -> None:
         "action": "send",
         "target": target,
         "message": message,
+        "plain": getattr(args, "plain", False),
     }
 
     result = send_message_tool(tool_args)
@@ -438,6 +439,16 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         metavar="LINE",
         default=None,
         help="Prepend a subject/header line before the message body.",
+    )
+
+    parser.add_argument(
+        "-p",
+        "--plain",
+        action="store_true",
+        default=False,
+        help="Send as plain text (Telegram): no HTML/MarkdownV2 parsing. Use for "
+        "status/alert text containing <placeholders>, commit messages, or markdown "
+        "metacharacters that the formatter would mangle. Emojis and bare URLs still render.",
     )
 
     parser.add_argument(

@@ -70,7 +70,7 @@ def test_positional_message_success(fake_tool, capsys):
         send_cmd.cmd_send(args)
     assert exc.value.code == 0
     assert fake_tool.calls == [
-        {"action": "send", "target": "telegram", "message": "hello world"}
+        {"action": "send", "target": "telegram", "message": "hello world", "plain": False}
     ]
     out = capsys.readouterr()
     assert "sent" in out.out or out.out == ""  # "sent" is the default success banner

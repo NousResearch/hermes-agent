@@ -444,6 +444,51 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     return host_only == bound_lc
 
 
+def _canonical_web_origin(parsed: urllib.parse.ParseResult) -> Optional[Tuple[str, str, int]]:
+    """Return a normalised (scheme, host, port) tuple for http(s) origins."""
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        return None
+    host = parsed.hostname
+    if not host:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return scheme, host.lower(), port
+
+
+def _origin_matches_declared_public_url(parsed_origin: urllib.parse.ParseResult) -> bool:
+    """True when the WS Origin matches dashboard.public_url.
+
+    Loopback dashboards may still be intentionally exposed through a trusted
+    reverse proxy/tunnel. In that topology the proxy sends ``Host: 127.0.0.1``
+    to the local origin so the Host guard passes, while the browser correctly
+    sends ``Origin: https://public-dashboard.example``. The operator-declared
+    ``dashboard.public_url`` / ``HERMES_DASHBOARD_PUBLIC_URL`` is the explicit
+    allowlist for that public browser origin.
+    """
+    origin = _canonical_web_origin(parsed_origin)
+    if origin is None:
+        return False
+    try:
+        from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+        public_url = resolve_public_url()
+    except Exception:
+        return False
+    if not public_url:
+        return False
+    try:
+        parsed_public = urllib.parse.urlparse(public_url)
+    except ValueError:
+        return False
+    return origin == _canonical_web_origin(parsed_public)
+
+
 @app.middleware("http")
 async def host_header_middleware(request: Request, call_next):
     """Reject requests whose Host header doesn't match the bound interface.
@@ -11428,6 +11473,9 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
 
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
+
+    if _origin_matches_declared_public_url(parsed):
+        return None
 
     if not _is_accepted_host(parsed.netloc, bound_host):
         return f"origin_mismatch origin={origin} bound={bound_host}"

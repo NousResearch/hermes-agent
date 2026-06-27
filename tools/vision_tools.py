@@ -32,6 +32,7 @@ import base64
 import json
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -45,7 +46,153 @@ import sys
 
 logger = logging.getLogger(__name__)
 
+# ── MiniMax VLM direct bypass ────────────────────────────────────────────────
+_MINIMAX_VLM_LOADED = False
+_MINIMAX_KEY = None
+_MINIMAX_VLM_MODEL = "MiniMax-VL-02"
+
+def _get_minimax_key():
+    global _MINIMAX_KEY
+    if _MINIMAX_KEY is None:
+        env = Path.home() / ".hermes" / ".env"
+        if env.exists():
+            for line in env.read_text().splitlines():
+                if line.startswith("MINIMAX_API_KEY"):
+                    k = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    _MINIMAX_KEY = re.sub(r"^Bearer\s+", "", k)
+                    break
+    return _MINIMAX_KEY
+
+def _is_minimax_vision_enabled():
+    cfg_path = Path.home() / ".hermes" / "config.yaml"
+    if not cfg_path.exists():
+        return False
+    content = cfg_path.read_text()
+    # 检查 auxiliary.vision.provider == minimax
+    in_vision = False
+    for line in content.splitlines():
+        ls = line.strip()
+        if ls.startswith("auxiliary:"):
+            in_vision = False  # 不是 break，继续找 vision:
+        elif ls.startswith("vision:") and not ls.startswith("#"):
+            in_vision = True
+        elif in_vision and ls.startswith("provider:"):
+            return "minimax" in ls.lower()
+    return False
+
+def _call_minimax_vlm_direct(prompt: str, image_path: Path, mime_type: str = "image/jpeg") -> str:
+    """直调 MiniMax VLM 端点，绕过 async_call_llm"""
+    from PIL import Image
+
+    api_key = _get_minimax_key()
+    if not api_key:
+        raise RuntimeError("MINIMAX_API_KEY not found in ~/.hermes/.env")
+
+    # 压缩图片（800px宽）
+    img = Image.open(image_path)
+    w, h = img.size
+    if w > 800:
+        img = img.resize((800, int(800 * h / w)))
+    tmp = image_path.parent / "_vlm_temp.jpg"
+    img.save(tmp, "JPEG", quality=85)
+
+    with open(tmp, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    tmp.unlink(missing_ok=True)
+
+    payload = json.dumps({
+        "model": _MINIMAX_VLM_MODEL,
+        "prompt": prompt,
+        "image_url": f"data:{mime_type};base64,{b64}"
+    }).encode()
+
+    import urllib.request
+    req = urllib.request.Request(
+        "https://api.minimaxi.com/v1/coding_plan/vlm",
+        data=payload,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read())
+    if "content" in result:
+        return result["content"]
+    raise RuntimeError(f"MiniMax VLM error: {result}")
+
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
+
+
+# ── MiniMax VLM direct integration ──────────────────────────────────────────
+
+def _is_minimax_vision_configured() -> tuple[bool, str, str, str]:
+    """
+    Check if MiniMax VLM is configured via auxiliary.vision in config.yaml.
+    Returns (configured, api_key, base_url, model).
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        vision_cfg = cfg.get("auxiliary", {}).get("vision", {})
+        if not vision_cfg:
+            return False, "", "", ""
+        provider = vision_cfg.get("provider", "")
+        if provider != "minimax":
+            return False, "", "", ""
+        api_key = str(vision_cfg.get("api_key", ""))
+        base_url = str(vision_cfg.get("base_url", "")).rstrip("/")
+        model = str(vision_cfg.get("model", ""))
+        if not api_key:
+            return False, "", "", ""
+        return True, api_key, base_url, model
+    except Exception:
+        return False, "", "", ""
+
+
+async def _call_minimax_vlm(image_data_url: str, prompt: str, timeout: float = 120.0) -> str:
+    """
+    Call MiniMax VLM (coding_plan/vlm) directly.
+    image_data_url: data:image/jpeg;base64,... format
+    Returns the analysis text.
+    """
+    configured, api_key, base_url, model = _is_minimax_vision_configured()
+    if not configured:
+        raise RuntimeError("MiniMax VLM not configured")
+
+    # Resolve API key from environment variable reference if needed
+    resolved_key = api_key
+    if api_key.startswith("${") and api_key.endswith("}"):
+        env_var = api_key[2:-1]
+        resolved_key = os.getenv(env_var, "")
+    if not resolved_key:
+        # Fallback: read directly from .env file
+        from pathlib import Path
+        env_path = Path.home() / ".hermes" / ".env"
+        if env_path.exists():
+            for line in env_path.read_text().split("\n"):
+                if line.startswith("MINIMAX_API_KEY="):
+                    resolved_key = line.split("=", 1)[1].strip().strip("'").strip('"')
+                    break
+
+    # VLM endpoint is /v1/coding_plan/vlm — NOT under /anthropic
+    # base_url may contain /anthropic so we strip it
+    clean_base = base_url.replace("/anthropic", "").rstrip("/")
+    url = f"{clean_base}/v1/coding_plan/vlm"
+    payload = {
+        "prompt": prompt,
+        "image_url": image_data_url,
+    }
+    headers = {
+        "Authorization": f"Bearer {resolved_key}",
+        "MM-API-Source": "hermes-vision-tools",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("base_resp", {}).get("status_code") != 0:
+            raise RuntimeError(f"MiniMax VLM error: {data.get('base_resp', {}).get('status_msg', 'unknown')}")
+        return data.get("content", "") or ""
 
 # Configurable HTTP download timeout for _download_image().
 # Separate from auxiliary.vision.timeout which governs the LLM API call.
@@ -923,8 +1070,16 @@ async def vision_analyze_tool(
 
         debug_call_data["image_size_bytes"] = image_size_bytes
         
-        # Use the prompt as provided (model_tools.py now handles full description formatting)
-        comprehensive_prompt = user_prompt
+        # ── MiniMax VLM bypass: try direct call first ──
+        if _is_minimax_vision_enabled():
+            try:
+                logger.info("Using MiniMax VLM direct bypass")
+                analysis = _call_minimax_vlm_direct(user_prompt, temp_image_path, detected_mime_type)
+                result = {"success": True, "analysis": analysis}
+                return json.dumps(result, indent=2, ensure_ascii=False)
+            except Exception as _mm_err:
+                logger.warning("MiniMax VLM bypass failed, falling back to async_call_llm: %s", _mm_err)
+        # ── end bypass ──
         
         # Prepare the message with base64-encoded image
         messages = [
@@ -946,15 +1101,11 @@ async def vision_analyze_tool(
         ]
         
         logger.info("Processing image with vision model...")
-        
-        # Call the vision API via centralized router.
-        # Read timeout from config.yaml (auxiliary.vision.timeout), default 120s.
-        # Local vision models (llama.cpp, ollama) can take well over 30s.
+
+        # Resolve vision_timeout from config
         vision_timeout = 120.0
         vision_temperature = 0.1
         try:
-            from hermes_cli.config import cfg_get, load_config
-            _cfg = load_config()
             _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
             _vt = _vision_cfg.get("timeout")
             if _vt is not None:
@@ -964,42 +1115,53 @@ async def vision_analyze_tool(
                 vision_temperature = float(_vtemp)
         except Exception:
             pass
-        call_kwargs = {
-            "task": "vision",
-            "messages": messages,
-            "temperature": vision_temperature,
-            "max_tokens": 2000,
-            "timeout": vision_timeout,
-        }
-        if model:
-            call_kwargs["model"] = model
-        # Try full-size image first; on size-related rejection, downscale and retry.
-        try:
-            response = await async_call_llm(**call_kwargs)
-        except Exception as _api_err:
-            if (_is_image_size_error(_api_err)
-                    and len(image_data_url) > _RESIZE_TARGET_BYTES):
-                logger.info(
-                    "API rejected image (%.1f MB, likely too large); "
-                    "auto-resizing to ~%.0f MB and retrying...",
-                    len(image_data_url) / (1024 * 1024),
-                    _RESIZE_TARGET_BYTES / (1024 * 1024),
-                )
-                image_data_url = _resize_image_for_vision(
-                    temp_image_path, mime_type=detected_mime_type)
-                messages[0]["content"][1]["image_url"]["url"] = image_data_url
-                response = await async_call_llm(**call_kwargs)
-            else:
-                raise
-        
-        # Extract the analysis — fall back to reasoning if content is empty
-        analysis = extract_content_or_reasoning(response)
 
-        # Retry once on empty content (reasoning-only response)
-        if not analysis:
-            logger.warning("Vision LLM returned empty content, retrying once")
-            response = await async_call_llm(**call_kwargs)
+        # ── MiniMax VLM direct path ──────────────────────────────────────────
+        configured, _, base_url, _ = _is_minimax_vision_configured()
+        if configured:
+            logger.info("Using MiniMax VLM direct path")
+            result_text = await _call_minimax_vlm(
+                image_data_url=image_data_url,
+                prompt=comprehensive_prompt,
+                timeout=vision_timeout,
+            )
+            analysis = result_text
+        else:
+            # ── Generic path (OpenRouter / Anthropic / etc.) ────────────────
+            call_kwargs = {
+                "task": "vision",
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": 2000,
+                "timeout": vision_timeout,
+            }
+            if model:
+                call_kwargs["model"] = model
+            try:
+                response = await async_call_llm(**call_kwargs)
+            except Exception as _api_err:
+                if (_is_image_size_error(_api_err)
+                        and len(image_data_url) > _RESIZE_TARGET_BYTES):
+                    logger.info(
+                        "API rejected image (%.1f MB, likely too large); "
+                        "auto-resizing to ~%.0f MB and retrying...",
+                        len(image_data_url) / (1024 * 1024),
+                        _RESIZE_TARGET_BYTES / (1024 * 1024),
+                    )
+                    image_data_url = _resize_image_for_vision(
+                        temp_image_path, mime_type=detected_mime_type)
+                    messages[0]["content"][1]["image_url"]["url"] = image_data_url
+                    response = await async_call_llm(**call_kwargs)
+                else:
+                    raise
+            # Extract the analysis — fall back to reasoning if content is empty
             analysis = extract_content_or_reasoning(response)
+
+            # Retry once on empty content (reasoning-only response)
+            if not analysis:
+                logger.warning("Vision LLM returned empty content, retrying once")
+                response = await async_call_llm(**call_kwargs)
+                analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis)
         

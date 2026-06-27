@@ -43,7 +43,11 @@ import type {
   SkillInfo,
   StatusResponse,
   ToolsetConfig,
-  ToolsetInfo
+  ToolsetInfo,
+  WorkQueueItem,
+  WorkQueueItemCreatePayload,
+  WorkQueueItemPatchPayload,
+  WorkQueueResponse
 } from '@/types/hermes'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
@@ -115,7 +119,11 @@ export type {
   StaleAuxAssignment,
   StatusResponse,
   ToolsetConfig,
-  ToolsetInfo
+  ToolsetInfo,
+  WorkQueueItem,
+  WorkQueueItemCreatePayload,
+  WorkQueueItemPatchPayload,
+  WorkQueueResponse
 } from '@/types/hermes'
 
 export class HermesGateway extends JsonRpcGatewayClient {
@@ -581,6 +589,43 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
   return window.hermesDesktop.api<MessagingPlatformTestResponse>({
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
+  })
+}
+
+export function getWorkQueue(): Promise<WorkQueueResponse> {
+  return window.hermesDesktop.api<WorkQueueResponse>({
+    path: '/api/work-queue'
+  })
+}
+
+export function createWorkQueueItem(body: WorkQueueItemCreatePayload): Promise<WorkQueueItem> {
+  return window.hermesDesktop.api<WorkQueueItem>({
+    path: '/api/work-queue/items',
+    method: 'POST',
+    body
+  })
+}
+
+export function updateWorkQueueItem(itemId: string, body: WorkQueueItemPatchPayload): Promise<WorkQueueItem> {
+  return window.hermesDesktop.api<WorkQueueItem>({
+    path: `/api/work-queue/items/${encodeURIComponent(itemId)}`,
+    method: 'PATCH',
+    body
+  })
+}
+
+export function archiveWorkQueueItem(itemId: string): Promise<WorkQueueItem> {
+  return window.hermesDesktop.api<WorkQueueItem>({
+    path: `/api/work-queue/items/${encodeURIComponent(itemId)}/archive`,
+    method: 'POST'
+  })
+}
+
+export function snoozeWorkQueueItem(itemId: string, snoozedUntil: string): Promise<WorkQueueItem> {
+  return window.hermesDesktop.api<WorkQueueItem>({
+    path: `/api/work-queue/items/${encodeURIComponent(itemId)}/snooze`,
+    method: 'POST',
+    body: { snoozed_until: snoozedUntil }
   })
 }
 

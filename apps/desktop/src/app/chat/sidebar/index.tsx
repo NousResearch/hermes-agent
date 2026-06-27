@@ -66,6 +66,7 @@ import {
   setPinnedSessionOrder,
   setSidebarAgentsGrouped,
   setSidebarCronOpen,
+  setSidebarOpen,
   setSidebarPinsOpen,
   setSidebarProjectOrderIds,
   setSidebarRecentsOpen,
@@ -113,7 +114,7 @@ import {
   setCurrentCwd
 } from '@/store/session'
 
-import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE, WORK_QUEUE_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
@@ -168,6 +169,7 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     route: SKILLS_ROUTE
   },
   { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
+  { id: 'work-queue', label: 'Work Queue', icon: props => <Codicon name="checklist" {...props} />, route: WORK_QUEUE_ROUTE },
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 
@@ -379,6 +381,12 @@ export function ChatSidebar({
   const overlayMounted = useStore($sidebarOverlayMounted)
   const contentVisible = sidebarOpen || overlayMounted
   const panesFlipped = useStore($panesFlipped)
+
+  useEffect(() => {
+    if (currentView === 'work-queue' && !sidebarOpen) {
+      setSidebarOpen(true)
+    }
+  }, [currentView, sidebarOpen])
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
@@ -1198,9 +1206,12 @@ export function ChatSidebar({
                 const active =
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
-                  (item.id === 'artifacts' && currentView === 'artifacts')
+                  (item.id === 'artifacts' && currentView === 'artifacts') ||
+                  (item.id === 'work-queue' && currentView === 'work-queue')
 
                 const isNewSession = item.id === 'new-session'
+                const label = s.nav[item.id] || item.label
+                const showTextLabel = contentVisible || item.id === 'work-queue'
 
                 return (
                   <SidebarMenuItem key={item.id}>
@@ -1231,14 +1242,14 @@ export function ChatSidebar({
 
                         onNavigate(item)
                       }}
-                      tooltip={s.nav[item.id] ?? item.label}
+                      tooltip={label}
                       type="button"
                     >
                       <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
-                      {contentVisible && (
+                      {showTextLabel && (
                         <>
-                          <span className="min-w-0 flex-1 truncate">{s.nav[item.id] ?? item.label}</span>
-                          {isNewSession && (
+                          <span className="min-w-0 flex-1 truncate">{label}</span>
+                          {contentVisible && isNewSession && (
                             <KbdGroup
                               className={cn('ml-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
                               keys={[...NEW_SESSION_KBD]}

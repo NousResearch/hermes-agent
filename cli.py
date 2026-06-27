@@ -9972,7 +9972,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return  # File unchanged — fast path
 
         # File changed — check whether mcp_servers section changed
-        self._config_mtime = mtime
         try:
             with open(cfg_path, encoding="utf-8") as f:
                 new_cfg = _yaml.safe_load(f) or {}
@@ -9981,21 +9980,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         new_mcp = new_cfg.get("mcp_servers") or {}
         if new_mcp == self._config_mcp_servers:
+            self._config_mtime = mtime
             return  # mcp_servers unchanged (some other section was edited)
 
-        self._config_mcp_servers = new_mcp
         # Notify user and reload.  Run in a separate thread with a hard
         # timeout so a hung MCP server cannot block the process_loop
         # indefinitely (which would freeze the entire TUI).
         print()
         print("🔄 MCP server config changed — reloading connections...")
+        reload_state = {"success": False}
+
+        def _run_reload() -> None:
+            try:
+                reload_state["success"] = bool(self._reload_mcp())
+            except Exception:
+                reload_state["success"] = False
+
         _reload_thread = threading.Thread(
-            target=self._reload_mcp, daemon=True
+            target=_run_reload, daemon=True
         )
         _reload_thread.start()
         _reload_thread.join(timeout=30)
         if _reload_thread.is_alive():
             print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
+            return
+
+        if not reload_state["success"]:
+            print("  ↻ MCP config reload did not apply; watcher will retry on the next poll.")
+            return
+
+        self._config_mtime = mtime
+        self._config_mcp_servers = new_mcp
 
     # Inline-skip tokens that bypass the destructive-slash confirmation modal.
     # A general escape hatch for non-interactive use (scripting/automation) and
@@ -10289,9 +10304,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     pass  # Best-effort
 
             print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
+            return True
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
+            return False
 
     def _reload_skills(self) -> None:
         """Reload skills: rescan ~/.hermes/skills/ and queue a note for the

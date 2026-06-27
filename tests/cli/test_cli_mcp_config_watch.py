@@ -80,6 +80,30 @@ class TestMCPConfigWatch:
 
         obj._reload_mcp.assert_called_once()
 
+    def test_reload_failure_is_retried_on_next_poll(self, tmp_path):
+        """A failed reload should not poison the watcher state."""
+        import yaml
+
+        obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
+        obj._reload_mcp = MagicMock(side_effect=[RuntimeError("reload failed"), True])
+
+        cfg_file.write_text(yaml.dump({"mcp_servers": {"github": {"url": "https://mcp.github.com"}}}))
+        obj._config_mtime = 0.0
+
+        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+            obj._check_config_mcp_changes()
+
+        assert obj._reload_mcp.call_count == 1
+        assert obj._config_mcp_servers == {}
+        assert obj._config_mtime == 0.0
+
+        obj._last_config_check = 0.0
+        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+            obj._check_config_mcp_changes()
+
+        assert obj._reload_mcp.call_count == 2
+        assert obj._config_mcp_servers == {"github": {"url": "https://mcp.github.com"}}
+
     def test_interval_throttle_skips_check(self, tmp_path):
         """If called within CONFIG_WATCH_INTERVAL, stat() is skipped."""
         obj, cfg_file = _make_cli(tmp_path)

@@ -851,7 +851,14 @@ export function ChatSidebar({
       data-mobile-drawer={mobileStandalone ? '' : undefined}
     >
       <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
-        <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
+        <SidebarGroup
+          className={cn(
+            'shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]',
+            // No desktop titlebar on mobile — trim back to just the status-bar
+            // safe area so the nav list doesn't float ~100px below the notch.
+            mobileStandalone && 'pt-[calc(env(safe-area-inset-top)+0.5rem)]'
+          )}
+        >
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
               {SIDEBAR_NAV.map(item => {
@@ -974,7 +981,7 @@ export function ChatSidebar({
               />
             )}
 
-            {!trimmedQuery && (
+            {!trimmedQuery && (!mobileStandalone || pinnedSessions.length > 0) && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}

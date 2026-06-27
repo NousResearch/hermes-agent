@@ -3055,6 +3055,13 @@ def run_job(
         # on the next tick — there is no in-memory cache.
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
+        # Cron-wide model/provider/base_url overrides. Applied ONLY when a job
+        # does NOT carry its own per-job override; a per-job value always wins.
+        # Populated from ``cron.{model,provider,base_url}`` in config.yaml below.
+        cron_model_override = ""
+        cron_provider_override = ""
+        cron_base_url_override = ""
+
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
         _model_cfg = {}
@@ -3074,11 +3081,19 @@ def run_job(
                 except Exception:
                     pass
                 _cfg = _expand_env_vars(_cfg)
+                _cron_cfg = _cfg.get("cron", {}) or {}
+                cron_model_override = str(_cron_cfg.get("model") or "").strip()
+                cron_provider_override = str(_cron_cfg.get("provider") or "").strip()
+                cron_base_url_override = str(_cron_cfg.get("base_url") or "").strip().rstrip("/")
                 # Coerce null/missing to {} so a falsy default never
                 # clobbers an already-resolved env value with ``None``.
                 _model_cfg = _cfg.get("model") or {}
                 if not job.get("model"):
-                    if isinstance(_model_cfg, str):
+                    # Precedence (highest first): per-job model > cron-wide
+                    # cron.model > global model.default > HERMES_MODEL env.
+                    if cron_model_override:
+                        model = cron_model_override
+                    elif isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         # Mirror the CLI/oneshot resolution: prefer ``default``,
@@ -3177,15 +3192,19 @@ def run_job(
             # circuits that precedence and can resurrect old providers (for
             # example DeepSeek) for cron jobs that do not pin provider/model.
             runtime_kwargs = {
-                "requested": job.get("provider"),
+                # Per-job provider wins; otherwise fall back to a cron-wide
+                # provider override (cron.provider) before resolve_runtime_provider
+                # picks the persisted default.
+                "requested": job.get("provider") or cron_provider_override or None,
                 # Derive provider-specific api_mode from the model this job
                 # will actually run (per-job pin > env > config default), not
                 # the stale persisted default — mirrors the fallback path
                 # below, which already passes its fb_model.
                 "target_model": model,
             }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            _job_base_url = job.get("base_url") or cron_base_url_override
+            if _job_base_url:
+                runtime_kwargs["explicit_base_url"] = _job_base_url
             runtime = resolve_runtime_provider(**runtime_kwargs)
             primary_provider_for_drift = (
                 str(runtime.get("provider") or "").strip().lower()
@@ -3369,7 +3388,7 @@ def run_job(
             session_id=_cron_session_id,
             session_db=_session_db,
         )
-        
+
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured
@@ -3566,7 +3585,7 @@ def run_job(
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
@@ -3581,14 +3600,14 @@ def run_job(
 
 {logged_response}
 """
-        
+
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
-        
+
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
-        
+
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
@@ -3895,10 +3914,10 @@ def tick(
 ):
     """
     Check and run all due jobs.
-    
+
     Uses a file lock so only one tick runs at a time, even if the gateway's
     in-process ticker and a standalone daemon or manual tick overlap.
-    
+
     Args:
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)

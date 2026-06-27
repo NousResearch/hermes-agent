@@ -1783,6 +1783,10 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Browser/dashboard Chat embeds the same TUI through /api/pty. Keep it
+        # enabled by default for desktop/browser chat, but allow small hosts to
+        # disable the PTY/TUI child without affecting dashboard management pages.
+        "embedded_chat_enabled": True,
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

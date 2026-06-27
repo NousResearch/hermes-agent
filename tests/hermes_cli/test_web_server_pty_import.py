@@ -35,6 +35,25 @@ def test_web_server_exposes_pty_bridge_symbols():
     assert issubclass(web_server.PtyUnavailableError, BaseException)
 
 
+def test_dashboard_embedded_chat_can_be_disabled_from_config(monkeypatch):
+    monkeypatch.setattr(
+        web_server,
+        "load_config",
+        lambda: {"dashboard": {"embedded_chat_enabled": False}},
+    )
+
+    assert web_server._dashboard_embedded_chat_enabled() is False
+
+
+def test_dashboard_embedded_chat_defaults_enabled_on_bad_config(monkeypatch):
+    def boom():
+        raise RuntimeError("bad config")
+
+    monkeypatch.setattr(web_server, "load_config", boom)
+
+    assert web_server._dashboard_embedded_chat_enabled() is True
+
+
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows-only")
 def test_web_server_uses_win_pty_bridge_on_windows():
     """On native Windows, web_server.PtyBridge must be the ConPTY backend."""

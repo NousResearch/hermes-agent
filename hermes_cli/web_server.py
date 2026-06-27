@@ -264,13 +264,26 @@ app.include_router(_memory_oauth_router)
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
-# In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
-# desktop app and the dashboard's own Chat tab both drive the agent over the
-# `/api/ws` + `/api/pty` WebSockets, so the embedded-chat surface is an
-# unconditional part of the dashboard.  Kept as a module-level constant (rather
-# than inlining ``True`` at every gate) so the WS endpoints and the SPA token
-# injection share a single, testable seam.
-_DASHBOARD_EMBEDDED_CHAT_ENABLED = True
+# In-browser Chat tab (/chat, /api/pty, /api/ws, …). Enabled by default:
+# the desktop app and the dashboard's own Chat tab both drive the agent over the
+# `/api/ws` + `/api/pty` WebSockets. Small always-on hosts can disable this via
+# ``dashboard.embedded_chat_enabled: false`` so management pages keep working
+# without spawning the Node/TUI/PTY child.
+def _dashboard_embedded_chat_enabled() -> bool:
+    try:
+        value = cfg_get(
+            load_config(), "dashboard", "embedded_chat_enabled", default=True
+        )
+    except Exception:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return bool(value)
+
+
+_DASHBOARD_EMBEDDED_CHAT_ENABLED = _dashboard_embedded_chat_enabled()
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []

@@ -1436,41 +1436,88 @@ def _termux_workspace_install_context(
     return ws_root, tuple(workspace_args)
 
 
+_TUI_REQUIRED_DEV_DEPENDENCIES = frozenset({"esbuild"})
+
+
+def _npm_package_path(package_name: str) -> str:
+    """Return the package-lock path for a hoisted dependency name."""
+    return f"node_modules/{package_name}"
+
+
+def _tui_lock_package_scope(root: Path, packages: dict) -> set[str]:
+    """Return package-lock entries relevant to launching/building ``root``.
+
+    A Hermes checkout has one root ``package-lock.json`` for every JavaScript
+    workspace (web, desktop, ui-tui, installers).  The dashboard/TUI launcher
+    deliberately runs ``npm install --workspace ui-tui`` so startup does not
+    pull Electron/desktop/web packages into the hot path on small machines.
+    Comparing the full root lock against npm's hidden lock therefore reports
+    hundreds of intentionally-missing packages forever.  Follow the dependency
+    closure from the ``ui-tui`` workspace instead.
+    """
+    ws_root = _workspace_root(root)
+    if ws_root == root:
+        return {name for name in packages if name}
+
+    try:
+        workspace = root.relative_to(ws_root).as_posix()
+    except ValueError:
+        return {name for name in packages if name}
+
+    scoped: set[str] = set()
+    queue: list[str] = [workspace]
+
+    def enqueue(name: str | None) -> None:
+        if not name or name in scoped or name not in packages:
+            return
+        scoped.add(name)
+        queue.append(name)
+
+    while queue:
+        name = queue.pop(0)
+        pkg = packages.get(name)
+        if not isinstance(pkg, dict):
+            continue
+
+        # Local workspace links (e.g. node_modules/@hermes/ink ->
+        # ui-tui/packages/hermes-ink) carry their real dependencies on the
+        # resolved target package entry, not on the link entry.
+        resolved = pkg.get("resolved")
+        if pkg.get("link") and isinstance(resolved, str):
+            enqueue(resolved)
+
+        for field in (
+            "dependencies",
+            "devDependencies",
+            "optionalDependencies",
+            "peerDependencies",
+        ):
+            deps = pkg.get(field)
+            if not isinstance(deps, dict):
+                continue
+            for dep_name in deps:
+                if (
+                    field == "devDependencies"
+                    and dep_name not in _TUI_REQUIRED_DEV_DEPENDENCIES
+                ):
+                    continue
+                enqueue(_npm_package_path(dep_name))
+
+    return scoped
+
+
 def _tui_need_npm_install(root: Path) -> bool:
-    """True when @hermes/ink is missing or node_modules is behind package-lock.json.
+    """True when TUI deps are missing or behind the relevant lock entries.
 
-    Prebuilt bundle mode: when ``dist/entry.js`` exists and there is no
-    ``package-lock.json`` (nix install layout only ships ``dist/`` +
-    ``package.json``), skip reinstall entirely — the bundle is self-contained
-    and there is nothing to install.
-
-    With npm workspaces the single ``package-lock.json`` and the hoisted
-    ``node_modules/`` live at the workspace root (the parent of the
-    ``ui-tui/`` directory).  The lockfile / ink / marker checks use that
-    workspace root; only the prebuilt-bundle sentinel stays relative to
-    *root* (``ui-tui/dist/entry.js``).
-
-    Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
-    (npm's hidden lockfile) by **content**, not mtime: git checkouts and npm
-    rewrites can bump the root lockfile's timestamp even when installed deps
-    already match, which used to trigger a spurious "Installing TUI
-    dependencies" on every launch.
-
-    For each entry in the root lock's ``packages`` map:
-      - missing from hidden lock → reinstall (unless the entry is marked
-        ``optional`` or ``peer``, which npm may intentionally skip per platform)
-      - present but with differing fields (excluding npm-written runtime
-        annotations like ``ideallyInert``) → reinstall
-
-    Extra entries that exist only in the hidden lock are ignored — stale
-    transitives left over from a removed dependency don't break runtime and
-    we'd rather not force a reinstall for them. Falls back to mtime
-    comparison if either lockfile is unparseable.
+    In workspace checkouts this intentionally validates only the dependency
+    closure reachable from ``ui-tui``.  The root lock also contains web,
+    desktop, Electron, and installer workspaces that ``npm install --workspace
+    ui-tui`` is not supposed to install; treating those absent packages as a
+    TUI failure makes dashboard chat run npm on every launch.
     """
     # Prebuilt self-contained bundle (nix / packaged release): no lockfile
     # shipped, dist/entry.js is the single runtime artefact.
     entry = root / "dist" / "entry.js"
-    # With npm workspaces the lockfile lives at the workspace root.
     ws_root = _workspace_root(root)
     lock = ws_root / "package-lock.json"
     if entry.is_file() and not lock.is_file():
@@ -1497,15 +1544,19 @@ def _tui_need_npm_install(root: Path) -> bool:
     def comparable(pkg: dict) -> dict:
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
 
-    for name, pkg in wanted.items():
-        if not name:
-            continue
+    required_dev_paths = {
+        _npm_package_path(dep) for dep in _TUI_REQUIRED_DEV_DEPENDENCIES
+    }
 
+    for name in sorted(_tui_lock_package_scope(root, wanted)):
+        pkg = wanted.get(name)
         if not isinstance(pkg, dict):
             continue
 
         if name not in installed:
             if pkg.get("optional") or pkg.get("peer"):
+                continue
+            if pkg.get("dev") and name not in required_dev_paths:
                 continue
             return True
 
@@ -1513,8 +1564,8 @@ def _tui_need_npm_install(root: Path) -> bool:
             installed[name]
         ):
             return True
-
     return False
+
 
 
 _TUI_BUILD_INPUT_DIRS = (

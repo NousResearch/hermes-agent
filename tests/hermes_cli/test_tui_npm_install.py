@@ -70,6 +70,124 @@ def test_no_install_when_only_optional_peer_package_missing_from_hidden_lock(tmp
     assert main_mod._tui_need_npm_install(tmp_path) is False
 
 
+def test_workspace_install_ignores_non_tui_workspace_missing_packages(tmp_path: Path, main_mod) -> None:
+    """Scoped ui-tui installs intentionally omit web/desktop packages."""
+    tui = tmp_path / "ui-tui"
+    tui.mkdir()
+    (tui / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    lock = {
+        "packages": {
+            "ui-tui": {
+                "dependencies": {
+                    "@hermes/ink": "file:./packages/hermes-ink",
+                    "ink": "^1.0.0",
+                }
+            },
+            "node_modules/@hermes/ink": {
+                "resolved": "ui-tui/packages/hermes-ink",
+                "link": True,
+            },
+            "ui-tui/packages/hermes-ink": {
+                "dependencies": {"chalk": "^5.0.0"},
+            },
+            "node_modules/ink": {"version": "1.0.0"},
+            "node_modules/chalk": {"version": "5.0.0"},
+            "apps/desktop": {"version": "1.0.0"},
+            "node_modules/electron": {"version": "99.0.0"},
+        }
+    }
+    installed = {
+        "packages": {
+            "ui-tui": lock["packages"]["ui-tui"],
+            "node_modules/@hermes/ink": lock["packages"]["node_modules/@hermes/ink"],
+            "ui-tui/packages/hermes-ink": lock["packages"]["ui-tui/packages/hermes-ink"],
+            "node_modules/ink": lock["packages"]["node_modules/ink"],
+            "node_modules/chalk": lock["packages"]["node_modules/chalk"],
+        }
+    }
+    import json
+
+    (tmp_path / "package-lock.json").write_text(json.dumps(lock))
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(json.dumps(installed))
+
+    assert main_mod._tui_need_npm_install(tui) is False
+
+
+def test_workspace_install_still_detects_missing_tui_dependency(tmp_path: Path, main_mod) -> None:
+    tui = tmp_path / "ui-tui"
+    tui.mkdir()
+    (tui / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    lock = {
+        "packages": {
+            "ui-tui": {"dependencies": {"ink": "^1.0.0"}},
+            "node_modules/ink": {"version": "1.0.0", "dependencies": {"chalk": "^5.0.0"}},
+            "node_modules/chalk": {"version": "5.0.0"},
+            "apps/desktop": {"version": "1.0.0"},
+        }
+    }
+    installed = {
+        "packages": {
+            "ui-tui": lock["packages"]["ui-tui"],
+            "node_modules/ink": lock["packages"]["node_modules/ink"],
+        }
+    }
+    import json
+
+    (tmp_path / "package-lock.json").write_text(json.dumps(lock))
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(json.dumps(installed))
+
+    assert main_mod._tui_need_npm_install(tui) is True
+
+
+def test_workspace_install_ignores_non_build_dev_dependencies(tmp_path: Path, main_mod) -> None:
+    tui = tmp_path / "ui-tui"
+    tui.mkdir()
+    (tui / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    lock = {
+        "packages": {
+            "ui-tui": {"devDependencies": {"eslint": "^9", "esbuild": "^1"}},
+            "node_modules/eslint": {"version": "9.0.0", "dependencies": {"ajv": "^8"}},
+            "node_modules/ajv": {"version": "8.0.0"},
+            "node_modules/esbuild": {"version": "1.0.0"},
+        }
+    }
+    installed = {
+        "packages": {
+            "ui-tui": lock["packages"]["ui-tui"],
+            "node_modules/esbuild": lock["packages"]["node_modules/esbuild"],
+        }
+    }
+    import json
+
+    (tmp_path / "package-lock.json").write_text(json.dumps(lock))
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(json.dumps(installed))
+
+    assert main_mod._tui_need_npm_install(tui) is False
+
+
+def test_workspace_install_requires_esbuild_for_rebuilds(tmp_path: Path, main_mod) -> None:
+    tui = tmp_path / "ui-tui"
+    tui.mkdir()
+    (tui / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    lock = {
+        "packages": {
+            "ui-tui": {"devDependencies": {"esbuild": "^1"}},
+            "node_modules/esbuild": {"version": "1.0.0"},
+        }
+    }
+    installed = {"packages": {"ui-tui": lock["packages"]["ui-tui"]}}
+    import json
+
+    (tmp_path / "package-lock.json").write_text(json.dumps(lock))
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(json.dumps(installed))
+
+    assert main_mod._tui_need_npm_install(tui) is True
+
+
 def test_no_install_when_only_peer_annotation_differs(tmp_path: Path, main_mod) -> None:
     """npm 9 drops the ``peer`` flag from the hidden lock on dev-deps that are
     *also* declared as peers.  That's a cosmetic difference — the package is

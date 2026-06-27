@@ -813,6 +813,7 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
   return window.hermesDesktop.api<AudioTranscriptionResponse>({
     path: '/api/audio/transcribe',
     method: 'POST',
+    ...profileScoped(),
     body: {
       data_url: dataUrl,
       mime_type: mimeType
@@ -824,12 +825,14 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
   return window.hermesDesktop.api<AudioSpeakResponse>({
     path: '/api/audio/speak',
     method: 'POST',
+    ...profileScoped(),
     body: { text }
   })
 }
 
 export function getElevenLabsVoices(): Promise<ElevenLabsVoicesResponse> {
   return window.hermesDesktop.api<ElevenLabsVoicesResponse>({
-    path: '/api/audio/elevenlabs/voices'
+    path: '/api/audio/elevenlabs/voices',
+    ...profileScoped()
   })
 }

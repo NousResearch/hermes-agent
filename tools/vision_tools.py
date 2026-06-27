@@ -800,7 +800,7 @@ async def _vision_analyze_native(
 
 async def vision_analyze_tool(
     image_url: str,
-    user_prompt: str,
+    user_prompt: str = "Describe this image in detail.",
     model: str = None,
 ) -> str:
     """
@@ -837,6 +837,8 @@ async def vision_analyze_tool(
     """
     if not isinstance(user_prompt, str):
         user_prompt = str(user_prompt) if user_prompt is not None else ""
+    if not user_prompt.strip():
+        raise ValueError("user_prompt cannot be empty — provide a description or question about the image")
     debug_call_data = {
         "parameters": {
             "image_url": image_url,
@@ -1337,12 +1339,14 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
 
 async def video_analyze_tool(
     video_url: str,
-    user_prompt: str,
+    user_prompt: str = "Describe this video in detail.",
     model: str = None,
 ) -> str:
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     if not isinstance(user_prompt, str):
         user_prompt = str(user_prompt) if user_prompt is not None else ""
+    if not user_prompt.strip():
+        raise ValueError("user_prompt cannot be empty — provide a description or question about the video")
     debug_call_data = {
         "parameters": {
             "video_url": video_url,

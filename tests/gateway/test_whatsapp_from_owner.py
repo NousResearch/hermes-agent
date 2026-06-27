@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp import WhatsAppAdapter
+from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
 
 def _make_adapter():

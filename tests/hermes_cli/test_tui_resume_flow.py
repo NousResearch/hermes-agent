@@ -806,9 +806,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
 
-        def chat(self, prompt):
+        def run_conversation(self, prompt):
             captured["prompt"] = prompt
-            return "ok"
+            return {"final_response": "ok"}
 
     class FakeSessionDB:
         def __new__(cls):
@@ -1095,3 +1095,75 @@ def test_print_tui_exit_summary_prefers_actual_active_session_file(
     assert seen == ["actual_session"]
     assert "hermes --tui --resume actual_session" in out
     assert "startup_resume" not in out
+
+
+def test_oneshot_surfaces_turn_error_on_empty_response(monkeypatch, capsys):
+    """Regression for #50420: a failed turn returns final_response=None plus a
+    descriptive ``error``. _run_agent must read run_conversation()'s ``error``
+    (not just the empty final_response via the thin .chat() wrapper) and raise
+    it, so run_oneshot reports the real provider/API failure instead of the
+    generic 'no final response was produced' with nothing in the log."""
+    import hermes_cli.oneshot as oneshot_mod
+
+    class FailingAgent:
+        def __init__(self, **kwargs):
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def run_conversation(self, prompt):
+            return {
+                "final_response": None,
+                "error": "openrouter 401: provider rejected the request",
+            }
+
+    def _mod(name, **attrs):
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", _mod("run_agent", AIAgent=FailingAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_state",
+        _mod("hermes_state", SessionDB=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        _mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        _mod("hermes_cli.models", detect_provider_for_model=lambda *_a, **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        _mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_k: {
+                "api_key": "k",
+                "base_url": "u",
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "credential_pool": None,
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        _mod("hermes_cli.tools_config", _get_platform_tools=lambda *_a, **_k: set()),
+    )
+
+    # The empty-response-with-error condition must be raised, not swallowed.
+    assert oneshot_mod.run_oneshot("hello") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    # The real reason is surfaced via the "agent failed:" handler ...
+    assert "openrouter 401" in captured.err
+    # ... and the undiagnosable generic message is NOT what the user sees.
+    assert "no final response was produced" not in captured.err

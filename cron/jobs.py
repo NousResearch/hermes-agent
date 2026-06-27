@@ -789,6 +789,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    delivery_policy: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -833,6 +834,11 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        delivery_policy: Optional delivery policy. Set to ``"always"`` to bypass
+                the generic ``[SILENT]`` suppression hint. Use for recurring
+                briefing / report jobs that must deliver on every run, even an
+                all-clear. Default ``None`` (standard silent-suppression
+                behaviour).  See #53230.
 
     Returns:
         The created job dict
@@ -868,6 +874,11 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_delivery_policy = str(delivery_policy).strip().lower() if isinstance(delivery_policy, str) else None
+    if normalized_delivery_policy not in (None, "always"):
+        raise ValueError(
+            f"delivery_policy must be None or 'always', got {delivery_policy!r}"
+        )
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -974,6 +985,12 @@ def create_job(
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
 
+    # Only persist delivery_policy when explicitly set ("always"), so
+    # existing jobs and the common case stay byte-identical (absent key
+    # => standard [SILENT] suppression behaviour).  See #53230.
+    if normalized_delivery_policy is not None:
+        job["delivery_policy"] = normalized_delivery_policy
+
     with _jobs_lock():
         jobs = load_jobs()
         jobs.append(job)
@@ -1062,6 +1079,19 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            # Normalize delivery_policy: None / empty / "auto" => remove key
+            # (restores default [SILENT] behaviour).  Only "always" persists.
+            if "delivery_policy" in updates:
+                _dp = updates["delivery_policy"]
+                if _dp in {None, "", False, "auto"}:
+                    updates.pop("delivery_policy")
+                    # Also remove from existing job so the key is gone
+                    job.pop("delivery_policy", None)
+                elif _dp != "always":
+                    raise ValueError(
+                        f"delivery_policy must be 'always' or 'auto', got {_dp!r}"
+                    )
 
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates

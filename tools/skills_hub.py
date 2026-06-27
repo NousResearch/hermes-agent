@@ -3048,7 +3048,7 @@ class OptionalSkillSource(SkillSource):
                 and "__pycache__" not in f.parts
                 and f.suffix != ".pyc"
             ):
-                rel_path = str(f.relative_to(skill_dir))
+                rel_path = f.relative_to(skill_dir).as_posix()
                 try:
                     files[rel_path] = f.read_bytes()
                 except OSError:
@@ -3064,7 +3064,7 @@ class OptionalSkillSource(SkillSource):
             name=name,
             files=files,
             source="official",
-            identifier=f"official/{skill_dir.relative_to(self._optional_dir)}",
+            identifier=f"official/{skill_dir.relative_to(self._optional_dir).as_posix()}",
             trust_level="builtin",
         )
 
@@ -3450,8 +3450,8 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(SKILLS_DIR)),
-        files=list(bundle.files.keys()),
+        install_path=install_dir.relative_to(SKILLS_DIR).as_posix(),
+        files=[str(rel_path).replace("\\", "/") for rel_path in bundle.files],
         metadata=bundle.metadata,
     )
 
@@ -3497,12 +3497,16 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
 def bundle_content_hash(bundle: SkillBundle) -> str:
     """Compute a deterministic hash for an in-memory skill bundle."""
     h = hashlib.sha256()
-    for rel_path in sorted(bundle.files):
+    normalized_files = {
+        str(rel_path).replace("\\", "/"): content
+        for rel_path, content in bundle.files.items()
+    }
+    for rel_path in sorted(normalized_files):
         # Include the path so swapping file contents between two paths
         # changes the hash (avoids filename-swap evading update detection).
         h.update(rel_path.encode("utf-8"))
         h.update(b"\x00")
-        content = bundle.files[rel_path]
+        content = normalized_files[rel_path]
         if isinstance(content, bytes):
             h.update(content)
         else:
@@ -3558,7 +3562,18 @@ def check_for_skill_updates(
             })
             continue
 
-        current_hash = entry.get("content_hash", "")
+        lock_hash = entry.get("content_hash", "")
+        current_hash = lock_hash
+        install_path = entry.get("install_path")
+        if install_path:
+            try:
+                installed_path = _resolve_lock_install_path(
+                    install_path, entry.get("name", "")
+                )
+            except ValueError:
+                installed_path = None
+            if installed_path and installed_path.exists():
+                current_hash = content_hash(installed_path)
         latest_hash = bundle_content_hash(bundle)
         status = "up_to_date" if current_hash == latest_hash else "update_available"
         results.append({
@@ -3567,6 +3582,7 @@ def check_for_skill_updates(
             "source": source_name,
             "status": status,
             "current_hash": current_hash,
+            "lock_hash": lock_hash,
             "latest_hash": latest_hash,
             "bundle": bundle,
         })

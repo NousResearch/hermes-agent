@@ -13443,6 +13443,7 @@ def _wake_on_detect() -> None:
         phrase = wake_phrase()
     except Exception:
         phrase = ""
+    logger.info("wake.detected: emitting to sid=%r", sid)
     _emit("wake.detected", sid, {"phrase": phrase})
 
 
@@ -13467,9 +13468,12 @@ def _(rid, params: dict) -> dict:
 
     cfg = load_wake_word_config()
     if not wake_surface_enabled(surface, cfg):
+        logger.info("wake.start(%s): disabled for surface (enabled=%s, surface=%s)",
+                    surface, cfg.get("enabled"), cfg.get("surface"))
         return _ok(rid, {"started": False, "reason": "disabled_for_surface"})
     reqs = check_wake_word_requirements(cfg)
     if not reqs["available"]:
+        logger.warning("wake.start(%s): not available — %s", surface, reqs.get("hint"))
         return _ok(rid, {"started": False, "reason": reqs.get("hint") or "unavailable"})
 
     with _wake_lock:
@@ -13477,9 +13481,11 @@ def _(rid, params: dict) -> dict:
     try:
         start_listening(_wake_on_detect, config=cfg)
     except Exception as e:
+        logger.warning("wake.start(%s): failed to start listener: %s", surface, e)
         return _err(rid, 5026, str(e))
     with _wake_lock:
         _wake_active = True
+    logger.info("wake.start(%s): listening for %r (%s)", surface, reqs["phrase"], reqs["provider"])
     return _ok(rid, {"started": True, "phrase": reqs["phrase"], "provider": reqs["provider"]})
 
 

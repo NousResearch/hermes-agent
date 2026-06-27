@@ -356,13 +356,13 @@ class WakeWordDetector:
             logger.error("wake word: failed to open microphone: %s", e)
             return
 
-        logger.debug("wake word: listening (frame=%d)", frame_length)
+        logger.info("wake word: listening (frame=%d, rate=%d)", frame_length, SAMPLE_RATE)
         try:
             while not self._stop.is_set():
                 try:
                     data, _overflow = stream.read(frame_length)
                 except Exception as e:
-                    logger.debug("wake word: stream read error: %s", e)
+                    logger.warning("wake word: stream read error: %s", e)
                     break
                 frame = data[:, 0] if getattr(data, "ndim", 1) == 2 else data
                 try:
@@ -374,17 +374,20 @@ class WakeWordDetector:
                     now = time.monotonic()
                     if now - self._last_fire >= self.cooldown:
                         self._last_fire = now
+                        logger.info("wake word: phrase detected — firing callback")
                         try:
                             self.on_wake()
                         except Exception as e:
                             logger.warning("wake word callback failed: %s", e)
+                    else:
+                        logger.debug("wake word: detection within cooldown — ignored")
         finally:
             try:
                 stream.stop()
                 stream.close()
             except Exception:
                 pass
-            logger.debug("wake word: stream closed")
+            logger.info("wake word: stream closed")
 
 
 # ---------------------------------------------------------------------------

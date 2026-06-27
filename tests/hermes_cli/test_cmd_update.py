@@ -602,6 +602,95 @@ class TestCmdUpdateCheckBranchFlag:
         assert "bb/gui" in out
 
 
+class TestCmdUpdateShallowHistory:
+    """Shallow installs without a merge-base should avoid bogus rev-list counts."""
+
+    def _apply_side_effect(self, *, check_mode: bool = False):
+        compare_ref = "upstream/main" if check_mode else "origin/main"
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+
+            if "fetch" in joined and ("origin" in joined or "upstream" in joined):
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{compare_ref}\n", stderr="")
+            if "rev-parse" in joined and "--is-shallow-repository" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+            if "merge-base" in joined:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            if "pull" in joined and "--ff-only" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "pip" in joined and "--version" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="pip 25.0\n", stderr="")
+            if "rev-list" in joined:
+                raise AssertionError(f"rev-list should be skipped for {joined}")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        return side_effect
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_skips_exact_count_when_shallow_history_has_no_merge_base(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = self._apply_side_effect(check_mode=False)
+        empty_sync = {"copied": [], "updated": [], "user_modified": [], "cleaned": []}
+
+        with (
+            patch.object(hm, "_capture_head_sha", return_value="oldsha"),
+            patch.object(
+                hm,
+                "_validate_critical_files_syntax",
+                return_value=(True, None, None),
+            ),
+            patch.object(hm, "_clear_bytecode_cache", return_value=0),
+            patch.object(
+                hm, "_install_python_dependencies_with_optional_fallback"
+            ),
+            patch.object(hm, "_refresh_active_lazy_features"),
+            patch.object(hm, "_update_node_dependencies"),
+            patch.object(hm, "_build_web_ui"),
+            patch("tools.skills_sync.sync_skills", return_value=empty_sync),
+            patch("hermes_cli.profiles.list_profiles", return_value=[]),
+            patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
+            patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
+            patch("hermes_cli.config.check_config_version", return_value=(1, 1)),
+        ):
+            cmd_update(mock_args)
+
+        out = capsys.readouterr().out
+        assert "exact commit count unavailable" in out
+        assert "shallow history" in out
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("merge-base HEAD origin/main" in c for c in commands), commands
+        assert not any("rev-list" in c for c in commands), commands
+        assert any("pull --ff-only origin main" in c for c in commands), commands
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_reports_generic_update_when_shallow_history_has_no_merge_base(
+        self, mock_run, _mock_method, capsys
+    ):
+        mock_run.side_effect = self._apply_side_effect(check_mode=True)
+        args = SimpleNamespace(check=True, branch=None)
+
+        cmd_update(args)
+
+        out = capsys.readouterr().out
+        assert "remote tip differs from upstream/main" in out
+        assert "exact commit count is unavailable" in out
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("merge-base HEAD upstream/main" in c for c in commands), commands
+        assert not any("rev-list" in c for c in commands), commands
+
+
 class TestCmdUpdateZipBranchRefusal:
     """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
 

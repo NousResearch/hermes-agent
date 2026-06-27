@@ -7547,6 +7547,47 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
     return -1
 
 
+def _get_remote_update_commit_count(
+    git_cmd: list[str], cwd: Path, compare_branch: str
+) -> tuple[int | None, bool]:
+    """Return ``(count, exact)`` for ``HEAD..compare_branch``.
+
+    Shallow installs can end up with no merge-base against the remote branch.
+    In that state ``git rev-list --count`` often returns a large but misleading
+    distance, even though the actionable state is simply "remote tip differs".
+    When that guard trips, return ``(None, False)`` so callers can surface a
+    generic update message and continue with the real pull/reset flow.
+    """
+    shallow_result = subprocess.run(
+        git_cmd + ["rev-parse", "--is-shallow-repository"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    is_shallow = (
+        shallow_result.returncode == 0
+        and shallow_result.stdout.strip().lower() == "true"
+    )
+    if is_shallow:
+        merge_base_result = subprocess.run(
+            git_cmd + ["merge-base", "HEAD", compare_branch],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if merge_base_result.returncode != 0 or not merge_base_result.stdout.strip():
+            return None, False
+
+    result = subprocess.run(
+        git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return int(result.stdout.strip()), True
+
+
 def _should_skip_upstream_prompt() -> bool:
     """Check if user previously declined to add upstream."""
     from hermes_constants import get_hermes_home
@@ -8631,20 +8672,22 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
 
-    rev_result = subprocess.run(
-        git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
+    behind, exact_count = _get_remote_update_commit_count(
+        git_cmd, PROJECT_ROOT, compare_branch
     )
-    behind = int(rev_result.stdout.strip())
 
     if behind == 0:
         print("✓ Already up to date.")
     else:
-        commits_word = "commit" if behind == 1 else "commits"
-        print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
+        if exact_count:
+            commits_word = "commit" if behind == 1 else "commits"
+            print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
+        else:
+            print(
+                "⚕ Update available: remote tip differs from "
+                f"{compare_branch}, but exact commit count is unavailable for "
+                "this shallow history."
+            )
         from hermes_cli.config import recommended_update_command
 
         print(f"  Run '{recommended_update_command()}' to install.")
@@ -9091,14 +9134,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
         # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
+        commit_count, exact_commit_count = _get_remote_update_commit_count(
+            git_cmd, PROJECT_ROOT, f"origin/{branch}"
         )
-        commit_count = int(result.stdout.strip())
 
         if commit_count == 0:
             _invalidate_update_cache()
@@ -9127,7 +9165,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("✓ Already up to date!")
             return
 
-        print(f"→ Found {commit_count} new commit(s)")
+        if exact_commit_count:
+            print(f"→ Found {commit_count} new commit(s)")
+        else:
+            print(
+                "→ Update available (shallow history without a merge-base; "
+                "exact commit count unavailable)"
+            )
 
         # Snapshot critical state (state.db, config, pairing JSONs, etc.)
         # before pulling so a user can recover if something goes wrong.

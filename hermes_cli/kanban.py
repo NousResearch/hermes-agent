@@ -45,9 +45,10 @@ _STATUS_ICONS = {
 
 
 def _fmt_ts(ts: Optional[int]) -> str:
-    if not ts:
-        return ""
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    # Delegate to the canonical helper in kanban_db, which renders the
+    # timestamp in the user's configured IANA timezone rather than the
+    # host's local one (UTC on most servers).
+    return kb.fmt_ts(ts)
 
 
 def _fmt_task_line(t: kb.Task) -> str:

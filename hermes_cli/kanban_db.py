@@ -136,6 +136,29 @@ KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
 
+def fmt_ts(ts: Optional[int]) -> str:
+    """Format a Unix timestamp in the user's configured IANA timezone.
+
+    Resolves via ``hermes_time`` (HERMES_TIMEZONE env var or
+    ``config.yaml`` ``timezone`` key) and falls back to the server's local
+    time when the user hasn't configured one. The previous implementation
+    used ``time.localtime()``, which rendered host-TZ (typically UTC) and
+    silently shifted displayed wall-clock time for non-UTC users.
+    """
+    if not ts:
+        return ""
+    try:
+        from hermes_time import get_timezone
+        from datetime import datetime
+
+        tz = get_timezone()
+        if tz is not None:
+            return datetime.fromtimestamp(int(ts), tz=tz).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        pass
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+
+
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
     """Fire a kanban lifecycle plugin hook, fully best-effort.
 
@@ -7921,7 +7944,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             )
         for offset, run in enumerate(shown):
             idx = first_shown_idx + offset
-            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(run.started_at))
+            ts = fmt_ts(run.started_at)
             profile = run.profile or "(unknown)"
             outcome = run.outcome or run.status
             lines.append(f"### Attempt {idx} — {outcome} ({profile}, {ts})")
@@ -7996,9 +8019,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         if role_rows:
             lines.append(f"## Recent work by @{task.assignee}")
             for row in role_rows:
-                ts = time.strftime(
-                    "%Y-%m-%d %H:%M", time.localtime(int(row["ended_at"]))
-                )
+                ts = fmt_ts(int(row["ended_at"]))
                 s = (row["summary"] or "").strip().splitlines()
                 first = s[0][:200] if s else "(no summary)"
                 lines.append(f"- {row['id']} — {row['title']} ({ts}): {first}")
@@ -8022,7 +8043,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                 f"omitted; showing most recent {len(shown_c)})_"
             )
         for c in shown_c:
-            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(c.created_at))
+            ts = fmt_ts(c.created_at)
             # Render author with explicit "comment from worker" framing so
             # operator-controlled HERMES_PROFILE values like "hermes-system"
             # or "operator" can't be misread by the next worker as a system

@@ -1670,7 +1670,11 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if not or_key:
-            _mark_provider_unhealthy("openrouter", ttl=60)
+            # Missing credentials means OpenRouter is simply unavailable for
+            # this installation; do not mark it as a payment/credit failure.
+            # Explicit callers get a precise warning from
+            # resolve_provider_client(), while auto mode can quietly continue
+            # to the next configured provider.
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
@@ -1679,7 +1683,8 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
+        # Missing credentials means OpenRouter is simply unavailable for this
+        # installation; do not mark it as a payment/credit failure.
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
@@ -1719,11 +1724,9 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
-        logger.warning(
-            "Auxiliary Nous client unavailable: no Nous authentication found "
-            "(run: hermes auth)."
+        logger.debug(
+            "Auxiliary Nous client unavailable: no Nous authentication found."
         )
-        _mark_provider_unhealthy("nous", ttl=60)
         return None, None
     if runtime is None and nous:
         logger.debug(
@@ -3692,7 +3695,8 @@ def _resolve_auto(
         tried.append(label)
     logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
                    "Compression, summarization, and memory flush will not work. "
-                   "Set OPENROUTER_API_KEY or configure a local model in config.yaml.",
+                   "Configure auxiliary.<task>.provider (for example, gemini) "
+                   "or set a supported provider credential.",
                    ", ".join(tried))
     return None, None
 

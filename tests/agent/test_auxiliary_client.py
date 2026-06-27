@@ -739,13 +739,10 @@ class TestExpiredCodexFallback:
         import base64
         import time as _time
 
-        # Belt-and-suspenders: _try_openrouter marks openrouter unhealthy
-        # when OPENROUTER_API_KEY is absent (which the preceding test in
-        # this class exercises).  The file-level _clean_env autouse fixture
-        # clears the cache, but fixture ordering with the conftest
-        # _hermetic_environment autouse can leave a narrow window where
-        # the mark reappears.  Explicitly clear here so this test is
-        # independent of run order.
+        # Clear the process-local unhealthy cache so this test is independent
+        # of any previous provider-fallback test. Missing OpenRouter
+        # credentials no longer mark the provider as a payment failure, but
+        # real 402/rate-limit tests still can.
         import agent.auxiliary_client as _aux_mod
         _aux_mod._aux_unhealthy_until.clear()
         _aux_mod._aux_unhealthy_logged_at.clear()
@@ -918,6 +915,20 @@ class TestExplicitProviderRouting:
             "OPENROUTER_API_KEY not set" in record.message
             for record in caplog.records
         )
+
+    def test_missing_openrouter_credentials_do_not_mark_payment_unhealthy(self, monkeypatch, caplog):
+        """Absent OpenRouter credentials are not a billing/credit failure."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        aux._reset_aux_unhealthy_cache()
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                client, model = aux._try_openrouter()
+        assert client is None
+        assert model is None
+        assert not aux._is_provider_unhealthy("openrouter")
+        assert not any("payment / credit error" in record.message for record in caplog.records)
 
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""

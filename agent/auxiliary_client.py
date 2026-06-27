@@ -2393,6 +2393,41 @@ def _normalize_chain_label(provider: str) -> str:
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
 
 
+def _capacity_governor_allows_provider(
+    provider: str,
+    model: Optional[str],
+    task: Optional[str],
+    *,
+    raw_codex: bool = False,
+) -> bool:
+    try:
+        from agent.capacity_governor import (
+            check_capacity,
+            format_capacity_block_message,
+            task_class_for_auxiliary_task,
+        )
+
+        decision = check_capacity(
+            provider=provider,
+            model=model,
+            task_class=task_class_for_auxiliary_task(task, raw_codex=raw_codex),
+        )
+        if not decision.allowed:
+            logger.info(
+                "Auxiliary %s: %s",
+                task or "call",
+                format_capacity_block_message(decision),
+            )
+            return False
+    except Exception:
+        logger.debug(
+            "Auxiliary %s: capacity governor check failed; allowing call",
+            task or "call",
+            exc_info=True,
+        )
+    return True
+
+
 def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None:
     """Mark ``provider`` as recently-402'd, hidden from chain iteration
     until the TTL expires. Called from the payment-fallback branches in
@@ -3188,7 +3223,7 @@ def _try_main_agent_model_fallback(
 
     try:
         client, resolved_model = resolve_provider_client(
-            provider=main_provider, model=main_model,
+            provider=main_provider, model=main_model, task=task,
         )
     except Exception:
         client, resolved_model = None, None
@@ -3605,6 +3640,7 @@ def _resolve_auto(
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
                 api_mode=runtime_api_mode or None,
+                task=task,
             )
             if client is not None:
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
@@ -3916,6 +3952,13 @@ def resolve_provider_client(
 
     # ── OpenAI Codex (OAuth → Responses API) ─────────────────────────
     if provider == "openai-codex":
+        if not _capacity_governor_allows_provider(
+            provider,
+            model,
+            task,
+            raw_codex=raw_codex,
+        ):
+            return None, None
         if not model:
             logger.warning(
                 "resolve_provider_client: openai-codex requested without a "
@@ -4979,6 +5022,9 @@ def _get_cached_client(
     preventing the fd-exhaustion that previously occurred in long-running
     gateways where recycled worker threads created unbounded entries (#10200).
     """
+    if not _capacity_governor_allows_provider(provider, model, task):
+        return None, None
+
     # Resolve the current event loop for async clients so we can validate
     # cached entries.  Loop identity is NOT in the cache key — instead we
     # check at hit time whether the cached loop is still current and open.

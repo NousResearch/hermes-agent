@@ -1180,6 +1180,27 @@ def run_conversation(
                         )
                     return agent._interruptible_api_call(next_api_kwargs)
 
+                try:
+                    from agent.capacity_governor import (
+                        check_capacity,
+                        format_capacity_block_message,
+                    )
+
+                    _capacity_decision = check_capacity(
+                        provider=agent.provider,
+                        model=agent.model,
+                        task_class="interactive_main",
+                    )
+                    if not _capacity_decision.allowed:
+                        raise RuntimeError(format_capacity_block_message(_capacity_decision))
+                except RuntimeError:
+                    raise
+                except Exception:
+                    logger.debug(
+                        "Interactive capacity governor check failed; allowing main call",
+                        exc_info=True,
+                    )
+
                 from hermes_cli.middleware import run_llm_execution_middleware
 
                 response = run_llm_execution_middleware(

@@ -2427,6 +2427,31 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"(or pin the original values to keep them). See #44585."
             )
 
+        try:
+            from agent.capacity_governor import (
+                check_capacity,
+                format_capacity_block_message,
+            )
+
+            _capacity_decision = check_capacity(
+                provider=runtime.get("provider"),
+                model=model,
+                task_class="cron_judgment",
+                config=_cfg,
+            )
+            if not _capacity_decision.allowed:
+                message = format_capacity_block_message(_capacity_decision)
+                logger.warning("Job '%s': skipped by capacity governor: %s", job_id, message)
+                raise RuntimeError(message)
+        except RuntimeError:
+            raise
+        except Exception as gov_exc:
+            logger.debug(
+                "Job '%s': capacity governor check failed; allowing cron run: %s",
+                job_id,
+                gov_exc,
+            )
+
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()

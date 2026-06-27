@@ -181,6 +181,63 @@ def test_on_session_end_ingests_clean_messages(provider):
     assert provider._session_turns == []
 
 
+# A slash-skill invocation expands into a model-facing turn that embeds the full
+# skill body; on_session_end reads the raw conversation, so it must strip the
+# scaffolding (like MemoryManager does for the prefetch/sync fan-out, #47311)
+# before ingesting — otherwise the whole skill body lands in the vector store.
+_SKILL_SCAFFOLDING_TURN = (
+    '[IMPORTANT: The user has invoked the "skill-creator" skill, indicating they want '
+    "you to follow its instructions. The full skill content is loaded below.]\n\n"
+    "# Skill Creator\n\n"
+    "Large skill body that must not be searched or embedded.\n\n"
+    "The user has provided the following instruction alongside the skill invocation: "
+    "make a skill for release triage"
+)
+_BARE_SKILL_TURN = (
+    '[IMPORTANT: The user has invoked the "skill-creator" skill, indicating they want '
+    "you to follow its instructions. The full skill content is loaded below.]\n\n"
+    "# Skill Creator\n\n"
+    "Large skill body, no user instruction."
+)
+
+
+def test_on_session_end_strips_skill_scaffolding(provider):
+    provider.on_session_end(
+        [
+            {"role": "user", "content": _SKILL_SCAFFOLDING_TURN},
+            {"role": "assistant", "content": "done"},
+        ]
+    )
+    assert len(provider._client.ingest_calls) == 1
+    ingested = provider._client.ingest_calls[0]["messages"]
+    assert ingested == [
+        {"role": "user", "content": "make a skill for release triage"},
+        {"role": "assistant", "content": "done"},
+    ]
+    assert all("Large skill body" not in m["content"] for m in ingested)
+
+
+def test_on_session_end_drops_bare_skill_invocation(provider):
+    provider.on_session_end(
+        [
+            {"role": "user", "content": "what is the weather"},
+            {"role": "assistant", "content": "it is sunny"},
+            {"role": "user", "content": _BARE_SKILL_TURN},
+            {"role": "assistant", "content": "loaded the skill"},
+        ]
+    )
+    assert len(provider._client.ingest_calls) == 1
+    ingested = provider._client.ingest_calls[0]["messages"]
+    # The bare /skill turn carried no user instruction, so the WHOLE turn is
+    # dropped — its skill body is never ingested, and the assistant reply that
+    # followed it ("loaded the skill") is dropped too rather than left orphaned.
+    assert ingested == [
+        {"role": "user", "content": "what is the weather"},
+        {"role": "assistant", "content": "it is sunny"},
+    ]
+    assert all("Large skill body" not in m["content"] for m in ingested)
+
+
 def test_merge_metadata_stamps_sm_source():
     # sm_source routes Hermes writes into the "Hermes" Space in the Supermemory
     # app (functional routing, not telemetry) — must always be present.

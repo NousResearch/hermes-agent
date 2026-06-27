@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -597,11 +598,31 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if not self._active or not self._write_enabled or not self._client or not self._session_id:
             return
         cleaned = []
+        skip_turn = False
         for message in messages or []:
             role = message.get("role")
             if role not in {"user", "assistant"}:
                 continue
-            content = _clean_text_for_capture(str(message.get("content", "")))
+            raw = str(message.get("content", ""))
+            if role == "user":
+                # Strip slash-skill scaffolding so the session ingest captures
+                # the user's actual instruction, not the embedded skill body.
+                # MemoryManager._strip_skill_scaffolding (#47311) only covers
+                # the prefetch/sync fan-out; this session-end ingest reads the
+                # raw conversation directly, so it must strip here too.
+                instruction = extract_user_instruction_from_skill_message(raw)
+                if not instruction:
+                    # Bare /skill invocation: no memory-worthy user content.
+                    # Drop the whole turn — including the assistant reply(ies)
+                    # that follow — so we never ingest an assistant message
+                    # detached from the instruction that produced it.
+                    skip_turn = True
+                    continue
+                skip_turn = False
+                raw = instruction
+            elif skip_turn:
+                continue
+            content = _clean_text_for_capture(raw)
             if content:
                 cleaned.append({"role": role, "content": content})
         if not cleaned:

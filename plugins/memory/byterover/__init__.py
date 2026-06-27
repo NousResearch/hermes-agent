@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -287,11 +288,30 @@ class ByteRoverMemoryProvider(MemoryProvider):
 
         # Build a summary of messages about to be compressed
         parts = []
+        skip_turn = False
         for msg in messages[-10:]:  # last 10 messages
             role = msg.get("role", "")
             content = msg.get("content", "")
-            if isinstance(content, str) and content.strip() and role in {"user", "assistant"}:
-                parts.append(f"{role}: {content[:500]}")
+            if not (isinstance(content, str) and content.strip() and role in {"user", "assistant"}):
+                continue
+            if role == "user":
+                # Strip slash-skill scaffolding so the pre-compression flush
+                # curates the user's actual instruction, not the embedded skill
+                # body. MemoryManager._strip_skill_scaffolding (#47311) only
+                # covers the prefetch/sync fan-out; this hook reads the raw
+                # conversation directly, so it must strip here too.
+                instruction = extract_user_instruction_from_skill_message(content)
+                if not instruction:
+                    # Bare /skill invocation: drop the whole turn (including the
+                    # assistant reply that follows) so no skill body or orphaned
+                    # response gets curated into the knowledge tree.
+                    skip_turn = True
+                    continue
+                skip_turn = False
+                content = instruction
+            elif skip_turn:
+                continue
+            parts.append(f"{role}: {content[:500]}")
 
         if not parts:
             return ""

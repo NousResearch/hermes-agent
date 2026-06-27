@@ -239,10 +239,11 @@ interface SessionContextMenuProps extends SessionActions {
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
   const { renameDialog, renderItems } = useSessionActions(actions)
-  // Radix's ContextMenuTrigger fires on right-click. On touch, dnd-kit's
-  // pointer sensor captures the pointer and Radix's built-in long-press
-  // detection never fires reliably. Bind our own 500ms long-press detector
-  // and synthesize a contextmenu event so the same Radix menu opens.
+  // Use a controlled DropdownMenu so we can open it programmatically from a
+  // long-press timer — Radix's ContextMenu only opens on a *trusted*
+  // contextmenu event, which a JS-dispatched MouseEvent is not. Right-click
+  // on desktop and long-press on touch both route through onOpenChange(true).
+  const [open, setOpen] = useState(false)
   const longPressTimer = useRef<number | null>(null)
   const longPressOrigin = useRef<{ x: number; y: number } | null>(null)
   const clearLongPress = () => {
@@ -253,16 +254,9 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
     longPressOrigin.current = null
   }
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    // Accept mouse too — the iOS simulator dispatches pointerType 'mouse'.
-    // Right-click still opens normally via Radix's own handler; this only
-    // fires the synthetic event after a 500ms hold, never on a quick click.
-    if (event.pointerType !== 'touch' && event.pointerType !== 'mouse' && event.pointerType !== 'pen') return
     longPressOrigin.current = { x: event.clientX, y: event.clientY }
-    const { clientX, clientY, currentTarget } = event
     longPressTimer.current = window.setTimeout(() => {
-      currentTarget.dispatchEvent(
-        new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window, clientX, clientY })
-      )
+      setOpen(true)
       longPressTimer.current = null
     }, 500)
   }
@@ -272,12 +266,17 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
     const dy = event.clientY - longPressOrigin.current.y
     if (dx * dx + dy * dy > 100) clearLongPress()
   }
+  const onContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setOpen(true)
+  }
   return (
     <>
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
+      <DropdownMenu onOpenChange={setOpen} open={open}>
+        <DropdownMenuTrigger asChild>
           <div
             className="contents"
+            onContextMenu={onContextMenu}
             onPointerCancel={clearLongPress}
             onPointerDown={onPointerDown}
             onPointerLeave={clearLongPress}
@@ -286,11 +285,11 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
           >
             {children}
           </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-40">
-          {renderItems(ContextMenuItem)}
-        </ContextMenuContent>
-      </ContextMenu>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-40">
+          {renderItems(DropdownMenuItem)}
+        </DropdownMenuContent>
+      </DropdownMenu>
       {renameDialog}
     </>
   )

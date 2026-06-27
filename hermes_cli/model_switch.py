@@ -807,6 +807,7 @@ def switch_model(
     resolved_alias = ""
     new_model = raw_input.strip()
     target_provider = current_provider
+    resolved_moa_preset = False
 
     # =================================================================
     # PATH A: Explicit --provider given
@@ -843,6 +844,14 @@ def switch_model(
             )
 
         target_provider = pdef.id
+        if target_provider == "moa" and not new_model:
+            try:
+                from hermes_cli.config import load_config
+                from hermes_cli.moa_config import normalize_moa_config
+
+                new_model = normalize_moa_config(load_config().get("moa") or {})["default_preset"]
+            except Exception:
+                new_model = "default"
 
         # Guard against silent aggregator hops. A vendor name like bare
         # "openai" is an alias that resolves to an aggregator ("openrouter").
@@ -925,10 +934,28 @@ def switch_model(
     # PATH B: No explicit provider — resolve from model input
     # =================================================================
     else:
-        # --- Step a: Try alias resolution on current provider ---
-        alias_result = resolve_alias(raw_input, current_provider)
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import exact_moa_preset_name, normalize_moa_config
 
-        if alias_result is not None:
+            _moa_cfg = normalize_moa_config(load_config().get("moa") or {})
+            _moa_match = exact_moa_preset_name(_moa_cfg, raw_input)
+            if _moa_match:
+                target_provider = "moa"
+                new_model = _moa_match
+                resolved_alias = ""
+                resolved_moa_preset = True
+                alias_result = None
+            else:
+                alias_result = resolve_alias(raw_input, current_provider)
+        except Exception:
+            alias_result = resolve_alias(raw_input, current_provider)
+
+        # --- Step a: Try alias resolution on current provider ---
+
+        if resolved_moa_preset:
+            pass
+        elif alias_result is not None:
             target_provider, new_model, resolved_alias = alias_result
             logger.debug(
                 "Alias '%s' resolved to %s on %s",
@@ -961,7 +988,7 @@ def switch_model(
                             f"Try specifying the full model name."
                         ),
                     )
-            else:
+            elif not resolved_moa_preset:
                 # --- Step c: On aggregator, convert vendor:model to vendor/model ---
                 # Only convert when there's no slash — a slash means the name
                 # is already in vendor/model format and the colon is a variant
@@ -1378,11 +1405,13 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
 
 
 def _provider_cfg_model_ids(ep_cfg: dict) -> list[str]:
-    """Model ids declared under a ``providers:`` config entry."""
+    """Model ids explicitly configured on a ``providers:`` entry."""
     models_list: list[str] = []
+
     default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
     if default_model:
         models_list.append(str(default_model))
+
     cfg_models = ep_cfg.get("models", [])
     if isinstance(cfg_models, dict):
         for model_id in cfg_models:
@@ -1392,11 +1421,12 @@ def _provider_cfg_model_ids(ep_cfg: dict) -> list[str]:
         for model_id in cfg_models:
             if model_id and model_id not in models_list:
                 models_list.append(str(model_id))
+
     return models_list
 
 
 def _union_preserve_order_model_ids(primary: list[str], extra: list[str]) -> list[str]:
-    """Append ``extra`` model ids not already present (case-insensitive)."""
+    """Append ``extra`` model ids not already present, case-insensitively."""
     seen = {m.lower() for m in primary if m}
     merged = list(primary)
     for model_id in extra:
@@ -1413,13 +1443,7 @@ def _union_preserve_order_model_ids(primary: list[str], extra: list[str]) -> lis
 def _merge_user_provider_models_into_results(
     results: list[dict], user_providers: dict | None
 ) -> None:
-    """Fold explicit ``providers:`` model lists into already-emitted rows.
-
-    Canonical rows (e.g. opencode-go from HERMES_OVERLAYS) are emitted before
-    section 3 walks ``providers:``. Section 3 skips duplicate slugs, which left
-    config-only models like minimax-m3 invisible in GUI pickers when the live
-    /v1/models probe returned a smaller catalog.
-    """
+    """Fold configured ``providers:`` model IDs into already-emitted rows."""
     if not user_providers or not isinstance(user_providers, dict):
         return
 
@@ -1968,7 +1992,27 @@ def list_authenticated_providers(
                 or ep_cfg.get("url", "")
                 or ""
             )
-            models_list = _provider_cfg_model_ids(ep_cfg)
+            # ``default_model`` is the legacy key; ``model`` matches what
+            # custom_providers entries use, so accept either.
+            default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
+
+            # Build models list from both default_model and full models array
+            models_list = []
+            if default_model:
+                models_list.append(default_model)
+            # Also include the full models list from config.
+            # Hermes writes ``models:`` as a dict keyed by model id
+            # (see hermes_cli/main.py::_save_custom_provider); older
+            # configs or hand-edited files may still use a list.
+            cfg_models = ep_cfg.get("models", [])
+            if isinstance(cfg_models, dict):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
+            elif isinstance(cfg_models, list):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -2004,9 +2048,7 @@ def list_authenticated_providers(
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
                     if live_models:
-                        models_list = _union_preserve_order_model_ids(
-                            live_models, models_list
-                        )
+                        models_list = live_models
                 except Exception:
                     pass
 
@@ -2275,12 +2317,50 @@ def list_authenticated_providers(
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 
+    # Surface a custom / uncurated model the user selected via the CLI.
+    # Each row's model list is its curated/live catalog, so a model the user set
+    # with `/model <provider>/<uncurated-name>` would otherwise be invisible in
+    # every picker — the main model picker AND the MoA reference/aggregator slot
+    # pickers, which read these same rows. Inject it at the front of the current
+    # provider's row (matched by slug) so it is selectable and shown. Done as a
+    # post-pass so it covers every provider section uniformly, regardless of
+    # which branch emitted the row.
     _merge_user_provider_models_into_results(results, user_providers)
+
+    if current_model:
+        for _row in results:
+            if not _row.get("is_current"):
+                continue
+            _models = _row.get("models") or []
+            if current_model not in _models:
+                _row["models"] = [current_model, *_models]
+                _row["total_models"] = _row.get("total_models", len(_models)) + 1
+            break
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
+
+
+def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = "") -> List[dict]:
+    """Add the virtual MoA provider row used by interactive model pickers.
+
+    ``list_authenticated_providers()`` only returns real/auth-backed providers.
+    The CLI model inventory adds MoA separately so named presets appear next to
+    normal providers; gateway pickers call ``list_picker_providers()`` directly,
+    so they need the same virtual row here. Reuse the inventory's single row
+    builder so the row shape stays defined in one place.
+    """
+    try:
+        from hermes_cli.inventory import _moa_provider_row
+
+        moa_row = _moa_provider_row(current_provider)
+        if moa_row is None:
+            return providers
+        return [moa_row] + [p for p in providers if str(p.get("slug", "")).lower() != "moa"]
+    except Exception:
+        return providers
 
 
 def list_picker_providers(
@@ -2290,6 +2370,7 @@ def list_picker_providers(
     custom_providers: list | None = None,
     max_models: int | None = None,
     current_model: str = "",
+    include_moa: bool = False,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -2320,6 +2401,8 @@ def list_picker_providers(
         max_models=max_models,
         current_model=current_model,
     )
+    if include_moa:
+        providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
     filtered: List[dict] = []
     for p in providers:

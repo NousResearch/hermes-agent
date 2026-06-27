@@ -215,7 +215,7 @@ Rolling back may cause config incompatibilities if new options were added. Run `
 
 ### Note for Nix users
 
-If you installed via Nix flake, updates are managed through the Nix package manager:
+Nix is no longer an explicitly supported install path (best-effort only) — see [Nix Setup](./nix-setup.md). If you installed via Nix flake, updates are managed through the Nix package manager:
 
 ```bash
 # Update the flake input

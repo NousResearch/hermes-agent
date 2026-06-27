@@ -108,39 +108,6 @@ def load_picker_context() -> ConfigContext:
 # ─── Public: payload builder ────────────────────────────────────────────
 
 
-def _apply_opencode_go_official_catalog(rows: list[dict]) -> None:
-    """Ensure the OpenCode Go row exposes the official subscription catalog.
-
-    Unions the docs list with any live/config IDs, orders official models
-    first, and normalizes the display name for GUI pickers.
-    """
-    from hermes_cli.models import OPENCODE_GO_OFFICIAL_MODELS
-    from hermes_cli.model_switch import _union_preserve_order_model_ids
-
-    for row in rows:
-        if str(row.get("slug", "")).lower() != "opencode-go":
-            continue
-        row["name"] = "OpenCode Go"
-        before = list(row.get("models") or [])
-        merged = _union_preserve_order_model_ids(
-            OPENCODE_GO_OFFICIAL_MODELS, before
-        )
-        present = {m.lower(): m for m in merged}
-        ordered: list[str] = []
-        for mid in OPENCODE_GO_OFFICIAL_MODELS:
-            key = mid.lower()
-            if key in present:
-                ordered.append(present[key])
-        seen = {m.lower() for m in ordered}
-        for m in merged:
-            lk = m.lower()
-            if lk not in seen:
-                ordered.append(m)
-                seen.add(lk)
-        row["models"] = ordered
-        row["total_models"] = len(ordered)
-
-
 def build_models_payload(
     ctx: ConfigContext,
     *,
@@ -196,6 +163,10 @@ def build_models_payload(
         refresh=refresh,
     )
 
+    moa_row = _moa_provider_row(ctx.current_provider)
+    if moa_row is not None:
+        rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
+
     # --- Deduplicate: remove models from aggregators that overlap with
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
     # serves a model whose name also appears in an aggregator's curated
@@ -215,7 +186,6 @@ def build_models_payload(
         for row in rows:
             if row.get("is_user_defined"):
                 user_models.update(m.lower() for m in (row.get("models") or []))
-
         if user_models:
             for row in rows:
                 # A user's own configured provider is never an "aggregator
@@ -237,20 +207,13 @@ def build_models_payload(
                 if not _is_routing_aggregator(slug):
                     continue
                 original = row.get("models") or []
-                if not original:
-                    continue
                 filtered = [m for m in original if m.lower() not in user_models]
                 if len(filtered) < len(original):
                     row["models"] = filtered
                     row["total_models"] = len(filtered)
 
-    from hermes_cli.model_switch import _merge_user_provider_models_into_results
-
-    _merge_user_provider_models_into_results(rows, ctx.user_providers)
-    _apply_opencode_go_official_catalog(rows)
-
     if include_unconfigured:
-        rows = list(rows) + _append_unconfigured_rows(rows, ctx)
+        rows = list(rows) + [r for r in _append_unconfigured_rows(rows, ctx) if str(r.get("slug", "")).lower() != "moa"]
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:
@@ -477,3 +440,34 @@ def _apply_pricing(
                 # is never blocked from picking a model.
                 row["free_tier"] = False
                 row["unavailable_models"] = []
+
+
+def _moa_provider_row(current_provider: str = "") -> dict | None:
+    """Build the virtual ``moa`` provider row for model pickers.
+
+    Shared by the CLI inventory (:func:`build_models_payload`) and the gateway
+    picker path (:func:`hermes_cli.model_switch.list_picker_providers`) so the
+    row shape stays in one place. Returns ``None`` when no MoA presets exist.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import normalize_moa_config
+
+        cfg = normalize_moa_config(load_config().get("moa") or {})
+        models = list(cfg.get("presets", {}).keys())
+        if not models:
+            return None
+        return {
+            "slug": "moa",
+            "name": "Mixture of Agents",
+            "is_current": (current_provider or "").lower() == "moa",
+            "is_user_defined": False,
+            "models": models,
+            "total_models": len(models),
+            "source": "virtual",
+            "authenticated": True,
+            "auth_type": "virtual",
+            "warning": "Aggregator acts as the selected model; references provide analysis before each call.",
+        }
+    except Exception:
+        return None

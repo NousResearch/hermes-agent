@@ -30,14 +30,60 @@ def _slot_label(slot: dict[str, str]) -> str:
     return f"{slot.get('provider', '').strip()}:{slot.get('model', '').strip()}"
 
 
+def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
+    """Resolve a reference/aggregator slot to real runtime call kwargs.
+
+    A MoA slot is just a model selection — it must be called the same way any
+    model is called elsewhere, not through a bare ``call_llm(provider=...,
+    model=...)`` that leaves base_url/api_key/api_mode unresolved and lets the
+    auxiliary auto-detector guess. We route the slot's provider through
+    ``resolve_runtime_provider`` (the canonical provider→api_mode/base_url/
+    api_key resolver the CLI, gateway, and delegate_task all use), so the slot
+    gets its provider's real API surface — e.g. MiniMax → anthropic_messages,
+    GPT-5/o-series → max_completion_tokens, custom endpoints → their base_url.
+
+    Returns the kwargs to pass through to ``call_llm`` (provider/model plus the
+    resolved base_url/api_key when available). Falls back to the bare
+    provider/model on any resolution error so a misconfigured slot still
+    attempts the call rather than aborting the whole MoA turn.
+    """
+    provider = str(slot.get("provider") or "").strip()
+    model = str(slot.get("model") or "").strip()
+    out: dict[str, Any] = {"provider": provider, "model": model}
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        rt = resolve_runtime_provider(requested=provider, target_model=model)
+        # Pass the resolved endpoint through so call_llm builds the request for
+        # the provider's actual API surface instead of auto-detecting. base_url
+        # routes call_llm to the right adapter (incl. anthropic_messages mode);
+        # api_key is the resolved credential for that provider.
+        if rt.get("base_url"):
+            out["base_url"] = rt["base_url"]
+        if rt.get("api_key"):
+            out["api_key"] = rt["api_key"]
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
+    return out
+
+
 def _run_reference(
     slot: dict[str, str],
     ref_messages: list[dict[str, Any]],
     *,
-    temperature: float,
-    max_tokens: int,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
 ) -> tuple[str, str]:
     """Call one reference model and return ``(label, text)``.
+
+    The slot is resolved to its provider's real runtime (via ``_slot_runtime``)
+    and called through the same ``call_llm`` request-building path any model
+    uses, so per-model wire-format handling (anthropic_messages,
+    max_completion_tokens, fixed/forbidden temperature) applies identically to
+    a reference as it would if that model were the acting model. MoA imposes no
+    cap of its own (``max_tokens`` defaults to ``None`` → omitted → the model's
+    real maximum); ``temperature`` is only the user's configured preset value,
+    which call_llm may still override per model.
 
     Never raises: a failed reference becomes a labelled note so the aggregator
     can still act with partial context. Designed to run inside a thread pool —
@@ -48,11 +94,10 @@ def _run_reference(
     try:
         response = call_llm(
             task="moa_reference",
-            provider=slot["provider"],
-            model=slot["model"],
             messages=ref_messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            **_slot_runtime(slot),
         )
         return label, _extract_text(response) or "(empty response)"
     except Exception as exc:
@@ -64,8 +109,8 @@ def _run_references_parallel(
     reference_models: list[dict[str, str]],
     ref_messages: list[dict[str, Any]],
     *,
-    temperature: float,
-    max_tokens: int,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
 ) -> list[tuple[str, str]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -169,12 +214,18 @@ def aggregate_moa_context(
     aggregator: dict[str, str],
     temperature: float = 0.6,
     aggregator_temperature: float = 0.4,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice.
 
     Failures are returned as model-specific notes instead of aborting the normal
     agent loop; the main model can still act with partial context.
+
+    ``max_tokens`` is ``None`` by default: MoA does not cap reference or
+    aggregator output, so each model uses its own maximum. ``call_llm`` omits
+    the parameter entirely when it is ``None`` (see its docstring), which also
+    sidesteps providers that reject ``max_tokens`` outright. A hardcoded cap
+    here previously truncated long aggregator syntheses.
     """
     reference_outputs: list[tuple[str, str]] = []
     ref_messages = _reference_messages(api_messages)
@@ -203,11 +254,10 @@ def aggregate_moa_context(
     try:
         response = call_llm(
             task="moa_aggregator",
-            provider=aggregator["provider"],
-            model=aggregator["model"],
             messages=[{"role": "user", "content": synth_prompt}],
             temperature=aggregator_temperature,
             max_tokens=max_tokens,
+            **_slot_runtime(aggregator),
         )
         synthesis = _extract_text(response)
     except Exception as exc:
@@ -241,7 +291,10 @@ class MoAChatCompletions:
         messages = list(api_kwargs.get("messages") or [])
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}
-        max_tokens = int(preset.get("max_tokens", api_kwargs.get("max_tokens") or 4096) or 4096)
+        # MoA does not cap reference or aggregator output: each model uses its
+        # own maximum. Passing max_tokens=None makes call_llm omit the parameter
+        # (it never caps by default), so a long aggregator synthesis is never
+        # truncated and providers that reject max_tokens don't 400.
         temperature = float(preset.get("reference_temperature", 0.6) or 0.6)
         aggregator_temperature = float(preset.get("aggregator_temperature", api_kwargs.get("temperature") or 0.4) or 0.4)
 
@@ -257,7 +310,7 @@ class MoAChatCompletions:
             reference_models,
             ref_messages,
             temperature=temperature,
-            max_tokens=max_tokens,
+            max_tokens=None,
         )
 
         agg_messages = [dict(m) for m in messages]
@@ -286,17 +339,22 @@ class MoAChatCompletions:
             raise RuntimeError("MoA aggregator cannot be another MoA preset")
         agg_kwargs = dict(api_kwargs)
         agg_kwargs["messages"] = agg_messages
-        agg_kwargs["model"] = aggregator.get("model")
-        agg_kwargs["temperature"] = aggregator_temperature
+        # The aggregator is the acting model. Resolve its slot to the provider's
+        # real runtime (base_url/api_key/api_mode) and call it through the same
+        # request-building path any model uses — so per-model wire-format
+        # handling (anthropic_messages, max_completion_tokens, fixed/forbidden
+        # temperature) applies identically to it. MoA imposes no output cap:
+        # max_tokens is passed through from the caller (normally None → omitted
+        # → the model's real maximum). The preset's old hardcoded 4096 default
+        # is gone — it truncated long syntheses.
         return call_llm(
             task="moa_aggregator",
-            provider=aggregator.get("provider"),
-            model=aggregator.get("model"),
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=agg_kwargs.get("max_tokens"),
             tools=agg_kwargs.get("tools"),
             extra_body=agg_kwargs.get("extra_body"),
+            **_slot_runtime(aggregator),
         )
 
 

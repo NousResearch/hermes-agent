@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import concurrent.futures
 import dataclasses
 import inspect
 import json
@@ -86,6 +87,22 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r")",
     re.IGNORECASE | re.DOTALL,
 )
+
+# Surfaces that consume gateway text programmatically (CLI/TUI "local"
+# diagnostics, API JSON, webhook payloads) and therefore must keep RAW
+# status/error text. EVERY other platform is a human-facing chat surface
+# where operational lifecycle/provider-error noise (and any secrets in it)
+# must be suppressed or sanitized. Widens #28533's Telegram-only filter to
+# all chat gateways (#39293). Fail-closed: unknown/empty platform -> chat.
+_GATEWAY_RAW_TEXT_PLATFORMS = frozenset(
+    {"local", "api_server", "webhook", "msgraph_webhook"}
+)
+
+
+def _gateway_surface_passes_raw_text(platform: Any) -> bool:
+    """True only for programmatic/local surfaces that must keep raw text."""
+    return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
+
 
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
@@ -370,15 +387,18 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 
 
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
-    """Sanitize final gateway replies before sending them to high-noise chats.
+    """Sanitize final gateway replies before sending them to chat surfaces.
 
-    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
-    failure categories instead of raw HTTP bodies, request IDs, or policy text.
-    Other platforms keep the existing behaviour for now.
+    Every human-facing chat surface (Telegram, WhatsApp, Discord, Slack,
+    Signal, Matrix, plugin platforms, etc.) should receive concise, safe
+    provider failure categories with secrets redacted instead of raw HTTP
+    bodies, request IDs, leaked credentials, or policy text. Only programmatic
+    surfaces in ``_GATEWAY_RAW_TEXT_PLATFORMS`` (CLI/TUI ``local`` diagnostics,
+    API JSON, webhook payloads) keep the raw text unchanged.
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
+    if _gateway_surface_passes_raw_text(platform):
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
@@ -392,7 +412,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+    if _gateway_surface_passes_raw_text(platform):
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
@@ -2540,6 +2560,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_via_service: bool = False
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
+    _restart_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _startup_restore_in_progress: bool = False
@@ -2620,7 +2641,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_via_service = False
         self._restart_command_source: Optional[SessionSource] = None
         self._stop_task: Optional[asyncio.Task] = None
-        
+        self._restart_task: Optional[asyncio.Task] = None
+        self._executor_lock = threading.Lock()
+        self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        # Set on gateway stop so the recreate-on-shutdown path can't resurrect
+        # the pool during a real shutdown.
+        self._executor_closing = False
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
@@ -4075,8 +4101,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         gateway/drain_control.py). Marker present -> ``_enter_external_drain``;
         marker absent -> ``_exit_external_drain``. The 1s cadence bounds the
         observe-the-marker latency the live-validation gate checks (point a).
-        Reconciles once at startup so a marker that survived a restart is
-        honoured immediately. Best-effort: any tick error is logged and the
+        Reconciles once at startup. A marker stamped with a PRIOR
+        instantiation epoch (one that survived a machine restart on the durable
+        HERMES_HOME volume — NS-570) is treated as absent by ``drain_requested``
+        and is NOT honoured; only a marker from the current instantiation flips
+        the gateway into drain. Best-effort: any tick error is logged and the
         loop continues (a transient stat() failure must not wedge the gateway).
         """
         from gateway.drain_control import drain_requested
@@ -5498,9 +5527,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await asyncio.sleep(0.05)
             await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
 
-        task = asyncio.create_task(_run_restart())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        # _run_restart is a short-lived self-terminating task (calls stop()
+        # then returns).  Don't add it to _background_tasks — _stop_impl
+        # cancels all entries in that set, which would cancel _run_restart
+        # while it's awaiting _stop_task, propagating CancelledError into
+        # _stop_impl and preventing _shutdown_event.set() / _exit_code = 75.
+        # See #12875.
+        #
+        # We still hold a strong reference in self._restart_task: a bare
+        # asyncio.create_task() keeps only a weak reference, so the event
+        # loop may garbage-collect a still-pending task mid-flight.  The
+        # cancel loop in _stop_impl explicitly skips _restart_task for the
+        # same reason it skips _stop_task.
+        self._restart_task = asyncio.create_task(_run_restart())
         return True
 
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
@@ -6342,8 +6381,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Start background drain-control watcher — reconciles the gateway's
         # new-turn accept-state with the external ``.drain_request.json`` marker
-        # the dashboard begin/cancel-drain endpoint writes (Phase 2). Honours a
-        # marker that survived a restart on its first tick.
+        # the dashboard begin/cancel-drain endpoint writes (Phase 2). A marker
+        # left behind by a prior instantiation (durable-volume restart, NS-570)
+        # is ignored via its instantiation epoch; only a current-epoch marker
+        # engages drain on the first tick.
         asyncio.create_task(self._drain_control_watcher())
 
         logger.info("Press Ctrl+C to stop")
@@ -7206,6 +7247,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for _task in list(self._background_tasks):
                 if _task is self._stop_task:
                     continue
+                if _task is self._restart_task:
+                    # The restart orchestration task is awaiting _stop_task
+                    # right now; cancelling it would propagate CancelledError
+                    # into this _stop_impl and skip _shutdown_event.set() /
+                    # _exit_code = 75 (#12875).  It self-terminates anyway.
+                    continue
                 _task.cancel()
             self._background_tasks.clear()
 
@@ -7261,6 +7308,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _db.close()
                 except Exception as _e:
                     logger.debug("SessionDB close error: %s", _e)
+            GatewayRunner._shutdown_executor(self)
             logger.info(
                 "Shutdown phase: SessionDB close done at +%.2fs",
                 _phase_elapsed(),
@@ -8732,33 +8780,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_goal_command(event)
 
         if canonical == "moa":
+            # /moa is one-shot sugar only: run a single prompt through the
+            # default MoA preset, then restore the prior model. To *switch* to a
+            # MoA preset for the session, pick it from the model picker (MoA
+            # presets surface as a virtual "Mixture of Agents" provider).
             from hermes_cli.moa_config import (
-                exact_moa_preset_name,
                 moa_usage,
                 normalize_moa_config,
-                resolve_moa_preset,
             )
             from hermes_cli.config import load_config
 
             moa_payload = event.get_command_args().strip()
+            if not moa_payload:
+                return moa_usage()
             try:
                 cfg = load_config()
                 moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
             except Exception:
                 moa_cfg = normalize_moa_config({})
-            matched_preset = exact_moa_preset_name(moa_cfg, moa_payload) if moa_payload else moa_cfg["default_preset"]
-            if matched_preset:
-                self._session_model_overrides[_quick_key] = {
-                    "provider": "moa",
-                    "model": matched_preset,
-                    "base_url": "moa://local",
-                    "api_key": "moa-virtual-provider",
-                    "api_mode": "chat_completions",
-                }
-                self._evict_cached_agent(_quick_key)
-                return f"Model switched to MoA preset: {matched_preset}."
-            if not moa_payload:
-                return moa_usage()
             preset = moa_cfg["default_preset"]
             try:
                 event.text = moa_payload
@@ -9005,16 +9044,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
-            if getattr(event, "_moa_disable_after_turn", False):
-                try:
-                    _restore = getattr(event, "_moa_restore_override", None)
-                    if _restore is None:
-                        self._session_model_overrides.pop(_quick_key, None)
-                    else:
-                        self._session_model_overrides[_quick_key] = _restore
-                    self._evict_cached_agent(_quick_key)
-                except Exception:
-                    pass
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -9045,6 +9074,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
         finally:
+            # MoA one-shot restore must run on EVERY exit path, not just
+            # success. The restore data lives on the per-turn event object
+            # (_moa_restore_override), which is discarded once the event goes
+            # out of scope — so if _handle_message_with_agent raises, a restore
+            # in the try block would be skipped and the MoA override would leak
+            # permanently (every later message silently fans out through MoA).
+            # Putting it in finally guarantees the revert on success, exception,
+            # and interrupt alike.
+            self._restore_moa_one_shot(event, _quick_key)
             # Unconditional release covers every exit path. _release_running_agent_state
             # is idempotent (pop-on-absent is harmless) and, called without a
             # run_generation guard, always clears the slot regardless of which
@@ -9053,6 +9091,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # inside _run_agent returns False, and the old sentinel-only check here
             # missed the leftover real agent — locking the session out forever (#28686).
             self._release_running_agent_state(_quick_key)
+
+    def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
+        """Revert a ``/moa <prompt>`` one-shot model override after its turn.
+
+        Called from the ``finally`` of the message-handling path so the revert
+        fires whether the turn succeeded, raised, or was interrupted. A no-op
+        unless ``event._moa_disable_after_turn`` is set. ``_moa_restore_override``
+        carries the prior per-session override (``None`` means the user had no
+        override, so the MoA override is cleared outright).
+        """
+        if not getattr(event, "_moa_disable_after_turn", False):
+            return
+        try:
+            _restore = getattr(event, "_moa_restore_override", None)
+            if _restore is None:
+                self._session_model_overrides.pop(quick_key, None)
+            else:
+                self._session_model_overrides[quick_key] = _restore
+            self._evict_cached_agent(quick_key)
+        except Exception:
+            pass
 
     async def _prepare_inbound_message_text(
         self,
@@ -13343,7 +13402,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Run blocking work in the thread pool while preserving session contextvars."""
         loop = asyncio.get_running_loop()
         ctx = copy_context()
-        return await loop.run_in_executor(None, ctx.run, func, *args)
+        return await loop.run_in_executor(
+            self._get_executor(),
+            ctx.run,
+            func,
+            *args,
+        )
+
+    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Return the gateway-owned executor for blocking agent work."""
+        lock = getattr(self, "_executor_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._executor_lock = lock
+
+        with lock:
+            if getattr(self, "_executor_closing", False):
+                raise RuntimeError("Gateway is shutting down; executor unavailable")
+            executor = getattr(self, "_executor", None)
+            if executor is None or getattr(executor, "_shutdown", False):
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=10,
+                    thread_name_prefix="hermes-gateway",
+                )
+                self._executor = executor
+            return executor
+
+    def _shutdown_executor(self) -> None:
+        """Stop the gateway-owned executor without touching the loop default."""
+        lock = getattr(self, "_executor_lock", None)
+        if lock is None:
+            return
+
+        with lock:
+            self._executor_closing = True
+            executor = getattr(self, "_executor", None)
+            self._executor = None
+
+        if executor is None:
+            return
+
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
 
     def _decide_image_input_mode(self) -> str:
         """Resolve the image-input routing for the currently active model.
@@ -15859,10 +15961,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
 
-            # session_key is now set via contextvars in _set_session_env()
-            # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
-            os.environ["HERMES_SESSION_KEY"] = session_key or ""
-            
+            # session_key is propagated via contextvars in _set_session_env()
+            # (_SESSION_KEY) and via set_current_session_key() (_approval_session_key)
+            # below — both concurrency-safe and inherited by tool worker threads.
+            # We deliberately do NOT write os.environ["HERMES_SESSION_KEY"] here:
+            # os.environ is process-global, so concurrent gateway sessions (e.g.
+            # two Discord threads) would clobber each other's value, and a tool
+            # thread whose contextvar is unset would fall back to os.environ and
+            # read the wrong session key — misrouting command-approval prompts to
+            # the wrong thread (#24100). The non-gateway surfaces don't depend on
+            # this write: CLI and cron bind the session via contextvars
+            # (set_current_session_key / session context), and only the TUI
+            # slash-worker *subprocess* exports HERMES_SESSION_KEY (from its own
+            # --session-key argv, a separate process) — so removing this in-process
+            # gateway write does not affect any of them.
+
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value

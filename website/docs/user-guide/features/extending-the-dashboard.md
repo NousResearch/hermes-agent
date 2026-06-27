@@ -14,7 +14,7 @@ The Hermes web dashboard (`hermes dashboard`) is built to be reskinned and exten
 
 All three are **drop-in at runtime**: no repo clone, no `npm run build`, no patching the dashboard source. This page is the canonical reference for all three.
 
-If you just want to use the dashboard, see [Web Dashboard](./web-dashboard). If you want to reskin the terminal CLI (not the web dashboard), see [Skins & Themes](./skins) — the CLI skin system is unrelated to dashboard themes.
+If you just want to use the dashboard, see [Web Dashboard](./web-dashboard). If you want to reskin the terminal CLI or the embedded dashboard chat, see [Skins & Themes](./skins). Dashboard themes and CLI/TUI skins use separate YAML formats, but the dashboard Appearance picker can set linked built-in pairs so the web chrome and chat surface stay in step.
 
 :::note How the pieces compose
 Themes and plugins are independent but synergistic. A theme can stand alone (just a YAML file). A plugin can stand alone (just a tab). Together they let you build a complete visual reskin with custom HUDs — the example `strike-freedom-cockpit` demo (lives in the `hermes-example-plugins` companion repo — see [Combined theme + plugin demo](#combined-theme--plugin-demo) for install steps) does exactly that.
@@ -73,7 +73,7 @@ palette:
   midground: "#ff00ff"
 ```
 
-Refresh the dashboard. Click the palette icon in the header and pick **Neon**. The background goes black, text and accents go magenta, and every derived color (card, border, muted, ring, etc.) is recomputed from that 2-color triplet via `color-mix()` in CSS.
+Refresh the dashboard. Click the palette icon in the header, open **Dashboard theme**, and pick **Neon**. The background goes black, text and accents go magenta, and every derived color (card, border, muted, ring, etc.) is recomputed from that 2-color triplet via `color-mix()` in CSS.
 
 That's the whole onboarding: one file, two colors. Everything below is optional refinement.
 
@@ -133,8 +133,8 @@ typography:
 
 ##### Changing the font from the UI (no YAML)
 
-The theme picker in the dashboard header has a **Font** section below the
-theme list. Pick any font there and it overrides the body font of whatever
+The Appearance picker in the dashboard header has a **Font** section below the
+theme and chat-skin lists. Pick any font there and it overrides the body font of whatever
 theme is active — the choice is independent of the theme and persists across
 theme switches (stored in `config.yaml` under `dashboard.font`). Choose
 **Theme default** to clear the override and fall back to the active theme's
@@ -351,7 +351,7 @@ customCSS: |
   /* Any additional selector-level tweaks */
 ```
 
-Refresh the dashboard after creating the file. Switch themes live from the header bar — click the palette icon. Selection persists to `config.yaml` under `dashboard.theme` and is restored on reload.
+Refresh the dashboard after creating the file. Switch themes live from the header bar — click the palette icon and use **Dashboard theme**. Selection persists to `config.yaml` under `dashboard.theme` and is restored on reload.
 
 ---
 
@@ -872,6 +872,7 @@ Read the plugin source (`strike-freedom-cockpit/dashboard/dist/index.js` in the 
 |----------|--------|-------------|
 | `/api/dashboard/themes` | GET | List available themes + active name. Built-ins return `{name, label, description}`; user themes also include a `definition` field with the full normalised theme object. |
 | `/api/dashboard/theme` | PUT | Set active theme. Body: `{"name": "midnight"}`. Persists to `config.yaml` under `dashboard.theme`. |
+| `/api/appearance` | GET/PUT | Unified dashboard appearance surface. Lists dashboard themes, CLI/TUI skins, and linked presets. PUT accepts `dashboard_theme` and/or `chat_skin`, persists `dashboard.theme` / `display.skin`, and broadcasts a live `skin.changed` event to embedded chat when the skin changes. |
 
 ### Plugin endpoints
 

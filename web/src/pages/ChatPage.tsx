@@ -76,18 +76,25 @@ function generateChannelId(scope?: string): string {
   )}`;
 }
 
-// Colors for the terminal body.  Matches the dashboard's dark teal canvas
-// with cream foreground — we intentionally don't pick monokai or a loud
-// theme, because the TUI's skin engine already paints the content; the
-// terminal chrome just needs to sit quietly inside the dashboard.
-// `background` is omitted here — it's supplied dynamically from the active
-// theme's `terminalBackground` field so users can control it via YAML themes.
+// Colors for the terminal body. The TUI skin engine paints the content; xterm
+// only supplies the neutral canvas underneath it. Keep this independent of the
+// dashboard theme so "Dashboard theme" choices don't visually mutate the chat
+// skin through the browser embed.
 const TERMINAL_THEME_STATIC = {
   foreground: "#f0e6d2",
   cursor: "#f0e6d2",
   cursorAccent: "#0d2626",
   selectionBackground: "#f0e6d244",
 };
+
+const LIGHT_CHAT_SKIN_BACKGROUNDS: Record<string, string> = {
+  daylight: "#f8fafc",
+  "warm-lightmode": "#f5f0e8",
+};
+
+function terminalBackgroundForChatSkin(skinName: string): string {
+  return LIGHT_CHAT_SKIN_BACKGROUNDS[skinName] ?? "#000000";
+}
 
 /**
  * CSS width for xterm font tiers.
@@ -214,8 +221,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : false,
   );
 
-  const { theme } = useTheme();
-  const terminalBg = theme.terminalBackground ?? "#000000";
+  const { chatSkin, theme } = useTheme();
+  const terminalBg = terminalBackgroundForChatSkin(chatSkin);
+  const cancelDashboardInversion = (theme.palette.foreground.alpha ?? 0) > 0.01;
   const terminalTheme = useMemo(
     () => ({ ...TERMINAL_THEME_STATIC, background: terminalBg }),
     [terminalBg],
@@ -910,8 +918,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
   }, [isActive]);
 
-  // Keep the live xterm theme in sync when the active theme's terminal
-  // background changes (e.g. user switches to a custom YAML theme mid-session).
+  // Keep the live xterm theme in sync when the selected chat skin changes
+  // between dark-terminal and light-terminal skins.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
@@ -1039,6 +1047,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           )}
           style={{
             backgroundColor: terminalBg,
+            filter: cancelDashboardInversion ? "invert(1)" : undefined,
+            isolation: "isolate",
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >

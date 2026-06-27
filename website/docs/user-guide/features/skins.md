@@ -6,7 +6,7 @@ description: "Customize the Hermes CLI with built-in and user-defined skins"
 
 # Skins & Themes
 
-Skins control the **visual presentation** of the Hermes CLI: banner colors, spinner faces and verbs, response-box labels, branding text, and the tool activity prefix.
+Skins control the **visual presentation** of the Hermes CLI and the TUI embedded in dashboard chat: banner colors, spinner faces and verbs, response-box labels, branding text, and the tool activity prefix.
 
 Conversational style and visual style are separate concepts:
 
@@ -27,6 +27,12 @@ Or set the default skin in `~/.hermes/config.yaml`:
 display:
   skin: default
 ```
+
+In the web dashboard, click the palette icon in the header to open
+**Appearance**. Linked presets set both the dashboard theme and this
+`display.skin` value together; the **Chat skin** section lists built-in and
+custom skins from `~/.hermes/skins/` when you want to choose the TUI skin
+independently.
 
 ## Built-in skins
 
@@ -266,6 +272,7 @@ Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [pr
 - Built-in skins load from `hermes_cli/skin_engine.py`.
 - Unknown skins automatically fall back to `default`.
 - `/skin` updates the active CLI theme immediately for the current session.
+- The dashboard Appearance picker persists `display.skin` and broadcasts the change to embedded chat sessions.
 - User skins in `~/.hermes/skins/` take precedence over built-in skins with the same name.
 - Skin changes via `/skin` are session-only. To make a skin your permanent default, set it in `config.yaml`.
 - The `banner_logo` and `banner_hero` fields support Rich console markup (e.g., `[bold #FF0000]text[/]`) for colored ASCII art.

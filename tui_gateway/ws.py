@@ -28,6 +28,7 @@ import concurrent.futures
 import json
 import logging
 import socket
+import threading
 from typing import Any
 
 from tui_gateway import server
@@ -142,6 +143,46 @@ class WSTransport:
         self._closed = True
 
 
+_TRANSPORTS_LOCK = threading.Lock()
+_TRANSPORTS: set[WSTransport] = set()
+
+
+def _register_transport(transport: WSTransport) -> None:
+    with _TRANSPORTS_LOCK:
+        _TRANSPORTS.add(transport)
+
+
+def _unregister_transport(transport: WSTransport) -> None:
+    with _TRANSPORTS_LOCK:
+        _TRANSPORTS.discard(transport)
+
+
+def broadcast_event(event: str, payload: dict | None = None, *, session_id: str = "") -> dict[str, int]:
+    """Broadcast a global event to every connected WebSocket transport."""
+    params = {"type": event, "session_id": session_id}
+    if payload is not None:
+        params["payload"] = payload
+    frame = {"jsonrpc": "2.0", "method": "event", "params": params}
+
+    with _TRANSPORTS_LOCK:
+        transports = list(_TRANSPORTS)
+
+    sent = 0
+    dropped: list[WSTransport] = []
+    for transport in transports:
+        if transport.write(frame):
+            sent += 1
+        else:
+            dropped.append(transport)
+
+    if dropped:
+        with _TRANSPORTS_LOCK:
+            for transport in dropped:
+                _TRANSPORTS.discard(transport)
+
+    return {"connected": len(transports), "sent": sent}
+
+
 def _ws_peer_label(ws: Any) -> str:
     """Return ``host:port`` when available, else a stable placeholder."""
     client = getattr(ws, "client", None)
@@ -189,6 +230,7 @@ async def handle_ws(ws: Any) -> None:
         _log.info("ws accepted peer=%s", peer)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        _register_transport(transport)
 
         ready_ok = await transport.write_async(
             {
@@ -300,6 +342,7 @@ async def handle_ws(ws: Any) -> None:
         reaped_sessions = 0
         detached_sessions = 0
         if transport is not None:
+            _unregister_transport(transport)
             transport.close()
 
             # Reap sessions this transport owned (close_on_disconnect sidecar

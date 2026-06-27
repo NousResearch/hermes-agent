@@ -1080,13 +1080,13 @@ The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-
 
 When you run `hermes update`, the web frontend is automatically rebuilt if `npm` is available. This keeps the dashboard in sync with code updates. If `npm` isn't installed, the update skips the frontend build and `hermes dashboard` will build it on first launch.
 
-## Themes & plugins
+## Appearance, themes & plugins
 
-The dashboard ships with six built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
+The dashboard ships with built-in appearance presets, dashboard themes, and CLI/TUI chat skins. It can also be extended with user-defined dashboard themes, custom CLI skins, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
 
-**Switch themes live** from the header bar — click the palette icon next to the language switcher. Selection persists to `config.yaml` under `dashboard.theme` and is restored on page load.
+**Switch appearance live** from the header bar — click the palette icon next to the language switcher. Linked presets update both the dashboard theme (`dashboard.theme`) and embedded chat/TUI skin (`display.skin`). The separate **Dashboard theme** and **Chat skin** sections let you choose custom or unmapped options independently.
 
-**Change the font independently** from the same picker — the **Font** section below the theme list overrides the UI font of whatever theme is active. The choice persists across theme switches (`config.yaml` → `dashboard.font`); pick **Theme default** to clear it and return to the active theme's own font.
+**Change the font independently** from the same picker — the **Font** section overrides the UI font of whatever theme is active. The choice persists across theme switches (`config.yaml` → `dashboard.font`); pick **Theme default** to clear it and return to the active theme's own font.
 
 Built-in themes:
 
@@ -1094,6 +1094,7 @@ Built-in themes:
 |-------|-----------|
 | **Hermes Teal** (`default`) | Dark teal + cream, system fonts, comfortable spacing |
 | **Hermes Teal (Large)** (`default-large`) | Same as default with 18px text and roomier spacing |
+| **Nous Blue** (`nous-blue`) | Light mode with vivid Nous-blue accents |
 | **Midnight** (`midnight`) | Deep blue-violet, Inter + JetBrains Mono |
 | **Ember** (`ember`) | Warm crimson + bronze, Spectral serif + IBM Plex Mono |
 | **Mono** (`mono`) | Grayscale, IBM Plex, compact |

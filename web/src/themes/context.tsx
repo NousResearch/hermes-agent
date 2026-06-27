@@ -29,6 +29,7 @@ import type {
   ThemeTypography,
 } from "./types";
 import { api } from "@/lib/api";
+import type { AppearancePreset, ChatSkinSummary } from "@/lib/api";
 
 /** LocalStorage key — pre-applied before the React tree mounts to avoid
  *  a visible flash of the default palette on theme-overridden installs. */
@@ -50,6 +51,14 @@ const THEME_NAME_ALIASES: Record<string, string> = {
   // Renamed during the LENS_5I port + Nous-blue rebrand.
   "lens-5i": "nous-blue",
 };
+
+const DEFAULT_CHAT_SKINS: ChatSkinSummary[] = [
+  { name: "default", label: "default", description: "Classic Hermes — gold and kawaii", source: "builtin" },
+  { name: "ares", label: "ares", description: "War-god theme — crimson and bronze", source: "builtin" },
+  { name: "mono", label: "mono", description: "Monochrome — clean grayscale", source: "builtin" },
+  { name: "slate", label: "slate", description: "Cool blue — developer-focused", source: "builtin" },
+  { name: "daylight", label: "daylight", description: "Light theme for bright terminals", source: "builtin" },
+];
 
 function migrateThemeName(name: string): string {
   return THEME_NAME_ALIASES[name] ?? name;
@@ -430,6 +439,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     })),
   );
 
+  const [chatSkin, setChatSkinState] = useState("default");
+  const [availableSkins, setAvailableSkins] = useState<ChatSkinSummary[]>(DEFAULT_CHAT_SKINS);
+  const [appearancePresets, setAppearancePresets] = useState<AppearancePreset[]>([]);
+
   /** Full definitions for user themes keyed by name — the API provides
    *  these so custom YAMLs apply without a client-side stub. */
   const [userThemeDefs, setUserThemeDefs] = useState<
@@ -468,11 +481,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyTheme(resolveTheme(themeName));
   }, [themeName, resolveTheme, fontId]);
 
-  // Load server-side themes (built-ins + user YAMLs) once on mount.
+  // Load server-side appearance choices (dashboard themes + CLI/TUI skins)
+  // once on mount. The richer endpoint keeps the picker in sync with custom
+  // YAMLs from both ~/.hermes/dashboard-themes and ~/.hermes/skins.
   useEffect(() => {
     let cancelled = false;
     api
-      .getThemes()
+      .getAppearance()
       .then((resp) => {
         if (cancelled) return;
         if (resp.themes?.length) {
@@ -491,10 +506,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
               defs[entry.name] = entry.definition;
             }
           }
-          if (Object.keys(defs).length > 0) setUserThemeDefs(defs);
+          setUserThemeDefs(defs);
         }
-        if (resp.active) {
-          const migratedActive = migrateThemeName(resp.active);
+        if (resp.skins?.length) {
+          setAvailableSkins(resp.skins);
+        }
+        setAppearancePresets(resp.presets ?? []);
+        if (resp.chat_skin) {
+          setChatSkinState(resp.chat_skin);
+        }
+        if (resp.dashboard_theme) {
+          const migratedActive = migrateThemeName(resp.dashboard_theme);
           if (migratedActive !== themeName) {
             setThemeName(migratedActive);
             window.localStorage.setItem(STORAGE_KEY, migratedActive);
@@ -502,8 +524,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           // If the server is still persisting the stale key, push the
           // migrated value back so it converges too — otherwise every
           // future page load would re-trigger this branch.
-          if (migratedActive !== resp.active) {
-            api.setTheme(migratedActive).catch(() => {});
+          if (migratedActive !== resp.dashboard_theme) {
+            api.setAppearance({ dashboard_theme: migratedActive }).catch(() => {});
           }
         }
       })
@@ -551,9 +573,60 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       if (typeof window !== "undefined") {
         window.localStorage.setItem(STORAGE_KEY, next);
       }
-      api.setTheme(next).catch(() => {});
+      api.setAppearance({ dashboard_theme: next }).catch(() => {
+        api.setTheme(next).catch(() => {});
+      });
     },
     [availableThemes, userThemeDefs],
+  );
+
+  const setChatSkin = useCallback(
+    (name: string) => {
+      const knownNames = new Set<string>([
+        "default",
+        ...availableSkins.map((skin) => skin.name),
+      ]);
+      const next = knownNames.has(name) ? name : "default";
+      setChatSkinState(next);
+      api.setAppearance({ chat_skin: next }).catch(() => {});
+    },
+    [availableSkins],
+  );
+
+  const setAppearance = useCallback(
+    ({ dashboardTheme, chatSkin: nextSkin }: AppearanceSelection) => {
+      let nextTheme: string | undefined;
+      if (dashboardTheme) {
+        const knownThemes = new Set<string>([
+          ...Object.keys(BUILTIN_THEMES),
+          ...availableThemes.map((t) => t.name),
+          ...Object.keys(userThemeDefs),
+        ]);
+        nextTheme = knownThemes.has(dashboardTheme) ? dashboardTheme : "default";
+        setThemeName(nextTheme);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(STORAGE_KEY, nextTheme);
+        }
+      }
+
+      let resolvedSkin: string | undefined;
+      if (nextSkin) {
+        const knownSkins = new Set<string>([
+          "default",
+          ...availableSkins.map((skin) => skin.name),
+        ]);
+        resolvedSkin = knownSkins.has(nextSkin) ? nextSkin : "default";
+        setChatSkinState(resolvedSkin);
+      }
+
+      api
+        .setAppearance({
+          dashboard_theme: nextTheme,
+          chat_skin: resolvedSkin,
+        })
+        .catch(() => {});
+    },
+    [availableThemes, availableSkins, userThemeDefs],
   );
 
   const setFont = useCallback((id: string) => {
@@ -571,16 +644,34 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       themeName,
       availableThemes,
       setTheme,
+      chatSkin,
+      availableSkins,
+      setChatSkin,
+      appearancePresets,
+      setAppearance,
       fontId,
       fontChoices: FONT_CHOICES,
       setFont,
     }),
-    [themeName, availableThemes, setTheme, resolveTheme, fontId, setFont],
+    [
+      themeName,
+      availableThemes,
+      setTheme,
+      resolveTheme,
+      chatSkin,
+      availableSkins,
+      setChatSkin,
+      appearancePresets,
+      setAppearance,
+      fontId,
+      setFont,
+    ],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useTheme(): ThemeContextValue {
   return useContext(ThemeContext);
 }
@@ -594,13 +685,28 @@ const ThemeContext = createContext<ThemeContextValue>({
     description: t.description,
   })),
   setTheme: () => {},
+  chatSkin: "default",
+  availableSkins: DEFAULT_CHAT_SKINS,
+  setChatSkin: () => {},
+  appearancePresets: [],
+  setAppearance: () => {},
   fontId: THEME_DEFAULT_FONT_ID,
   fontChoices: FONT_CHOICES,
   setFont: () => {},
 });
 
+interface AppearanceSelection {
+  chatSkin?: string;
+  dashboardTheme?: string;
+}
+
 interface ThemeContextValue {
+  appearancePresets: AppearancePreset[];
+  availableSkins: ChatSkinSummary[];
   availableThemes: ThemeListEntry[];
+  chatSkin: string;
+  setAppearance: (appearance: AppearanceSelection) => void;
+  setChatSkin: (name: string) => void;
   setTheme: (name: string) => void;
   theme: DashboardTheme;
   themeName: string;

@@ -3700,7 +3700,28 @@ async def get_defaults():
 
 @app.get("/api/config/schema")
 async def get_schema():
-    return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
+    return {
+        "fields": _config_schema_with_dynamic_options(),
+        "category_order": _CATEGORY_ORDER,
+    }
+
+
+def _config_schema_with_dynamic_options() -> Dict[str, Dict[str, Any]]:
+    """Return config schema with runtime-discovered appearance options."""
+    fields = {key: dict(value) for key, value in CONFIG_SCHEMA.items()}
+    try:
+        fields["display.skin"]["options"] = [
+            skin["name"] for skin in _available_cli_skins()
+        ]
+    except Exception:
+        _log.debug("Failed to populate dynamic skin schema options", exc_info=True)
+    try:
+        fields["dashboard.theme"]["options"] = [
+            theme["name"] for theme in _available_dashboard_themes()
+        ]
+    except Exception:
+        _log.debug("Failed to populate dynamic dashboard theme schema options", exc_info=True)
+    return fields
 
 
 _EMPTY_MODEL_INFO: dict = {
@@ -11876,6 +11897,17 @@ def _resolve_chat_argv(
     except Exception:
         _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     env.setdefault("NODE_ENV", "production")
+    # The dashboard PTY is rendered by xterm.js, not by whatever terminal
+    # launched `hermes dashboard`. Codex/CI shells often export TERM=dumb or
+    # NO_COLOR=1, which makes the Ink TUI suppress every skin color in the
+    # browser even though xterm.js supports them. Normalize only this embedded
+    # chat child so native CLI/TUI launches keep honoring the user's shell.
+    env["TERM"] = "xterm-256color"
+    env["COLORTERM"] = "truecolor"
+    env["FORCE_COLOR"] = "3"
+    env["HERMES_TUI_TRUECOLOR"] = "1"
+    env.setdefault("HERMES_TUI_BACKGROUND", "#000000")
+    env.pop("NO_COLOR", None)
     # Browser-embedded chat should prefer stable wheel-based scrollback over
     # native terminal mouse tracking. When mouse tracking is enabled, wheel
     # events are consumed by the TUI and forwarded as terminal input, which
@@ -12504,6 +12536,128 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
 ]
 
+_APPEARANCE_PRESETS = [
+    {
+        "id": "hermes-teal",
+        "label": "Hermes Teal",
+        "description": "Canonical dashboard with the default Hermes chat skin",
+        "dashboard_theme": "default",
+        "chat_skin": "default",
+    },
+    {
+        "id": "hermes-teal-large",
+        "label": "Hermes Teal (Large)",
+        "description": "Roomier dashboard with the default Hermes chat skin",
+        "dashboard_theme": "default-large",
+        "chat_skin": "default",
+    },
+    {
+        "id": "nous-blue",
+        "label": "Nous Blue",
+        "description": "Light dashboard paired with the daylight chat skin",
+        "dashboard_theme": "nous-blue",
+        "chat_skin": "daylight",
+    },
+    {
+        "id": "midnight",
+        "label": "Midnight",
+        "description": "Cool dashboard paired with the slate chat skin",
+        "dashboard_theme": "midnight",
+        "chat_skin": "slate",
+    },
+    {
+        "id": "mono",
+        "label": "Mono",
+        "description": "Monochrome dashboard and chat skin",
+        "dashboard_theme": "mono",
+        "chat_skin": "mono",
+    },
+    {
+        "id": "ember",
+        "label": "Ember",
+        "description": "Warm dashboard paired with the Ares chat skin",
+        "dashboard_theme": "ember",
+        "chat_skin": "ares",
+    },
+]
+
+
+def _available_dashboard_themes() -> list:
+    user_themes = _discover_user_themes()
+    seen = set()
+    themes = []
+    for t in _BUILTIN_DASHBOARD_THEMES:
+        seen.add(t["name"])
+        themes.append(dict(t))
+    for t in user_themes:
+        if t["name"] in seen:
+            continue
+        themes.append({
+            "name": t["name"],
+            "label": t["label"],
+            "description": t["description"],
+            "definition": t,
+        })
+        seen.add(t["name"])
+    return themes
+
+
+def _available_cli_skins() -> list:
+    from hermes_cli.skin_engine import list_skins
+
+    skins = []
+    for skin in list_skins():
+        name = str(skin.get("name", "")).strip()
+        if not name:
+            continue
+        skins.append({
+            "name": name,
+            "label": name,
+            "description": skin.get("description", ""),
+            "source": skin.get("source", "builtin"),
+        })
+    return skins
+
+
+def _available_appearance_presets(themes: list, skins: list) -> list:
+    theme_names = {theme["name"] for theme in themes}
+    skin_names = {skin["name"] for skin in skins}
+    presets = []
+    for preset in _APPEARANCE_PRESETS:
+        out = dict(preset)
+        out["available"] = (
+            preset["dashboard_theme"] in theme_names
+            and preset["chat_skin"] in skin_names
+        )
+        presets.append(out)
+    return presets
+
+
+def _active_appearance_preset(
+    dashboard_theme: str,
+    chat_skin: str,
+    presets: list,
+) -> Optional[str]:
+    for preset in presets:
+        if (
+            preset.get("available", True)
+            and preset.get("dashboard_theme") == dashboard_theme
+            and preset.get("chat_skin") == chat_skin
+        ):
+            return str(preset["id"])
+    return None
+
+
+def _broadcast_tui_skin_changed() -> dict:
+    try:
+        from tui_gateway import server as tui_server
+        from tui_gateway.ws import broadcast_event
+
+        return broadcast_event("skin.changed", tui_server.resolve_skin())
+    except Exception:
+        _log.debug("Failed to broadcast TUI skin change", exc_info=True)
+        return {"connected": 0, "sent": 0}
+
 
 def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0) -> Optional[Dict[str, Any]]:
     """Normalise a theme layer spec from YAML into `{hex, alpha}` form.
@@ -12753,23 +12907,7 @@ async def get_dashboard_themes():
     """
     config = load_config()
     active = cfg_get(config, "dashboard", "theme", default="default")
-    user_themes = _discover_user_themes()
-    seen = set()
-    themes = []
-    for t in _BUILTIN_DASHBOARD_THEMES:
-        seen.add(t["name"])
-        themes.append(t)
-    for t in user_themes:
-        if t["name"] in seen:
-            continue
-        themes.append({
-            "name": t["name"],
-            "label": t["label"],
-            "description": t["description"],
-            "definition": t,
-        })
-        seen.add(t["name"])
-    return {"themes": themes, "active": active}
+    return {"themes": _available_dashboard_themes(), "active": active}
 
 
 class ThemeSetBody(BaseModel):
@@ -12785,6 +12923,99 @@ async def set_dashboard_theme(body: ThemeSetBody):
     config["dashboard"]["theme"] = body.name
     save_config(config)
     return {"ok": True, "theme": body.name}
+
+
+class AppearanceSetBody(BaseModel):
+    dashboard_theme: Optional[str] = None
+    chat_skin: Optional[str] = None
+
+
+@app.get("/api/appearance")
+async def get_appearance():
+    """Return dashboard theme + CLI/TUI skin choices for the unified picker."""
+    config = load_config()
+    dashboard_theme = cfg_get(config, "dashboard", "theme", default="default")
+    chat_skin = cfg_get(config, "display", "skin", default="default")
+    themes = _available_dashboard_themes()
+    skins = _available_cli_skins()
+    presets = _available_appearance_presets(themes, skins)
+    return {
+        "dashboard_theme": dashboard_theme,
+        "chat_skin": chat_skin,
+        "themes": themes,
+        "skins": skins,
+        "presets": presets,
+        "active_preset": _active_appearance_preset(
+            dashboard_theme,
+            chat_skin,
+            presets,
+        ),
+    }
+
+
+@app.put("/api/appearance")
+async def set_appearance(body: AppearanceSetBody):
+    """Persist dashboard and/or chat appearance settings."""
+    config = load_config()
+    themes = _available_dashboard_themes()
+    skins = _available_cli_skins()
+    theme_names = {theme["name"] for theme in themes}
+    skin_names = {skin["name"] for skin in skins}
+
+    if body.dashboard_theme is None and body.chat_skin is None:
+        raise HTTPException(
+            status_code=400,
+            detail="dashboard_theme or chat_skin required",
+        )
+
+    if body.dashboard_theme is not None and body.dashboard_theme not in theme_names:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown dashboard theme: {body.dashboard_theme}",
+        )
+
+    if body.chat_skin is not None and body.chat_skin not in skin_names:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown chat skin: {body.chat_skin}",
+        )
+
+    if body.dashboard_theme is not None:
+        dashboard = config.get("dashboard")
+        if not isinstance(dashboard, dict):
+            dashboard = {}
+        dashboard["theme"] = body.dashboard_theme
+        config["dashboard"] = dashboard
+
+    skin_changed = False
+    if body.chat_skin is not None:
+        display = config.get("display")
+        if not isinstance(display, dict):
+            display = {}
+        skin_changed = display.get("skin", "default") != body.chat_skin
+        display["skin"] = body.chat_skin
+        config["display"] = display
+
+    save_config(config)
+
+    skin_broadcast = (
+        _broadcast_tui_skin_changed() if body.chat_skin is not None else None
+    )
+    dashboard_theme = cfg_get(config, "dashboard", "theme", default="default")
+    chat_skin = cfg_get(config, "display", "skin", default="default")
+    presets = _available_appearance_presets(themes, skins)
+    return {
+        "ok": True,
+        "dashboard_theme": dashboard_theme,
+        "chat_skin": chat_skin,
+        "skin_changed": skin_changed,
+        "skin_broadcast": skin_broadcast,
+        "active_preset": _active_appearance_preset(
+            dashboard_theme,
+            chat_skin,
+            presets,
+        ),
+    }
 
 
 # Curated font-override ids. Kept in sync with FONT_CHOICES in

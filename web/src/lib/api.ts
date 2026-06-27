@@ -928,6 +928,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
+  getAppearance: () =>
+    fetchJSON<AppearanceResponse>("/api/appearance"),
+  setAppearance: (body: AppearanceSetRequest) =>
+    fetchJSON<AppearanceSetResponse>("/api/appearance", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   getFontPref: () =>
     fetchJSON<DashboardFontResponse>("/api/dashboard/font"),
   setFontPref: (font: string) =>
@@ -2232,6 +2240,46 @@ export interface DashboardThemeSummary {
 export interface DashboardThemesResponse {
   active: string;
   themes: DashboardThemeSummary[];
+}
+
+export interface ChatSkinSummary {
+  description: string;
+  label: string;
+  name: string;
+  source: "builtin" | "user" | string;
+}
+
+export interface AppearancePreset {
+  active?: boolean;
+  available: boolean;
+  chat_skin: string;
+  dashboard_theme: string;
+  description: string;
+  id: string;
+  label: string;
+}
+
+export interface AppearanceResponse {
+  active_preset?: string | null;
+  chat_skin: string;
+  dashboard_theme: string;
+  presets: AppearancePreset[];
+  skins: ChatSkinSummary[];
+  themes: DashboardThemeSummary[];
+}
+
+export interface AppearanceSetRequest {
+  chat_skin?: string;
+  dashboard_theme?: string;
+}
+
+export interface AppearanceSetResponse {
+  active_preset?: string | null;
+  chat_skin: string;
+  dashboard_theme: string;
+  ok: boolean;
+  skin_broadcast?: { connected: number; sent: number } | null;
+  skin_changed?: boolean;
 }
 
 export interface DashboardFontResponse {

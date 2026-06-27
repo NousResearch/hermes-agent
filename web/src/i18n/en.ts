@@ -527,8 +527,8 @@ export const en: Translations = {
   },
 
   theme: {
-    title: "Theme",
-    switchTheme: "Switch theme",
+    title: "Appearance",
+    switchTheme: "Switch appearance",
     fontTitle: "Font",
     fontDefault: "Theme default",
     fontDefaultHint: "Use the active theme's font",

@@ -723,6 +723,7 @@ class TestAdminEndpointsAuthGate:
             "/api/portal",
             "/api/system/stats",
             "/api/hermes/update/check",
+            "/api/appearance",
         ],
     )
     def test_gated(self, path):
@@ -731,6 +732,10 @@ class TestAdminEndpointsAuthGate:
 
     def test_webhooks_enable_post_gated(self):
         resp = self.client.post("/api/webhooks/enable")
+        assert resp.status_code in (401, 403)
+
+    def test_appearance_put_gated(self):
+        resp = self.client.put("/api/appearance", json={"dashboard_theme": "mono"})
         assert resp.status_code in (401, 403)
 
 
@@ -1083,3 +1088,101 @@ class TestToolsConfigEndpoints:
                 kwargs["json"] = payload
             r = fn(path, **kwargs)
             assert r.status_code == 401, f"{method} {path} not gated"
+
+
+class TestAppearanceEndpoints:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, self.header = _client()
+
+    def test_get_appearance_lists_presets_themes_skins_and_custom_entries(self):
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        (home / "skins").mkdir(parents=True, exist_ok=True)
+        (home / "skins" / "ocean-chat.yaml").write_text(
+            "name: ocean-chat\ndescription: Custom ocean skin\n",
+            encoding="utf-8",
+        )
+        (home / "dashboard-themes").mkdir(parents=True, exist_ok=True)
+        (home / "dashboard-themes" / "ocean.yaml").write_text(
+            "name: ocean\nlabel: Ocean\ndescription: Custom ocean dashboard\n"
+            "palette:\n  background: '#001122'\n  midground: '#aaddff'\n",
+            encoding="utf-8",
+        )
+
+        r = self.client.get("/api/appearance")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["dashboard_theme"] == "default"
+        assert body["chat_skin"] == "default"
+        assert "hermes-teal" in {preset["id"] for preset in body["presets"]}
+        assert "ocean" in {theme["name"] for theme in body["themes"]}
+        assert "ocean-chat" in {skin["name"] for skin in body["skins"]}
+
+    def test_set_appearance_writes_theme_and_skin(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config
+
+        monkeypatch.setattr(
+            ws,
+            "_broadcast_tui_skin_changed",
+            lambda: {"connected": 1, "sent": 1},
+        )
+
+        r = self.client.put(
+            "/api/appearance",
+            json={"dashboard_theme": "mono", "chat_skin": "ares"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["dashboard_theme"] == "mono"
+        assert body["chat_skin"] == "ares"
+        assert body["skin_broadcast"] == {"connected": 1, "sent": 1}
+
+        cfg = load_config()
+        assert cfg["dashboard"]["theme"] == "mono"
+        assert cfg["display"]["skin"] == "ares"
+
+    def test_set_appearance_rejects_invalid_values_without_corrupting_config(self):
+        from hermes_cli.config import load_config
+
+        ok = self.client.put(
+            "/api/appearance",
+            json={"dashboard_theme": "mono", "chat_skin": "mono"},
+        )
+        assert ok.status_code == 200, ok.text
+
+        r = self.client.put(
+            "/api/appearance",
+            json={"dashboard_theme": "missing-theme", "chat_skin": "ares"},
+        )
+        assert r.status_code == 400
+
+        cfg = load_config()
+        assert cfg["dashboard"]["theme"] == "mono"
+        assert cfg["display"]["skin"] == "mono"
+
+    def test_config_schema_uses_dynamic_theme_and_skin_options(self):
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        (home / "skins").mkdir(parents=True, exist_ok=True)
+        (home / "skins" / "custom-chat.yaml").write_text(
+            "name: custom-chat\ndescription: Custom chat skin\n",
+            encoding="utf-8",
+        )
+        (home / "dashboard-themes").mkdir(parents=True, exist_ok=True)
+        (home / "dashboard-themes" / "custom-dashboard.yaml").write_text(
+            "name: custom-dashboard\nlabel: Custom Dashboard\n"
+            "palette:\n  background: '#101010'\n  midground: '#eeeeee'\n",
+            encoding="utf-8",
+        )
+
+        r = self.client.get("/api/config/schema")
+        assert r.status_code == 200, r.text
+        fields = r.json()["fields"]
+        assert "custom-chat" in fields["display.skin"]["options"]
+        assert "custom-dashboard" in fields["dashboard.theme"]["options"]
+        assert "default-large" in fields["dashboard.theme"]["options"]
+        assert "charizard" in fields["display.skin"]["options"]

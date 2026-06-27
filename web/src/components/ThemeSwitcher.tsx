@@ -1,6 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
-import { Palette, Check, Type } from "lucide-react";
+import { Check, Layers, Palette, Terminal, Type } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
@@ -8,6 +15,7 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { BUILTIN_THEMES, THEME_DEFAULT_FONT_ID, useTheme } from "@/themes";
 import type { DashboardTheme, FontChoice, ThemeListEntry } from "@/themes";
+import type { AppearancePreset, ChatSkinSummary } from "@/lib/api";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 
@@ -25,13 +33,26 @@ import { cn } from "@/lib/utils";
  * the sidebar (same idea as a responsive Drawer).
  */
 export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitcherProps) {
-  const { themeName, availableThemes, setTheme, fontId, fontChoices, setFont } = useTheme();
+  const {
+    appearancePresets,
+    availableSkins,
+    availableThemes,
+    chatSkin,
+    fontChoices,
+    fontId,
+    setAppearance,
+    setChatSkin,
+    setFont,
+    setTheme,
+    themeName,
+  } = useTheme();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
   const useMobileSheet = Boolean(dropUp && narrowViewport);
+  const [dropUpStyle, setDropUpStyle] = useState<CSSProperties | undefined>();
 
   const close = useCallback(() => setOpen(false), []);
 
@@ -56,9 +77,41 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [open, close, useMobileSheet]);
 
-  const current = availableThemes.find((th) => th.name === themeName);
-  const label = current?.label ?? themeName;
-  const sheetTitle = t.theme?.title ?? "Theme";
+  useEffect(() => {
+    if (!open || !dropUp || useMobileSheet) {
+      return;
+    }
+
+    let raf = 0;
+    const sync = () => {
+      raf = 0;
+      const rect = wrapperRef.current?.getBoundingClientRect();
+      setDropUpStyle(
+        rect
+          ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
+          : undefined,
+      );
+    };
+
+    raf = window.requestAnimationFrame(sync);
+    window.addEventListener("resize", sync);
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", sync);
+    };
+  }, [dropUp, open, useMobileSheet]);
+
+  const currentTheme = availableThemes.find((th) => th.name === themeName);
+  const currentSkin = availableSkins.find((skin) => skin.name === chatSkin);
+  const activePreset = appearancePresets.find(
+    (preset) =>
+      preset.available &&
+      preset.dashboard_theme === themeName &&
+      preset.chat_skin === chatSkin,
+  );
+  const label = activePreset?.label ?? "Custom";
+  const detail = `${currentTheme?.label ?? themeName} / ${currentSkin?.label ?? chatSkin}`;
+  const sheetTitle = t.theme?.title ?? "Appearance";
 
   return (
     <div ref={wrapperRef} className="relative">
@@ -71,8 +124,8 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
             ? "text-text-secondary hover:text-foreground hover:bg-transparent"
             : "px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
         )}
-        title={`${t.theme?.switchTheme ?? "Switch theme"}: ${label}`}
-        aria-label={t.theme?.switchTheme ?? "Switch theme"}
+        title={`${t.theme?.switchTheme ?? "Switch appearance"}: ${detail}`}
+        aria-label={t.theme?.switchTheme ?? "Switch appearance"}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
@@ -98,11 +151,25 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
           title={sheetTitle}
         >
           <div aria-label={sheetTitle} role="listbox">
+            <PresetSection
+              availableThemes={availableThemes}
+              chatSkin={chatSkin}
+              close={close}
+              presets={appearancePresets}
+              setAppearance={setAppearance}
+              themeName={themeName}
+            />
             <ThemeSwitcherOptions
               availableThemes={availableThemes}
               close={close}
               setTheme={setTheme}
               themeName={themeName}
+            />
+            <ChatSkinSection
+              chatSkin={chatSkin}
+              close={close}
+              setChatSkin={setChatSkin}
+              skins={availableSkins}
             />
             <FontSection
               fontChoices={fontChoices}
@@ -114,23 +181,18 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
       )}
 
       {open && !useMobileSheet && (() => {
-        const rect = wrapperRef.current?.getBoundingClientRect();
         const dropdown = (
           <div
             ref={dropdownRef}
             aria-label={sheetTitle}
             className={cn(
-              "min-w-[240px] max-h-[70dvh] overflow-y-auto",
+              "min-w-[280px] max-h-[70dvh] overflow-y-auto",
               "border border-current/20 bg-background-base/95 backdrop-blur-sm",
               "shadow-[0_12px_32px_-8px_rgba(0,0,0,0.6)]",
               dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
             )}
             role="listbox"
-            style={
-              dropUp && rect
-                ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
-                : undefined
-            }
+            style={dropUp ? dropUpStyle : undefined}
           >
             <div className="border-b border-current/20 px-3 py-2">
               <Typography
@@ -141,11 +203,25 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               </Typography>
             </div>
 
+            <PresetSection
+              availableThemes={availableThemes}
+              chatSkin={chatSkin}
+              close={close}
+              presets={appearancePresets}
+              setAppearance={setAppearance}
+              themeName={themeName}
+            />
             <ThemeSwitcherOptions
               availableThemes={availableThemes}
               close={close}
               setTheme={setTheme}
               themeName={themeName}
+            />
+            <ChatSkinSection
+              chatSkin={chatSkin}
+              close={close}
+              setChatSkin={setChatSkin}
+              skins={availableSkins}
             />
             <FontSection
               fontChoices={fontChoices}
@@ -160,6 +236,72 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
   );
 }
 
+function PresetSection({
+  availableThemes,
+  chatSkin,
+  close,
+  presets,
+  setAppearance,
+  themeName,
+}: PresetSectionProps) {
+  const availablePresets = presets.filter((preset) => preset.available);
+  if (availablePresets.length === 0) return null;
+
+  return (
+    <>
+      <SectionHeader icon={<Layers className="h-3 w-3" />} label="Linked" />
+      {availablePresets.map((preset) => {
+        const isActive =
+          preset.dashboard_theme === themeName && preset.chat_skin === chatSkin;
+        const theme = availableThemes.find((th) => th.name === preset.dashboard_theme);
+        const paletteTheme = BUILTIN_THEMES[preset.dashboard_theme] ?? theme?.definition;
+
+        return (
+          <ListItem
+            active={isActive}
+            aria-selected={isActive}
+            className="gap-3"
+            key={preset.id}
+            onClick={() => {
+              setAppearance({
+                dashboardTheme: preset.dashboard_theme,
+                chatSkin: preset.chat_skin,
+              });
+              close();
+            }}
+            role="option"
+          >
+            {paletteTheme ? (
+              <ThemeSwatch theme={paletteTheme} />
+            ) : (
+              <PlaceholderSwatch />
+            )}
+
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <Typography
+                mondwest
+                className="truncate text-display text-xs tracking-wide"
+              >
+                {preset.label}
+              </Typography>
+              <Typography className="truncate text-xs tracking-normal text-text-tertiary">
+                {preset.description}
+              </Typography>
+            </div>
+
+            <Check
+              className={cn(
+                "h-3 w-3 shrink-0 text-midground",
+                isActive ? "opacity-100" : "opacity-0",
+              )}
+            />
+          </ListItem>
+        );
+      })}
+    </>
+  );
+}
+
 function ThemeSwitcherOptions({
   availableThemes,
   close,
@@ -168,6 +310,7 @@ function ThemeSwitcherOptions({
 }: ThemeSwitcherOptionsProps) {
   return (
     <>
+      <SectionHeader icon={<Palette className="h-3 w-3" />} label="Dashboard theme" />
       {availableThemes.map((th) => {
         const isActive = th.name === themeName;
         const paletteTheme = BUILTIN_THEMES[th.name] ?? th.definition;
@@ -217,6 +360,61 @@ function ThemeSwitcherOptions({
   );
 }
 
+function ChatSkinSection({
+  chatSkin,
+  close,
+  setChatSkin,
+  skins,
+}: ChatSkinSectionProps) {
+  return (
+    <>
+      <SectionHeader icon={<Terminal className="h-3 w-3" />} label="Chat skin" />
+      {skins.map((skin) => {
+        const isActive = skin.name === chatSkin;
+
+        return (
+          <ListItem
+            active={isActive}
+            aria-selected={isActive}
+            className="gap-3"
+            key={skin.name}
+            onClick={() => {
+              setChatSkin(skin.name);
+              close();
+            }}
+            role="option"
+          >
+            <span aria-hidden className="h-4 w-9 shrink-0 text-center text-xs text-text-tertiary">
+              {skin.source === "user" ? "usr" : "cli"}
+            </span>
+
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <Typography
+                mondwest
+                className="truncate text-display text-xs tracking-wide"
+              >
+                {skin.label}
+              </Typography>
+              {skin.description && (
+                <Typography className="truncate text-xs tracking-normal text-text-tertiary">
+                  {skin.description}
+                </Typography>
+              )}
+            </div>
+
+            <Check
+              className={cn(
+                "h-3 w-3 shrink-0 text-midground",
+                isActive ? "opacity-100" : "opacity-0",
+              )}
+            />
+          </ListItem>
+        );
+      })}
+    </>
+  );
+}
+
 const FONT_CATEGORY_LABEL_KEY: Record<FontChoice["category"], "fontSans" | "fontSerif" | "fontMono"> = {
   sans: "fontSans",
   serif: "fontSerif",
@@ -231,17 +429,10 @@ function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
   const order: FontChoice["category"][] = ["sans", "serif", "mono"];
   return (
     <>
-      <div className="mt-1 border-t border-current/20 px-3 pb-1 pt-2">
-        <span className="inline-flex items-center gap-1.5">
-          <Type className="h-3 w-3 text-text-tertiary" />
-          <Typography
-            mondwest
-            className="text-display text-xs tracking-[0.12em] text-text-tertiary"
-          >
-            {t.theme?.fontTitle ?? "Font"}
-          </Typography>
-        </span>
-      </div>
+      <SectionHeader
+        icon={<Type className="h-3 w-3" />}
+        label={t.theme?.fontTitle ?? "Font"}
+      />
 
       {/* Theme-default (clears the override). */}
       <ListItem
@@ -316,6 +507,22 @@ function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
   );
 }
 
+function SectionHeader({ icon, label }: SectionHeaderProps) {
+  return (
+    <div className="mt-1 border-t border-current/20 px-3 pb-1 pt-2 first:mt-0 first:border-t-0">
+      <span className="inline-flex items-center gap-1.5 text-text-tertiary">
+        {icon}
+        <Typography
+          mondwest
+          className="text-display text-xs tracking-[0.12em] text-text-tertiary"
+        >
+          {label}
+        </Typography>
+      </span>
+    </div>
+  );
+}
+
 function ThemeSwatch({ theme }: { theme: DashboardTheme }) {
   // Inverted themes (Nous Blue / future lens themes) author their palette
   // pre-inversion — `#FFAC02` reads as `#0053FD` blue once the foreground-
@@ -354,6 +561,27 @@ interface ThemeSwitcherOptionsProps {
   close: () => void;
   setTheme: (name: string) => void;
   themeName: string;
+}
+
+interface PresetSectionProps {
+  availableThemes: ThemeListEntry[];
+  chatSkin: string;
+  close: () => void;
+  presets: AppearancePreset[];
+  setAppearance: (appearance: { chatSkin?: string; dashboardTheme?: string }) => void;
+  themeName: string;
+}
+
+interface ChatSkinSectionProps {
+  chatSkin: string;
+  close: () => void;
+  setChatSkin: (name: string) => void;
+  skins: ChatSkinSummary[];
+}
+
+interface SectionHeaderProps {
+  icon: ReactNode;
+  label: string;
 }
 
 interface FontSectionProps {

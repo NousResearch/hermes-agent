@@ -5632,6 +5632,10 @@ class TestPtyWebSocket:
         """Dashboard chat runs the TUI in browser-scrollback mode."""
         import hermes_cli.main as main_mod
 
+        monkeypatch.setenv("TERM", "dumb")
+        monkeypatch.setenv("NO_COLOR", "1")
+        monkeypatch.setenv("FORCE_COLOR", "0")
+        monkeypatch.delenv("COLORTERM", raising=False)
         monkeypatch.setattr(
             main_mod,
             "_make_tui_argv",
@@ -5643,6 +5647,12 @@ class TestPtyWebSocket:
         assert env["HERMES_TUI_DASHBOARD"] == "1"
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
+        assert env["TERM"] == "xterm-256color"
+        assert env["COLORTERM"] == "truecolor"
+        assert env["FORCE_COLOR"] == "3"
+        assert env["HERMES_TUI_TRUECOLOR"] == "1"
+        assert env["HERMES_TUI_BACKGROUND"] == "#000000"
+        assert "NO_COLOR" not in env
 
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home

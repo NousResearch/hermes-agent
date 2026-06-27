@@ -6390,6 +6390,15 @@ class TelegramAdapter(BasePlatformAdapter):
         # Only process reactions on our own bot messages.
         from gateway import rich_sent_store
         message_text = rich_sent_store.lookup(chat_id, message_id)
+
+        logger.info(
+            "[%s] reaction update: chat=%s msg=%s new=%s old=%s known_bot_msg=%s",
+            self.name, chat_id, message_id,
+            [getattr(r, "emoji", "?") for r in (rxn.new_reaction or [])],
+            [getattr(r, "emoji", "?") for r in (rxn.old_reaction or [])],
+            message_text is not None,
+        )
+
         if message_text is None:
             # Not a message we sent — ignore.
             return

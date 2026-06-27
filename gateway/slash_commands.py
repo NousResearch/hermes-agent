@@ -780,12 +780,21 @@ class GatewaySlashCommandsMixin:
         row_uid = str(row.get("user_id") or "")
         if caller_uid:
             # Identity-bearing caller: allow only when the row PROVES the same
-            # owner. A row with no/blank user_id cannot be proven to belong to
-            # this caller, so fail closed — an identified user must not bind to
-            # an unowned or other-owned persisted session by id/title. (Legacy
-            # NULL-owner rows are intentionally not resumable this way; use a
-            # live session or an explicit admin override.)
-            return bool(row_uid) and row_uid == caller_uid
+            # owner AND the same platform/origin. A row with no/blank user_id
+            # cannot be proven to belong to this caller; a row with no/blank
+            # source cannot be proven to share the caller's platform (the
+            # row_src check above only rejects a *mismatching* non-blank source,
+            # so a blank/legacy source would otherwise slip through on user_id
+            # equality alone). Either gap fails closed — an identified user must
+            # not bind to an unowned, other-owned, or unproven-origin persisted
+            # session by id/title. (Legacy NULL-owner or blank-source rows are
+            # intentionally not resumable this way; use a live session or an
+            # explicit admin override.)
+            return (
+                bool(row_uid) and row_uid == caller_uid
+                and bool(row_src) and bool(caller_src)
+                and str(row_src) == str(caller_src)
+            )
         # No caller identity (single-user / no-identity context): there is no
         # cross-user boundary to enforce beyond the same-platform check above.
         return True

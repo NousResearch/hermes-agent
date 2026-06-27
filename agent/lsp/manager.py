@@ -59,6 +59,7 @@ from agent.lsp.workspace import (
 logger = logging.getLogger("agent.lsp.manager")
 
 DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
+REAPER_SWEEP_INTERVAL = 60  # seconds between idle-reaper sweeps
 
 
 class _BackgroundLoop:
@@ -115,6 +116,20 @@ class _BackgroundLoop:
         except Exception:
             fut.cancel()
             raise
+
+    def spawn(self, coro) -> None:
+        """Schedule a long-running coroutine on the loop, fire-and-forget.
+
+        Unlike :meth:`run`, this does not block the caller or wait for a
+        result — used for background tasks like the idle reaper that live
+        for the lifetime of the loop.
+        """
+        from agent.async_utils import safe_schedule_threadsafe
+        if self._loop is None:
+            if asyncio.iscoroutine(coro):
+                coro.close()
+            return
+        safe_schedule_threadsafe(coro, self._loop)
 
     def stop(self) -> None:
         loop = self._loop
@@ -182,6 +197,15 @@ class LSPService:
         # out anything in the baseline so the agent only sees errors
         # introduced by the current edit.
         self._delta_baseline: Dict[str, List[Dict[str, Any]]] = {}
+
+        # Idle reaper: language servers (esp. tsserver) hold hundreds of
+        # MB and are spawned lazily but never torn down on their own.  In
+        # a long-lived gateway process this accumulates until OOM.  The
+        # reaper sweeps periodically and shuts down clients idle longer
+        # than ``idle_timeout``.  Started only when the service is enabled
+        # so the background loop is actually running.
+        if self._enabled:
+            self._loop.spawn(self._reaper_loop())
 
     @classmethod
     def create_from_config(cls) -> Optional["LSPService"]:
@@ -508,6 +532,9 @@ class LSPService:
         with self._state_lock:
             client = self._clients.get(key)
             if client is not None and client.is_running:
+                # Mark in-use at acquisition time (not just completion) so
+                # the idle reaper can't reap a client mid-request.
+                self._last_used[key] = time.time()
                 eventlog.log_active(srv.server_id, per_server_root)
                 return client
             spawning = self._spawning.get(key)
@@ -576,6 +603,46 @@ class LSPService:
             *(c.shutdown() for c in clients),
             return_exceptions=True,
         )
+
+    async def _reaper_loop(self) -> None:
+        """Periodically tear down LSP clients idle longer than the timeout.
+
+        Without this, every language server spawned for the life of the
+        process (tsserver alone holds ~1GB after a few days) is never
+        reclaimed.  Runs forever on the background loop; one sweep every
+        ``REAPER_SWEEP_INTERVAL`` seconds.
+        """
+        while True:
+            try:
+                await asyncio.sleep(REAPER_SWEEP_INTERVAL)
+                await self._reap_idle_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.debug("LSP reaper sweep failed: %s", e)
+
+    async def _reap_idle_once(self) -> None:
+        """Shut down every client whose last use is older than the timeout."""
+        timeout = self._idle_timeout
+        if timeout <= 0:
+            return
+        now = time.time()
+        victims: List[Tuple[Tuple[str, str], LSPClient]] = []
+        with self._state_lock:
+            for key, client in list(self._clients.items()):
+                # Never reap a key with an in-flight spawn.
+                if key in self._spawning:
+                    continue
+                if now - self._last_used.get(key, 0.0) > timeout:
+                    self._clients.pop(key, None)
+                    self._last_used.pop(key, None)
+                    victims.append((key, client))
+        for key, client in victims:
+            try:
+                await client.shutdown()
+                logger.info("LSP reaped idle server %s @ %s", key[0], key[1])
+            except Exception as e:  # noqa: BLE001
+                logger.debug("idle reap shutdown failed for %s: %s", key, e)
 
     # ------------------------------------------------------------------
     # status / introspection (used by ``hermes lsp status``)

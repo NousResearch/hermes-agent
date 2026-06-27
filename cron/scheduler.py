@@ -288,6 +288,70 @@ def _is_cron_silence_response(text: str) -> bool:
         return True
     return False
 
+
+_CRON_FINAL_MARKER_RE = re.compile(
+    r"(?im)^\s*(?:final\s+(?:answer|response|output)|final|deliverable)[^\S\r\n]*:[^\S\r\n]*(.*)$"
+)
+_CRON_MARKDOWN_RULE_RE = re.compile(r"(?m)^\s*-{3,}\s*$")
+_CRON_REASONING_PREAMBLE_SIGNALS = (
+    "all checks complete",
+    "compiling",
+    "summary of findings",
+    "now filtering",
+    "filtering",
+    "grouping",
+    "sorting",
+    "checking",
+    "working notes",
+    "reasoning",
+    "i need to",
+    "i will",
+    "let me",
+)
+
+
+def _looks_like_cron_reasoning_preamble(text: str) -> bool:
+    """Heuristic guard for stripping untagged cron working notes."""
+    lower = text.lower()
+    return sum(1 for signal in _CRON_REASONING_PREAMBLE_SIGNALS if signal in lower) >= 2
+
+
+def _extract_cron_deliverable_response(text: str) -> str:
+    """Return the final user-facing cron response when a clear marker exists.
+
+    Cron jobs run in quiet, unattended mode, so some reasoning models leak
+    plain-text working notes before the actual report. Avoid broad prose
+    classification: only strip when the model supplied an explicit final marker
+    or a markdown rule after a preamble that looks like working notes.
+    """
+    if not isinstance(text, str):
+        return ""
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+
+    marker_matches = list(_CRON_FINAL_MARKER_RE.finditer(stripped))
+    if marker_matches:
+        marker = marker_matches[-1]
+        same_line_tail = (marker.group(1) or "").strip()
+        remaining_tail = stripped[marker.end():].strip()
+        if same_line_tail and remaining_tail:
+            tail = f"{same_line_tail}\n{remaining_tail}"
+        else:
+            tail = same_line_tail or remaining_tail
+        if tail:
+            return tail
+
+    rule_matches = list(_CRON_MARKDOWN_RULE_RE.finditer(stripped))
+    for rule in reversed(rule_matches):
+        prefix = stripped[:rule.start()].strip()
+        tail = stripped[rule.end():].strip()
+        if prefix and tail and _looks_like_cron_reasoning_preamble(prefix):
+            return tail
+
+    return stripped
+
+
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
 # The tick function submits jobs here and returns immediately so the ticker
@@ -3345,6 +3409,9 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
             # #46917).  Keeps the intentional bracketed-prefix / trailing-line
             # tolerance the cron contract relies on.
+            if should_deliver and success:
+                deliver_content = _extract_cron_deliverable_response(deliver_content)
+                should_deliver = bool(deliver_content.strip())
             if should_deliver and success and _is_cron_silence_response(deliver_content):
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False

@@ -8,7 +8,19 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import (
+    _resolve_origin,
+    _resolve_delivery_target,
+    _deliver_result,
+    _send_media_via_adapter,
+    _extract_cron_deliverable_response,
+    run_job,
+    run_one_job,
+    SILENT_MARKER,
+    _build_job_prompt,
+    _resolve_cron_enabled_toolsets,
+    _merge_mcp_into_per_job_toolsets,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -2426,6 +2438,111 @@ class TestRunJobSkillBacked:
         assert "Instructions for blogwatcher." in prompt_arg
         assert "Instructions for maps." in prompt_arg
         assert "Combine the results." in prompt_arg
+
+
+class TestCronDeliverableResponseExtraction:
+    """Cron delivery should strip obvious untagged working notes, conservatively."""
+
+    def test_strips_reasoning_preamble_before_markdown_rule(self):
+        response = """All checks complete. Compiling the brief.
+
+Summary of findings:
+- Weather checked.
+- Portfolio checked.
+
+---
+
+Good morning.
+
+WEATHER
+- Today: 13C
+"""
+
+        assert _extract_cron_deliverable_response(response) == """Good morning.
+
+WEATHER
+- Today: 13C"""
+
+    def test_strips_reasoning_preamble_before_final_answer_marker(self):
+        response = """Now filtering issues by status.
+Grouping by priority and sorting by owner.
+
+Final answer:
+
+Urgent
+- DOS-527 needs attention.
+"""
+
+        assert _extract_cron_deliverable_response(response) == """Urgent
+- DOS-527 needs attention."""
+
+    def test_preserves_multiline_tail_after_same_line_final_marker(self):
+        response = """I need to group the results.
+
+Final answer: Urgent
+- DOS-527 needs attention.
+- DOS-333 can wait.
+"""
+
+        assert _extract_cron_deliverable_response(response) == """Urgent
+- DOS-527 needs attention.
+- DOS-333 can wait."""
+
+    def test_leaves_normal_markdown_horizontal_rule_alone(self):
+        response = """Daily Brief
+---
+
+Weather: clear.
+Portfolio: unchanged.
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_leaves_single_signal_markdown_rule_alone(self):
+        response = """Checking in on weekly metrics
+---
+
+Weather: clear.
+Portfolio: unchanged.
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_leaves_normal_report_heading_alone(self):
+        response = """Report:
+
+- Weather: clear.
+- Portfolio: unchanged.
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_run_one_job_delivers_extracted_final_response(self):
+        response = """All checks complete. Compiling the brief.
+
+Summary of findings:
+- Weather checked.
+
+---
+
+Good morning.
+
+WEATHER
+- Today: 13C
+"""
+
+        with patch("cron.scheduler.run_job", return_value=(True, "# raw output", response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md") as save_mock, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            assert run_one_job({"id": "brief-job", "name": "brief"})
+
+        save_mock.assert_called_once_with("brief-job", "# raw output")
+        deliver_mock.assert_called_once()
+        assert deliver_mock.call_args.args[1] == """Good morning.
+
+WEATHER
+- Today: 13C"""
 
 
 class TestSilentDelivery:

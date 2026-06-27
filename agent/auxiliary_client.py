@@ -3203,6 +3203,40 @@ def _try_payment_fallback(
     return None, None, ""
 
 
+def _main_agent_vision_fallback_allowed(client: Any, model: str) -> bool:
+    """Return True when the resolved main-agent endpoint can accept images.
+
+    A custom or aliased main provider can resolve to a concrete backend after
+    ``resolve_provider_client``.  For vision fallback, use that actual endpoint
+    to verify model capabilities before handing image payloads to the main
+    model.  This keeps an auxiliary vision timeout from turning into a
+    misleading provider-side model/API mismatch.
+    """
+    base_url = str(getattr(client, "base_url", "") or "").strip()
+    if not base_url:
+        return True
+
+    try:
+        from agent.model_metadata import _infer_provider_from_url
+
+        inferred_provider = _infer_provider_from_url(base_url)
+    except Exception:
+        inferred_provider = None
+
+    if not inferred_provider:
+        return True
+
+    try:
+        from agent.image_routing import _lookup_supports_vision
+        from hermes_cli.config import load_config
+
+        supports = _lookup_supports_vision(inferred_provider, model, load_config())
+    except Exception:
+        supports = None
+
+    return supports is True
+
+
 def _try_main_agent_model_fallback(
     failed_provider: str,
     task: str = None,
@@ -3244,12 +3278,21 @@ def _try_main_agent_model_fallback(
     if client is None:
         return None, None, ""
 
+    fallback_model = resolved_model or main_model
+    if task == "vision" and not _main_agent_vision_fallback_allowed(client, fallback_model):
+        logger.info(
+            "Auxiliary vision: skipping main agent model fallback %s (%s) "
+            "because the resolved endpoint does not report vision support",
+            main_provider, fallback_model,
+        )
+        return None, None, ""
+
     label = f"main-agent({main_provider})"
     logger.info(
         "Auxiliary %s: %s on %s — falling back to main agent model %s (%s)",
-        task or "call", reason, failed_provider, label, resolved_model or main_model,
+        task or "call", reason, failed_provider, label, fallback_model,
     )
-    return client, resolved_model or main_model, label
+    return client, fallback_model, label
 
 
 # ── Context-window screening for runtime fallback chains (issue #52392) ──

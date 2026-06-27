@@ -27,6 +27,7 @@ from agent.auxiliary_client import (
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
+    _try_main_agent_model_fallback,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
@@ -1782,6 +1783,73 @@ class TestTryPaymentFallback:
         assert client is None
         assert model is None
         assert label == ""
+
+
+class TestTryMainAgentModelFallback:
+    """Main-agent fallback should preserve task capability boundaries."""
+
+    def _patch_main_model(self, client, model="mimo-v2.5-pro"):
+        return (
+            patch("agent.auxiliary_client._read_main_provider", return_value="custom"),
+            patch("agent.auxiliary_client._read_main_model", return_value=model),
+            patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(client, model)),
+        )
+
+    def test_vision_skips_main_agent_when_resolved_model_is_not_vision_capable(self):
+        main_client = MagicMock()
+        main_client.base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+
+        patches = self._patch_main_model(main_client)
+        with patches[0], patches[1], patches[2], patches[3], \
+             patch("hermes_cli.config.load_config", return_value={}), \
+             patch("agent.image_routing._lookup_supports_vision", return_value=False) as lookup:
+            client, model, label = _try_main_agent_model_fallback(
+                "gemini",
+                task="vision",
+                reason="connection error",
+            )
+
+        assert client is None
+        assert model is None
+        assert label == ""
+        lookup.assert_called_once_with("xiaomi", "mimo-v2.5-pro", {})
+
+    def test_vision_allows_main_agent_when_resolved_model_supports_vision(self):
+        main_client = MagicMock()
+        main_client.base_url = "https://api.openai.com/v1"
+
+        patches = self._patch_main_model(main_client, model="gpt-4o")
+        with patches[0], patches[1], patches[2], patches[3], \
+             patch("hermes_cli.config.load_config", return_value={}), \
+             patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            client, model, label = _try_main_agent_model_fallback(
+                "gemini",
+                task="vision",
+                reason="connection error",
+            )
+
+        assert client is main_client
+        assert model == "gpt-4o"
+        assert label == "main-agent(custom)"
+
+    def test_non_vision_still_uses_main_agent_without_vision_lookup(self):
+        main_client = MagicMock()
+        main_client.base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+
+        patches = self._patch_main_model(main_client)
+        with patches[0], patches[1], patches[2], patches[3], \
+             patch("agent.image_routing._lookup_supports_vision") as lookup:
+            client, model, label = _try_main_agent_model_fallback(
+                "gemini",
+                task="compression",
+                reason="connection error",
+            )
+
+        assert client is main_client
+        assert model == "mimo-v2.5-pro"
+        assert label == "main-agent(custom)"
+        lookup.assert_not_called()
 
 
 class TestCallLlmPaymentFallback:

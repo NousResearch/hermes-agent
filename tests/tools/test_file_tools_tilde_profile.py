@@ -55,6 +55,13 @@ class TestExpandTilde:
         # Should use os.path.expanduser, not the profile home
         assert "/opt/data/profiles/coder/home" not in result
 
+    def test_consecutive_slashes_keep_profile_home(self):
+        """~//path (consecutive slashes) must NOT drop the profile home (#53432)."""
+        with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
+            result = ft._expand_tilde("~//scratch/file.txt")
+        assert result == "/opt/data/profiles/coder/home/scratch/file.txt"
+        assert result.startswith("/opt/data/profiles/coder/home")
+
     def test_no_tilde_unchanged(self):
         """Paths without ~ are returned unchanged (modulo expanduser)."""
         with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):

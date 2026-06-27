@@ -42,7 +42,14 @@ def _expand_tilde(path: str) -> str:
     except Exception:
         home = None
     if home and (path == "~" or path.startswith("~/")):
-        return home if path == "~" else os.path.join(home, path[2:])
+        if path == "~":
+            return home
+        # Strip the leading "~/" and any extra leading slashes so a path like
+        # "~//scratch" (or "~/ /" style consecutive separators) does not become
+        # an absolute path: os.path.join(home, "/scratch") returns "/scratch",
+        # silently discarding the profile home (#53432).
+        remainder = path[2:].lstrip("/")
+        return os.path.join(home, remainder)
     return os.path.expanduser(path)
 
 

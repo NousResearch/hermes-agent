@@ -15,13 +15,14 @@ problem. When activated, MCP and plugin tools are replaced in the
 model-visible tools array by three bridge tools, and the model loads each
 specific tool's schema on demand.
 
-:::info Built-in Hermes tools never defer
+:::info Built-in Hermes tools never defer by default
 The tools that make up Hermes' core capability set (`terminal`,
 `read_file`, `write_file`, `patch`, `search_files`, `todo`, `memory`,
 `browser_*`, `web_search`, `web_extract`, `clarify`, `execute_code`,
 `delegate_task`, `session_search`, `send_message`, and the rest of
-`_HERMES_CORE_TOOLS`) are *always* loaded directly. Only MCP tools and
-non-core plugin tools are eligible for deferral.
+`_HERMES_CORE_TOOLS`) are loaded directly unless you explicitly opt in
+with [`include_builtin`](#deferring-builtin-tools-opt-in). By default
+only MCP tools and non-core plugin tools are eligible for deferral.
 :::
 
 ## How it works
@@ -78,6 +79,8 @@ tools:
     threshold_pct: 10   # percentage of context — only used in auto mode
     search_default_limit: 5
     max_search_limit: 20
+    include_builtin: false   # opt-in: defer builtin tools too (see below)
+    # always_include: [...]  # names that never defer (see below)
 ```
 
 | Key | Default | Meaning |
@@ -86,6 +89,8 @@ tools:
 | `threshold_pct` | `10` | Percentage of context length at which `auto` mode kicks in. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
+| `include_builtin` | `false` | Opt-in: builtin (core) tools outside `always_include` become deferrable too. |
+| `always_include` | lean hot set | Tool names that never defer. Extends — can never remove — the agent-loop floor. |
 
 You can also flip the legacy boolean shape:
 
@@ -93,6 +98,45 @@ You can also flip the legacy boolean shape:
 tools:
   tool_search: true   # equivalent to {enabled: auto}
 ```
+
+## Deferring builtin tools (opt-in)
+
+On installs with no or few MCP servers, the dominant per-turn schema cost
+is Hermes' own builtin toolset — measurements in
+[hermes-agent#6839](https://github.com/NousResearch/hermes-agent/issues/6839)
+put a typical 42-tool builtin surface at roughly 15K tokens per call, and
+local models pay it again in prefill time on every turn.
+
+`include_builtin: true` extends Tool Search to builtin tools:
+
+```yaml
+tools:
+  tool_search:
+    enabled: auto
+    include_builtin: true
+    # Optional — override the default hot set:
+    # always_include: [terminal, read_file, write_file, web_search]
+```
+
+- Builtin tools **not** in `always_include` join the deferred catalog and
+  are loaded on demand exactly like MCP tools.
+- When you don't set `always_include`, a lean default hot set stays
+  direct: `terminal`, `process`, `read_file`, `write_file`, `patch`,
+  `search_files`, `web_search`, `web_extract`, `execute_code`, the skill
+  tools, and the agent-loop floor. Browser, kanban, Home Assistant, and
+  media tools defer — they are the bulk of the schema bytes and the least
+  used in text-first sessions.
+- If you set `always_include`, your list **replaces** the default hot set
+  but is always unioned with the agent-loop floor (`todo`, `memory`,
+  `session_search`, `delegate_task`, `clarify`) — those are serviced by
+  the agent loop itself and can never be deferred, no matter the config.
+- `always_include` also accepts MCP/plugin tool names, so you can pin a
+  hot MCP tool (e.g. a search tool you call every turn) while everything
+  else defers. Pinning never *adds* tools — a name outside the session's
+  toolsets stays unavailable.
+- The same threshold gate applies: in `auto` mode nothing changes until
+  the deferrable surface (now including builtin schemas) crosses
+  `threshold_pct` of the context window.
 
 ## When NOT to use it
 

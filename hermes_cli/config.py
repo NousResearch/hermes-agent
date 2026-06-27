@@ -2563,7 +2563,8 @@ DEFAULT_CONFIG = {
     # tool_search / tool_describe / tool_call — and surfaced on demand.
     #
     # Core Hermes tools (terminal, read_file, write_file, patch,
-    # search_files, todo, memory, browser_*, etc.) are NEVER deferred.
+    # search_files, todo, memory, browser_*, etc.) are never deferred by
+    # default; ``include_builtin`` opts them in, minus ``always_include``.
     # See tools/tool_search.py for full design notes and the
     # openclaw-tool-search-report PDF in this PR for the rationale.
     "tools": {
@@ -2584,6 +2585,18 @@ DEFAULT_CONFIG = {
             "search_default_limit": 5,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
+            # Opt-in (hermes-agent#6839): make builtin (core) tools outside
+            # ``always_include`` deferrable too. On installs with few or no
+            # MCP servers the builtin schemas ARE the per-turn overhead.
+            "include_builtin": False,
+            # Tool names that never defer. Omit for the lean default hot set
+            # (terminal/process, file tools, web tools, execute_code, skill
+            # tools + the agent-loop floor). A user-provided list replaces
+            # the default hot set but is always unioned with the agent-loop
+            # floor (todo, memory, session_search, delegate_task, clarify).
+            # Accepts MCP/plugin names too — pinning never adds tools the
+            # session wasn't granted.
+            # "always_include": ["terminal", "read_file", "web_search"],
         },
     },
 

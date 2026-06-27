@@ -536,3 +536,179 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+
+# ---------------------------------------------------------------------------
+# Builtin (core) tool deferral — the include_builtin opt-in (#6839).
+#
+# Every test passes an explicit ToolSearchConfig so results never depend on
+# the developer's ~/.hermes/config.yaml.
+# ---------------------------------------------------------------------------
+
+
+def _cfg(**overrides):
+    from tools.tool_search import ToolSearchConfig
+    return ToolSearchConfig.from_raw(overrides)
+
+
+class TestBuiltinDeferralConfig:
+    def test_include_builtin_defaults_off(self):
+        from tools.tool_search import ToolSearchConfig
+        assert ToolSearchConfig.from_raw(None).include_builtin is False
+        assert ToolSearchConfig.from_raw(True).include_builtin is False
+        assert ToolSearchConfig.from_raw({}).include_builtin is False
+
+    def test_include_builtin_parses_bool_and_strings(self):
+        assert _cfg(include_builtin=True).include_builtin is True
+        assert _cfg(include_builtin="true").include_builtin is True
+        assert _cfg(include_builtin="off").include_builtin is False
+        assert _cfg(include_builtin="garbage").include_builtin is False
+
+    def test_always_include_defaults_to_hot_set(self):
+        from tools.tool_search import DEFAULT_ALWAYS_INCLUDE, ALWAYS_INCLUDE_FLOOR
+        cfg = _cfg(include_builtin=True)
+        assert cfg.always_include == DEFAULT_ALWAYS_INCLUDE
+        assert ALWAYS_INCLUDE_FLOOR <= cfg.always_include
+
+    def test_user_always_include_extends_floor_but_cannot_remove_it(self):
+        from tools.tool_search import ALWAYS_INCLUDE_FLOOR
+        cfg = _cfg(include_builtin=True, always_include=["terminal"])
+        assert "terminal" in cfg.always_include
+        # Floor names survive even though the user list omitted them.
+        assert ALWAYS_INCLUDE_FLOOR <= cfg.always_include
+        # And the default hot set is replaced, not merged.
+        assert "web_search" not in cfg.always_include
+
+    def test_always_include_non_list_falls_back_to_default(self):
+        from tools.tool_search import DEFAULT_ALWAYS_INCLUDE
+        cfg = _cfg(include_builtin=True, always_include="terminal")
+        assert cfg.always_include == DEFAULT_ALWAYS_INCLUDE
+
+
+class TestBuiltinDeferralClassification:
+    def test_core_tools_never_defer_with_default_config(self):
+        """The original invariant holds verbatim when include_builtin is off."""
+        from tools.tool_search import is_deferrable_tool_name
+        cfg = _cfg()
+        for core_name in ["terminal", "read_file", "browser_navigate",
+                          "cronjob", "send_message", "computer_use"]:
+            assert not is_deferrable_tool_name(core_name, config=cfg)
+
+    def test_opt_in_makes_cold_core_tools_deferrable(self):
+        from tools.tool_search import is_deferrable_tool_name
+        cfg = _cfg(include_builtin=True)
+        for name in ["browser_navigate", "browser_click", "cronjob",
+                     "send_message", "computer_use", "kanban_show"]:
+            assert is_deferrable_tool_name(name, config=cfg), (
+                f"'{name}' should be deferrable under include_builtin"
+            )
+
+    def test_default_hot_set_stays_direct_under_opt_in(self):
+        from tools.tool_search import is_deferrable_tool_name
+        cfg = _cfg(include_builtin=True)
+        for name in ["terminal", "process", "read_file", "write_file",
+                     "patch", "search_files", "web_search", "web_extract",
+                     "execute_code", "skills_list"]:
+            assert not is_deferrable_tool_name(name, config=cfg)
+
+    def test_floor_tools_never_defer_even_with_minimal_always_include(self):
+        from tools.tool_search import is_deferrable_tool_name
+        cfg = _cfg(include_builtin=True, always_include=["terminal"])
+        # Agent-loop tools are serviced by run_agent itself — deferring them
+        # would break the loop, so the floor wins over user config.
+        for name in ["todo", "memory", "session_search", "delegate_task",
+                     "clarify"]:
+            assert not is_deferrable_tool_name(name, config=cfg)
+        # But non-floor core tools outside the user's list now defer.
+        assert is_deferrable_tool_name("web_search", config=cfg)
+
+    def test_always_include_pins_non_core_names_too(self):
+        from tools.tool_search import is_deferrable_tool_name
+        cfg = _cfg(always_include=["mcp_pinned_example_op"])
+        # The pin short-circuits before any registry lookup.
+        assert not is_deferrable_tool_name("mcp_pinned_example_op", config=cfg)
+
+    def test_bridge_tools_still_never_defer(self):
+        from tools.tool_search import is_deferrable_tool_name, BRIDGE_TOOL_NAMES
+        cfg = _cfg(include_builtin=True, always_include=[])
+        for name in BRIDGE_TOOL_NAMES:
+            assert not is_deferrable_tool_name(name, config=cfg)
+
+
+class TestBuiltinDeferralAssembly:
+    @staticmethod
+    def _defs():
+        return [
+            _td("terminal", "Run shell commands"),
+            _td("read_file", "Read a file"),
+            _td("browser_navigate", "Navigate the browser"),
+            _td("browser_click", "Click an element"),
+            _td("cronjob", "Manage cron jobs"),
+        ]
+
+    def test_classify_splits_builtin_by_always_include(self):
+        from tools.tool_search import classify_tools
+        cfg = _cfg(include_builtin=True)
+        visible, deferrable = classify_tools(self._defs(), config=cfg)
+        vnames = {(t.get("function") or {}).get("name") for t in visible}
+        dnames = {(t.get("function") or {}).get("name") for t in deferrable}
+        assert {"terminal", "read_file"} <= vnames
+        assert {"browser_navigate", "browser_click", "cronjob"} <= dnames
+
+    def test_assembly_defers_builtin_and_keeps_hot_set(self):
+        from tools.tool_search import assemble_tool_defs, BRIDGE_TOOL_NAMES
+        cfg = _cfg(enabled="on", include_builtin=True)
+        result = assemble_tool_defs(
+            self._defs(), context_length=200_000, config=cfg,
+        )
+        assert result.activated
+        names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
+        assert {"terminal", "read_file"} <= names
+        assert BRIDGE_TOOL_NAMES <= names
+        assert "browser_navigate" not in names
+        assert result.deferred_count == 3
+
+    def test_assembly_unchanged_without_opt_in(self):
+        """Same defs, include_builtin off → pure passthrough."""
+        from tools.tool_search import assemble_tool_defs
+        cfg = _cfg(enabled="on")
+        result = assemble_tool_defs(
+            self._defs(), context_length=200_000, config=cfg,
+        )
+        assert not result.activated
+        names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
+        assert "browser_navigate" in names
+
+    def test_catalog_classifies_builtin_source(self):
+        from tools.tool_search import build_catalog
+        catalog = build_catalog([_td("browser_navigate", "Navigate the browser")])
+        assert catalog[0].source == "builtin"
+
+    def test_describe_serves_builtin_schema_under_opt_in(self):
+        from tools.tool_search import dispatch_tool_describe
+        out = json.loads(dispatch_tool_describe(
+            {"name": "browser_navigate"},
+            current_tool_defs=self._defs(),
+            config=_cfg(include_builtin=True),
+        ))
+        assert out.get("name") == "browser_navigate"
+        assert "parameters" in out
+
+    def test_describe_rejects_builtin_without_opt_in(self):
+        from tools.tool_search import dispatch_tool_describe
+        out = json.loads(dispatch_tool_describe(
+            {"name": "browser_navigate"},
+            current_tool_defs=self._defs(),
+            config=_cfg(),
+        ))
+        assert "error" in out
+
+    def test_scoped_deferrable_names_respects_config(self):
+        from tools.tool_search import scoped_deferrable_names
+        defs = self._defs()
+        assert "browser_navigate" not in scoped_deferrable_names(
+            defs, config=_cfg(),
+        )
+        names = scoped_deferrable_names(defs, config=_cfg(include_builtin=True))
+        assert "browser_navigate" in names
+        assert "terminal" not in names
+

@@ -333,3 +333,130 @@ def test_references_run_in_parallel(monkeypatch):
     assert out[2][1].startswith("[failed:")
     assert out[0][1] == "resp-p1"
 
+
+def _ref_config(home):
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+        - provider: openrouter
+          model: anthropic/claude-opus-4.8
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+
+
+def test_moa_facade_emits_reference_then_aggregating(monkeypatch, tmp_path):
+    """The facade reports each reference's output, then an aggregating signal,
+    so frontends can render reference blocks before the aggregator acts."""
+    home = tmp_path / ".hermes"
+    _ref_config(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            return _response(f"advice from {kwargs['model']}")
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAChatCompletions
+
+    events = []
+    facade = MoAChatCompletions("review", reference_callback=lambda ev, **kw: events.append((ev, kw)))
+    facade.create(messages=[{"role": "user", "content": "q"}], tools=[{"type": "function"}])
+
+    ref_events = [e for e in events if e[0] == "moa.reference"]
+    agg_events = [e for e in events if e[0] == "moa.aggregating"]
+    # One block per reference model, labelled by source, with index/count.
+    assert len(ref_events) == 2
+    assert ref_events[0][1]["label"] == "openai-codex:gpt-5.5"
+    assert ref_events[0][1]["index"] == 1 and ref_events[0][1]["count"] == 2
+    assert "advice from" in ref_events[0][1]["text"]
+    # Exactly one aggregating signal, after the references, naming the aggregator.
+    assert len(agg_events) == 1
+    assert agg_events[0][1]["aggregator"] == "openrouter:anthropic/claude-opus-4.8"
+    assert agg_events[0][1]["ref_count"] == 2
+
+
+def test_moa_facade_caches_references_within_a_turn(monkeypatch, tmp_path):
+    """References run + emit ONCE per user turn, not per tool-loop iteration.
+
+    The agent loop calls create() once per iteration; the advisory message
+    view is identical across iterations (tool/tool_call turns are stripped),
+    so re-running references would multiply their cost and re-spam the display.
+    """
+    home = tmp_path / ".hermes"
+    _ref_config(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    ref_runs = []
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            ref_runs.append(kwargs["model"])
+            return _response("advice")
+        return _response("acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAChatCompletions
+
+    events = []
+    facade = MoAChatCompletions("review", reference_callback=lambda ev, **kw: events.append(ev))
+
+    base_msgs = [{"role": "user", "content": "do the thing"}]
+    # Iteration 1: model emits a tool call.
+    facade.create(messages=base_msgs, tools=[{"type": "function"}])
+    # Iteration 2: same turn — a tool result was appended, but the advisory
+    # view (which strips tool turns) is unchanged, so references must be reused.
+    facade.create(
+        messages=base_msgs
+        + [
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "result"},
+        ],
+        tools=[{"type": "function"}],
+    )
+
+    # 2 reference models, run once total (not once per iteration).
+    assert len(ref_runs) == 2
+    # Reference blocks emitted once (2 reference events + 1 aggregating).
+    assert events.count("moa.reference") == 2
+    assert events.count("moa.aggregating") == 1
+
+
+def test_moa_facade_reruns_references_on_new_turn(monkeypatch, tmp_path):
+    """A genuinely new user message invalidates the cache and re-runs refs."""
+    home = tmp_path / ".hermes"
+    _ref_config(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    ref_runs = []
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            ref_runs.append(kwargs["model"])
+            return _response("advice")
+        return _response("acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "turn one"}], tools=[])
+    facade.create(messages=[{"role": "user", "content": "turn two"}], tools=[])
+
+    # 2 references × 2 distinct turns = 4 reference runs.
+    assert len(ref_runs) == 4
+

@@ -8,6 +8,7 @@ iteration.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -280,8 +281,37 @@ def aggregate_moa_context(
 class MoAChatCompletions:
     """OpenAI-chat-compatible facade where the aggregator is the acting model."""
 
-    def __init__(self, preset_name: str):
+    def __init__(self, preset_name: str, reference_callback: Any = None):
         self.preset_name = preset_name or "default"
+        # Optional display hook. Called as reference outputs become available so
+        # frontends can show each reference model's answer as a labelled block
+        # before the aggregator acts. Signature:
+        #   reference_callback(event, **kwargs)
+        # where event is one of:
+        #   "moa.reference"   kwargs: index, count, label, text
+        #   "moa.aggregating" kwargs: aggregator (label), ref_count
+        # Never raises into the model call — display is best-effort.
+        self.reference_callback = reference_callback
+        # Turn-scoped reference cache. The agent loop calls create() once per
+        # tool-loop iteration, but references are advisory for the whole turn:
+        # the advisory message view (_reference_messages) is identical across
+        # iterations (it strips tool/tool_call turns) until a new user message
+        # arrives. Re-running references every iteration would multiply their
+        # API cost by the tool-loop depth AND re-emit the same blocks to the
+        # display on every iteration. So cache outputs keyed by the advisory
+        # view's signature and reuse them — running and showing references once
+        # per user turn.
+        self._ref_cache_key: tuple | None = None
+        self._ref_cache_outputs: list[tuple[str, str]] = []
+
+    def _emit(self, event: str, **kwargs: Any) -> None:
+        cb = self.reference_callback
+        if cb is None:
+            return
+        try:
+            cb(event, **kwargs)
+        except Exception as exc:  # pragma: no cover - display must never break the turn
+            logger.debug("MoA reference_callback failed for %s: %s", event, exc)
 
     def create(self, **api_kwargs: Any) -> Any:
         from hermes_cli.config import load_config
@@ -306,12 +336,52 @@ class MoAChatCompletions:
 
         reference_outputs: list[tuple[str, str]] = []
         ref_messages = _reference_messages(messages)
-        reference_outputs = _run_references_parallel(
-            reference_models,
-            ref_messages,
-            temperature=temperature,
-            max_tokens=None,
-        )
+
+        # Turn-scoped cache: only run + display references when the advisory
+        # view changed (i.e. a new user turn). Within one turn the agent loop
+        # calls create() once per tool iteration with the same advisory view;
+        # reuse the cached outputs and skip both the re-run and the re-emit.
+        _sig = hashlib.sha256(
+            "\u0000".join(
+                f"{m.get('role')}:{m.get('content')}" for m in ref_messages
+            ).encode("utf-8", "replace")
+        ).hexdigest()
+        _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))
+        _refs_from_cache = _cache_key == self._ref_cache_key and bool(self._ref_cache_outputs)
+
+        if _refs_from_cache:
+            reference_outputs = list(self._ref_cache_outputs)
+        else:
+            reference_outputs = _run_references_parallel(
+                reference_models,
+                ref_messages,
+                temperature=temperature,
+                max_tokens=None,
+            )
+            self._ref_cache_key = _cache_key
+            self._ref_cache_outputs = list(reference_outputs)
+
+            # Surface each reference model's answer to the display BEFORE the
+            # aggregator acts — once per turn (only on the iteration that
+            # actually ran them). The user sees one labelled block per
+            # reference (rendered like a thinking block) so the MoA process is
+            # visible rather than a silent pause. Best-effort: never blocks the
+            # turn.
+            _ref_count = len(reference_outputs)
+            for _idx, (_label, _text) in enumerate(reference_outputs, start=1):
+                self._emit(
+                    "moa.reference",
+                    index=_idx,
+                    count=_ref_count,
+                    label=_label,
+                    text=_text,
+                )
+            if _ref_count:
+                self._emit(
+                    "moa.aggregating",
+                    aggregator=_slot_label(aggregator),
+                    ref_count=_ref_count,
+                )
 
         agg_messages = [dict(m) for m in messages]
         if reference_outputs:
@@ -359,6 +429,6 @@ class MoAChatCompletions:
 
 
 class MoAClient:
-    def __init__(self, preset_name: str):
+    def __init__(self, preset_name: str, reference_callback: Any = None):
         self.chat = type("_MoAChat", (), {})()
-        self.chat.completions = MoAChatCompletions(preset_name)
+        self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback)

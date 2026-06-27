@@ -53,6 +53,64 @@ COMPACTION_STATUS = (
 )
 
 
+class CompressionCommitFence:
+    """Fence timeout cancellation against post-summary session mutation.
+
+    Compression itself is synchronous and may be running in an executor thread.
+    A caller can stop waiting for the summary, but it cannot kill that thread.
+    This fence makes the commit boundary deterministic: cancellation either wins
+    before session mutation starts, or waits until an already-started commit is
+    fully complete before the caller proceeds.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._commit_started = False
+
+    def cancel_before_commit(self) -> bool:
+        """Cancel a pending commit, or wait for an active commit to finish.
+
+        Returns ``True`` when cancellation won before the commit boundary.
+        Returns ``False`` when the worker had already entered the boundary; in
+        that case acquiring this lock waits until all session mutation finishes.
+        """
+        with self._lock:
+            if self._commit_started:
+                return False
+            self._cancelled = True
+            return True
+
+    def try_cancel_before_commit(self) -> Optional[bool]:
+        """Non-blocking form of :meth:`cancel_before_commit`.
+
+        Returns ``None`` while an active commit owns the fence, allowing an
+        async caller to yield instead of blocking its event loop.
+        """
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if self._commit_started:
+                return False
+            self._cancelled = True
+            return True
+        finally:
+            self._lock.release()
+
+    def begin_commit(self) -> bool:
+        """Enter the commit boundary unless cancellation already won."""
+        self._lock.acquire()
+        if self._cancelled:
+            self._lock.release()
+            return False
+        self._commit_started = True
+        return True
+
+    def finish_commit(self) -> None:
+        """Leave a commit boundary entered by :meth:`begin_commit`."""
+        self._lock.release()
+
+
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
     """Whether the live in-memory SessionDB class structurally predates locks.
 
@@ -465,6 +523,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    commit_fence: Optional[CompressionCommitFence] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -481,6 +540,9 @@ def compress_context(
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
+        commit_fence: Optional cooperative fence for executor callers that
+            may time out. It prevents a late worker from mutating session state
+            after its caller has moved on.
 
     Returns:
         ``(compressed_messages, new_system_prompt)`` tuple.  When
@@ -495,14 +557,26 @@ def compress_context(
     # thread/compact mechanism. Behavior is controlled by
     # ``compression.codex_app_server_auto`` (native|hermes|off).
     if getattr(agent, "api_mode", None) == "codex_app_server":
-        return _compress_context_via_codex_app_server(
-            agent,
-            messages,
-            system_message,
-            approx_tokens=approx_tokens,
-            task_id=task_id,
-            force=force,
-        )
+        _codex_fence_entered = False
+        if commit_fence is not None:
+            _codex_fence_entered = commit_fence.begin_commit()
+            if not _codex_fence_entered:
+                existing_prompt = getattr(agent, "_cached_system_prompt", None)
+                if not existing_prompt:
+                    existing_prompt = agent._build_system_prompt(system_message)
+                return messages, existing_prompt
+        try:
+            return _compress_context_via_codex_app_server(
+                agent,
+                messages,
+                system_message,
+                approx_tokens=approx_tokens,
+                task_id=task_id,
+                force=force,
+            )
+        finally:
+            if _codex_fence_entered:
+                commit_fence.finish_commit()
 
     # Every automatic entrypoint must honor compressor-owned cooldown and
     # breaker state. Gateway hygiene constructs a fresh AIAgent, so the
@@ -779,6 +853,26 @@ def compress_context(
             _existing_sp = agent._build_system_prompt(system_message)
         _release_lock()
         return messages, _existing_sp
+
+    _commit_fence_entered = False
+    if commit_fence is not None:
+        try:
+            _commit_fence_entered = commit_fence.begin_commit()
+        except Exception:
+            _release_lock()
+            raise
+        if not _commit_fence_entered:
+            logger.info(
+                "Compression commit cancelled before session mutation "
+                "(session=%s).",
+                agent.session_id or "none",
+            )
+            agent._last_compaction_in_place = False
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            _release_lock()
+            return messages, _existing_sp
 
     try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
@@ -1107,7 +1201,11 @@ def compress_context(
         # file dedup) ran. A concurrent path that wakes up the moment we
         # release will see the NEW session_id in state.db / SessionEntry and
         # acquire on that — no race against our just-finished work.
-        _release_lock()
+        try:
+            _release_lock()
+        finally:
+            if _commit_fence_entered:
+                commit_fence.finish_commit()
 
 
 def _compress_context_via_codex_app_server(

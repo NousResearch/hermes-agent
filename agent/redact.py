@@ -107,10 +107,58 @@ _PREFIX_PATTERNS = [
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
 ]
 
-# ENV assignment patterns: KEY=value where KEY contains a secret-like name
+# ENV assignment patterns: KEY=value where KEY contains a secret-like name.
+# Uppercase keys tolerate spaces around "=" (e.g. ``FOO_SECRET = bar``) because
+# an all-caps key is almost never prose/code.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
+)
+
+# Lowercase / dotted / hyphenated config keys from config files
+# (application.properties, .env, YAML-ish dumps): ``spring.datasource.password=secret``,
+# ``app.api.key=xyz``, ``password=secret``. The uppercase _ENV_ASSIGN_RE above
+# never matched these, so config-file passwords leaked verbatim (issue #16413).
+#
+# These run only in a config-file context, NOT in prose, code, or URLs — three
+# carve-outs preserved from the original design (#4367 + the documented
+# web-URL passthrough below):
+#   1. The value is bounded by ``[^\s&]`` (stops at whitespace AND ``&``) so
+#      form-urlencoded bodies are handled pair-by-pair (by _redact_form_body),
+#      not greedily swallowed.
+#   2. _CFG_DOTTED_RE only matches when the key is NAMESPACED (contains a dot),
+#      which is unambiguously a config key — never a prose word.
+#   3. _CFG_ANCHORED_RE matches a bare secret-word key only at line start
+#      (optionally after ``export``), so conversational ``I have password=foo``
+#      mid-sentence is left alone.
+# The colon-form URL guard (skip when ``://`` present) lives at the call site.
+_SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
+_CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
+# Namespaced (dotted) key: the secret word may sit anywhere in a dotted path.
+_CFG_DOTTED_RE = re.compile(
+    rf"((?:[A-Za-z0-9_\-]+\.)+[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*"
+    rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]+)"
+    rf"={_CFG_VALUE}",
+    re.IGNORECASE,
+)
+# Line-anchored bare key: ``password=…`` / ``export api_key=…`` at start of line.
+_CFG_ANCHORED_RE = re.compile(
+    rf"(^[ \t]*(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Unquoted YAML / colon config (e.g. ``password: secret``,
+# ``spring.datasource.password: hunter2``). The secret keyword must be part of
+# the KEY (anchored to the start of the line/indent), and the value is a single
+# whitespace-free token — so prose like ``note: secret meeting`` (keyword in the
+# value) and ``error: token expired`` are left alone. Bare ``auth`` is excluded
+# from the key set so ``Authorization:`` / ``author:`` don't match (the former
+# is masked by _AUTH_HEADER_RE); ``auth_token``/``auth-token`` still match via
+# the ``token`` keyword. Quoted values defer to _JSON_FIELD_RE via the lookahead.
+_YAML_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential)"
+_YAML_ASSIGN_RE = re.compile(
+    rf"(^[ \t]*[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*)(:[ \t]*)(?!['\"])([^\s&]+)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
@@ -120,9 +168,25 @@ _JSON_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Authorization headers
+# Authorization headers — any scheme (Bearer, Basic, Token, Digest, …) plus the
+# bare-credential form, and Proxy-Authorization. The credential token is masked
+# while the header name and scheme word are preserved for debuggability. The
+# previous rule only matched ``Bearer``, so ``Basic <base64 user:pass>`` and
+# ``token <pat>`` leaked verbatim into logs/transcripts.
 _AUTH_HEADER_RE = re.compile(
-    r"(Authorization:\s*Bearer\s+)(\S+)",
+    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?(\S+)",
+    re.IGNORECASE,
+)
+
+# API-key style auth headers carrying a single opaque value (no scheme word).
+# Anthropic and many providers authenticate with ``x-api-key``; values without
+# a known vendor prefix (custom/local backends) would otherwise leak when a
+# request or curl command is logged or echoed into tool output / transcripts.
+_SECRET_HEADER_NAMES = (
+    r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
+)
+_SECRET_HEADER_RE = re.compile(
+    rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)",
     re.IGNORECASE,
 )
 
@@ -366,6 +430,13 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
                 name, quote, value = m.group(1), m.group(2), m.group(3)
                 return f"{name}={quote}{_mask_token(value)}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+            # Lowercase/dotted config keys (issue #16413). Skip URLs entirely —
+            # web-URL query params are intentionally passed through (see note
+            # near the bottom of this function); _DB_CONNSTR_RE still guards
+            # connection-string passwords.
+            if "://" not in text:
+                text = _CFG_DOTTED_RE.sub(_redact_env, text)
+                text = _CFG_ANCHORED_RE.sub(_redact_env, text)
 
         # JSON fields: "apiKey": "***"  (skip for code files — false positives)
         if ":" in text and '"' in text:
@@ -374,11 +445,28 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
-    # Authorization headers — _AUTH_HEADER_RE is "Authorization: Bearer ..."
-    # case-insensitive, so "uthorization" is the cheapest substring gate that
-    # covers both "Authorization" and "authorization" without a casefold().
+        # Unquoted YAML / colon config: password: ***  (after JSON so quoted
+        # values are handled there; the lookahead in _YAML_ASSIGN_RE skips
+        # quotes). Skip URLs — web-URL query params pass through by design.
+        if ":" in text and "://" not in text:
+            def _redact_yaml(m):
+                key, sep, value = m.group(1), m.group(2), m.group(3)
+                return f"{key}{sep}{_mask_token(value)}"
+            text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
+
+    # Authorization headers — _AUTH_HEADER_RE matches any scheme after
+    # "[Proxy-]Authorization:" case-insensitively, so "uthorization" is the
+    # cheapest substring gate that covers every casing without a casefold().
     if "uthorization" in text or "UTHORIZATION" in text:
         text = _AUTH_HEADER_RE.sub(
+            lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)),
+            text,
+        )
+
+    # API-key style headers (x-api-key, api-key, …). Header values are
+    # colon-separated, so gate on ":" — the regex itself is the precise filter.
+    if ":" in text:
+        text = _SECRET_HEADER_RE.sub(
             lambda m: m.group(1) + _mask_token(m.group(2)),
             text,
         )

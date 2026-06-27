@@ -272,7 +272,10 @@ function PostSetupRunner({ toolset, postSetupKey, onComplete }: PostSetupRunnerP
       </div>
 
       {status && (status.lines.length > 0 || status.running) && (
-        <pre className="max-h-48 overflow-y-auto rounded-md bg-background px-2.5 py-1.5 font-mono text-[0.7rem] leading-relaxed text-muted-foreground whitespace-pre-wrap">
+        <pre
+          className="max-h-48 overflow-y-auto rounded-md bg-background px-2.5 py-1.5 font-mono text-[0.7rem] leading-relaxed text-muted-foreground whitespace-pre-wrap"
+          data-selectable-text="true"
+        >
           {status.lines.length > 0 ? status.lines.join('\n') : copy.postSetupStarting}
         </pre>
       )}
@@ -310,7 +313,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     } finally {
       setLoading(false)
     }
-  }, [toolset])
+  }, [copy.failedLoad, toolset])
 
   useEffect(() => {
     void refresh()
@@ -415,9 +418,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
               <div className="grid gap-2 bg-muted/20 p-3">
                 {provider.tag && <p className="text-[0.72rem] text-muted-foreground">{provider.tag}</p>}
                 {provider.requires_nous_auth && (
-                  <p className="text-[0.72rem] text-muted-foreground">
-                    {copy.nousIncluded}
-                  </p>
+                  <p className="text-[0.72rem] text-muted-foreground">{copy.nousIncluded}</p>
                 )}
                 {provider.env_vars.length === 0 ? (
                   <p className="text-[0.72rem] text-muted-foreground">{copy.noApiKeyRequired}</p>

@@ -1,0 +1,315 @@
+name: Docker Build, Test, and Publish
+
+on:
+  release:
+    types: [published]
+  workflow_call:
+
+permissions:
+  contents: read
+  # Needed so the arm64 job can push/pull its registry-backed build cache
+  # to ghcr.io (cache-to/cache-from type=registry).  See the build-arm64
+  # job for why registry cache replaced the gha cache on that arch.
+  packages: write
+
+# Concurrency: push/release runs are NEVER cancelled so every merge gets
+# its own image.  PR runs reuse a PR-scoped group with
+# cancel-in-progress: true so rapid pushes to the same PR collapse to the
+# latest commit.
+concurrency:
+  group: docker-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_NAME: nousresearch/hermes-agent
+
+jobs:
+  # Build, test, and optionally push the amd64 image.
+  build-amd64:
+    # Only run on the upstream repository, not on forks
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # The image build + integration tests run on every event
+      # (PRs, push-to-main, release). Publish steps below are gated to
+      # push-to-main / release only.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Build once, load into the local daemon for testing.  Cached
+      # to gha with a per-arch scope; the push step below reuses every
+      # layer from this build.
+      - name: Build image (amd64)
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE_NAME }}:test
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=docker-amd64
+          cache-to: type=gha,mode=max,scope=docker-amd64
+
+      # Run the docker-integration test suite against the freshly-built
+      # image already loaded into the local daemon (`:test`).
+      #
+      # Piggybacking here avoids a second image build: the build step
+      # already loaded the image into the daemon under
+      # `${IMAGE_NAME}:test`, so we just point ``HERMES_TEST_IMAGE`` at
+      # that.  The fixture's ``HERMES_TEST_IMAGE`` branch (see
+      # tests/docker/conftest.py:62-63) short-circuits the rebuild.
+      #
+      # Why this job and not a standalone one: the image is 5GB+; passing
+      # it between jobs via ``docker save``/``upload-artifact`` is slower
+      # than the build itself.  Reusing the existing daemon state is the
+      # cheapest path to coverage on every PR that touches docker code.
+      # ---------------------------------------------------------------------
+      - name: Install uv (for docker tests)
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+
+      - name: Set up Python 3.11 (for docker tests)
+        run: uv python install 3.11
+
+      - name: Install Python dependencies (for docker tests)
+        run: |
+          # ``dev`` extra pulls in pytest, pytest-asyncio —
+          # everything tests/docker/ needs.  We deliberately avoid ``all``
+          # here because the docker tests only drive the container via
+          # subprocess and don't import hermes_agent's optional deps.
+          uv sync --locked --python 3.11 --extra dev
+
+      - name: Run docker integration tests
+        env:
+          # Skip rebuild; use the image already loaded by the build step.
+          HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
+          # Match the policy in tests.yml :: test job — no accidental
+          # real-API calls from inside the harness.
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+        run: |
+          scripts/run_tests.sh tests/docker/ --file-timeout 600
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Push amd64 by digest only (no tag).  The merge job assembles the
+      # tagged manifest list.  `push-by-digest=true` is docker's recommended
+      # pattern for multi-runner multi-platform builds.
+      - name: Push amd64 by digest
+        id: push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=docker-amd64
+          cache-to: type=gha,mode=max,scope=docker-amd64
+
+      # Write the digest to a file and upload it as an artifact so the
+      # merge job can stitch both per-arch digests into a manifest list.
+      - name: Export digest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: digest-amd64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Build, test, and optionally push the arm64 image.
+  # ---------------------------------------------------------------------------
+  build-arm64:
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Log in to ghcr.io so the registry-backed build cache below can be
+      # read (cache-from) on every event and written (cache-to) on
+      # push/release.  Uses the workflow's GITHUB_TOKEN, which is valid for
+      # the whole job — unlike the gha cache backend's short-lived Azure SAS
+      # token, which expired mid-build on slow cold-cache arm64 runs and
+      # crashed the build before the tests ran (the reason the gha cache
+      # was removed from arm64 PRs in the first place).
+      - name: Log in to ghcr.io (build cache)
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build once, load into the local daemon for testing, then push
+      # by digest below. Reads AND writes the registry-backed cache so the
+      # push reuses layers from this build and the next build starts warm.
+      #
+      # Registry cache (type=registry on ghcr.io) is used instead of the gha
+      # cache that previously broke here: its credential is the job-lifetime
+      # GITHUB_TOKEN, not a short-lived SAS token, so the cold-build-outlives-
+      # token failure mode cannot recur.
+      - name: Build image (arm64, cached publish)
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          platforms: linux/arm64
+          tags: ${{ env.IMAGE_NAME }}:test
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
+          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
+
+      - name: Install uv for docker tests
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+
+      - name: Set up Python 3.11 for docker tests
+        run: uv python install 3.11
+
+      - name: Install Python dependencies for docker tests
+        run: |
+          uv sync --locked --python 3.11 --extra dev
+
+      - name: Run docker tests
+        env:
+          # Skip rebuild; use the image already loaded by the build step.
+          HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+        run: |
+          scripts/run_tests.sh tests/docker/ --file-timeout 600
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push arm64 by digest
+        id: push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/arm64
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
+          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
+
+      - name: Export digest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: digest-arm64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Stitch both per-arch digests into a single tagged multi-arch manifest.
+  # This is a registry-side operation — no building, no layer re-push —
+  # so it runs in ~30 seconds.
+  #
+  # On main pushes: tags both :main and :latest.
+  # On releases: tags :<release_tag_name>.
+  # ---------------------------------------------------------------------------
+  merge:
+    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    runs-on: ubuntu-latest
+    needs: [build-amd64, build-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          args=()
+          for digest_file in *; do
+            args+=("${IMAGE_NAME}@sha256:${digest_file}")
+          done
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            docker buildx imagetools create \
+              -t "${IMAGE_NAME}:${TAG}" \
+              "${args[@]}"
+          else
+            docker buildx imagetools create \
+              -t "${IMAGE_NAME}:main" \
+              -t "${IMAGE_NAME}:latest" \
+              "${args[@]}"
+          fi
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+
+      - name: Inspect image
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            docker buildx imagetools inspect "${IMAGE_NAME}:${{ github.event.release.tag_name }}"
+          else
+            docker buildx imagetools inspect "${IMAGE_NAME}:main"
+          fi
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}

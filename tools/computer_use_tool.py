@@ -24,7 +24,7 @@ registry.register(
     check_fn=check_computer_use_requirements,
     requires_env=[],
     description=(
-        "Universal macOS desktop control via cua-driver. Works with any "
+        "Universal desktop control via cua-driver (macOS, Windows, Linux). Works with any "
         "tool-capable model (Anthropic, OpenAI, OpenRouter, local vLLM, "
         "etc.). Background computer-use: does NOT steal the user's cursor "
         "or keyboard focus."

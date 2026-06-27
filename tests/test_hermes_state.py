@@ -96,6 +96,66 @@ class TestSessionLifecycle:
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
+    def test_update_session_cwd_persists_git_branch(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo", git_branch="pets-feature")
+
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/repo"
+        assert session["git_branch"] == "pets-feature"
+
+    def test_update_session_cwd_empty_branch_does_not_clobber(self, db):
+        """A failed branch probe (empty string) must not wipe a branch we
+        already captured — only the cwd updates."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo", git_branch="main")
+        db.update_session_cwd("s1", "/work/repo", git_branch="")
+
+        session = db.get_session("s1")
+        assert session["git_branch"] == "main"
+
+    def test_update_session_cwd_without_branch_arg(self, db):
+        """Back-compat: callers that pass only (id, cwd) still work."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo")
+
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/repo"
+        assert session["git_branch"] is None
+
+    def test_update_session_cwd_persists_git_repo_root(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo/src", git_repo_root="/work/repo")
+
+        assert db.get_session("s1")["git_repo_root"] == "/work/repo"
+
+    def test_update_session_cwd_empty_repo_root_does_not_clobber(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo", git_repo_root="/work/repo")
+        db.update_session_cwd("s1", "/work/repo", git_repo_root="")
+
+        assert db.get_session("s1")["git_repo_root"] == "/work/repo"
+
+    def test_distinct_session_cwds_aggregates_history(self, db):
+        db.create_session("s1", "cli", cwd="/repo")
+        db.create_session("s2", "cli", cwd="/repo")
+        db.create_session("s3", "cli", cwd="/other")
+        db.create_session("s4", "cli")  # no cwd — excluded
+
+        rows = {r["cwd"]: r["sessions"] for r in db.distinct_session_cwds()}
+        assert rows == {"/repo": 2, "/other": 1}
+
+    def test_backfill_repo_roots_fills_only_empty(self, db):
+        db.create_session("s1", "cli", cwd="/repo/a")
+        db.create_session("s2", "cli", cwd="/repo/b")
+        db.update_session_cwd("s2", "/repo/b", git_repo_root="/already")
+
+        db.backfill_repo_roots({"/repo/a": "/repo", "/repo/b": "/repo"})
+
+        assert db.get_session("s1")["git_repo_root"] == "/repo"
+        # Pre-existing root is preserved, not clobbered.
+        assert db.get_session("s2")["git_repo_root"] == "/already"
+
     def test_end_session(self, db):
         db.create_session(session_id="s1", source="cli")
         db.end_session("s1", end_reason="user_exit")
@@ -209,6 +269,54 @@ class TestSessionLifecycle:
         db.update_token_counts("s1", input_tokens=10, output_tokens=5,
                                model="xiaomi/mimo-v2.5-pro")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+
+    def test_update_session_billing_route_overwrites_after_switch(self, db):
+        """A mid-session provider switch must overwrite the billing route.
+
+        update_token_counts writes billing fields with
+        COALESCE(billing_provider, ?) (first-writer-wins), so after a
+        provider switch the dashboard kept attributing cost to the original
+        provider (#48248). update_session_billing_route sets them
+        unconditionally and nulls system_prompt so the next turn rebuilds
+        the Model:/Provider: header (#48173).
+        """
+        db.create_session(session_id="s1", source="telegram")
+        # First token update seeds the billing route.
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               billing_provider="openrouter",
+                               billing_base_url="https://openrouter.ai/api/v1",
+                               billing_mode="api_key")
+        sess = db.get_session("s1")
+        assert sess["billing_provider"] == "openrouter"
+        # A later token update never changes it (COALESCE first-writer-wins).
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               billing_provider="ollama",
+                               billing_base_url="http://localhost:11434/v1",
+                               billing_mode="local")
+        assert db.get_session("s1")["billing_provider"] == "openrouter"
+
+        # Seed a stale prompt snapshot, then switch the billing route.
+        db.update_system_prompt("s1", "Model: x/old\nProvider: openrouter")
+        assert db.get_session("s1")["system_prompt"] is not None
+        db.update_session_billing_route(
+            "s1", provider="ollama",
+            base_url="http://localhost:11434/v1", billing_mode="local",
+        )
+        sess = db.get_session("s1")
+        assert sess["billing_provider"] == "ollama"
+        assert sess["billing_base_url"] == "http://localhost:11434/v1"
+        assert sess["billing_mode"] == "local"
+        assert sess["system_prompt"] is None, \
+            "system_prompt must be nulled so the next turn rebuilds Model:/Provider:"
+
+        # billing_mode defaults to COALESCE — omitting it preserves the value.
+        db.update_session_billing_route(
+            "s1", provider="openai",
+            base_url="https://api.openai.com/v1",
+        )
+        sess = db.get_session("s1")
+        assert sess["billing_provider"] == "openai"
+        assert sess["billing_mode"] == "local"  # preserved (COALESCE on None)
 
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
@@ -1526,6 +1634,13 @@ class TestCounts:
         assert db.session_count(source="cli") == 2
         assert db.session_count(source="telegram") == 1
 
+    def test_session_count_by_cwd_prefix(self, db):
+        db.create_session("s1", "cli", cwd="/repo")
+        db.create_session("s2", "cli", cwd="/repo-wt-feature")
+        db.create_session("s3", "cli", cwd="/repo/subdir")
+
+        assert db.session_count(cwd_prefix="/repo") == 2
+
     def test_message_count_total(self, db):
         assert db.message_count() == 0
         db.create_session(session_id="s1", source="cli")
@@ -2063,6 +2178,89 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] == "Before End"
         assert session["ended_at"] is not None
+
+
+class TestSessionTitleLineage:
+    """Renaming a compression continuation back to its base title must succeed
+    by transferring the title off the ended, hidden predecessor.
+
+    After a context compaction the original session is ended and projected
+    behind its live tip in the session list (list_sessions_rich), so the user
+    cannot see or free it. Without lineage-aware handling, renaming the visible
+    tip back to the base name dead-ends with "already in use by <session they
+    can't find>".
+    """
+
+    def _make_compression_chain(self, db, t0, *, root="root", tip="tip"):
+        db.create_session(root, "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, root))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 100, root),
+        )
+        db.create_session(tip, "cli", parent_session_id=root)
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 200, tip))
+        db._conn.commit()
+
+    def test_rename_continuation_back_to_base_transfers_title(self, db):
+        import time as _time
+        self._make_compression_chain(db, _time.time() - 3600)
+        db.set_session_title("root", "fingerprint-scanner")
+        db.set_session_title("tip", "fingerprint-scanner #2")
+
+        # User renames the visible tip back to the base name — must succeed.
+        assert db.set_session_title("tip", "fingerprint-scanner") is True
+        assert db.get_session("tip")["title"] == "fingerprint-scanner"
+        # Title transferred off the hidden ancestor — no duplicate titles.
+        assert db.get_session("root")["title"] is None
+
+    def test_transfer_walks_multi_level_chain(self, db):
+        import time as _time
+        t0 = _time.time() - 7200
+        # root (compression) -> mid (compression) -> tip
+        self._make_compression_chain(db, t0, root="root", tip="mid")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 300, "mid"),
+        )
+        db.create_session("tip", "cli", parent_session_id="mid")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 400, "tip"))
+        db._conn.commit()
+
+        db.set_session_title("root", "deep-dive")
+        assert db.set_session_title("tip", "deep-dive") is True
+        assert db.get_session("tip")["title"] == "deep-dive"
+        assert db.get_session("root")["title"] is None
+
+    def test_unrelated_session_still_conflicts(self, db):
+        db.create_session("a", "cli")
+        db.create_session("b", "cli")
+        db.set_session_title("a", "shared")
+        with pytest.raises(ValueError, match="already in use"):
+            db.set_session_title("b", "shared")
+        # The unrelated holder keeps its title.
+        assert db.get_session("a")["title"] == "shared"
+
+    def test_non_compression_child_still_conflicts(self, db):
+        """A child whose parent did NOT end via compression (delegate/branch
+        spawned while the parent was live) is not a continuation, so renaming it
+        to the parent's title must still raise."""
+        import time as _time
+        t0 = _time.time() - 3600
+        db.create_session("parent", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "parent"))
+        db.create_session("child", "cli", parent_session_id="parent")
+        # Child started BEFORE parent ended, and parent ended for a non-
+        # compression reason — not a continuation edge.
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 10, "child"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='user_exit' WHERE id=?",
+            (t0 + 100, "parent"),
+        )
+        db._conn.commit()
+        db.set_session_title("parent", "shared")
+        with pytest.raises(ValueError, match="already in use"):
+            db.set_session_title("child", "shared")
 
 
 class TestSanitizeTitle:
@@ -2973,6 +3171,14 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich(source="cli")
         assert len(sessions) == 1
         assert sessions[0]["id"] == "s1"
+
+    def test_rich_list_cwd_prefix_filter(self, db):
+        db.create_session("s1", "cli", cwd="/repo")
+        db.create_session("s2", "cli", cwd="/repo/subdir")
+        db.create_session("s3", "cli", cwd="/repo-wt-feature")
+
+        sessions = db.list_sessions_rich(cwd_prefix="/repo")
+        assert [session["id"] for session in sessions] == ["s2", "s1"]
 
     def test_preview_newlines_collapsed(self, db):
         db.create_session("s1", "cli")

@@ -54,6 +54,19 @@ class TestHostHeaderValidator:
                     f"bound={bound} must reject attacker host={attacker!r}"
                 )
 
+    def test_loopback_bind_accepts_trusted_proxy_alias(self, monkeypatch):
+        """Exact allowlisted aliases support trusted local reverse proxies."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ALLOWED_HOSTS",
+            "dashboard.tailnet.ts.net:443,[fd7a:115c:a1e0::1]:9119",
+        )
+
+        assert _is_accepted_host("dashboard.tailnet.ts.net", "127.0.0.1")
+        assert _is_accepted_host("[fd7a:115c:a1e0::1]", "localhost")
+        assert not _is_accepted_host("evil.tailnet.ts.net", "127.0.0.1")
+
     def test_zero_zero_bind_accepts_anything(self):
         """0.0.0.0 means operator explicitly opted into all-interfaces
         (requires --insecure). No Host-layer defence is possible — rely

@@ -11616,10 +11616,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     # threading resume logic through the voice machinery.
 
     def _maybe_start_wake_word(self):
-        """Start the wake-word listener at CLI startup if enabled in config."""
+        """Start the wake-word listener at CLI startup if this surface owns it."""
         try:
-            from tools.wake_word import load_wake_word_config
-            if not load_wake_word_config().get("enabled"):
+            from tools.wake_word import wake_surface_enabled
+            if not wake_surface_enabled("cli"):
                 return
         except Exception:
             return
@@ -11774,6 +11774,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cprint(f"  State:       {'LISTENING' if active else 'OFF'}")
         _cprint(f"  Phrase:      \"{reqs['phrase']}\"")
         _cprint(f"  Provider:    {reqs['provider']}")
+        _cprint(f"  Surface:     {cfg.get('surface', 'auto')}")
         _cprint(f"  New session: {'yes' if cfg.get('start_new_session', True) else 'no'}")
         if not reqs["available"] and reqs.get("hint"):
             _cprint(f"  {_DIM}{reqs['hint']}{_RST}")

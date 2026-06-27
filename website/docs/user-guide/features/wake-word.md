@@ -6,11 +6,12 @@ description: "Hands-free 'Hey Hermes' wake word — start a voice session by spe
 
 # Wake Word ("Hey Hermes")
 
-The wake word turns Hermes into a hands-free assistant in the CLI: with one
-setting on, Hermes listens in the background for a spoken trigger phrase. Say it,
-and Hermes starts a fresh session, opens the microphone, captures your command
-via the normal [voice pipeline](/user-guide/features/voice-mode), and answers —
-exactly like "Hey Siri" or "Alexa".
+The wake word turns Hermes into a hands-free assistant across the CLI, TUI, and
+desktop app: with one setting on, Hermes listens in the background for a spoken
+trigger phrase. Say it, and Hermes starts a fresh session, opens the microphone,
+captures your command via the normal [voice pipeline](/user-guide/features/voice-mode),
+and answers — exactly like "Hey Siri" or "Alexa". Use `surface` to pick which
+one listens.
 
 Detection runs **entirely on-device**. The always-on listener only watches for
 the wake phrase; no audio leaves your machine until you actually speak a command
@@ -62,6 +63,7 @@ wake_word:
 ```yaml
 wake_word:
   enabled: false
+  surface: auto               # which surface owns the listener: "auto" | "cli" | "tui" | "gui"
   provider: openwakeword      # "openwakeword" (free, local) | "porcupine"
   phrase: "hey jarvis"        # cosmetic label only — detection is keyed by the model/keyword below
   sensitivity: 0.5            # 0.0-1.0 — raise to reduce false triggers
@@ -75,6 +77,23 @@ wake_word:
 
 `sensitivity`, `phrase`, and `start_new_session` apply to both engines. The
 `openwakeword` and `porcupine` blocks select the actual detection model.
+
+### Surfaces (CLI, TUI, GUI)
+
+The wake word works in all three Hermes surfaces, and `surface` picks which one
+owns the listener and opens the new session when it fires:
+
+| `surface` | Behavior |
+|-----------|----------|
+| `auto` (default) | Whichever surface you launch arms the listener. |
+| `cli` | Only the classic `hermes` CLI. |
+| `tui` | Only `hermes --tui`. |
+| `gui` | Only the desktop app. |
+
+The detector is on-device and single-mic, so only one surface listens at a time
+— `surface` is how you pin it. The TUI and desktop GUI share the same Python
+backend (`tui_gateway`), which runs the detector server-side and yields the mic
+to voice capture while a command records.
 
 ## Using a real "Hey Hermes"
 
@@ -140,8 +159,9 @@ PORCUPINE_ACCESS_KEY=your-key-here
 
 ## Notes & limits
 
-- **CLI only.** The wake word lives in the interactive `hermes` CLI, where a
-  local microphone is available. It does not run in the messaging gateway.
+- **Local surfaces only.** The wake word runs in the CLI, TUI, and desktop GUI —
+  wherever a local microphone is available. It does not run in the messaging
+  gateway (Telegram, Discord, …), which has no mic.
 - **One mic at a time.** The detector releases the microphone while a command is
   recording and reclaims it once the turn ends, so it won't fight voice capture.
 - **Privacy.** Hotword detection is local. Set `sensitivity` higher if you get

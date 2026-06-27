@@ -2210,6 +2210,7 @@ DEFAULT_CONFIG = {
     # Off by default; toggle with /wake or `wake_word.enabled: true`.
     "wake_word": {
         "enabled": False,
+        "surface": "auto",            # which surface owns the listener / opens the new session: "auto" (the running one) | "cli" | "tui" | "gui"
         "provider": "openwakeword",   # "openwakeword" (free, local) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
         "phrase": "hey jarvis",       # cosmetic label only; detection is keyed by the engine model/keyword below
         "sensitivity": 0.5,           # 0.0-1.0 detection threshold (higher = stricter)

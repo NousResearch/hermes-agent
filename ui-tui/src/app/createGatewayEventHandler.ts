@@ -317,6 +317,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // "too many re-renders" guard in embedded dashboard PTYs.
     ensureAgentsNudgeConfig()
 
+    // Arm "Hey Hermes" if this surface owns it (server gates on config).
+    // Fire-and-forget + idempotent server-side, so reconnects are harmless.
+    void rpc('wake.start', { surface: 'tui' })
+
     rpc<CommandsCatalogResponse>('commands.catalog', {})
       .then(r => {
         if (!r?.pairs) {
@@ -628,6 +632,23 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // submit reads it.
         setInput('')
         setTimeout(() => submitRef.current(text), 0)
+
+        return
+      }
+
+      case 'wake.detected': {
+        // "Hey Hermes": open a fresh session, then arm voice capture so the
+        // user can speak their request hands-free. Mirrors the CLI flow.
+        void (async () => {
+          await newSession()
+          const sid = getUiState().sid
+          if (!sid) {
+            return
+          }
+          setVoiceEnabled(true)
+          await rpc('voice.toggle', { action: 'on' })
+          await rpc('voice.record', { action: 'start', session_id: sid })
+        })()
 
         return
       }

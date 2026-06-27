@@ -7206,7 +7206,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for platform, adapter in list(self.adapters.items()):
                 _adapter_started_at = time.monotonic()
                 try:
-                    await adapter.cancel_background_tasks()
+                    # On a planned restart, give in-flight sends a moment to
+                    # flush so the /restart ack the handler just queued isn't
+                    # cancelled mid-send (it starts ~50ms before teardown
+                    # reaches here — far less than one HTTPS round trip).
+                    await adapter.cancel_background_tasks(
+                        grace_seconds=2.0 if self._restart_requested else 0.0
+                    )
                 except Exception as e:
                     logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
                 try:

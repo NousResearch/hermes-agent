@@ -5053,17 +5053,38 @@ class BasePlatformAdapter(ABC):
         if session_key not in self._active_sessions:
             self._session_tasks.pop(session_key, None)
     
-    async def cancel_background_tasks(self) -> None:
+    async def cancel_background_tasks(self, grace_seconds: float = 0.0) -> None:
         """Cancel any in-flight background message-processing tasks.
 
         Used during gateway shutdown/replacement so active sessions from the old
         process do not keep running after adapters are being torn down.
+
+        ``grace_seconds`` lets in-flight tasks finish naturally before any
+        cancellation.  The planned-restart path passes a small grace so the
+        reply the /restart handler just queued (the "Restarting gateway"
+        ack) isn't cancelled mid-send — the handler returns ~50ms before
+        teardown reaches this method, well inside one HTTPS round trip, so
+        without a grace the ack is reliably lost whenever no active agents
+        force a longer drain.  Tasks still pending after the grace window
+        are cancelled as usual.
 
         Each cancelled task is awaited with a 5s bound so a wedged finally
         (typing-task cleanup, on_processing_complete hook) can't stall the
         whole shutdown path.  Stragglers are released from our tracking and
         allowed to finish unwinding on their own.
         """
+        if grace_seconds > 0:
+            pending = [t for t in self._background_tasks if not t.done()]
+            if pending:
+                _done, still_pending = await asyncio.wait(
+                    pending, timeout=grace_seconds
+                )
+                if still_pending:
+                    logger.debug(
+                        "[%s] %d background task(s) still pending after "
+                        "%.1fs grace; cancelling",
+                        self.name, len(still_pending), grace_seconds,
+                    )
         # Loop until no new tasks appear.  Without this, a message
         # arriving during the `await asyncio.gather` below would spawn
         # a fresh _process_message_background task (added to

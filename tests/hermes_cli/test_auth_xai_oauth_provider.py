@@ -1893,7 +1893,7 @@ def test_pool_manual_entry_does_not_sync_back_to_singleton(tmp_path, monkeypatch
 # ---------------------------------------------------------------------------
 
 
-def test_auxiliary_client_routes_xai_oauth_through_responses_api(tmp_path, monkeypatch):
+def test_auxiliary_client_routes_xai_oauth_through_chat_completions_api(tmp_path, monkeypatch):
     """Without explicit xai-oauth handling in ``resolve_provider_client``, an
     xai-oauth main provider falls through to the generic ``oauth_external``
     arm and returns ``(None, None)`` — silently re-routing every auxiliary
@@ -1904,7 +1904,7 @@ def test_auxiliary_client_routes_xai_oauth_through_responses_api(tmp_path, monke
     their xAI subscription.
 
     Pin the routing contract: ``resolve_provider_client("xai-oauth", model)``
-    must return a non-None client wrapping the xAI Responses API."""
+    must return a non-None client on xAI's native chat-completions surface."""
     from agent.auxiliary_client import (
         CodexAuxiliaryClient,
         resolve_provider_client,
@@ -1919,14 +1919,14 @@ def test_auxiliary_client_routes_xai_oauth_through_responses_api(tmp_path, monke
 
     client, model = resolve_provider_client("xai-oauth", model="grok-4")
     assert client is not None, (
-        "xai-oauth must route to a Responses-API client; falling through to "
+        "xai-oauth must route to a native xAI client; falling through to "
         "the generic oauth_external branch silently swaps providers for "
         "every auxiliary task."
     )
-    assert isinstance(client, CodexAuxiliaryClient)
+    assert not isinstance(client, CodexAuxiliaryClient)
     assert model == "grok-4"
-    # The wrapper preserves base_url + api_key so async wrappers and cache
-    # eviction can introspect them.  Pin both to the live xAI runtime.
+    # Preserve base_url + api_key so async wrappers and cache eviction can
+    # introspect them. Pin both to the live xAI runtime.
     assert str(client.base_url).rstrip("/") == DEFAULT_XAI_OAUTH_BASE_URL
     assert client.api_key == fresh
 

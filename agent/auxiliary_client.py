@@ -2081,11 +2081,12 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
 
 
 def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
-    """Build a CodexAuxiliaryClient for an xAI Grok OAuth-authenticated session.
+    """Build a native OpenAI-wire client for an xAI Grok OAuth session.
 
-    xAI's ``/v1/responses`` endpoint speaks the OpenAI Responses API, so we
-    wrap a plain ``OpenAI`` client in ``CodexAuxiliaryClient`` to translate
-    ``chat.completions.create()`` calls into ``responses.stream()`` requests.
+    Auxiliary tasks still call ``chat.completions.create()`` directly.  xAI
+    OAuth access tokens are only accepted on that chat-completions surface, so
+    this path must return a plain ``OpenAI`` client instead of routing through
+    ``CodexAuxiliaryClient`` and ``/v1/responses``.
 
     The caller must pass an explicit model — pinning a default for Grok
     would silently rot when xAI's allowlist drifts.  Returns ``(None, None)``
@@ -2101,9 +2102,8 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     if resolved is None:
         return None, None
     api_key, base_url = resolved
-    logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
-    real_client = OpenAI(api_key=api_key, base_url=base_url)
-    return CodexAuxiliaryClient(real_client, model), model
+    logger.debug("Auxiliary client: xAI OAuth (%s via Chat Completions API)", model)
+    return OpenAI(api_key=api_key, base_url=base_url), model
 
 
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -3996,7 +3996,7 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    # ── xAI Grok OAuth (loopback PKCE → Responses API) ───────────────
+    # ── xAI Grok OAuth (loopback PKCE → Chat Completions API) ────────
     # Without this branch, an xai-oauth main provider falls through to the
     # generic ``oauth_external`` arm below and returns ``(None, None)``,
     # silently re-routing every auxiliary task (compression, web extract,

@@ -1,10 +1,12 @@
 import argparse
+import ast
 import asyncio
 import json
 import sqlite3
 import subprocess
 import sys
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,22 +21,48 @@ from mcp_profile_router import (
     MAX_TERMINAL_OUTPUT_CHARS,
     MAX_TERMINAL_TIMEOUT_SECONDS,
     MAX_VIKING_OVERVIEW_CHARS,
+    PROFILE_ROUTER_CAPABILITY_GROUPS,
     PROFILE_ROUTER_TOOL_GROUP,
+    FORBIDDEN_MODEL_LOOP_TOOL_NAMES,
+    HERMES_CATALOG_BLOCKED_TOOL_NAMES,
+    HERMES_CATALOG_MODEL_BACKED_TOOL_NAMES,
+    HERMES_REGISTRY_TOOL_NAMES,
     ProfileRouterError,
     RouterToolMetadata,
     _build_terminal_sanitized_env,
     _prepare_terminal_subprocess_plan,
     _shape_terminal_subprocess_result,
     assert_default_tools_are_no_model,
+    assert_no_model_loop_tools_absent,
     classify_terminal_command,
     create_workspace_metadata,
+    cron_create_script_only,
+    cron_list,
+    cron_pause,
+    cron_resume,
+    cron_run,
+    directory_create,
+    file_delete,
+    file_move,
     file_patch,
     file_read,
     file_search,
     file_write,
+    git_branch,
+    git_diff,
+    git_log,
+    git_status,
+    hermes_catalog_blocked_tool,
     get_router_tool_metadata,
     load_profile_router_policy,
+    message_send,
     parse_profile_ref,
+    patch_apply,
+    process_start,
+    process_kill,
+    process_list,
+    process_log,
+    process_poll,
     profile_context_get,
     profile_get,
     profile_health,
@@ -44,6 +72,7 @@ from mcp_profile_router import (
     session_search,
     skill_view,
     skills_list,
+    telegram_send,
     terminal_run,
     viking_read,
     viking_search,
@@ -52,12 +81,16 @@ from mcp_profile_router import (
     workspace_diff,
     workspace_file_list,
     workspace_file_read,
+    workspace_file_stat,
+    workspace_file_search,
     workspace_get,
     workspace_instructions_get,
     workspace_open,
 )
 from mcp_profile_router_auth import (
     DEFAULT_PROFILE_ROUTER_SCOPES,
+    PROFILE_ROUTER_CRON_SCOPE,
+    PROFILE_ROUTER_MESSAGING_SCOPE,
     PROFILE_ROUTER_TERMINAL_SCOPE,
     PROFILE_ROUTER_WRITE_SCOPE,
     ProfileRouterAuditLogger,
@@ -228,6 +261,32 @@ def test_parse_profile_ref_requires_fully_qualified_ref():
             parse_profile_ref(bad_ref)
 
 
+def _registry_tool_names_from_source() -> set[str]:
+    tools_root = Path(mcp_profile_router.__file__).resolve().parent / "tools"
+    names: set[str] = set()
+    for tool_file in tools_root.glob("*.py"):
+        tree = ast.parse(tool_file.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "register"
+            ):
+                continue
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "name"
+                    and isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, str)
+                ):
+                    names.add(keyword.value.value)
+    return names
+
+
+def test_phase9_static_hermes_registry_inventory_matches_source():
+    assert set(HERMES_REGISTRY_TOOL_NAMES) == _registry_tool_names_from_source()
+
+
 def test_router_tool_metadata_is_explicitly_no_model_by_default():
     metadata = get_router_tool_metadata()
     public_tools = {
@@ -247,10 +306,88 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "workspace_close",
         "workspace_file_list",
         "workspace_file_read",
+        "workspace_file_stat",
+        "workspace_file_search",
         "workspace_diff",
     }
-    disabled_power_tools = {"file_read", "file_search", "file_patch", "file_write", "terminal_run"}
-    assert set(metadata) == public_tools | disabled_power_tools
+    disabled_power_tools = {
+        "file_read",
+        "file_search",
+        "file_patch",
+        "patch_apply",
+        "file_write",
+        "file_move",
+        "file_delete",
+        "directory_create",
+        "terminal_run",
+        "process_start",
+        "process_list",
+        "process_poll",
+        "process_log",
+        "process_kill",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "git_branch",
+        "cron_list",
+        "cron_pause",
+        "cron_resume",
+        "cron_run",
+        "cron_create_script_only",
+        "message_send",
+        "telegram_send",
+    }
+    blocked_catalog_tools = set(HERMES_CATALOG_BLOCKED_TOOL_NAMES)
+    assert set(metadata) == public_tools | disabled_power_tools | blocked_catalog_tools
+    assert {"delegate_task", "image_generate", "vision_analyze"}.issubset(blocked_catalog_tools)
+    assert set(HERMES_REGISTRY_TOOL_NAMES).issubset(set(metadata))
+    workspace_required_tools = {
+        "workspace_instructions_get",
+        "workspace_context_status",
+        "workspace_get",
+        "workspace_close",
+        "workspace_file_list",
+        "workspace_file_read",
+        "workspace_file_stat",
+        "workspace_file_search",
+        "workspace_diff",
+        "file_read",
+        "file_search",
+        "file_patch",
+        "patch_apply",
+        "file_write",
+        "file_move",
+        "file_delete",
+        "directory_create",
+        "terminal_run",
+        "process_start",
+        "process_list",
+        "process_poll",
+        "process_log",
+        "process_kill",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "git_branch",
+        "cron_list",
+        "cron_pause",
+        "cron_resume",
+        "cron_run",
+        "cron_create_script_only",
+        "message_send",
+        "telegram_send",
+    }
+    for name, tool in metadata.items():
+        assert tool["allowed_by_default"] is tool["enabled_by_default"]
+        assert tool["side_effects"] is tool["mutates_state"]
+        assert tool["requires_workspace"] is (name in workspace_required_tools)
+        assert tool["requires_approval"] is tool["mutates_state"]
+        assert tool["capability_group"] in {
+            "profile",
+            "workspace",
+            *PROFILE_ROUTER_CAPABILITY_GROUPS,
+        }
+        assert tool["llm_calls"] == 0
 
     for name in public_tools:
         tool = metadata[name]
@@ -260,28 +397,54 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
             else COST_CLASS_NO_MODEL
         )
         assert tool["cost_class"] == expected_cost_class
-        assert tool["llm_calls"] == 0
         assert tool["enabled_by_default"] is True
         assert tool["mutates_state"] is False
-        assert tool["requires_context"] is (name in {"workspace_file_list", "workspace_file_read", "workspace_diff"})
+        assert tool["requires_context"] is (
+            name
+            in {
+                "workspace_file_list",
+                "workspace_file_read",
+                "workspace_file_stat",
+                "workspace_file_search",
+                "workspace_diff",
+            }
+        )
+        assert tool["execution_status"] == "executable_no_model"
 
     for name in disabled_power_tools:
         tool = metadata[name]
         assert tool["cost_class"] == COST_CLASS_NO_MODEL
-        assert tool["llm_calls"] == 0
         assert tool["enabled_by_default"] is False
         assert tool["requires_context"] is True
+        assert tool["execution_status"] == "executable_no_model"
+
+    for name in blocked_catalog_tools:
+        tool = metadata[name]
+        assert tool["cost_class"] == COST_CLASS_NO_MODEL
+        assert tool["enabled_by_default"] is False
+        assert tool["mutates_state"] is False
+        assert tool["requires_context"] is False
+        assert tool["requires_workspace"] is False
+        assert tool["execution_status"] == "blocked_no_model"
+        expected_reason = (
+            "model_backed_tool_blocked"
+            if name in HERMES_CATALOG_MODEL_BACKED_TOOL_NAMES
+            else "requires_no_model_implementation"
+        )
+        assert tool["blocked_reason"] == expected_reason
+
+    for name in set(metadata) & FORBIDDEN_MODEL_LOOP_TOOL_NAMES:
+        assert metadata[name]["execution_status"] == "blocked_no_model"
+        assert metadata[name]["blocked_reason"] == "model_backed_tool_blocked"
     for name in {"skills_list", "skill_view"}:
         tool = metadata[name]
         assert tool["cost_class"] == COST_CLASS_NO_MODEL
-        assert tool["llm_calls"] == 0
         assert tool["enabled_by_default"] is True
         assert tool["mutates_state"] is False
         assert tool["requires_profile_ref"] is True
         assert tool["requires_context_policy"] == "context.skills.read"
     session_tool = metadata["session_search"]
     assert session_tool["cost_class"] == COST_CLASS_NO_MODEL
-    assert session_tool["llm_calls"] == 0
     assert session_tool["enabled_by_default"] is True
     assert session_tool["mutates_state"] is False
     assert session_tool["requires_profile_ref"] is True
@@ -289,15 +452,64 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
     for name in {"viking_search", "viking_read"}:
         tool = metadata[name]
         assert tool["cost_class"] == COST_CLASS_EXTERNAL_API_NO_MODEL
-        assert tool["llm_calls"] == 0
         assert tool["enabled_by_default"] is True
         assert tool["mutates_state"] is False
         assert tool["requires_context_policy"] == "profile_router.context.viking.read"
     assert metadata["workspace_diff"]["mutates_state"] is False
-    for name in {"file_patch", "file_write", "terminal_run"}:
+    for name in {"file_patch", "patch_apply", "file_write", "file_move", "file_delete", "directory_create", "terminal_run", "process_kill", "message_send", "telegram_send"}:
         assert metadata[name]["mutates_state"] is True
+    for name in {"process_list", "process_poll", "process_log", "git_status", "git_diff", "git_log", "git_branch"}:
+        assert metadata[name]["mutates_state"] is False
+    for name in {"git_status", "git_diff", "git_log", "git_branch"}:
+        assert metadata[name]["capability_group"] == "git"
+    for name in {"message_send", "telegram_send"}:
+        assert metadata[name]["capability_group"] == "messaging"
 
     assert_default_tools_are_no_model()
+
+
+def test_phase9_web_browser_api_model_surfaces_are_catalog_visible_but_blocked():
+    metadata = get_router_tool_metadata()
+    phase9_blocked_tools = {
+        "browser_back",
+        "browser_cdp",
+        "browser_click",
+        "browser_console",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision",
+        "web_extract",
+        "web_search",
+        "x_search",
+    }
+    assert phase9_blocked_tools.issubset(set(metadata))
+    for name in phase9_blocked_tools:
+        assert metadata[name]["execution_status"] == "blocked_no_model"
+        assert metadata[name]["llm_calls"] == 0
+        assert metadata[name]["enabled_by_default"] is False
+    assert metadata["web_search"]["capability_group"] == "web"
+    assert metadata["browser_navigate"]["capability_group"] == "browser"
+    assert metadata["x_search"]["blocked_reason"] == "model_backed_tool_blocked"
+    assert metadata["browser_vision"]["blocked_reason"] == "model_backed_tool_blocked"
+
+
+def test_hermes_catalog_blocked_tool_returns_sanitized_llm_zero_error():
+    payload = json.loads(hermes_catalog_blocked_tool("delegate_task"))
+    assert payload["ok"] is False
+    assert payload["llm_calls"] == 0
+    assert payload["cost_class"] == COST_CLASS_NO_MODEL
+    assert payload["error"]["code"] == "model_backed_tool_blocked"
+    assert payload["catalog_tool"] == {
+        "name": "delegate_task",
+        "execution_status": "blocked_no_model",
+        "native_side_effects": True,
+        "capability_group": "api",
+        "root_exposed": False,
+    }
+    assert "run_conversation" not in json.dumps(payload)
 
 
 def test_no_model_guard_fails_closed_for_model_spending_default_tool():
@@ -309,6 +521,21 @@ def test_no_model_guard_fails_closed_for_model_spending_default_tool():
                     description="would call an agent loop",
                     cost_class=COST_CLASS_CALLS_HERMES_AGENT_MODEL,
                     llm_calls=1,
+                )
+            }
+        )
+
+
+def test_no_model_guard_fails_closed_for_unblocked_forbidden_model_loop_tool_name():
+    with pytest.raises(ProfileRouterError, match="Model-loop tools must be blocked no-model"):
+        assert_no_model_loop_tools_absent(
+            {
+                "run_conversation": RouterToolMetadata(
+                    name="run_conversation",
+                    description="would route to Hermes agent loop",
+                    cost_class=COST_CLASS_NO_MODEL,
+                    llm_calls=0,
+                    enabled_by_default=False,
                 )
             }
         )
@@ -479,6 +706,8 @@ def test_profile_router_policy_is_deny_by_default_for_execution_groups(hermes_ho
 
     assert route_policy.allowed_tool_groups == (PROFILE_ROUTER_TOOL_GROUP,)
     assert route_policy.allowed_roots == (str(hermes_home),)
+    assert tuple(route_policy.capability_groups) == PROFILE_ROUTER_CAPABILITY_GROUPS
+    assert all(value is False for value in route_policy.capability_groups.values())
     assert route_policy.allow_filesystem_read is False
     assert route_policy.allow_filesystem_write is False
     assert route_policy.allow_terminal is False
@@ -494,6 +723,44 @@ def test_profile_router_policy_is_deny_by_default_for_execution_groups(hermes_ho
     assert route_policy.terminal_execution_policy.allowed_commands == ()
     assert route_policy.terminal_execution_policy.allowed_command_prefixes == ()
     assert route_policy.terminal_execution_policy.require_no_shell is True
+
+
+def test_profile_router_policy_parses_explicit_capability_groups(tmp_path):
+    allowed_root = tmp_path / "allowed"
+    config = {
+        "profile_router": {
+            "hosts": {"local": {"enabled": True, "allowed_roots": [str(allowed_root)]}},
+            "profiles": {
+                "local:main-bot": {
+                    "enabled": True,
+                    "allowed_roots": [str(allowed_root)],
+                    "filesystem": {"read": True, "write": True},
+                    "terminal": {"enabled": True},
+                    "git": {"enabled": True},
+                    "cron": {"enabled": True},
+                    "messaging": {"enabled": True},
+                    "skills": {"enabled": True},
+                    "memory": {"enabled": True},
+                    "session": {"enabled": True},
+                    "web": {"enabled": True},
+                    "browser": {"enabled": True},
+                    "api": {"enabled": True},
+                }
+            },
+        }
+    }
+
+    policy = load_profile_router_policy(config=config)
+    route_policy = policy.get_profile_policy(parse_profile_ref("local:main-bot"))
+
+    assert tuple(route_policy.capability_groups) == PROFILE_ROUTER_CAPABILITY_GROUPS
+    assert all(route_policy.capability_enabled(group) is True for group in PROFILE_ROUTER_CAPABILITY_GROUPS)
+    assert route_policy.allowed_tool_groups == (PROFILE_ROUTER_TOOL_GROUP,)
+    assert route_policy.allow_model_tools is False
+    assert route_policy.allowed_cost_classes == (COST_CLASS_NO_MODEL,)
+
+    with pytest.raises(ProfileRouterError, match="Unknown profile-router capability group"):
+        route_policy.capability_enabled("model")
 
 
 def test_profile_router_policy_rejects_invalid_hosts_and_outside_roots(tmp_path):
@@ -728,6 +995,16 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
     assert read_without_context["ok"] is False
     assert read_without_context["error"]["code"] == "context_not_loaded"
 
+    search_without_context = json.loads(workspace_file_search(workspace["workspace_id"], "alpha"))
+    assert search_without_context["ok"] is False
+    assert search_without_context["error"]["code"] == "context_not_loaded"
+    assert search_without_context["llm_calls"] == 0
+
+    stat_without_context = json.loads(workspace_file_stat(workspace["workspace_id"], "notes.md"))
+    assert stat_without_context["ok"] is False
+    assert stat_without_context["error"]["code"] == "context_not_loaded"
+    assert stat_without_context["llm_calls"] == 0
+
     token = json.loads(workspace_instructions_get(workspace["workspace_id"]))["context"]["context_token"]
     list_result = json.loads(
         workspace_file_list(workspace["workspace_id"], file_glob="*.md", context_token=token)
@@ -743,10 +1020,31 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
     assert read_result["file"]["content"] == "beta\n"
     assert read_result["file"]["truncated"] is True
 
+    stat_result = json.loads(
+        workspace_file_stat(workspace["workspace_id"], "notes.md", context_token=token)
+    )
+    assert stat_result["ok"] is True
+    assert stat_result["llm_calls"] == 0
+    assert stat_result["stat"]["path"] == "notes.md"
+    assert stat_result["stat"]["type"] == "file"
+    assert stat_result["stat"]["size_bytes"] == notes.stat().st_size
+    assert stat_result["stat"]["within_file_read_size_cap"] is True
+    assert stat_result["stat"]["audit"] == {
+        "tool": "workspace_file_stat",
+        "llm_calls": 0,
+        "root_exposed": False,
+    }
+    assert str(workspace_root) not in json.dumps(stat_result)
+
     secret = json.loads(workspace_file_read(workspace["workspace_id"], ".env.local", context_token=token))
     assert secret["ok"] is False
     assert secret["error"]["code"] == "secret_path_denied"
     assert secret["llm_calls"] == 0
+
+    secret_stat = json.loads(workspace_file_stat(workspace["workspace_id"], ".env.local", context_token=token))
+    assert secret_stat["ok"] is False
+    assert secret_stat["error"]["code"] == "secret_path_denied"
+    assert secret_stat["llm_calls"] == 0
 
     binary = json.loads(workspace_file_read(workspace["workspace_id"], "binary.bin", context_token=token))
     assert binary["ok"] is False
@@ -802,6 +1100,18 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
     assert search_result["llm_calls"] == 0
     assert [match["line"] for match in search_result["search"]["matches"]] == [1, 3]
     assert search_result["search"]["skipped"]["binary"] == 0
+
+    workspace_search = json.loads(
+        workspace_file_search(
+            workspace["workspace_id"],
+            "alpha",
+            file_glob="*.md",
+            context_token=token,
+        )
+    )
+    assert workspace_search["ok"] is True
+    assert workspace_search["llm_calls"] == 0
+    assert [match["line"] for match in workspace_search["search"]["matches"]] == [1, 3]
 
     files_only = json.loads(
         file_search(
@@ -1057,6 +1367,8 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
     agents.write_text("# Agents\nInitial policy.\n", encoding="utf-8")
     notes = workspace_root / "notes.md"
     notes.write_text("alpha\n", encoding="utf-8")
+    other_notes = workspace_root / "other.md"
+    other_notes.write_text("one\n", encoding="utf-8")
 
     _write_router_config(
         hermes_home,
@@ -1081,6 +1393,38 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
     assert patch_without_context["error"]["code"] == "context_not_loaded"
     assert patch_without_context["llm_calls"] == 0
 
+    batch_patch_without_context = json.loads(
+        patch_apply(
+            workspace_id,
+            [{"path": "notes.md", "old_string": "alpha", "new_string": "beta"}],
+        )
+    )
+    assert batch_patch_without_context["ok"] is False
+    assert batch_patch_without_context["error"]["code"] == "context_not_loaded"
+    assert batch_patch_without_context["llm_calls"] == 0
+
+    directory_without_context = json.loads(
+        directory_create(workspace_id, "new-dir")
+    )
+    assert directory_without_context["ok"] is False
+    assert directory_without_context["error"]["code"] == "context_not_loaded"
+    assert directory_without_context["llm_calls"] == 0
+
+    move_without_context = json.loads(
+        file_move(workspace_id, "notes.md", "moved.md")
+    )
+    assert move_without_context["ok"] is False
+    assert move_without_context["error"]["code"] == "context_not_loaded"
+    assert move_without_context["llm_calls"] == 0
+    assert notes.exists()
+    assert not (workspace_root / "moved.md").exists()
+
+    delete_without_context = json.loads(file_delete(workspace_id, "notes.md"))
+    assert delete_without_context["ok"] is False
+    assert delete_without_context["error"]["code"] == "context_not_loaded"
+    assert delete_without_context["llm_calls"] == 0
+    assert notes.exists()
+
     terminal_without_context = json.loads(
         terminal_run(workspace_id, "codex exec 'should not classify before context'")
     )
@@ -1098,6 +1442,39 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
     assert write_with_stale_context["ok"] is False
     assert write_with_stale_context["error"]["code"] == "context_stale"
     assert notes.read_text(encoding="utf-8") == "alpha\n"
+
+    batch_patch_with_stale_context = json.loads(
+        patch_apply(
+            workspace_id,
+            [{"path": "notes.md", "old_string": "alpha", "new_string": "beta"}],
+            context_token=stale_token,
+        )
+    )
+    assert batch_patch_with_stale_context["ok"] is False
+    assert batch_patch_with_stale_context["error"]["code"] == "context_stale"
+    assert notes.read_text(encoding="utf-8") == "alpha\n"
+
+    directory_with_stale_context = json.loads(
+        directory_create(workspace_id, "stale-dir", context_token=stale_token)
+    )
+    assert directory_with_stale_context["ok"] is False
+    assert directory_with_stale_context["error"]["code"] == "context_stale"
+    assert not (workspace_root / "stale-dir").exists()
+
+    move_with_stale_context = json.loads(
+        file_move(workspace_id, "notes.md", "stale-moved.md", context_token=stale_token)
+    )
+    assert move_with_stale_context["ok"] is False
+    assert move_with_stale_context["error"]["code"] == "context_stale"
+    assert notes.exists()
+    assert not (workspace_root / "stale-moved.md").exists()
+
+    delete_with_stale_context = json.loads(
+        file_delete(workspace_id, "notes.md", context_token=stale_token)
+    )
+    assert delete_with_stale_context["ok"] is False
+    assert delete_with_stale_context["error"]["code"] == "context_stale"
+    assert notes.exists()
 
     refreshed = json.loads(workspace_instructions_get(workspace_id))
     fresh_token = refreshed["context"]["context_token"]
@@ -1117,6 +1494,35 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
     assert str(workspace_root) not in json.dumps(patch_result)
     assert notes.read_text(encoding="utf-8") == "beta\n"
 
+    batch_patch_result = json.loads(
+        patch_apply(
+            workspace_id,
+            [
+                {"path": "notes.md", "old_string": "beta", "new_string": "gamma"},
+                {"path": "other.md", "old_string": "one", "new_string": "two"},
+            ],
+            context_token=fresh_token,
+        )
+    )
+    assert batch_patch_result["ok"] is True
+    assert batch_patch_result["llm_calls"] == 0
+    assert batch_patch_result["patch_apply"]["patch_count"] == 2
+    assert batch_patch_result["patch_apply"]["file_count"] == 2
+    assert batch_patch_result["patch_apply"]["total_replacements"] == 2
+    assert batch_patch_result["patch_apply"]["changed"] is True
+    assert batch_patch_result["patch_apply"]["audit"] == {
+        "tool": "patch_apply",
+        "llm_calls": 0,
+        "root_exposed": False,
+    }
+    assert [file["path"] for file in batch_patch_result["patch_apply"]["files"]] == [
+        "notes.md",
+        "other.md",
+    ]
+    assert notes.read_text(encoding="utf-8") == "gamma\n"
+    assert other_notes.read_text(encoding="utf-8") == "two\n"
+    assert str(workspace_root) not in json.dumps(batch_patch_result)
+
     write_result = json.loads(
         file_write(workspace_id, "created.txt", "created\n", context_token=fresh_token)
     )
@@ -1124,6 +1530,58 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
     assert write_result["llm_calls"] == 0
     assert write_result["write"]["path"] == "created.txt"
     assert (workspace_root / "created.txt").read_text(encoding="utf-8") == "created\n"
+
+    move_result = json.loads(
+        file_move(workspace_id, "created.txt", "moved.txt", context_token=fresh_token)
+    )
+    assert move_result["ok"] is True
+    assert move_result["llm_calls"] == 0
+    assert move_result["move"]["source_path"] == "created.txt"
+    assert move_result["move"]["destination_path"] == "moved.txt"
+    assert move_result["move"]["moved"] is True
+    assert move_result["move"]["bytes_moved"] == len("created\n".encode("utf-8"))
+    assert move_result["move"]["audit"] == {
+        "tool": "file_move",
+        "llm_calls": 0,
+        "root_exposed": False,
+    }
+    assert not (workspace_root / "created.txt").exists()
+    assert (workspace_root / "moved.txt").read_text(encoding="utf-8") == "created\n"
+    assert str(workspace_root) not in json.dumps(move_result)
+
+    delete_result = json.loads(file_delete(workspace_id, "moved.txt", context_token=fresh_token))
+    assert delete_result["ok"] is True
+    assert delete_result["llm_calls"] == 0
+    assert delete_result["delete"]["path"] == "moved.txt"
+    assert delete_result["delete"]["deleted"] is True
+    assert delete_result["delete"]["bytes_deleted"] == len("created\n".encode("utf-8"))
+    assert delete_result["delete"]["audit"] == {
+        "tool": "file_delete",
+        "llm_calls": 0,
+        "root_exposed": False,
+    }
+    assert not (workspace_root / "moved.txt").exists()
+    assert str(workspace_root) not in json.dumps(delete_result)
+
+    directory_result = json.loads(
+        directory_create(
+            workspace_id,
+            "created-dir/nested",
+            parents=True,
+            context_token=fresh_token,
+        )
+    )
+    assert directory_result["ok"] is True
+    assert directory_result["llm_calls"] == 0
+    assert directory_result["directory"]["path"] == "created-dir/nested"
+    assert directory_result["directory"]["created"] is True
+    assert directory_result["directory"]["audit"] == {
+        "tool": "directory_create",
+        "llm_calls": 0,
+        "root_exposed": False,
+    }
+    assert (workspace_root / "created-dir" / "nested").is_dir()
+    assert str(workspace_root) not in json.dumps(directory_result)
 
     terminal_blocked_model = json.loads(
         terminal_run(
@@ -1550,7 +2008,11 @@ def test_terminal_private_runner_executes_allowlisted_commands_but_not_public(
     server = mcp_serve.create_profile_router_mcp_server()
     assert "terminal_run" in server._tool_manager._tools
     assert "file_patch" in server._tool_manager._tools
+    assert "patch_apply" in server._tool_manager._tools
     assert "file_write" in server._tool_manager._tools
+    assert "file_move" in server._tool_manager._tools
+    assert "file_delete" in server._tool_manager._tools
+    assert "directory_create" in server._tool_manager._tools
     assert "workspace_diff" in server._tool_manager._tools
     dumped = json.dumps(direct)
     assert "pwd" not in dumped
@@ -1710,7 +2172,491 @@ def test_terminal_private_runner_shapes_failure_and_timeout_without_leaking_valu
     server = mcp_serve.create_profile_router_mcp_server()
     assert "terminal_run" in server._tool_manager._tools
     assert "file_patch" in server._tool_manager._tools
+    assert "patch_apply" in server._tool_manager._tools
     assert "file_write" in server._tool_manager._tools
+    assert "file_move" in server._tool_manager._tools
+    assert "file_delete" in server._tool_manager._tools
+    assert "directory_create" in server._tool_manager._tools
+
+
+def test_process_tools_are_context_gated_and_tracked_only(hermes_home, tmp_path, monkeypatch):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+    command = "python -c fake-bg"
+
+    popen_calls = []
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            popen_calls.append((list(argv), kwargs))
+            assert kwargs["shell"] is False
+            assert kwargs["cwd"] == str(workspace_root)
+            assert kwargs["env"] == _build_terminal_sanitized_env()
+            assert "OPENAI_API_KEY" not in kwargs["env"]
+            kwargs["stdout"].write(f"root={workspace_root}\npath={kwargs['env']['PATH']}\n")
+            kwargs["stderr"].write(f"cwd={workspace_root}\nterm={kwargs['env']['TERM']}\n")
+            kwargs["stdout"].flush()
+            kwargs["stderr"].flush()
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setenv("OPENAI_API_KEY", "parent-secret-should-not-leak")
+    monkeypatch.setattr(mcp_profile_router.subprocess, "Popen", FakePopen)
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "terminal": {
+                    "enabled": True,
+                    "execution": {"enabled": True, "allowed_commands": [command]},
+                },
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+
+    missing_context = json.loads(process_list(workspace_id))
+    assert missing_context["ok"] is False
+    assert missing_context["error"]["code"] == "context_not_loaded"
+
+    start_missing_context = json.loads(process_start(workspace_id, command))
+    assert start_missing_context["ok"] is False
+    assert start_missing_context["error"]["code"] == "context_not_loaded"
+
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+    listed = json.loads(process_list(workspace_id, context_token=token, limit=999))
+    assert listed["ok"] is True
+    assert listed["llm_calls"] == 0
+    assert listed["processes"]["processes"] == []
+    assert listed["processes"]["process_count"] == 0
+    assert listed["processes"]["limit"] == 50
+    assert listed["processes"]["registry"] == {
+        "enabled": True,
+        "tracked_processes_only": True,
+        "host_process_listing": False,
+        "launch_supported": True,
+        "status": "runtime_owned_background_process_registry",
+    }
+    assert listed["processes"]["audit"]["llm_calls"] == 0
+    assert listed["processes"]["audit"]["host_process_listing"] is False
+    assert listed["processes"]["audit"]["host_pid_exposed"] is False
+    assert str(workspace_root) not in json.dumps(listed)
+
+    started = json.loads(process_start(workspace_id, command, context_token=token, max_output_chars=120))
+    dumped_started = json.dumps(started)
+    assert started["ok"] is True
+    assert started["llm_calls"] == 0
+    assert started["process"]["status"] == "running"
+    assert started["process"]["tracked_by_runtime"] is True
+    assert started["process"]["host_pid_exposed"] is False
+    assert started["process"]["raw_command_exposed"] is False
+    assert started["process"]["root_exposed"] is False
+    assert started["process"]["process_id"].startswith("proc_")
+    assert command not in dumped_started
+    assert str(workspace_root) not in dumped_started
+    assert "parent-secret-should-not-leak" not in dumped_started
+    assert "OPENAI_API_KEY" not in dumped_started
+    assert popen_calls and popen_calls[0][0] == ["python", "-c", "fake-bg"]
+
+    process_id = started["process"]["process_id"]
+    listed_after_start = json.loads(process_list(workspace_id, context_token=token))
+    assert listed_after_start["processes"]["process_count"] == 1
+    assert listed_after_start["processes"]["processes"][0]["process_id"] == process_id
+    assert listed_after_start["processes"]["processes"][0]["host_pid_exposed"] is False
+
+    polled = json.loads(process_poll(workspace_id, process_id, context_token=token))
+    assert polled["ok"] is True
+    assert polled["process"]["status"] == "running"
+    assert polled["process"]["host_pid_exposed"] is False
+
+    logged_running = json.loads(process_log(workspace_id, process_id, context_token=token, max_chars=90))
+    dumped_log = json.dumps(logged_running)
+    assert logged_running["ok"] is True
+    assert logged_running["log"]["available"] is True
+    assert logged_running["log"]["max_chars"] == 90
+    assert "<workspace>" in dumped_log
+    assert "<redacted_env_value>" in dumped_log
+    assert command not in dumped_log
+    assert str(workspace_root) not in dumped_log
+    assert "/usr/bin:/bin:/usr/sbin:/sbin" not in dumped_log
+    assert "dumb" not in dumped_log
+
+    killed = json.loads(process_kill(workspace_id, process_id, context_token=token))
+    assert killed["ok"] is True
+    assert killed["process"]["status"] == "killed"
+    assert killed["process"]["host_pid_exposed"] is False
+
+    opaque_id = "proc_should_not_be_echoed"
+    for tool_fn in (process_poll, process_log, process_kill):
+        result = json.loads(tool_fn(workspace_id, opaque_id, context_token=token))
+        assert result["ok"] is False
+        assert result["error"]["code"] == "process_not_found"
+        assert result["llm_calls"] == 0
+        assert result["process"]["tracked_by_runtime"] is False
+        assert result["process"]["id_exposed"] is False
+        assert result["process"]["host_pid_exposed"] is False
+        assert opaque_id not in json.dumps(result)
+        assert str(workspace_root) not in json.dumps(result)
+    logged = json.loads(process_log(workspace_id, opaque_id, context_token=token, max_chars=999999))
+    assert logged["log"] == {
+        "available": False,
+        "max_chars": 20000,
+        "truncated": False,
+        "root_exposed": False,
+    }
+
+    metadata = get_router_tool_metadata()
+    for name in {"process_start", "process_list", "process_poll", "process_log", "process_kill"}:
+        assert metadata[name]["enabled_by_default"] is False
+        assert metadata[name]["requires_context"] is True
+        assert metadata[name]["capability_group"] == "terminal"
+        assert metadata[name]["llm_calls"] == 0
+
+
+def test_process_tools_require_terminal_policy(hermes_home, tmp_path):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    start_denied = json.loads(process_start(workspace_id, "python -c fake-bg", context_token=token))
+    assert start_denied["ok"] is False
+    assert start_denied["error"]["code"] == "terminal_not_allowed"
+
+    denied = json.loads(process_list(workspace_id, context_token=token))
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "terminal_not_allowed"
+
+
+def test_cron_tools_are_context_gated_script_only_and_no_model(hermes_home, tmp_path, monkeypatch):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    class FakeCronBackend:
+        def __init__(self):
+            self.jobs = {
+                "script1": {
+                    "id": "script1",
+                    "name": "safe script API_KEY=should_not_leak",
+                    "schedule_display": "every 5m",
+                    "enabled": True,
+                    "state": "scheduled",
+                    "script": "safe.py",
+                    "no_agent": True,
+                    "prompt": "ignored prompt SECRET=hidden",
+                },
+                "agent1": {
+                    "id": "agent1",
+                    "name": "agent job",
+                    "schedule_display": "every 1m",
+                    "enabled": True,
+                    "state": "scheduled",
+                    "script": None,
+                    "no_agent": False,
+                    "prompt": "this would call a model SECRET=hidden",
+                },
+                "unapproved": {
+                    "id": "unapproved",
+                    "name": "unapproved script",
+                    "schedule_display": "every 10m",
+                    "enabled": True,
+                    "state": "scheduled",
+                    "script": "other.py",
+                    "no_agent": True,
+                },
+            }
+            self.created = []
+            self.parsed_schedules = []
+
+        def list_jobs(self, include_disabled=False):
+            return [job for job in self.jobs.values() if include_disabled or job.get("enabled", True)]
+
+        def resolve_job_ref(self, ref):
+            return self.jobs.get(ref)
+
+        def pause_job(self, job_id, reason=None):
+            job = dict(self.jobs[job_id])
+            job.update({"enabled": False, "state": "paused", "paused_reason": reason})
+            self.jobs[job_id] = job
+            return job
+
+        def resume_job(self, job_id):
+            job = dict(self.jobs[job_id])
+            job.update({"enabled": True, "state": "scheduled"})
+            self.jobs[job_id] = job
+            return job
+
+        def trigger_job(self, job_id):
+            job = dict(self.jobs[job_id])
+            job.update({"enabled": True, "state": "scheduled", "next_run_at": "2026-06-25T00:00:00+00:00"})
+            self.jobs[job_id] = job
+            return job
+
+        def parse_schedule(self, schedule):
+            self.parsed_schedules.append(schedule)
+            if schedule == "bad schedule":
+                raise ValueError("bad schedule")
+            return {"kind": "interval", "minutes": 5, "display": schedule}
+
+        def create_job(self, prompt, schedule, **kwargs):
+            self.created.append({"prompt": prompt, "schedule": schedule, **kwargs})
+            job = {
+                "id": "created1",
+                "name": kwargs.get("name") or "created",
+                "schedule_display": schedule,
+                "enabled": True,
+                "state": "scheduled",
+                "script": kwargs["script"],
+                "no_agent": kwargs["no_agent"],
+            }
+            self.jobs[job["id"]] = job
+            return job
+
+    backend = FakeCronBackend()
+    monkeypatch.setattr(mcp_profile_router, "_cron_jobs_backend", lambda: backend)
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "cron": {"enabled": True, "allowed_scripts": ["safe.py"]},
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+
+    missing_context = json.loads(cron_list(workspace_id))
+    assert missing_context["ok"] is False
+    assert missing_context["error"]["code"] == "context_not_loaded"
+
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+    listed = json.loads(cron_list(workspace_id, context_token=token, include_disabled=True, limit=999))
+    assert listed["ok"] is True
+    assert listed["llm_calls"] == 0
+    cron_payload = listed["cron"]
+    assert cron_payload["job_count"] == 3
+    assert cron_payload["limit"] == 50
+    assert cron_payload["policy"] == {
+        "cron_enabled": True,
+        "script_allowlist_count": 1,
+        "model_backed_crons_allowed": False,
+    }
+    assert cron_payload["audit"]["llm_calls"] == 0
+    by_id = {job["job_id"]: job for job in cron_payload["jobs"]}
+    assert by_id["script1"]["script_only"] is True
+    assert by_id["script1"]["script"]["allowed_by_profile_policy"] is True
+    assert by_id["agent1"]["model_backed"] is True
+    dumped_list = json.dumps(listed)
+    assert "safe.py" not in dumped_list
+    assert str(workspace_root) not in dumped_list
+    assert "should_not_leak" not in dumped_list
+    assert "SECRET=hidden" not in dumped_list
+
+    denied_model = json.loads(cron_run(workspace_id, "agent1", context_token=token))
+    assert denied_model["ok"] is False
+    assert denied_model["error"]["code"] == "cron_model_backed_job_denied"
+    assert denied_model["llm_calls"] == 0
+
+    denied_unapproved = json.loads(cron_run(workspace_id, "unapproved", context_token=token))
+    assert denied_unapproved["ok"] is False
+    assert denied_unapproved["error"]["code"] == "cron_script_not_allowed"
+
+    paused = json.loads(cron_pause(workspace_id, "script1", context_token=token, reason="manual"))
+    assert paused["ok"] is True
+    assert paused["cron"]["job"]["state"] == "paused"
+    assert paused["cron"]["audit"]["model_backed_crons_allowed"] is False
+
+    resumed = json.loads(cron_resume(workspace_id, "script1", context_token=token))
+    assert resumed["ok"] is True
+    assert resumed["cron"]["job"]["state"] == "scheduled"
+
+    triggered = json.loads(cron_run(workspace_id, "script1", context_token=token))
+    assert triggered["ok"] is True
+    assert triggered["cron"]["audit"]["action"] == "trigger_next_tick"
+
+    created = json.loads(
+        cron_create_script_only(
+            workspace_id,
+            "every 5m",
+            "safe.py",
+            context_token=token,
+            name="created SECRET=hidden",
+            repeat=1,
+        )
+    )
+    assert created["ok"] is True
+    assert created["cron"]["job"]["job_id"] == "created1"
+    assert backend.created[-1]["prompt"] == ""
+    assert backend.created[-1]["script"] == "safe.py"
+    assert backend.created[-1]["no_agent"] is True
+    assert backend.created[-1]["model"] is None
+    assert backend.created[-1]["provider"] is None
+    assert backend.created[-1]["deliver"] == "local"
+    assert backend.created[-1]["workdir"] == str(workspace_root)
+    dumped_created = json.dumps(created)
+    assert "safe.py" not in dumped_created
+    assert str(workspace_root) not in dumped_created
+    assert "hidden" not in dumped_created
+
+    denied_create = json.loads(
+        cron_create_script_only(workspace_id, "every 5m", "other.py", context_token=token)
+    )
+    assert denied_create["ok"] is False
+    assert denied_create["error"]["code"] == "cron_script_not_allowed"
+
+    metadata = get_router_tool_metadata()
+    for name in {"cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only"}:
+        assert metadata[name]["enabled_by_default"] is False
+        assert metadata[name]["requires_context"] is True
+        assert metadata[name]["capability_group"] == "cron"
+        assert metadata[name]["llm_calls"] == 0
+
+    import mcp_serve
+
+    monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+    server = mcp_serve.create_profile_router_mcp_server()
+    assert "cron_list" in server._tool_manager._tools
+    assert "cron_create_script_only" in server._tool_manager._tools
+
+
+def test_messaging_tools_are_context_gated_allowlisted_dry_run_only(hermes_home, tmp_path, monkeypatch):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "messaging": {
+                    "enabled": True,
+                    "allowed_recipients": ["telegram:-1001234567890", "email:ops@example.com"],
+                },
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+
+    missing_context = json.loads(message_send(workspace_id, "telegram:-1001234567890", "hello"))
+    assert missing_context["ok"] is False
+    assert missing_context["error"]["code"] == "context_not_loaded"
+    assert missing_context["llm_calls"] == 0
+
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+    denied_destination = json.loads(
+        message_send(workspace_id, "telegram:-1009999999999", "hello", context_token=token)
+    )
+    assert denied_destination["ok"] is False
+    assert denied_destination["error"]["code"] == "messaging_destination_not_allowed"
+    assert denied_destination["llm_calls"] == 0
+
+    secret_message = json.loads(
+        message_send(workspace_id, "telegram:-1001234567890", "API_KEY=should_not_send", context_token=token)
+    )
+    assert secret_message["ok"] is False
+    assert secret_message["error"]["code"] == "message_content_secret_denied"
+
+    dry_run = json.loads(
+        message_send(workspace_id, "telegram:-1001234567890", "safe status", context_token=token)
+    )
+    assert dry_run["ok"] is True
+    assert dry_run["llm_calls"] == 0
+    messaging = dry_run["messaging"]
+    assert messaging["status"] == "dry_run_ready"
+    assert messaging["platform"] == "telegram"
+    assert messaging["destination_allowed"] is True
+    assert messaging["destination_exposed"] is False
+    assert messaging["message_content_logged"] is False
+    assert messaging["delivery_attempted"] is False
+    assert messaging["external_delivery_enabled"] is False
+    assert messaging["policy"] == {
+        "messaging_enabled": True,
+        "allowed_recipients_count": 2,
+        "allowlist_redacted": True,
+        "broadcast_allowed": False,
+    }
+    assert messaging["audit"]["llm_calls"] == 0
+    dumped = json.dumps(dry_run)
+    assert "safe status" not in dumped
+    assert "-1001234567890" not in dumped
+    assert str(workspace_root) not in dumped
+
+    delivery_denied = json.loads(
+        message_send(workspace_id, "telegram:-1001234567890", "safe status", context_token=token, dry_run=False)
+    )
+    assert delivery_denied["ok"] is False
+    assert delivery_denied["error"]["code"] == "message_delivery_not_enabled"
+
+    telegram = json.loads(telegram_send(workspace_id, "-1001234567890", "telegram safe", context_token=token))
+    assert telegram["ok"] is True
+    assert telegram["messaging"]["platform"] == "telegram"
+    assert telegram["messaging"]["audit"]["tool"] == "telegram_send"
+    dumped_telegram = json.dumps(telegram)
+    assert "telegram safe" not in dumped_telegram
+    assert "-1001234567890" not in dumped_telegram
+
+    metadata = get_router_tool_metadata()
+    for name in {"message_send", "telegram_send"}:
+        assert metadata[name]["enabled_by_default"] is False
+        assert metadata[name]["requires_context"] is True
+        assert metadata[name]["capability_group"] == "messaging"
+        assert metadata[name]["llm_calls"] == 0
+
+    import mcp_serve
+
+    monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+    server = mcp_serve.create_profile_router_mcp_server()
+    assert "message_send" in server._tool_manager._tools
+    assert "telegram_send" in server._tool_manager._tools
 
 
 def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
@@ -1727,9 +2673,13 @@ def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
     outside_root.mkdir()
     outside_file = outside_root / "leak.txt"
     outside_file.write_text("leak\n", encoding="utf-8")
+    outside_dir = outside_root / "dir"
+    outside_dir.mkdir()
     link = workspace_root / "link"
+    link_dir = workspace_root / "linkdir"
     try:
         link.symlink_to(outside_file)
+        link_dir.symlink_to(outside_dir)
     except (NotImplementedError, OSError) as exc:
         pytest.skip(f"symlink creation unavailable: {exc}")
 
@@ -1753,6 +2703,33 @@ def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
     assert denied["error"]["code"] == "filesystem_write_not_allowed"
     assert notes.read_text(encoding="utf-8") == "alpha alpha\n"
 
+    mkdir_denied = json.loads(directory_create(workspace_id, "new-dir", context_token=token))
+    assert mkdir_denied["ok"] is False
+    assert mkdir_denied["error"]["code"] == "filesystem_write_not_allowed"
+    assert not (workspace_root / "new-dir").exists()
+
+    move_denied = json.loads(file_move(workspace_id, "notes.md", "renamed.md", context_token=token))
+    assert move_denied["ok"] is False
+    assert move_denied["error"]["code"] == "filesystem_write_not_allowed"
+    assert notes.exists()
+    assert not (workspace_root / "renamed.md").exists()
+
+    delete_denied = json.loads(file_delete(workspace_id, "notes.md", context_token=token))
+    assert delete_denied["ok"] is False
+    assert delete_denied["error"]["code"] == "filesystem_write_not_allowed"
+    assert notes.exists()
+
+    batch_patch_denied = json.loads(
+        patch_apply(
+            workspace_id,
+            [{"path": "notes.md", "old_string": "alpha", "new_string": "beta"}],
+            context_token=token,
+        )
+    )
+    assert batch_patch_denied["ok"] is False
+    assert batch_patch_denied["error"]["code"] == "filesystem_write_not_allowed"
+    assert notes.read_text(encoding="utf-8") == "alpha alpha\n"
+
     _write_router_config(
         hermes_home,
         host_roots=[str(allowed_root)],
@@ -1773,6 +2750,39 @@ def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
     assert not_unique["error"]["code"] == "patch_match_not_unique"
     assert notes.read_text(encoding="utf-8") == "alpha alpha\n"
 
+    batch_missing_file = json.loads(
+        patch_apply(
+            workspace_id,
+            [
+                {
+                    "path": "notes.md",
+                    "old_string": "alpha",
+                    "new_string": "beta",
+                    "replace_all": True,
+                },
+                {"path": "missing.md", "old_string": "missing", "new_string": "created"},
+            ],
+            context_token=token,
+        )
+    )
+    assert batch_missing_file["ok"] is False
+    assert batch_missing_file["error"]["code"] == "not_a_file"
+    assert notes.read_text(encoding="utf-8") == "alpha alpha\n"
+
+    duplicate_batch = json.loads(
+        patch_apply(
+            workspace_id,
+            [
+                {"path": "notes.md", "old_string": "alpha", "new_string": "beta", "replace_all": True},
+                {"path": "notes.md", "old_string": "alpha", "new_string": "gamma", "replace_all": True},
+            ],
+            context_token=token,
+        )
+    )
+    assert duplicate_batch["ok"] is False
+    assert duplicate_batch["error"]["code"] == "patch_duplicate_path"
+    assert notes.read_text(encoding="utf-8") == "alpha alpha\n"
+
     for blocked_path, expected_code in (
         (".env", "secret_path_denied"),
         ("../outside.txt", "path_outside_workspace"),
@@ -1783,6 +2793,57 @@ def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
         )
         assert blocked["ok"] is False
         assert blocked["error"]["code"] == expected_code
+        batch_blocked = json.loads(
+            patch_apply(
+                workspace_id,
+                [{"path": blocked_path, "old_string": "alpha", "new_string": "beta"}],
+                context_token=token,
+            )
+        )
+        assert batch_blocked["ok"] is False
+        assert batch_blocked["error"]["code"] == expected_code
+    assert outside_file.read_text(encoding="utf-8") == "leak\n"
+
+    for blocked_path, expected_code in (
+        (".env.d", "secret_path_denied"),
+        ("../outside-dir", "path_outside_workspace"),
+        ("linkdir/child", "symlink_traversal_denied"),
+    ):
+        blocked = json.loads(directory_create(workspace_id, blocked_path, parents=True, context_token=token))
+        assert blocked["ok"] is False
+        assert blocked["error"]["code"] == expected_code
+    assert not (outside_dir / "child").exists()
+
+    for source_path, destination_path, expected_code in (
+        (".env", "moved-secret", "secret_path_denied"),
+        ("../outside.txt", "moved-outside", "path_outside_workspace"),
+        ("link", "moved-link", "symlink_traversal_denied"),
+        ("notes.md", "linkdir/moved-notes.md", "symlink_traversal_denied"),
+    ):
+        blocked = json.loads(
+            file_move(
+                workspace_id,
+                source_path,
+                destination_path,
+                context_token=token,
+            )
+        )
+        assert blocked["ok"] is False
+        assert blocked["error"]["code"] == expected_code
+    assert notes.read_text(encoding="utf-8") == "alpha alpha\n"
+    assert outside_file.read_text(encoding="utf-8") == "leak\n"
+    assert not (outside_dir / "moved-notes.md").exists()
+
+    for blocked_path, expected_code in (
+        (".env", "secret_path_denied"),
+        ("../outside.txt", "path_outside_workspace"),
+        ("link", "symlink_traversal_denied"),
+        ("linkdir/child", "symlink_traversal_denied"),
+    ):
+        blocked = json.loads(file_delete(workspace_id, blocked_path, context_token=token))
+        assert blocked["ok"] is False
+        assert blocked["error"]["code"] == expected_code
+    assert notes.read_text(encoding="utf-8") == "alpha alpha\n"
     assert outside_file.read_text(encoding="utf-8") == "leak\n"
 
 
@@ -1888,6 +2949,109 @@ def test_workspace_diff_is_context_gated_bounded_and_filters_local_metadata(
     assert "should-not-leak" not in dumped
 
 
+def test_git_read_only_wrappers_require_context_and_git_policy_and_filter_secrets(
+    hermes_home,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+    notes = workspace_root / "notes.md"
+    notes.write_text("alpha\n", encoding="utf-8")
+
+    _git(workspace_root, "init")
+    _git(workspace_root, "config", "user.email", "router-test@example.invalid")
+    _git(workspace_root, "config", "user.name", "Router Test")
+    _git(workspace_root, "add", "AGENTS.md", "notes.md")
+    _git(workspace_root, "commit", "-m", "initial")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+
+    missing_context = json.loads(git_status(workspace_id))
+    assert missing_context["ok"] is False
+    assert missing_context["error"]["code"] == "context_not_loaded"
+    assert missing_context["llm_calls"] == 0
+
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+    denied = json.loads(git_status(workspace_id, context_token=token))
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "git_read_not_allowed"
+    assert denied["llm_calls"] == 0
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "git": {"enabled": True, "protected_branches": ["main", "master"]},
+            }
+        },
+    )
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+    notes.write_text("beta\n", encoding="utf-8")
+    (workspace_root / ".env").write_text("SECRET=should-not-leak\n", encoding="utf-8")
+
+    status = json.loads(git_status(workspace_id, context_token=token, limit=999))
+    assert status["ok"] is True
+    assert status["llm_calls"] == 0
+    status_payload = status["git_status"]
+    assert status_payload["limit"] == 100
+    assert {entry["path"] for entry in status_payload["changes"]} == {"notes.md"}
+    assert (".env", "secret_path_denied") in {
+        (item.get("path"), item.get("reason")) for item in status_payload["skipped"]
+    }
+    assert status_payload["audit"] == {
+        "tool": "git_status",
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "git_read_only": True,
+        "git_mutation_allowed": False,
+        "public_mcp_exposure": "disabled_pending_git_parity_policy_review",
+        "workspace_id": workspace_id,
+    }
+
+    diff = json.loads(git_diff(workspace_id, context_token=token))
+    assert diff["ok"] is True
+    assert diff["git_diff"]["tracked_files"] == ["notes.md"]
+    assert "-alpha" in diff["git_diff"]["diff"]["unified"]
+    assert "+beta" in diff["git_diff"]["diff"]["unified"]
+
+    log = json.loads(git_log(workspace_id, context_token=token, limit=1))
+    assert log["ok"] is True
+    assert log["git_log"]["commit_count"] == 1
+    assert log["git_log"]["commits"][0]["subject"] == "initial"
+    assert log["git_log"]["audit"]["llm_calls"] == 0
+
+    branches = json.loads(git_branch(workspace_id, context_token=token))
+    assert branches["ok"] is True
+    branch_payload = branches["git_branch"]
+    assert branch_payload["current"] in {"main", "master"}
+    current = [branch for branch in branch_payload["branches"] if branch["current"]]
+    assert len(current) == 1
+    assert current[0]["protected"] is True
+
+    dumped = json.dumps([status, diff, log, branches])
+    assert str(workspace_root) not in dumped
+    assert "should-not-leak" not in dumped
+
+
 def test_missing_profile_router_policy_exposes_no_profiles_by_default(hermes_home):
     result = json.loads(profiles_list())
     assert result["ok"] is True
@@ -1924,14 +3088,19 @@ def test_profiles_list_returns_policy_enabled_local_profile_refs_without_secret_
     enabled_profile = result["profiles"][0]
     assert enabled_profile["display_name"] == "Main Bot"
     assert enabled_profile["policy"]["enabled"] is True
-    assert enabled_profile["policy"]["capabilities"] == {
-        "filesystem_read": False,
-        "filesystem_write": False,
-        "terminal": False,
-        "messaging": False,
-        "cron": False,
-        "git_push": False,
-        "deploy": False,
+    capabilities = enabled_profile["policy"]["capabilities"]
+    for name in {
+        "filesystem_read",
+        "filesystem_write",
+        "terminal",
+        "messaging",
+        "cron",
+        "git_push",
+        "deploy",
+    }:
+        assert capabilities[name] is False
+    assert enabled_profile["policy"]["capability_groups"] == {
+        group: False for group in PROFILE_ROUTER_CAPABILITY_GROUPS
     }
     assert enabled_profile["policy"]["model_policy"] == {
         "allow_model_tools": False,
@@ -2635,6 +3804,8 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         "workspace_close",
         "workspace_file_list",
         "workspace_file_read",
+        "workspace_file_stat",
+        "workspace_file_search",
         "workspace_diff",
     }
     metadata_public_tools = {
@@ -2643,22 +3814,39 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         if tool["enabled_by_default"]
     }
 
-    private_action_tools = {"file_patch", "file_write", "terminal_run"}
+    private_action_tools = {"file_patch", "patch_apply", "file_write", "file_move", "file_delete", "directory_create", "terminal_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send"}
     assert set(tools) == expected_public_tools | private_action_tools
     assert expected_public_tools == metadata_public_tools
+    assert not (set(tools) & FORBIDDEN_MODEL_LOOP_TOOL_NAMES)
     assert "messages_send" not in tools
     assert "conversations_list" not in tools
+    assert "message_send" in tools
+    assert "telegram_send" in tools
     assert "terminal_run" in tools
     assert "workspace_diff" in tools
+    assert "workspace_file_search" in tools
+    assert "workspace_file_stat" in tools
     assert "file_read" not in tools
     assert "file_search" not in tools
     assert "file_patch" in tools
+    assert "patch_apply" in tools
     assert "file_write" in tools
+    assert "file_move" in tools
+    assert "file_delete" in tools
+    assert "directory_create" in tools
+    assert "workspace_file_stat" in tools
     assert "skills_list" in tools
     assert "skill_view" in tools
     assert "session_search" in tools
     assert "viking_search" in tools
     assert "viking_read" in tools
+    assert "git_status" in tools
+    assert "git_diff" in tools
+    assert "git_log" in tools
+    assert "git_branch" in tools
+    assert "cron_list" in tools
+    assert "cron_create_script_only" in tools
+    assert "cron_run" in tools
 
     listed = json.loads(tools["profiles_list"].fn())
     assert listed["ok"] is True
@@ -2769,16 +3957,28 @@ def test_profile_router_token_store_hashes_verifies_revokes_and_rotates(tmp_path
     assert viking_token["record"]["scopes"] == [VIKING_PROFILE_ROUTER_SCOPE]
     assert store.verify_token(viking_token["token"], required_scopes=[VIKING_PROFILE_ROUTER_SCOPE]) is not None
     action_token = store.create_token(
-        scopes=[PROFILE_ROUTER_WRITE_SCOPE, PROFILE_ROUTER_TERMINAL_SCOPE],
+        scopes=[
+            PROFILE_ROUTER_WRITE_SCOPE,
+            PROFILE_ROUTER_TERMINAL_SCOPE,
+            PROFILE_ROUTER_CRON_SCOPE,
+            PROFILE_ROUTER_MESSAGING_SCOPE,
+        ],
         name="action-pilot",
     )
     assert action_token["record"]["scopes"] == [
         PROFILE_ROUTER_WRITE_SCOPE,
         PROFILE_ROUTER_TERMINAL_SCOPE,
+        PROFILE_ROUTER_CRON_SCOPE,
+        PROFILE_ROUTER_MESSAGING_SCOPE,
     ]
     assert store.verify_token(
         action_token["token"],
-        required_scopes=[PROFILE_ROUTER_WRITE_SCOPE, PROFILE_ROUTER_TERMINAL_SCOPE],
+        required_scopes=[
+            PROFILE_ROUTER_WRITE_SCOPE,
+            PROFILE_ROUTER_TERMINAL_SCOPE,
+            PROFILE_ROUTER_CRON_SCOPE,
+            PROFILE_ROUTER_MESSAGING_SCOPE,
+        ],
     ) is not None
     assert raw_token not in (tmp_path / "tokens.json").read_text(encoding="utf-8")
     assert "token_hash_prefix" in record
@@ -2938,7 +4138,7 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
         name
         for name, tool in get_router_tool_metadata().items()
         if tool["enabled_by_default"]
-    } | {"file_patch", "file_write", "terminal_run"}
+    } | {"file_patch", "patch_apply", "file_write", "file_move", "file_delete", "directory_create", "terminal_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send"}
     server_kwargs = getattr(server, "kwargs")
     assert server_kwargs["host"] == "127.0.0.1"
     assert server_kwargs["port"] == 8765
@@ -2949,9 +4149,20 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
     assert server_kwargs["auth"].required_scopes == []
     assert "terminal_run" in tools
     assert "file_patch" in tools
+    assert "patch_apply" in tools
     assert "file_write" in tools
+    assert "file_move" in tools
+    assert "file_delete" in tools
+    assert "directory_create" in tools
+    assert "workspace_file_stat" in tools
     assert "skills_list" in tools
     assert "skill_view" in tools
     assert "session_search" in tools
     assert "viking_search" in tools
     assert "viking_read" in tools
+    assert "git_status" in tools
+    assert "git_diff" in tools
+    assert "git_log" in tools
+    assert "git_branch" in tools
+    assert "cron_list" in tools
+    assert "cron_create_script_only" in tools

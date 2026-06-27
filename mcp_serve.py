@@ -949,13 +949,34 @@ def create_profile_router_mcp_server(
 
     from mcp_profile_router import (
         assert_default_tools_are_no_model,
+        assert_no_model_loop_tools_absent,
         profile_context_get as _profile_context_get,
         profile_get as _profile_get,
         profile_health as _profile_health,
         profiles_list as _profiles_list,
+        cron_create_script_only as _cron_create_script_only,
+        cron_list as _cron_list,
+        cron_pause as _cron_pause,
+        cron_resume as _cron_resume,
+        cron_run as _cron_run,
+        message_send as _message_send,
+        telegram_send as _telegram_send,
+        directory_create as _directory_create,
+        file_delete as _file_delete,
+        file_move as _file_move,
+        patch_apply as _patch_apply,
         file_patch as _file_patch,
         file_write as _file_write,
+        git_branch as _git_branch,
+        git_diff as _git_diff,
+        git_log as _git_log,
+        git_status as _git_status,
         terminal_run as _terminal_run,
+        process_start as _process_start,
+        process_kill as _process_kill,
+        process_list as _process_list,
+        process_log as _process_log,
+        process_poll as _process_poll,
         session_search as _session_search,
         skill_view as _skill_view,
         skills_list as _skills_list,
@@ -966,6 +987,8 @@ def create_profile_router_mcp_server(
         workspace_diff as _workspace_diff,
         workspace_file_list as _workspace_file_list,
         workspace_file_read as _workspace_file_read,
+        workspace_file_stat as _workspace_file_stat,
+        workspace_file_search as _workspace_file_search,
         workspace_get as _workspace_get,
         workspace_instructions_get as _workspace_instructions_get,
         workspace_open as _workspace_open,
@@ -975,6 +998,8 @@ def create_profile_router_mcp_server(
         ProfileRouterAuthError,
         ProfileRouterBearerTokenVerifier,
         ProfileRouterTokenStore,
+        PROFILE_ROUTER_CRON_SCOPE,
+        PROFILE_ROUTER_MESSAGING_SCOPE,
         PROFILE_ROUTER_TERMINAL_SCOPE,
         PROFILE_ROUTER_WRITE_SCOPE,
         VIKING_PROFILE_ROUTER_SCOPE,
@@ -984,6 +1009,7 @@ def create_profile_router_mcp_server(
     )
 
     assert_default_tools_are_no_model()
+    assert_no_model_loop_tools_absent()
 
     auth_kwargs = {}
     audit_logger = ProfileRouterAuditLogger(audit_log_path) if http_auth else None
@@ -1010,13 +1036,18 @@ def create_profile_router_mcp_server(
             "skills_list, skill_view, session_search, workspace_open, "
             "workspace_instructions_get, workspace_context_status, workspace_get, "
             "workspace_close, workspace_file_list, workspace_file_read, "
-            "workspace_diff, and policy-gated local/private OpenViking context "
+            "workspace_file_stat, workspace_file_search, workspace_diff, and policy-gated local/private OpenViking context "
             "tools viking_search and viking_read. Private HTTP nodes also register "
-            "file_patch, file_write, and terminal_run for the public gateway's "
+            "file_patch, patch_apply, file_write, file_move, file_delete, directory_create, terminal_run, "
+            "tracked-process scaffolds process_start, process_list, process_poll, process_log, process_kill, "
+            "read-only Git scaffolds git_status, git_diff, git_log, git_branch, script-only no_agent cron "
+            "scaffolds cron_list, cron_pause, cron_resume, cron_run, cron_create_script_only, and no-delivery "
+            "messaging dry-run scaffolds message_send and telegram_send for the public gateway's "
             "explicit production wrappers; those direct tools require fresh "
-            "workspace context plus filesystem.write or terminal.execution policy. It does "
-            "not expose conversation messaging, session dumps, cron, deploy, "
-            "Git push/merge, or agent-loop execution tools."
+            "workspace context plus filesystem.write, terminal.execution, git.enabled, cron.enabled/allowed_scripts, "
+            "or messaging.enabled/allowed_recipients policy. It does "
+            "not expose broad conversation messaging, external delivery, deploy, "
+            "Git push/merge, model-backed cron jobs, or agent-loop execution tools."
         ),
         host=host,
         port=port,
@@ -1303,6 +1334,48 @@ def create_profile_router_mcp_server(
         )
 
     @mcp.tool()
+    def workspace_file_stat(
+        workspace_id: str,
+        path: str,
+        context_token: str | None = None,
+    ) -> str:
+        """Return bounded sanitized file/directory metadata after context hydration."""
+        return _call_tool(
+            "workspace_file_stat",
+            "workspace:read",
+            _workspace_file_stat,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            path=path,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def workspace_file_search(
+        workspace_id: str,
+        pattern: str,
+        path: str | None = None,
+        file_glob: str | None = None,
+        output_mode: str = "content",
+        limit: int | None = 50,
+        context_token: str | None = None,
+    ) -> str:
+        """Search bounded sanitized workspace files after context hydration."""
+        return _call_tool(
+            "workspace_file_search",
+            "workspace:read",
+            _workspace_file_search,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            pattern=pattern,
+            path=path,
+            file_glob=file_glob,
+            output_mode=output_mode,
+            limit=limit,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
     def workspace_diff(
         workspace_id: str,
         context_token: str | None = None,
@@ -1317,6 +1390,211 @@ def create_profile_router_mcp_server(
             workspace_id=workspace_id,
             context_token=context_token,
             max_files=max_files,
+        )
+
+    @mcp.tool()
+    def git_status(
+        workspace_id: str,
+        context_token: str | None = None,
+        limit: int | None = 100,
+    ) -> str:
+        """Private direct read-only Git status for explicit future gateway wrappers."""
+        return _call_tool(
+            "git_status",
+            "diff:read",
+            _git_status,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            context_token=context_token,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def git_diff(
+        workspace_id: str,
+        context_token: str | None = None,
+        max_files: int | None = 100,
+    ) -> str:
+        """Private direct read-only Git diff for explicit future gateway wrappers."""
+        return _call_tool(
+            "git_diff",
+            "diff:read",
+            _git_diff,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            context_token=context_token,
+            max_files=max_files,
+        )
+
+    @mcp.tool()
+    def git_log(
+        workspace_id: str,
+        context_token: str | None = None,
+        limit: int | None = 50,
+    ) -> str:
+        """Private direct read-only Git log for explicit future gateway wrappers."""
+        return _call_tool(
+            "git_log",
+            "diff:read",
+            _git_log,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            context_token=context_token,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def git_branch(
+        workspace_id: str,
+        context_token: str | None = None,
+        limit: int | None = 100,
+    ) -> str:
+        """Private direct read-only Git branch metadata for explicit future gateway wrappers."""
+        return _call_tool(
+            "git_branch",
+            "diff:read",
+            _git_branch,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            context_token=context_token,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def cron_list(
+        workspace_id: str,
+        context_token: str | None = None,
+        include_disabled: bool = False,
+        limit: int | None = 50,
+    ) -> str:
+        """Private direct no-model cron listing for explicit future gateway wrappers."""
+        return _call_tool(
+            "cron_list",
+            PROFILE_ROUTER_CRON_SCOPE,
+            _cron_list,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            context_token=context_token,
+            include_disabled=include_disabled,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def cron_pause(
+        workspace_id: str,
+        job_ref: str,
+        context_token: str | None = None,
+        reason: str | None = None,
+    ) -> str:
+        """Private direct pause for script-only no_agent cron jobs."""
+        return _call_tool(
+            "cron_pause",
+            PROFILE_ROUTER_CRON_SCOPE,
+            _cron_pause,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            job_ref=job_ref,
+            context_token=context_token,
+            reason=reason,
+        )
+
+    @mcp.tool()
+    def cron_resume(
+        workspace_id: str,
+        job_ref: str,
+        context_token: str | None = None,
+    ) -> str:
+        """Private direct resume for allowlisted script-only no_agent cron jobs."""
+        return _call_tool(
+            "cron_resume",
+            PROFILE_ROUTER_CRON_SCOPE,
+            _cron_resume,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            job_ref=job_ref,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def cron_run(
+        workspace_id: str,
+        job_ref: str,
+        context_token: str | None = None,
+    ) -> str:
+        """Private direct trigger for allowlisted script-only no_agent cron jobs."""
+        return _call_tool(
+            "cron_run",
+            PROFILE_ROUTER_CRON_SCOPE,
+            _cron_run,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            job_ref=job_ref,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def cron_create_script_only(
+        workspace_id: str,
+        schedule: str,
+        script: str,
+        context_token: str | None = None,
+        name: str | None = None,
+        repeat: int | None = None,
+    ) -> str:
+        """Private direct creation for allowlisted script-only no_agent cron jobs."""
+        return _call_tool(
+            "cron_create_script_only",
+            PROFILE_ROUTER_CRON_SCOPE,
+            _cron_create_script_only,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            schedule=schedule,
+            script=script,
+            context_token=context_token,
+            name=name,
+            repeat=repeat,
+        )
+
+    @mcp.tool()
+    def message_send(
+        workspace_id: str,
+        destination: str,
+        message: str,
+        context_token: str | None = None,
+        dry_run: bool = True,
+    ) -> str:
+        """Private direct messaging dry-run for explicit future gateway wrappers."""
+        return _call_tool(
+            "message_send",
+            PROFILE_ROUTER_MESSAGING_SCOPE,
+            _message_send,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            destination=destination,
+            message=message,
+            context_token=context_token,
+            dry_run=dry_run,
+        )
+
+    @mcp.tool()
+    def telegram_send(
+        workspace_id: str,
+        recipient: str,
+        message: str,
+        context_token: str | None = None,
+        dry_run: bool = True,
+    ) -> str:
+        """Private direct Telegram dry-run for explicit future gateway wrappers."""
+        return _call_tool(
+            "telegram_send",
+            PROFILE_ROUTER_MESSAGING_SCOPE,
+            _telegram_send,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            recipient=recipient,
+            message=message,
+            context_token=context_token,
+            dry_run=dry_run,
         )
 
     @mcp.tool()
@@ -1343,6 +1621,23 @@ def create_profile_router_mcp_server(
         )
 
     @mcp.tool()
+    def patch_apply(
+        workspace_id: str,
+        patches: list[dict],
+        context_token: str | None = None,
+    ) -> str:
+        """Private direct bounded multi-file patch for explicit future gateway wrappers."""
+        return _call_tool(
+            "patch_apply",
+            PROFILE_ROUTER_WRITE_SCOPE,
+            _patch_apply,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            patches=patches,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
     def file_write(
         workspace_id: str,
         path: str,
@@ -1358,6 +1653,156 @@ def create_profile_router_mcp_server(
             workspace_id=workspace_id,
             path=path,
             content=content,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def file_move(
+        workspace_id: str,
+        source_path: str,
+        destination_path: str,
+        context_token: str | None = None,
+    ) -> str:
+        """Private direct file move/rename for explicit future gateway wrappers."""
+        return _call_tool(
+            "file_move",
+            PROFILE_ROUTER_WRITE_SCOPE,
+            _file_move,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            source_path=source_path,
+            destination_path=destination_path,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def file_delete(
+        workspace_id: str,
+        path: str,
+        context_token: str | None = None,
+    ) -> str:
+        """Private direct file delete for explicit future gateway wrappers."""
+        return _call_tool(
+            "file_delete",
+            PROFILE_ROUTER_WRITE_SCOPE,
+            _file_delete,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            path=path,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def directory_create(
+        workspace_id: str,
+        path: str,
+        parents: bool = False,
+        exist_ok: bool = False,
+        context_token: str | None = None,
+    ) -> str:
+        """Private direct directory creation for explicit future gateway wrappers."""
+        return _call_tool(
+            "directory_create",
+            PROFILE_ROUTER_WRITE_SCOPE,
+            _directory_create,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            path=path,
+            parents=parents,
+            exist_ok=exist_ok,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def process_start(
+        workspace_id: str,
+        command: str,
+        timeout: int = 30,
+        working_directory: str = ".",
+        context_token: str | None = None,
+        max_output_chars: int | None = 20000,
+    ) -> str:
+        """Private direct runtime-owned process launch for explicit future gateway wrappers."""
+        return _call_tool(
+            "process_start",
+            PROFILE_ROUTER_TERMINAL_SCOPE,
+            _process_start,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            command=command,
+            timeout=timeout,
+            working_directory=working_directory,
+            context_token=context_token,
+            max_output_chars=max_output_chars,
+        )
+
+    @mcp.tool()
+    def process_list(
+        workspace_id: str,
+        context_token: str | None = None,
+        limit: int | None = 50,
+    ) -> str:
+        """Private direct tracked-process listing for explicit future gateway wrappers."""
+        return _call_tool(
+            "process_list",
+            PROFILE_ROUTER_TERMINAL_SCOPE,
+            _process_list,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            context_token=context_token,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def process_poll(
+        workspace_id: str,
+        process_id: str,
+        context_token: str | None = None,
+    ) -> str:
+        """Private direct tracked-process polling for explicit future gateway wrappers."""
+        return _call_tool(
+            "process_poll",
+            PROFILE_ROUTER_TERMINAL_SCOPE,
+            _process_poll,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            process_id=process_id,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def process_log(
+        workspace_id: str,
+        process_id: str,
+        context_token: str | None = None,
+        max_chars: int | None = 20000,
+    ) -> str:
+        """Private direct tracked-process bounded log read for explicit future gateway wrappers."""
+        return _call_tool(
+            "process_log",
+            PROFILE_ROUTER_TERMINAL_SCOPE,
+            _process_log,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            process_id=process_id,
+            context_token=context_token,
+            max_chars=max_chars,
+        )
+
+    @mcp.tool()
+    def process_kill(
+        workspace_id: str,
+        process_id: str,
+        context_token: str | None = None,
+    ) -> str:
+        """Private direct tracked-process kill for explicit future gateway wrappers."""
+        return _call_tool(
+            "process_kill",
+            PROFILE_ROUTER_TERMINAL_SCOPE,
+            _process_kill,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            process_id=process_id,
             context_token=context_token,
         )
 

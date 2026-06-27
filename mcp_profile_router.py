@@ -22,6 +22,9 @@ import re
 import shlex
 import sqlite3
 import subprocess
+import tempfile
+import threading
+import time
 from collections.abc import Iterable as IterableABC, Mapping as MappingABC
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -53,11 +56,37 @@ DEFAULT_ALLOWED_HOSTS = frozenset({"local", "mac"})
 LOCAL_HOST = "local"
 PROFILE_ROUTER_CONFIG_KEY = "profile_router"
 PROFILE_ROUTER_TOOL_GROUP = "profile_router"
+PROFILE_ROUTER_CAPABILITY_GROUPS = (
+    "filesystem",
+    "terminal",
+    "git",
+    "cron",
+    "messaging",
+    "skills",
+    "memory",
+    "session",
+    "web",
+    "browser",
+    "api",
+)
+PROFILE_ROUTER_METADATA_CAPABILITY_GROUPS = (
+    "profile",
+    "workspace",
+    *PROFILE_ROUTER_CAPABILITY_GROUPS,
+)
 CONTEXT_SKILLS_READ_POLICY = "context.skills.read"
 CONTEXT_SESSIONS_SEARCH_POLICY = "context.sessions.search"
 CONTEXT_VIKING_READ_POLICY = "profile_router.context.viking.read"
 DEFAULT_PROTECTED_BRANCHES = ("main", "master", "develop", "production")
 DEFAULT_ALLOWED_COST_CLASSES = (COST_CLASS_NO_MODEL,)
+
+
+def _default_profile_capability_groups() -> dict[str, bool]:
+    """Return the explicit deny-by-default profile capability map."""
+
+    return {group: False for group in PROFILE_ROUTER_CAPABILITY_GROUPS}
+
+
 SECRET_PATH_NAMES = frozenset(
     {
         ".aws",
@@ -104,12 +133,30 @@ MAX_FILE_SEARCH_RESULTS = 50
 MAX_FILE_SEARCH_BYTES = 1_000_000
 MAX_SEARCH_LINE_CHARS = 500
 MAX_FILE_WRITE_CHARS = 200_000
+MAX_PATCH_APPLY_OPERATIONS = 10
+MAX_PATCH_APPLY_TOTAL_WRITE_CHARS = 400_000
 MAX_WRITE_DIFF_CHARS = 20_000
 MAX_WORKSPACE_DIFF_CHARS = 30_000
 MAX_WORKSPACE_DIFF_FILES = 100
 MAX_TERMINAL_COMMAND_CHARS = 4_000
 MAX_TERMINAL_TIMEOUT_SECONDS = 30
 MAX_TERMINAL_OUTPUT_CHARS = 60_000
+MAX_PROCESS_LIST_RESULTS = 50
+MAX_PROCESS_LOG_CHARS = 20_000
+PROCESS_TERMINATE_GRACE_SECONDS = 2
+MAX_GIT_STATUS_ENTRIES = 100
+MAX_GIT_LOG_COUNT = 50
+MAX_GIT_BRANCH_COUNT = 100
+MAX_CRON_LIST_RESULTS = 50
+MAX_CRON_JOB_NAME_CHARS = 160
+MAX_CRON_SCHEDULE_CHARS = 120
+MAX_CRON_SCRIPT_PATH_CHARS = 240
+SAFE_CRON_SCRIPT_SUFFIXES = (".py", ".sh", ".bash")
+CRON_JOB_REF_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
+MAX_MESSAGING_DESTINATION_CHARS = 240
+MAX_MESSAGING_MESSAGE_CHARS = 4_000
+MESSAGING_DESTINATION_RE = re.compile(r"^([a-z][a-z0-9_-]{0,31}):(.{1,200})$")
+BROADCAST_MESSAGING_DESTINATIONS = frozenset({"*", "all", "broadcast", "everyone"})
 TERMINAL_SANITIZED_ENV_ALLOWED_KEYS = (
     "PATH",
     "LANG",
@@ -186,6 +233,29 @@ MODEL_COMMAND_NAMES = frozenset(
 )
 MODEL_COMMAND_TEXT_MARKERS = ("run_conversation", "delegate_task")
 HERMES_MODEL_SUBCOMMANDS = frozenset({"chat"})
+FORBIDDEN_MODEL_LOOP_TOOL_NAMES = frozenset(
+    {
+        "aider",
+        "claude",
+        "codex",
+        "create_message",
+        "createmessage",
+        "delegate_task",
+        "fable",
+        "gemini",
+        "hermes_agent_run",
+        "hermes_chat",
+        "image_generate",
+        "llm_summarize",
+        "mcp_create_message",
+        "mcp_sampling",
+        "openai",
+        "opencode",
+        "run_conversation",
+        "sampling_create_message",
+        "vision_analyze",
+    }
+)
 DESTRUCTIVE_COMMAND_PATTERNS = (
     (
         "rm_rf",
@@ -260,6 +330,20 @@ class TerminalExecutionPolicy:
 
 
 @dataclass(frozen=True)
+class CronPolicy:
+    """Explicit no-agent cron policy for a selected profile/workspace.
+
+    ``cron.enabled`` only permits inspecting and operating on script-only
+    ``no_agent`` jobs. Creating/resuming/running jobs additionally requires the
+    script path to match ``cron.allowed_scripts`` so ChatGPT cannot schedule an
+    arbitrary script that might call a model or leak data.
+    """
+
+    enabled: bool = False
+    allowed_scripts: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class TerminalSubprocessPlan:
     """Internal no-shell execution scaffold for future terminal_run support.
 
@@ -299,6 +383,9 @@ class ProfileRoutePolicy:
     description: str = ""
     allowed_roots: tuple[str, ...] = ()
     allowed_tool_groups: tuple[str, ...] = ()
+    capability_groups: Mapping[str, bool] = field(
+        default_factory=_default_profile_capability_groups
+    )
     messaging_allowed_recipients: tuple[str, ...] = ()
     allow_filesystem_read: bool = False
     allow_filesystem_write: bool = False
@@ -315,6 +402,18 @@ class ProfileRoutePolicy:
     terminal_execution_policy: TerminalExecutionPolicy = field(
         default_factory=TerminalExecutionPolicy
     )
+    cron_policy: CronPolicy = field(default_factory=CronPolicy)
+
+    def capability_enabled(self, group: str) -> bool:
+        """Return whether an explicit no-model capability group is enabled."""
+
+        normalized = str(group or "").strip().lower()
+        if normalized not in PROFILE_ROUTER_CAPABILITY_GROUPS:
+            raise ProfileRouterError(
+                "unknown_capability_group",
+                f"Unknown profile-router capability group: {group}",
+            )
+        return bool(self.capability_groups.get(normalized, False))
 
 
 @dataclass(frozen=True)
@@ -486,6 +585,106 @@ def _parse_terminal_execution_policy(value: Any, field: str) -> TerminalExecutio
                 f"{field} entries cannot require shell control operators",
             )
     return execution_policy
+
+
+def _normalize_cron_script_path(script: str, field: str = "script") -> str:
+    """Validate a cron script identifier without treating it as a shell command."""
+
+    if not isinstance(script, str):
+        raise ProfileRouterError("invalid_cron_script", f"{field} must be a string")
+    text = script.strip()
+    if not text:
+        raise ProfileRouterError("invalid_cron_script", f"{field} is required")
+    if len(text) > MAX_CRON_SCRIPT_PATH_CHARS:
+        raise ProfileRouterError(
+            "invalid_cron_script",
+            f"{field} must be <= {MAX_CRON_SCRIPT_PATH_CHARS} characters",
+        )
+    if "\x00" in text or "\n" in text or "\r" in text or "\\" in text:
+        raise ProfileRouterError("invalid_cron_script", f"{field} must be a single POSIX path")
+    if text.startswith("/") or "://" in text:
+        raise ProfileRouterError(
+            "invalid_cron_script",
+            f"{field} must be a relative allowlisted Hermes script path",
+        )
+    normalized = posixpath.normpath(text)
+    if normalized in {".", ""} or normalized.startswith("../"):
+        raise ProfileRouterError("invalid_cron_script", f"{field} must not escape the scripts directory")
+    parts = [part for part in normalized.split("/") if part]
+    if any(part in {".", ".."} or part.startswith(".") for part in parts):
+        raise ProfileRouterError("invalid_cron_script", f"{field} must not contain dot path segments")
+    if _is_secret_path(normalized):
+        raise ProfileRouterError("secret_path_denied", f"{field} is blocked by the secret denylist")
+    if not normalized.endswith(SAFE_CRON_SCRIPT_SUFFIXES):
+        raise ProfileRouterError(
+            "invalid_cron_script",
+            f"{field} must end with one of: {', '.join(SAFE_CRON_SCRIPT_SUFFIXES)}",
+        )
+    return normalized
+
+
+def _policy_cron_script_tuple(value: Any, field: str) -> tuple[str, ...]:
+    scripts = []
+    for script in _policy_string_tuple(value, field):
+        normalized = _normalize_cron_script_path(script, field)
+        if normalized not in scripts:
+            scripts.append(normalized)
+    return tuple(scripts)
+
+
+def _normalize_messaging_destination(destination: str, field: str = "destination") -> tuple[str, str, str]:
+    """Validate an allowlisted messaging destination without exposing it later."""
+
+    if not isinstance(destination, str):
+        raise ProfileRouterError("invalid_messaging_destination", f"{field} must be a string")
+    text = destination.strip()
+    if not text:
+        raise ProfileRouterError("invalid_messaging_destination", f"{field} is required")
+    if len(text) > MAX_MESSAGING_DESTINATION_CHARS:
+        raise ProfileRouterError(
+            "invalid_messaging_destination",
+            f"{field} must be <= {MAX_MESSAGING_DESTINATION_CHARS} characters",
+        )
+    if "\x00" in text or "\n" in text or "\r" in text:
+        raise ProfileRouterError(
+            "invalid_messaging_destination",
+            f"{field} must be a single-line destination",
+        )
+    if text.lower() in BROADCAST_MESSAGING_DESTINATIONS:
+        raise ProfileRouterError("messaging_broadcast_not_allowed", "broadcast messaging destinations are not allowed")
+    match = MESSAGING_DESTINATION_RE.fullmatch(text)
+    if not match:
+        raise ProfileRouterError(
+            "invalid_messaging_destination",
+            f"{field} must use '<platform>:<recipient>' form",
+        )
+    platform = match.group(1).lower()
+    recipient = match.group(2).strip()
+    if not recipient or recipient.lower() in BROADCAST_MESSAGING_DESTINATIONS:
+        raise ProfileRouterError("messaging_broadcast_not_allowed", "broadcast messaging destinations are not allowed")
+    redacted = _redact_sensitive_text_fields(text)
+    if redacted != text:
+        raise ProfileRouterError("messaging_destination_secret_denied", "destination is blocked by the secret denylist")
+    return platform, recipient, f"{platform}:{recipient}"
+
+
+def _policy_messaging_destination_tuple(value: Any, field: str) -> tuple[str, ...]:
+    destinations = []
+    for destination in _policy_string_tuple(value, field):
+        _platform, _recipient, normalized = _normalize_messaging_destination(destination, field)
+        if normalized not in destinations:
+            destinations.append(normalized)
+    return tuple(destinations)
+
+
+def _parse_cron_policy(value: Any, field: str) -> CronPolicy:
+    policy = _policy_mapping(value, field)
+    return CronPolicy(
+        enabled=_policy_bool(policy.get("enabled"), f"{field}.enabled"),
+        allowed_scripts=_policy_cron_script_tuple(
+            policy.get("allowed_scripts"), f"{field}.allowed_scripts"
+        ),
+    )
 
 
 def _path_within_root(path: str, root: str) -> bool:
@@ -661,9 +860,47 @@ def _parse_profile_policy(
 
     filesystem = _policy_mapping(policy.get("filesystem"), f"profiles.{ref.value}.filesystem")
     terminal = _policy_mapping(policy.get("terminal"), f"profiles.{ref.value}.terminal")
+    messaging = _policy_mapping(policy.get("messaging"), f"profiles.{ref.value}.messaging")
+    cron = _policy_mapping(policy.get("cron"), f"profiles.{ref.value}.cron")
+    git = _policy_mapping(policy.get("git"), f"profiles.{ref.value}.git")
+    deploy = _policy_mapping(policy.get("deploy"), f"profiles.{ref.value}.deploy")
+    skills = _policy_mapping(policy.get("skills"), f"profiles.{ref.value}.skills")
+    memory = _policy_mapping(policy.get("memory"), f"profiles.{ref.value}.memory")
+    session = _policy_mapping(policy.get("session"), f"profiles.{ref.value}.session")
+    web = _policy_mapping(policy.get("web"), f"profiles.{ref.value}.web")
+    browser = _policy_mapping(policy.get("browser"), f"profiles.{ref.value}.browser")
+    api = _policy_mapping(policy.get("api"), f"profiles.{ref.value}.api")
+
+    allow_filesystem_read = _policy_bool(
+        filesystem.get("read"), f"profiles.{ref.value}.filesystem.read"
+    )
+    allow_filesystem_write = _policy_bool(
+        filesystem.get("write"), f"profiles.{ref.value}.filesystem.write"
+    )
     allow_terminal = _policy_bool(
         terminal.get("enabled"), f"profiles.{ref.value}.terminal.enabled"
     )
+    allow_messaging = _policy_bool(
+        messaging.get("enabled"), f"profiles.{ref.value}.messaging.enabled"
+    )
+    allow_cron = _policy_bool(cron.get("enabled"), f"profiles.{ref.value}.cron.enabled")
+    cron_policy = _parse_cron_policy(cron, f"profiles.{ref.value}.cron")
+    allow_git = _policy_bool(git.get("enabled"), f"profiles.{ref.value}.git.enabled")
+    allow_git_push = _policy_bool(
+        git.get("allow_push"), f"profiles.{ref.value}.git.allow_push"
+    )
+    allow_deploy = _policy_bool(
+        deploy.get("enabled"), f"profiles.{ref.value}.deploy.enabled"
+    )
+    allow_skills = _policy_bool(skills.get("enabled"), f"profiles.{ref.value}.skills.enabled")
+    allow_memory = _policy_bool(memory.get("enabled"), f"profiles.{ref.value}.memory.enabled")
+    allow_session = _policy_bool(session.get("enabled"), f"profiles.{ref.value}.session.enabled")
+    allow_web = _policy_bool(web.get("enabled"), f"profiles.{ref.value}.web.enabled")
+    allow_browser = _policy_bool(
+        browser.get("enabled"), f"profiles.{ref.value}.browser.enabled"
+    )
+    allow_api = _policy_bool(api.get("enabled"), f"profiles.{ref.value}.api.enabled")
+
     terminal_execution_policy = _parse_terminal_execution_policy(
         terminal.get("execution"), f"profiles.{ref.value}.terminal.execution"
     )
@@ -672,10 +909,6 @@ def _parse_profile_policy(
             "terminal_execution_requires_terminal",
             f"profiles.{ref.value}.terminal.execution.enabled requires terminal.enabled=true",
         )
-    messaging = _policy_mapping(policy.get("messaging"), f"profiles.{ref.value}.messaging")
-    cron = _policy_mapping(policy.get("cron"), f"profiles.{ref.value}.cron")
-    git = _policy_mapping(policy.get("git"), f"profiles.{ref.value}.git")
-    deploy = _policy_mapping(policy.get("deploy"), f"profiles.{ref.value}.deploy")
     context = _policy_mapping(policy.get("context"), f"profiles.{ref.value}.context")
     context_skills = _policy_mapping(
         context.get("skills"), f"profiles.{ref.value}.context.skills"
@@ -705,6 +938,20 @@ def _parse_profile_policy(
                 + ", ".join(unsafe_cost_classes),
             )
 
+    capability_groups = {
+        "filesystem": allow_filesystem_read or allow_filesystem_write,
+        "terminal": allow_terminal,
+        "git": allow_git or allow_git_push,
+        "cron": allow_cron,
+        "messaging": allow_messaging,
+        "skills": allow_skills,
+        "memory": allow_memory,
+        "session": allow_session,
+        "web": allow_web,
+        "browser": allow_browser,
+        "api": allow_api,
+    }
+
     return ProfileRoutePolicy(
         ref=ref,
         enabled=enabled,
@@ -712,27 +959,18 @@ def _parse_profile_policy(
         description=str(policy.get("description") or "").strip(),
         allowed_roots=allowed_roots,
         allowed_tool_groups=allowed_tool_groups,
-        messaging_allowed_recipients=_policy_string_tuple(
+        capability_groups=capability_groups,
+        messaging_allowed_recipients=_policy_messaging_destination_tuple(
             messaging.get("allowed_recipients"),
             f"profiles.{ref.value}.messaging.allowed_recipients",
         ),
-        allow_filesystem_read=_policy_bool(
-            filesystem.get("read"), f"profiles.{ref.value}.filesystem.read"
-        ),
-        allow_filesystem_write=_policy_bool(
-            filesystem.get("write"), f"profiles.{ref.value}.filesystem.write"
-        ),
+        allow_filesystem_read=allow_filesystem_read,
+        allow_filesystem_write=allow_filesystem_write,
         allow_terminal=allow_terminal,
-        allow_messaging=_policy_bool(
-            messaging.get("enabled"), f"profiles.{ref.value}.messaging.enabled"
-        ),
-        allow_cron=_policy_bool(cron.get("enabled"), f"profiles.{ref.value}.cron.enabled"),
-        allow_git_push=_policy_bool(
-            git.get("allow_push"), f"profiles.{ref.value}.git.allow_push"
-        ),
-        allow_deploy=_policy_bool(
-            deploy.get("enabled"), f"profiles.{ref.value}.deploy.enabled"
-        ),
+        allow_messaging=allow_messaging,
+        allow_cron=allow_cron,
+        allow_git_push=allow_git_push,
+        allow_deploy=allow_deploy,
         allow_model_tools=allow_model_tools,
         allow_context_skills_read=_policy_bool(
             context_skills.get("read"), f"profiles.{ref.value}.context.skills.read"
@@ -748,6 +986,7 @@ def _parse_profile_policy(
         ),
         allowed_cost_classes=allowed_cost_classes,
         terminal_execution_policy=terminal_execution_policy,
+        cron_policy=cron_policy,
     )
 
 
@@ -813,6 +1052,8 @@ class RouterToolMetadata:
     requires_profile_ref: bool = False
     requires_context_policy: str | None = None
     tool_group: str = "profile_router"
+    execution_status: str = "executable_no_model"
+    blocked_reason: str | None = None
 
 
 def parse_profile_ref(
@@ -984,6 +1225,20 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         llm_calls=0,
         requires_context=True,
     ),
+    "workspace_file_stat": RouterToolMetadata(
+        name="workspace_file_stat",
+        description="Return bounded sanitized file/directory metadata after workspace context hydration.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        requires_context=True,
+    ),
+    "workspace_file_search": RouterToolMetadata(
+        name="workspace_file_search",
+        description="Search bounded sanitized workspace files after workspace context hydration.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        requires_context=True,
+    ),
     "file_read": RouterToolMetadata(
         name="file_read",
         description="Legacy direct file-read alias; public v1 uses workspace_file_read.",
@@ -1012,11 +1267,60 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         mutates_state=True,
         requires_context=True,
     ),
+    "patch_apply": RouterToolMetadata(
+        name="patch_apply",
+        description=(
+            "Direct bounded multi-file literal patch tool; disabled from default "
+            "public MCP exposure and always requires fresh workspace context plus "
+            "filesystem.write policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
     "file_write": RouterToolMetadata(
         name="file_write",
         description=(
             "Direct write tool; disabled from default public MCP exposure and always "
             "requires fresh workspace context plus filesystem.write policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "file_move": RouterToolMetadata(
+        name="file_move",
+        description=(
+            "Direct file move/rename tool; disabled from default public MCP exposure "
+            "and always requires fresh workspace context plus filesystem.write policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "file_delete": RouterToolMetadata(
+        name="file_delete",
+        description=(
+            "Direct file delete tool; disabled from default public MCP exposure "
+            "and always requires fresh workspace context plus filesystem.write policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "directory_create": RouterToolMetadata(
+        name="directory_create",
+        description=(
+            "Direct directory creation tool; disabled from default public MCP exposure "
+            "and always requires fresh workspace context plus filesystem.write policy."
         ),
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
@@ -1050,13 +1354,525 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         mutates_state=True,
         requires_context=True,
     ),
+    "process_start": RouterToolMetadata(
+        name="process_start",
+        description=(
+            "Private runtime-owned background process launch; disabled from default "
+            "public MCP exposure, requires fresh workspace context plus terminal.execution "
+            "allowlist, and tracks only opaque process ids owned by this runtime."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "process_list": RouterToolMetadata(
+        name="process_list",
+        description=(
+            "Private tracked-process listing scaffold; disabled from default public MCP "
+            "exposure and limited to processes launched/tracked by this runtime."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "process_poll": RouterToolMetadata(
+        name="process_poll",
+        description=(
+            "Private tracked-process status scaffold; disabled from default public MCP "
+            "exposure and never inspects arbitrary host processes."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "process_log": RouterToolMetadata(
+        name="process_log",
+        description=(
+            "Private tracked-process log scaffold; disabled from default public MCP "
+            "exposure and bounded/redacted before any future public wrapper."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "process_kill": RouterToolMetadata(
+        name="process_kill",
+        description=(
+            "Private tracked-process kill scaffold; disabled from default public MCP "
+            "exposure and scoped only to runtime-owned process ids."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "git_status": RouterToolMetadata(
+        name="git_status",
+        description=(
+            "Private read-only Git status wrapper; disabled from default public MCP "
+            "exposure and requires fresh workspace context plus git.enabled policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "git_diff": RouterToolMetadata(
+        name="git_diff",
+        description=(
+            "Private read-only Git diff wrapper; disabled from default public MCP "
+            "exposure and requires fresh workspace context plus git.enabled policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "git_log": RouterToolMetadata(
+        name="git_log",
+        description=(
+            "Private read-only Git log wrapper; disabled from default public MCP "
+            "exposure and requires fresh workspace context plus git.enabled policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "git_branch": RouterToolMetadata(
+        name="git_branch",
+        description=(
+            "Private read-only Git branch wrapper; disabled from default public MCP "
+            "exposure and requires fresh workspace context plus git.enabled policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "cron_list": RouterToolMetadata(
+        name="cron_list",
+        description=(
+            "Private no-model cron listing wrapper; disabled from default public MCP "
+            "exposure and requires fresh workspace context plus cron.enabled policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_context=True,
+    ),
+    "cron_pause": RouterToolMetadata(
+        name="cron_pause",
+        description=(
+            "Private no-model cron pause wrapper for script-only no_agent jobs; disabled "
+            "from default public MCP exposure and requires fresh context plus cron policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "cron_resume": RouterToolMetadata(
+        name="cron_resume",
+        description=(
+            "Private no-model cron resume wrapper for allowlisted script-only no_agent jobs; "
+            "disabled from default public MCP exposure."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "cron_run": RouterToolMetadata(
+        name="cron_run",
+        description=(
+            "Private no-model cron trigger wrapper for allowlisted script-only no_agent jobs; "
+            "disabled from default public MCP exposure and never runs agent/model loops."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "cron_create_script_only": RouterToolMetadata(
+        name="cron_create_script_only",
+        description=(
+            "Private no-model cron creation wrapper that only creates allowlisted script-only "
+            "no_agent jobs; disabled from default public MCP exposure."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "message_send": RouterToolMetadata(
+        name="message_send",
+        description=(
+            "Private no-model messaging dry-run scaffold; disabled from default public MCP "
+            "exposure and requires fresh workspace context plus messaging.enabled and an "
+            "explicit allowed_recipients policy entry."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "telegram_send": RouterToolMetadata(
+        name="telegram_send",
+        description=(
+            "Private Telegram-specific no-model messaging dry-run scaffold; disabled from "
+            "default public MCP exposure and requires fresh workspace context plus an "
+            "explicit telegram:<recipient> allowlist entry."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
 }
+
+
+# Static Phase 9 inventory of Hermes registry tools discovered from tools/*.py
+# registry.register(name=...). Keep this list synchronized with the source
+# registry so full-catalog parity has an explicit no-model representation for
+# every Hermes tool without importing tool modules or invoking model paths.
+HERMES_REGISTRY_TOOL_NAMES: tuple[str, ...] = (
+    "browser_back",
+    "browser_cdp",
+    "browser_click",
+    "browser_console",
+    "browser_dialog",
+    "browser_get_images",
+    "browser_navigate",
+    "browser_press",
+    "browser_scroll",
+    "browser_snapshot",
+    "browser_type",
+    "browser_vision",
+    "clarify",
+    "computer_use",
+    "cronjob",
+    "delegate_task",
+    "discord",
+    "discord_admin",
+    "execute_code",
+    "feishu_doc_read",
+    "feishu_drive_add_comment",
+    "feishu_drive_list_comment_replies",
+    "feishu_drive_list_comments",
+    "feishu_drive_reply_comment",
+    "ha_call_service",
+    "ha_get_state",
+    "ha_list_entities",
+    "ha_list_services",
+    "image_generate",
+    "kanban_block",
+    "kanban_comment",
+    "kanban_complete",
+    "kanban_create",
+    "kanban_heartbeat",
+    "kanban_link",
+    "kanban_list",
+    "kanban_show",
+    "kanban_unblock",
+    "memory",
+    "mixture_of_agents",
+    "patch",
+    "process",
+    "read_file",
+    "read_terminal",
+    "search_files",
+    "send_message",
+    "session_search",
+    "skill_manage",
+    "skill_view",
+    "skills_list",
+    "terminal",
+    "text_to_speech",
+    "todo",
+    "video_analyze",
+    "video_generate",
+    "vision_analyze",
+    "web_extract",
+    "web_search",
+    "write_file",
+    "x_search",
+    "yb_query_group_info",
+    "yb_query_group_members",
+    "yb_search_sticker",
+    "yb_send_dm",
+    "yb_send_sticker",
+)
+
+HERMES_CATALOG_MODEL_BACKED_TOOL_NAMES = frozenset(
+    {
+        "browser_vision",
+        "computer_use",
+        "delegate_task",
+        "image_generate",
+        "mixture_of_agents",
+        "video_analyze",
+        "video_generate",
+        "vision_analyze",
+        "web_extract",
+        "x_search",
+    }
+)
+HERMES_CATALOG_SIDE_EFFECT_TOOL_NAMES = frozenset(
+    {
+        "browser_back",
+        "browser_cdp",
+        "browser_click",
+        "browser_console",
+        "browser_dialog",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_type",
+        "clarify",
+        "computer_use",
+        "cronjob",
+        "delegate_task",
+        "discord",
+        "discord_admin",
+        "execute_code",
+        "feishu_drive_add_comment",
+        "feishu_drive_reply_comment",
+        "ha_call_service",
+        "image_generate",
+        "kanban_block",
+        "kanban_comment",
+        "kanban_complete",
+        "kanban_create",
+        "kanban_heartbeat",
+        "kanban_link",
+        "kanban_unblock",
+        "memory",
+        "patch",
+        "process",
+        "send_message",
+        "skill_manage",
+        "terminal",
+        "text_to_speech",
+        "todo",
+        "video_generate",
+        "write_file",
+        "yb_send_dm",
+        "yb_send_sticker",
+    }
+)
+HERMES_CATALOG_TOOL_CAPABILITY_GROUPS: Mapping[str, str] = {
+    "browser_back": "browser",
+    "browser_cdp": "browser",
+    "browser_click": "browser",
+    "browser_console": "browser",
+    "browser_dialog": "browser",
+    "browser_get_images": "browser",
+    "browser_navigate": "browser",
+    "browser_press": "browser",
+    "browser_scroll": "browser",
+    "browser_snapshot": "browser",
+    "browser_type": "browser",
+    "browser_vision": "browser",
+    "computer_use": "browser",
+    "cronjob": "cron",
+    "clarify": "api",
+    "delegate_task": "api",
+    "discord": "messaging",
+    "discord_admin": "messaging",
+    "execute_code": "terminal",
+    "feishu_doc_read": "api",
+    "feishu_drive_add_comment": "api",
+    "feishu_drive_list_comment_replies": "api",
+    "feishu_drive_list_comments": "api",
+    "feishu_drive_reply_comment": "api",
+    "ha_call_service": "api",
+    "ha_get_state": "api",
+    "ha_list_entities": "api",
+    "ha_list_services": "api",
+    "image_generate": "api",
+    "kanban_block": "api",
+    "kanban_comment": "api",
+    "kanban_complete": "api",
+    "kanban_create": "api",
+    "kanban_heartbeat": "api",
+    "kanban_link": "api",
+    "kanban_list": "api",
+    "kanban_show": "api",
+    "kanban_unblock": "api",
+    "memory": "memory",
+    "mixture_of_agents": "api",
+    "patch": "filesystem",
+    "process": "terminal",
+    "read_file": "filesystem",
+    "read_terminal": "terminal",
+    "search_files": "filesystem",
+    "send_message": "messaging",
+    "skill_manage": "skills",
+    "terminal": "terminal",
+    "text_to_speech": "api",
+    "todo": "api",
+    "video_analyze": "api",
+    "video_generate": "api",
+    "vision_analyze": "api",
+    "web_extract": "web",
+    "web_search": "web",
+    "write_file": "filesystem",
+    "x_search": "web",
+    "yb_query_group_info": "messaging",
+    "yb_query_group_members": "messaging",
+    "yb_search_sticker": "messaging",
+    "yb_send_dm": "messaging",
+    "yb_send_sticker": "messaging",
+}
+HERMES_CATALOG_BLOCKED_TOOL_NAMES: tuple[str, ...] = tuple(
+    name for name in HERMES_REGISTRY_TOOL_NAMES if name not in ROUTER_TOOL_METADATA
+)
+
+ROUTER_TOOL_METADATA = {
+    **ROUTER_TOOL_METADATA,
+    **{
+        name: RouterToolMetadata(
+            name=name,
+            description=(
+                f"Hermes registry tool {name!r} is catalog-visible for ChatGPT "
+                "parity but blocked by this no-model connector until an explicit "
+                "deterministic llm_calls=0 wrapper and policy are implemented."
+            ),
+            cost_class=COST_CLASS_NO_MODEL,
+            llm_calls=0,
+            enabled_by_default=False,
+            mutates_state=False,
+            requires_context=False,
+            execution_status="blocked_no_model",
+            blocked_reason=(
+                "model_backed_tool_blocked"
+                if name in HERMES_CATALOG_MODEL_BACKED_TOOL_NAMES
+                else "requires_no_model_implementation"
+            ),
+        )
+        for name in HERMES_CATALOG_BLOCKED_TOOL_NAMES
+    },
+}
+
+
+ROUTER_WORKSPACE_REQUIRED_TOOLS = frozenset(
+    {
+        "workspace_instructions_get",
+        "workspace_context_status",
+        "workspace_get",
+        "workspace_close",
+        "workspace_file_list",
+        "workspace_file_read",
+        "workspace_file_stat",
+        "workspace_file_search",
+        "workspace_diff",
+        "file_read",
+        "file_search",
+        "file_patch",
+        "patch_apply",
+        "file_write",
+        "file_move",
+        "file_delete",
+        "directory_create",
+        "terminal_run",
+        "process_start",
+        "process_list",
+        "process_poll",
+        "process_log",
+        "process_kill",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "git_branch",
+        "cron_list",
+        "cron_pause",
+        "cron_resume",
+        "cron_run",
+        "cron_create_script_only",
+        "message_send",
+        "telegram_send",
+    }
+)
+
+
+def _router_capability_group(tool_name: str) -> str:
+    if tool_name in HERMES_CATALOG_TOOL_CAPABILITY_GROUPS:
+        return HERMES_CATALOG_TOOL_CAPABILITY_GROUPS[tool_name]
+    if tool_name.startswith("profile") or tool_name == "profiles_list":
+        return "profile"
+    if tool_name in {"skills_list", "skill_view"}:
+        return "skills"
+    if tool_name == "session_search":
+        return "session"
+    if tool_name in {"viking_search", "viking_read"}:
+        return "memory"
+    if tool_name.startswith("git_"):
+        return "git"
+    if tool_name.startswith("cron_"):
+        return "cron"
+    if tool_name in {"message_send", "telegram_send"}:
+        return "messaging"
+    if tool_name == "terminal_run" or tool_name.startswith("process_"):
+        return "terminal"
+    if tool_name in {
+        "workspace_file_list",
+        "workspace_file_read",
+        "workspace_file_stat",
+        "workspace_file_search",
+        "workspace_diff",
+        "file_read",
+        "file_search",
+        "file_patch",
+        "patch_apply",
+        "file_write",
+        "file_move",
+        "file_delete",
+        "directory_create",
+    }:
+        return "filesystem"
+    if tool_name.startswith("workspace_"):
+        return "workspace"
+    return PROFILE_ROUTER_TOOL_GROUP
 
 
 def get_router_tool_metadata() -> dict[str, dict]:
     """Return serializable metadata for all current profile-router tools."""
 
-    return {name: asdict(meta) for name, meta in ROUTER_TOOL_METADATA.items()}
+    metadata: dict[str, dict] = {}
+    for name, meta in ROUTER_TOOL_METADATA.items():
+        data = asdict(meta)
+        data.update(
+            {
+                "allowed_by_default": meta.enabled_by_default,
+                "side_effects": meta.mutates_state,
+                "requires_workspace": name in ROUTER_WORKSPACE_REQUIRED_TOOLS,
+                "requires_approval": meta.mutates_state,
+                "capability_group": _router_capability_group(name),
+            }
+        )
+        metadata[name] = data
+    return metadata
 
 
 def assert_default_tools_are_no_model(
@@ -1064,6 +1880,7 @@ def assert_default_tools_are_no_model(
 ) -> None:
     """Fail closed if a default-exposed router tool may spend model tokens."""
 
+    assert_no_model_loop_tools_absent(metadata)
     unsafe = [
         meta.name
         for meta in metadata.values()
@@ -1074,6 +1891,43 @@ def assert_default_tools_are_no_model(
         raise ProfileRouterError(
             "unsafe_default_tool_exposure",
             "Default profile-router tools must be no-model: " + ", ".join(sorted(unsafe)),
+        )
+
+
+def assert_no_model_loop_tools_absent(
+    tool_names_or_metadata: Iterable[str] | Mapping[str, Any] = ROUTER_TOOL_METADATA,
+) -> None:
+    """Fail closed if model-loop names are executable instead of blocked."""
+
+    if isinstance(tool_names_or_metadata, MappingABC):
+        unsafe: list[str] = []
+        for raw_name, meta in tool_names_or_metadata.items():
+            name = str(raw_name).strip().lower()
+            if name not in FORBIDDEN_MODEL_LOOP_TOOL_NAMES:
+                continue
+            if isinstance(meta, MappingABC):
+                execution_status = meta.get("execution_status")
+                llm_calls = meta.get("llm_calls")
+                cost_class = meta.get("cost_class")
+            else:
+                execution_status = getattr(meta, "execution_status", None)
+                llm_calls = getattr(meta, "llm_calls", None)
+                cost_class = getattr(meta, "cost_class", None)
+            if (
+                execution_status == "blocked_no_model"
+                and llm_calls == 0
+                and cost_class == COST_CLASS_NO_MODEL
+            ):
+                continue
+            unsafe.append(name)
+    else:
+        normalized_names = {str(name).strip().lower() for name in tool_names_or_metadata}
+        unsafe = sorted(normalized_names & FORBIDDEN_MODEL_LOOP_TOOL_NAMES)
+    if unsafe:
+        raise ProfileRouterError(
+            "model_loop_tool_exposure_forbidden",
+            "Model-loop tools must be blocked no-model catalog entries, not executable: "
+            + ", ".join(sorted(unsafe)),
         )
 
 
@@ -1282,6 +2136,184 @@ def resolve_workspace_write_path(workspace: WorkspaceMetadata, path: str) -> Pat
             raise ProfileRouterError("not_a_file", "write path must be a file")
         return resolved
     return Path(resolve_workspace_path(workspace, raw_path, require_exists=False))
+
+
+def resolve_workspace_directory_create_path(
+    workspace: WorkspaceMetadata,
+    path: str,
+    *,
+    parents: bool = False,
+) -> Path:
+    """Resolve a workspace-relative directory target without following symlinks."""
+
+    if not isinstance(path, str):
+        raise ProfileRouterError("invalid_path", "path must be a string")
+    raw_path = path.strip()
+    if not raw_path or raw_path == ".":
+        raise ProfileRouterError("invalid_path", "directory path must name a subdirectory")
+    if raw_path.startswith("/"):
+        raise ProfileRouterError("absolute_path_not_allowed", "path must be workspace-relative")
+
+    normalized_relative = posixpath.normpath(raw_path)
+    if normalized_relative in {"", ".", ".."} or normalized_relative.startswith("../"):
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root")
+    normalized_candidate = posixpath.normpath(posixpath.join(workspace.root, normalized_relative))
+    if not _path_within_root(normalized_candidate, workspace.root):
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root")
+    _ensure_not_secret_path(normalized_candidate)
+
+    resolved_root = _resolve_existing_local_path(workspace.root, "workspace root")
+    current = resolved_root
+    parts = [part for part in normalized_relative.split("/") if part]
+    for index, part in enumerate(parts):
+        if part in {".", ".."}:
+            raise ProfileRouterError("path_outside_workspace", "path escapes workspace root")
+        child = current / part
+        is_last = index == len(parts) - 1
+        if child.is_symlink():
+            raise ProfileRouterError("symlink_traversal_denied", "directory path may not traverse a symlink")
+        if child.exists():
+            try:
+                resolved_child = child.resolve(strict=True)
+            except OSError as exc:
+                raise ProfileRouterError("invalid_path", "directory path is not accessible") from exc
+            if not _path_is_relative_to(resolved_child, resolved_root):
+                raise ProfileRouterError("symlink_traversal_denied", "directory path escapes workspace root")
+            if not resolved_child.is_dir():
+                raise ProfileRouterError("not_a_directory", "directory path collides with a file")
+            current = resolved_child
+            continue
+        if not is_last and not parents:
+            raise ProfileRouterError("parent_directory_not_found", "parent directory does not exist")
+        current = child
+
+    return Path(normalized_candidate)
+
+
+def _normalize_workspace_mutation_relative_path(path: str, *, label: str) -> str:
+    if not isinstance(path, str):
+        raise ProfileRouterError("invalid_path", f"{label} must be a string")
+    raw_path = path.strip()
+    if not raw_path or raw_path == ".":
+        raise ProfileRouterError("invalid_path", f"{label} must name a file")
+    if raw_path.startswith("/"):
+        raise ProfileRouterError("absolute_path_not_allowed", "path must be workspace-relative")
+    normalized_relative = posixpath.normpath(raw_path)
+    if normalized_relative in {"", ".", ".."} or normalized_relative.startswith("../"):
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root")
+    return normalized_relative
+
+
+def resolve_workspace_move_source_path(workspace: WorkspaceMetadata, path: str) -> tuple[Path, str]:
+    """Resolve an existing workspace-relative regular file source without symlinks."""
+
+    normalized_relative = _normalize_workspace_mutation_relative_path(path, label="source_path")
+    normalized_candidate = posixpath.normpath(posixpath.join(workspace.root, normalized_relative))
+    if not _path_within_root(normalized_candidate, workspace.root):
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root")
+    _ensure_not_secret_path(normalized_candidate)
+
+    resolved_root = _resolve_existing_local_path(workspace.root, "workspace root")
+    current = resolved_root
+    parts = [part for part in normalized_relative.split("/") if part]
+    for index, part in enumerate(parts):
+        child = current / part
+        if child.is_symlink():
+            raise ProfileRouterError("symlink_traversal_denied", "move source may not traverse a symlink")
+        if not child.exists():
+            raise ProfileRouterError("file_not_found", "move source does not exist")
+        try:
+            resolved_child = child.resolve(strict=True)
+        except OSError as exc:
+            raise ProfileRouterError("invalid_path", "move source is not accessible") from exc
+        if not _path_is_relative_to(resolved_child, resolved_root):
+            raise ProfileRouterError("symlink_traversal_denied", "move source escapes workspace root")
+        is_last = index == len(parts) - 1
+        if not is_last:
+            if not resolved_child.is_dir():
+                raise ProfileRouterError("parent_not_directory", "move source parent is not a directory")
+            current = resolved_child
+            continue
+        if not resolved_child.is_file():
+            raise ProfileRouterError("not_a_file", "move source must be a file")
+        return resolved_child, normalized_relative
+
+    raise ProfileRouterError("invalid_path", "source_path must name a file")
+
+
+def resolve_workspace_delete_path(workspace: WorkspaceMetadata, path: str) -> tuple[Path, str]:
+    """Resolve an existing workspace-relative regular file delete target without symlinks."""
+
+    normalized_relative = _normalize_workspace_mutation_relative_path(path, label="path")
+    normalized_candidate = posixpath.normpath(posixpath.join(workspace.root, normalized_relative))
+    if not _path_within_root(normalized_candidate, workspace.root):
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root")
+    _ensure_not_secret_path(normalized_candidate)
+
+    resolved_root = _resolve_existing_local_path(workspace.root, "workspace root")
+    current = resolved_root
+    parts = [part for part in normalized_relative.split("/") if part]
+    for index, part in enumerate(parts):
+        child = current / part
+        if child.is_symlink():
+            raise ProfileRouterError("symlink_traversal_denied", "delete path may not traverse a symlink")
+        if not child.exists():
+            raise ProfileRouterError("file_not_found", "delete target does not exist")
+        try:
+            resolved_child = child.resolve(strict=True)
+        except OSError as exc:
+            raise ProfileRouterError("invalid_path", "delete target is not accessible") from exc
+        if not _path_is_relative_to(resolved_child, resolved_root):
+            raise ProfileRouterError("symlink_traversal_denied", "delete path escapes workspace root")
+        is_last = index == len(parts) - 1
+        if not is_last:
+            if not resolved_child.is_dir():
+                raise ProfileRouterError("parent_not_directory", "delete target parent is not a directory")
+            current = resolved_child
+            continue
+        if not resolved_child.is_file():
+            raise ProfileRouterError("not_a_file", "delete target must be a file")
+        return resolved_child, normalized_relative
+
+    raise ProfileRouterError("invalid_path", "path must name a file")
+
+
+def resolve_workspace_move_destination_path(workspace: WorkspaceMetadata, path: str) -> tuple[Path, str]:
+    """Resolve a non-existing workspace-relative file move destination without symlinks."""
+
+    normalized_relative = _normalize_workspace_mutation_relative_path(path, label="destination_path")
+    normalized_candidate = posixpath.normpath(posixpath.join(workspace.root, normalized_relative))
+    if not _path_within_root(normalized_candidate, workspace.root):
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root")
+    _ensure_not_secret_path(normalized_candidate)
+
+    resolved_root = _resolve_existing_local_path(workspace.root, "workspace root")
+    parts = [part for part in normalized_relative.split("/") if part]
+    current = resolved_root
+    for part in parts[:-1]:
+        child = current / part
+        if child.is_symlink():
+            raise ProfileRouterError("symlink_traversal_denied", "move destination may not traverse a symlink")
+        if not child.exists():
+            raise ProfileRouterError("parent_directory_not_found", "destination parent directory does not exist")
+        try:
+            resolved_child = child.resolve(strict=True)
+        except OSError as exc:
+            raise ProfileRouterError("invalid_path", "move destination parent is not accessible") from exc
+        if not _path_is_relative_to(resolved_child, resolved_root):
+            raise ProfileRouterError("symlink_traversal_denied", "move destination escapes workspace root")
+        if not resolved_child.is_dir():
+            raise ProfileRouterError("parent_not_directory", "destination parent is not a directory")
+        current = resolved_child
+
+    destination = current / parts[-1]
+    if destination.is_symlink():
+        raise ProfileRouterError("symlink_traversal_denied", "move destination may not be a symlink")
+    if destination.exists():
+        raise ProfileRouterError("destination_already_exists", "move destination already exists")
+    if not _path_is_relative_to(destination.parent.resolve(strict=True), resolved_root):
+        raise ProfileRouterError("symlink_traversal_denied", "move destination escapes workspace root")
+    return destination, normalized_relative
 
 
 class WorkspaceRegistry:
@@ -1556,14 +2588,30 @@ def _public_policy_context(route_policy: ProfileRoutePolicy, router_policy: Prof
             "terminal": route_policy.allow_terminal,
             "messaging": route_policy.allow_messaging,
             "cron": route_policy.allow_cron,
+            "git": route_policy.capability_enabled("git"),
             "git_push": route_policy.allow_git_push,
             "deploy": route_policy.allow_deploy,
+            "skills": route_policy.capability_enabled("skills"),
+            "memory": route_policy.capability_enabled("memory"),
+            "session": route_policy.capability_enabled("session"),
+            "web": route_policy.capability_enabled("web"),
+            "browser": route_policy.capability_enabled("browser"),
+            "api": route_policy.capability_enabled("api"),
         },
+        "capability_groups": dict(route_policy.capability_groups),
         "context": {
             "skills": {"read": route_policy.allow_context_skills_read},
             "sessions": {"search": route_policy.allow_context_sessions_search},
         },
         "messaging_recipients_configured": bool(route_policy.messaging_allowed_recipients),
+        "messaging_policy": {
+            "enabled": route_policy.allow_messaging,
+            "allowed_recipients_count": len(route_policy.messaging_allowed_recipients),
+            "allowlist_redacted": True,
+            "broadcast_allowed": False,
+            "external_delivery_enabled": False,
+            "public_mcp_exposure": "disabled_pending_phase_10_messaging_policy_review",
+        },
         "terminal_execution_policy": {
             "enabled": route_policy.terminal_execution_policy.enabled,
             "require_no_shell": route_policy.terminal_execution_policy.require_no_shell,
@@ -1575,6 +2623,14 @@ def _public_policy_context(route_policy: ProfileRoutePolicy, router_policy: Prof
             ),
             "allowlist_redacted": True,
             "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+        },
+        "cron_policy": {
+            "enabled": route_policy.cron_policy.enabled,
+            "allowed_scripts_count": len(route_policy.cron_policy.allowed_scripts),
+            "allowlist_redacted": True,
+            "no_agent_only": True,
+            "model_backed_crons_allowed": False,
+            "public_mcp_exposure": "disabled_pending_phase_10_cron_parity_policy_review",
         },
         "protected_branches": list(route_policy.protected_branches),
         "model_policy": {
@@ -1819,7 +2875,11 @@ def close_workspace(
     """Remove an opened workspace from the server-side registry."""
 
     assert_default_tools_are_no_model()
-    return (registry or DEFAULT_WORKSPACE_REGISTRY).close(workspace_id)
+    active_registry = registry or DEFAULT_WORKSPACE_REGISTRY
+    workspace = active_registry.get(workspace_id)
+    if active_registry is DEFAULT_WORKSPACE_REGISTRY:
+        _WORKSPACE_PROCESS_REGISTRY.kill_all_for_workspace(workspace)
+    return active_registry.close(workspace.workspace_id)
 
 
 def read_workspace_file(
@@ -1897,6 +2957,43 @@ def _list_workspace_file_entry(workspace: WorkspaceMetadata, path: Path) -> dict
         "path": rel_path,
         "type": "directory" if path.is_dir() else "file",
         "size_bytes": stat.st_size if stat is not None and path.is_file() else None,
+    }
+
+
+def stat_workspace_file(
+    workspace_id: str,
+    path: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Return bounded file/directory metadata after context hydration."""
+
+    assert_default_tools_are_no_model()
+    workspace = require_fresh_workspace_context(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    resolved_path = Path(resolve_workspace_path(workspace, path))
+    try:
+        stat = resolved_path.stat()
+    except OSError as exc:
+        raise ProfileRouterError("file_not_readable", f"Path is not accessible: {path}") from exc
+    file_type = "directory" if resolved_path.is_dir() else "file"
+    if not (resolved_path.is_dir() or resolved_path.is_file()):
+        file_type = "other"
+    return {
+        "workspace_id": workspace.workspace_id,
+        "path": posixpath.normpath(path.strip() or "."),
+        "type": file_type,
+        "size_bytes": stat.st_size if resolved_path.is_file() else None,
+        "within_file_read_size_cap": bool(resolved_path.is_file() and stat.st_size <= MAX_FILE_READ_CHARS),
+        "audit": {
+            "tool": "workspace_file_stat",
+            "llm_calls": 0,
+            "root_exposed": False,
+        },
     }
 
 
@@ -2203,6 +3300,497 @@ def _require_workspace_terminal_access(
     return workspace, route_policy
 
 
+def _require_workspace_git_read_access(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> tuple[WorkspaceMetadata, ProfileRoutePolicy]:
+    """Require fresh context plus explicit read-only Git policy."""
+
+    workspace = require_fresh_workspace_context(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    _ref, route_policy, _router_policy = _require_local_profile_policy(workspace.profile_ref)
+    if not route_policy.capability_enabled("git"):
+        raise ProfileRouterError(
+            "git_read_not_allowed",
+            f"Git read access is disabled by profile_router policy: {workspace.profile_ref}",
+        )
+    _require_git_workspace(workspace)
+    return workspace, route_policy
+
+
+def _require_workspace_cron_access(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> tuple[WorkspaceMetadata, ProfileRoutePolicy]:
+    """Require fresh context plus explicit script-only cron policy."""
+
+    workspace = require_fresh_workspace_context(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    _ref, route_policy, _router_policy = _require_local_profile_policy(workspace.profile_ref)
+    if not route_policy.capability_enabled("cron") or not route_policy.cron_policy.enabled:
+        raise ProfileRouterError(
+            "cron_not_allowed",
+            f"Cron access is disabled by profile_router policy: {workspace.profile_ref}",
+        )
+    return workspace, route_policy
+
+
+def _require_workspace_messaging_access(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> tuple[WorkspaceMetadata, ProfileRoutePolicy]:
+    """Require fresh context plus explicit messaging policy and recipient allowlist."""
+
+    workspace = require_fresh_workspace_context(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    _ref, route_policy, _router_policy = _require_local_profile_policy(workspace.profile_ref)
+    if not route_policy.capability_enabled("messaging") or not route_policy.allow_messaging:
+        raise ProfileRouterError(
+            "messaging_not_allowed",
+            f"Messaging access is disabled by profile_router policy: {workspace.profile_ref}",
+        )
+    if not route_policy.messaging_allowed_recipients:
+        raise ProfileRouterError(
+            "messaging_no_allowlist",
+            "Messaging requires at least one explicit allowed_recipients entry",
+        )
+    return workspace, route_policy
+
+
+def _cron_jobs_backend():
+    """Return Hermes cron storage helpers lazily so tests can monkeypatch safely."""
+
+    from cron import jobs as cron_jobs
+
+    return cron_jobs
+
+
+def _bounded_text(value: Any, max_chars: int) -> str:
+    text = str(value or "").strip()
+    text = _redact_sensitive_text_fields(text)
+    if len(text) > max_chars:
+        return text[:max_chars] + "…"
+    return text
+
+
+def _normalize_cron_job_ref(job_ref: str) -> str:
+    if not isinstance(job_ref, str) or not job_ref.strip():
+        raise ProfileRouterError("invalid_cron_job_ref", "cron job reference is required")
+    ref = job_ref.strip()
+    if not CRON_JOB_REF_RE.fullmatch(ref):
+        raise ProfileRouterError("invalid_cron_job_ref", "cron job reference must be an opaque id or safe name")
+    return ref
+
+
+def _cron_job_script(job: Mapping[str, Any]) -> str | None:
+    script = job.get("script")
+    if not isinstance(script, str) or not script.strip():
+        return None
+    try:
+        return _normalize_cron_script_path(script)
+    except ProfileRouterError:
+        return None
+
+
+def _cron_job_is_script_only_no_agent(job: Mapping[str, Any]) -> bool:
+    return bool(job.get("no_agent") is True and _cron_job_script(job))
+
+
+def _cron_script_allowed(route_policy: ProfileRoutePolicy, script: str) -> bool:
+    try:
+        normalized = _normalize_cron_script_path(script)
+    except ProfileRouterError:
+        return False
+    return normalized in route_policy.cron_policy.allowed_scripts
+
+
+def _require_cron_script_allowed(route_policy: ProfileRoutePolicy, script: str) -> str:
+    normalized = _normalize_cron_script_path(script)
+    if not route_policy.cron_policy.allowed_scripts:
+        raise ProfileRouterError(
+            "cron_script_allowlist_required",
+            "cron.allowed_scripts must explicitly allow script-only no_agent jobs before scheduling or running them",
+        )
+    if normalized not in route_policy.cron_policy.allowed_scripts:
+        raise ProfileRouterError(
+            "cron_script_not_allowed",
+            "cron script is not allowed by profile_router cron.allowed_scripts policy",
+        )
+    return normalized
+
+
+def _resolve_cron_job(job_ref: str, *, backend: Any | None = None) -> Mapping[str, Any]:
+    selected_backend = backend or _cron_jobs_backend()
+    ref = _normalize_cron_job_ref(job_ref)
+    try:
+        if hasattr(selected_backend, "resolve_job_ref"):
+            job = selected_backend.resolve_job_ref(ref)
+        else:
+            job = selected_backend.get_job(ref)
+    except LookupError as exc:
+        raise ProfileRouterError("cron_job_ambiguous", "cron job reference is ambiguous; use the job id") from exc
+    except Exception as exc:  # pragma: no cover - defensive against storage failures
+        raise ProfileRouterError("cron_storage_unavailable", "cron storage could not be queried safely") from exc
+    if not job:
+        raise ProfileRouterError("cron_job_not_found", "cron job not found")
+    if not isinstance(job, MappingABC):
+        raise ProfileRouterError("invalid_cron_job", "cron storage returned an invalid job record")
+    return job
+
+
+def _require_script_only_cron_job(
+    job: Mapping[str, Any],
+    route_policy: ProfileRoutePolicy,
+    *,
+    require_script_allowlist: bool = True,
+) -> str:
+    if not _cron_job_is_script_only_no_agent(job):
+        raise ProfileRouterError(
+            "cron_model_backed_job_denied",
+            "model-backed cron jobs are denied by the ChatGPT no-model connector policy",
+        )
+    script = _cron_job_script(job)
+    if script is None:
+        raise ProfileRouterError("invalid_cron_script", "cron job script is invalid")
+    if require_script_allowlist:
+        return _require_cron_script_allowed(route_policy, script)
+    return script
+
+
+def _sanitize_cron_job(job: Mapping[str, Any], route_policy: ProfileRoutePolicy) -> dict:
+    script = _cron_job_script(job)
+    script_only = _cron_job_is_script_only_no_agent(job)
+    script_allowed = _cron_script_allowed(route_policy, script) if script else False
+    return {
+        "job_id": _bounded_text(job.get("id"), 80),
+        "name": _bounded_text(job.get("name"), MAX_CRON_JOB_NAME_CHARS),
+        "schedule_display": _bounded_text(job.get("schedule_display"), MAX_CRON_SCHEDULE_CHARS),
+        "enabled": bool(job.get("enabled", True)),
+        "state": _bounded_text(job.get("state"), 40),
+        "next_run_at": _bounded_text(job.get("next_run_at"), 80),
+        "last_run_at": _bounded_text(job.get("last_run_at"), 80),
+        "last_status": _bounded_text(job.get("last_status"), 40),
+        "no_agent": bool(job.get("no_agent") is True),
+        "script_only": script_only,
+        "model_backed": not script_only,
+        "script": {
+            "present": script is not None,
+            "allowed_by_profile_policy": script_allowed,
+            "path_exposed": False,
+        },
+    }
+
+
+def _cron_audit(tool_name: str, *, mutates_state: bool, action: str) -> dict:
+    return {
+        "tool": tool_name,
+        "action": action,
+        "llm_calls": 0,
+        "mutates_state": mutates_state,
+        "root_exposed": False,
+        "no_agent_only": True,
+        "model_backed_crons_allowed": False,
+    }
+
+
+def list_workspace_cron_jobs(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    include_disabled: bool = False,
+    limit: int | None = MAX_CRON_LIST_RESULTS,
+    backend: Any | None = None,
+) -> dict:
+    """List sanitized cron jobs after context/cron policy without model calls."""
+
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_cron_access(
+        workspace_id,
+        context_token=context_token,
+    )
+    max_results = _bounded_int(
+        limit,
+        "limit",
+        default=MAX_CRON_LIST_RESULTS,
+        minimum=1,
+        maximum=MAX_CRON_LIST_RESULTS,
+    )
+    selected_backend = backend or _cron_jobs_backend()
+    try:
+        jobs = selected_backend.list_jobs(include_disabled=bool(include_disabled))
+    except Exception as exc:  # pragma: no cover - defensive against storage failures
+        raise ProfileRouterError("cron_storage_unavailable", "cron storage could not be listed safely") from exc
+    sanitized = [_sanitize_cron_job(job, route_policy) for job in list(jobs)[:max_results]]
+    total_count = len(jobs) if isinstance(jobs, list) else len(sanitized)
+    return {
+        "workspace_id": workspace.workspace_id,
+        "jobs": sanitized,
+        "job_count": len(sanitized),
+        "total_count": total_count,
+        "limit": max_results,
+        "truncated": total_count > len(sanitized),
+        "policy": {
+            "cron_enabled": route_policy.cron_policy.enabled,
+            "script_allowlist_count": len(route_policy.cron_policy.allowed_scripts),
+            "model_backed_crons_allowed": False,
+        },
+        "audit": _cron_audit("cron_list", mutates_state=False, action="list"),
+    }
+
+
+def pause_workspace_cron_job(
+    workspace_id: str,
+    job_ref: str,
+    *,
+    context_token: str | None = None,
+    reason: str | None = None,
+    backend: Any | None = None,
+) -> dict:
+    """Pause a script-only no_agent cron job after context/cron policy."""
+
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_cron_access(workspace_id, context_token=context_token)
+    selected_backend = backend or _cron_jobs_backend()
+    job = _resolve_cron_job(job_ref, backend=selected_backend)
+    _require_script_only_cron_job(job, route_policy, require_script_allowlist=False)
+    pause_reason = _bounded_text(reason, 120) if reason else "paused by no-model profile-router cron tool"
+    try:
+        updated = selected_backend.pause_job(str(job.get("id") or job_ref), reason=pause_reason)
+    except Exception as exc:  # pragma: no cover - defensive against storage failures
+        raise ProfileRouterError("cron_storage_unavailable", "cron job could not be paused safely") from exc
+    if not updated:
+        raise ProfileRouterError("cron_job_not_found", "cron job not found")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "job": _sanitize_cron_job(updated, route_policy),
+        "audit": _cron_audit("cron_pause", mutates_state=True, action="pause"),
+    }
+
+
+def resume_workspace_cron_job(
+    workspace_id: str,
+    job_ref: str,
+    *,
+    context_token: str | None = None,
+    backend: Any | None = None,
+) -> dict:
+    """Resume an allowlisted script-only no_agent cron job without model calls."""
+
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_cron_access(workspace_id, context_token=context_token)
+    selected_backend = backend or _cron_jobs_backend()
+    job = _resolve_cron_job(job_ref, backend=selected_backend)
+    _require_script_only_cron_job(job, route_policy, require_script_allowlist=True)
+    try:
+        updated = selected_backend.resume_job(str(job.get("id") or job_ref))
+    except Exception as exc:  # pragma: no cover - defensive against storage failures
+        raise ProfileRouterError("cron_storage_unavailable", "cron job could not be resumed safely") from exc
+    if not updated:
+        raise ProfileRouterError("cron_job_not_found", "cron job not found")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "job": _sanitize_cron_job(updated, route_policy),
+        "audit": _cron_audit("cron_resume", mutates_state=True, action="resume"),
+    }
+
+
+def trigger_workspace_cron_job(
+    workspace_id: str,
+    job_ref: str,
+    *,
+    context_token: str | None = None,
+    backend: Any | None = None,
+) -> dict:
+    """Schedule an allowlisted script-only no_agent cron job for the next tick."""
+
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_cron_access(workspace_id, context_token=context_token)
+    selected_backend = backend or _cron_jobs_backend()
+    job = _resolve_cron_job(job_ref, backend=selected_backend)
+    _require_script_only_cron_job(job, route_policy, require_script_allowlist=True)
+    try:
+        updated = selected_backend.trigger_job(str(job.get("id") or job_ref))
+    except Exception as exc:  # pragma: no cover - defensive against storage failures
+        raise ProfileRouterError("cron_storage_unavailable", "cron job could not be triggered safely") from exc
+    if not updated:
+        raise ProfileRouterError("cron_job_not_found", "cron job not found")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "job": _sanitize_cron_job(updated, route_policy),
+        "audit": _cron_audit("cron_run", mutates_state=True, action="trigger_next_tick"),
+    }
+
+
+def create_workspace_cron_script_job(
+    workspace_id: str,
+    schedule: str,
+    script: str,
+    *,
+    context_token: str | None = None,
+    name: str | None = None,
+    repeat: int | None = None,
+    backend: Any | None = None,
+) -> dict:
+    """Create only allowlisted script-only no_agent cron jobs; never agent/model jobs."""
+
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_cron_access(workspace_id, context_token=context_token)
+    normalized_script = _require_cron_script_allowed(route_policy, script)
+    if not isinstance(schedule, str) or not schedule.strip():
+        raise ProfileRouterError("invalid_cron_schedule", "schedule is required")
+    schedule_text = schedule.strip()
+    if len(schedule_text) > MAX_CRON_SCHEDULE_CHARS:
+        raise ProfileRouterError(
+            "invalid_cron_schedule",
+            f"schedule must be <= {MAX_CRON_SCHEDULE_CHARS} characters",
+        )
+    if repeat is not None and (isinstance(repeat, bool) or not isinstance(repeat, int)):
+        raise ProfileRouterError("invalid_cron_repeat", "repeat must be an integer")
+    if repeat is not None and repeat > 1000:
+        raise ProfileRouterError("invalid_cron_repeat", "repeat must be <= 1000")
+    job_name = _bounded_text(name, MAX_CRON_JOB_NAME_CHARS) if name else None
+    selected_backend = backend or _cron_jobs_backend()
+    try:
+        # Validate schedule before any storage write when the backend exposes the parser.
+        if hasattr(selected_backend, "parse_schedule"):
+            selected_backend.parse_schedule(schedule_text)
+        job = selected_backend.create_job(
+            "",
+            schedule_text,
+            name=job_name,
+            repeat=repeat,
+            deliver="local",
+            origin=None,
+            skill=None,
+            skills=None,
+            model=None,
+            provider=None,
+            base_url=None,
+            script=normalized_script,
+            context_from=None,
+            enabled_toolsets=None,
+            workdir=workspace.root,
+            no_agent=True,
+        )
+    except ValueError as exc:
+        raise ProfileRouterError("invalid_cron_schedule", "cron schedule or job shape is invalid") from exc
+    except Exception as exc:  # pragma: no cover - defensive against storage failures
+        raise ProfileRouterError("cron_storage_unavailable", "cron job could not be created safely") from exc
+    return {
+        "workspace_id": workspace.workspace_id,
+        "job": _sanitize_cron_job(job, route_policy),
+        "audit": _cron_audit("cron_create_script_only", mutates_state=True, action="create_script_only"),
+    }
+
+
+def _messaging_destination_fingerprint(destination: str) -> str:
+    return hashlib.sha256(destination.encode("utf-8")).hexdigest()[:16]
+
+
+def _normalize_message_text(message: str) -> str:
+    if not isinstance(message, str):
+        raise ProfileRouterError("invalid_message", "message must be a string")
+    text = message.strip()
+    if not text:
+        raise ProfileRouterError("invalid_message", "message is required")
+    if "\x00" in text:
+        raise ProfileRouterError("invalid_message", "message must not contain NUL bytes")
+    if len(text) > MAX_MESSAGING_MESSAGE_CHARS:
+        raise ProfileRouterError(
+            "message_too_large",
+            f"message must be <= {MAX_MESSAGING_MESSAGE_CHARS} characters",
+        )
+    if _redact_sensitive_text_fields(text) != text:
+        raise ProfileRouterError(
+            "message_content_secret_denied",
+            "message content appears to contain a secret/token and is blocked",
+        )
+    return text
+
+
+def prepare_workspace_message_send(
+    workspace_id: str,
+    destination: str,
+    message: str,
+    *,
+    context_token: str | None = None,
+    dry_run: bool = True,
+    required_platform: str | None = None,
+    tool_name: str = "message_send",
+) -> dict:
+    """Validate an allowlisted messaging send without invoking gateway adapters."""
+
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_messaging_access(
+        workspace_id,
+        context_token=context_token,
+    )
+    if not isinstance(dry_run, bool):
+        raise ProfileRouterError("invalid_messaging_option", "dry_run must be a boolean")
+    platform, _recipient, normalized_destination = _normalize_messaging_destination(destination)
+    if required_platform and platform != required_platform:
+        raise ProfileRouterError(
+            "messaging_platform_mismatch",
+            f"{tool_name} only accepts {required_platform} destinations",
+        )
+    if normalized_destination not in route_policy.messaging_allowed_recipients:
+        raise ProfileRouterError(
+            "messaging_destination_not_allowed",
+            "destination is not in profile_router.messaging.allowed_recipients",
+        )
+    message_text = _normalize_message_text(message)
+    if not dry_run:
+        raise ProfileRouterError(
+            "message_delivery_not_enabled",
+            "external message delivery remains disabled pending explicit runtime policy/review",
+        )
+    return {
+        "workspace_id": workspace.workspace_id,
+        "messaging": {
+            "status": "dry_run_ready",
+            "platform": platform,
+            "destination_hash": _messaging_destination_fingerprint(normalized_destination),
+            "destination_allowed": True,
+            "destination_exposed": False,
+            "message_chars": len(message_text),
+            "message_content_logged": False,
+            "dry_run": True,
+            "delivery_attempted": False,
+            "external_delivery_enabled": False,
+            "policy": {
+                "messaging_enabled": route_policy.allow_messaging,
+                "allowed_recipients_count": len(route_policy.messaging_allowed_recipients),
+                "allowlist_redacted": True,
+                "broadcast_allowed": False,
+            },
+            "audit": {
+                "tool": tool_name,
+                "llm_calls": 0,
+                "root_exposed": False,
+                "uses_gateway_adapter": False,
+                "destination_exposed": False,
+                "message_content_logged": False,
+                "public_mcp_exposure": "disabled_pending_phase_10_messaging_policy_review",
+            },
+        },
+    }
+
+
 def _bounded_terminal_int(
     value: int | None,
     field: str,
@@ -2310,6 +3898,167 @@ def _write_operation_payload(
     return payload
 
 
+def _normalize_patch_apply_operations(patches: Any) -> list[dict[str, Any]]:
+    if not isinstance(patches, list):
+        raise ProfileRouterError("invalid_patch", "patches must be a list of patch operations")
+    if not patches:
+        raise ProfileRouterError("invalid_patch", "patches must include at least one operation")
+    if len(patches) > MAX_PATCH_APPLY_OPERATIONS:
+        raise ProfileRouterError(
+            "patch_batch_too_large",
+            f"patches exceeds {MAX_PATCH_APPLY_OPERATIONS} operations",
+        )
+
+    normalized: list[dict[str, Any]] = []
+    for index, raw_operation in enumerate(patches, start=1):
+        if not isinstance(raw_operation, MappingABC):
+            raise ProfileRouterError(
+                "invalid_patch",
+                f"patch operation {index} must be an object",
+            )
+        path = raw_operation.get("path")
+        old_string = raw_operation.get("old_string")
+        new_string = raw_operation.get("new_string")
+        replace_all = raw_operation.get("replace_all", False)
+        if not isinstance(path, str) or not path.strip():
+            raise ProfileRouterError(
+                "invalid_patch",
+                f"patch operation {index} path must be a non-empty string",
+            )
+        if not isinstance(old_string, str) or old_string == "":
+            raise ProfileRouterError(
+                "invalid_patch",
+                f"patch operation {index} old_string must be a non-empty string",
+            )
+        if not isinstance(new_string, str):
+            raise ProfileRouterError(
+                "invalid_patch",
+                f"patch operation {index} new_string must be a string",
+            )
+        if not isinstance(replace_all, bool):
+            raise ProfileRouterError(
+                "invalid_patch",
+                f"patch operation {index} replace_all must be a boolean",
+            )
+        _validate_write_content(new_string)
+        normalized.append(
+            {
+                "path": path,
+                "old_string": old_string,
+                "new_string": new_string,
+                "replace_all": replace_all,
+            }
+        )
+    return normalized
+
+
+def apply_workspace_patch(
+    workspace_id: str,
+    patches: list[Mapping[str, Any]],
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Apply a bounded multi-file literal patch batch after write-policy gates."""
+
+    assert_default_tools_are_no_model()
+    operations = _normalize_patch_apply_operations(patches)
+    workspace = _require_workspace_write_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+
+    prepared: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    total_after_chars = 0
+    for operation in operations:
+        resolved_path = resolve_workspace_write_path(workspace, operation["path"])
+        relative_path = _workspace_public_relative_path(workspace, resolved_path)
+        if relative_path in seen_paths:
+            raise ProfileRouterError(
+                "patch_duplicate_path",
+                "patch batch may target each file at most once",
+            )
+        seen_paths.add(relative_path)
+        before = _read_patchable_text(resolved_path, relative_path)
+        old_string = operation["old_string"]
+        new_string = operation["new_string"]
+        replace_all = operation["replace_all"]
+        match_count = before.count(old_string)
+        if match_count == 0:
+            raise ProfileRouterError(
+                "patch_match_not_found",
+                f"old_string was not found: {relative_path}",
+            )
+        if match_count > 1 and not replace_all:
+            raise ProfileRouterError(
+                "patch_match_not_unique",
+                f"old_string matched more than once in {relative_path}; set replace_all=true to replace all matches",
+            )
+        replacements = match_count if replace_all else 1
+        after = before.replace(old_string, new_string, replacements)
+        _validate_write_content(after)
+        total_after_chars += len(after)
+        if total_after_chars > MAX_PATCH_APPLY_TOTAL_WRITE_CHARS:
+            raise ProfileRouterError(
+                "patch_batch_too_large",
+                f"patch batch exceeds {MAX_PATCH_APPLY_TOTAL_WRITE_CHARS} characters after replacement",
+            )
+        prepared.append(
+            {
+                "resolved_path": resolved_path,
+                "relative_path": relative_path,
+                "before": before,
+                "after": after,
+                "replacements": replacements,
+            }
+        )
+
+    written: list[dict[str, Any]] = []
+    try:
+        for item in prepared:
+            item["resolved_path"].write_text(item["after"], encoding="utf-8")
+            written.append(item)
+    except OSError as exc:
+        for item in reversed(written):
+            try:
+                item["resolved_path"].write_text(item["before"], encoding="utf-8")
+            except OSError:
+                pass
+        raise ProfileRouterError("file_not_writable", "Patch batch could not be written") from exc
+
+    files = [
+        {
+            "path": item["relative_path"],
+            "bytes_written": len(item["after"].encode("utf-8")),
+            "changed": item["before"] != item["after"],
+            "replacements": item["replacements"],
+            "diff": _bounded_unified_diff(
+                item["before"],
+                item["after"],
+                item["relative_path"],
+            ),
+        }
+        for item in prepared
+    ]
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "patch_count": len(prepared),
+        "file_count": len(files),
+        "total_replacements": sum(item["replacements"] for item in prepared),
+        "bytes_written": sum(file["bytes_written"] for file in files),
+        "changed": any(file["changed"] for file in files),
+        "files": files,
+        "audit": {
+            "tool": "patch_apply",
+            "llm_calls": 0,
+            "root_exposed": False,
+        },
+    }
+
+
 def patch_workspace_file(
     workspace_id: str,
     path: str,
@@ -2393,6 +4142,157 @@ def write_workspace_file(
         before=before,
         after=content,
     )
+
+
+def move_workspace_file(
+    workspace_id: str,
+    source_path: str,
+    destination_path: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Move/rename one regular workspace file after context and write-policy gates."""
+
+    assert_default_tools_are_no_model()
+    workspace = _require_workspace_write_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    source, source_relative = resolve_workspace_move_source_path(workspace, source_path)
+    destination, destination_relative = resolve_workspace_move_destination_path(
+        workspace,
+        destination_path,
+    )
+    if source == destination:
+        raise ProfileRouterError("source_destination_same", "move source and destination must differ")
+    try:
+        bytes_moved = source.stat().st_size
+    except OSError as exc:
+        raise ProfileRouterError("file_not_readable", "move source is not readable") from exc
+    try:
+        source.rename(destination)
+    except OSError as exc:
+        raise ProfileRouterError("file_not_writable", "file could not be moved") from exc
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "source_path": source_relative,
+        "destination_path": destination_relative,
+        "type": "file",
+        "bytes_moved": bytes_moved,
+        "moved": True,
+        "audit": {
+            "tool": "file_move",
+            "llm_calls": 0,
+            "root_exposed": False,
+        },
+    }
+
+
+def delete_workspace_file(
+    workspace_id: str,
+    path: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Delete one regular workspace file after context and write-policy gates."""
+
+    assert_default_tools_are_no_model()
+    workspace = _require_workspace_write_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    target, relative_path = resolve_workspace_delete_path(workspace, path)
+    try:
+        bytes_deleted = target.stat().st_size
+    except OSError as exc:
+        raise ProfileRouterError("file_not_readable", "delete target is not readable") from exc
+    try:
+        target.unlink()
+    except OSError as exc:
+        raise ProfileRouterError("file_not_writable", "file could not be deleted") from exc
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "path": relative_path,
+        "type": "file",
+        "bytes_deleted": bytes_deleted,
+        "deleted": True,
+        "audit": {
+            "tool": "file_delete",
+            "llm_calls": 0,
+            "root_exposed": False,
+        },
+    }
+
+
+def create_workspace_directory(
+    workspace_id: str,
+    path: str,
+    *,
+    parents: bool = False,
+    exist_ok: bool = False,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Create a workspace-relative directory after context and write-policy gates."""
+
+    assert_default_tools_are_no_model()
+    if not isinstance(parents, bool):
+        raise ProfileRouterError("invalid_directory_option", "parents must be a boolean")
+    if not isinstance(exist_ok, bool):
+        raise ProfileRouterError("invalid_directory_option", "exist_ok must be a boolean")
+    workspace = _require_workspace_write_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    resolved_path = resolve_workspace_directory_create_path(
+        workspace,
+        path,
+        parents=parents,
+    )
+    existed = resolved_path.exists()
+    if existed:
+        if not resolved_path.is_dir():
+            raise ProfileRouterError("not_a_directory", "directory path collides with a file")
+        if not exist_ok:
+            raise ProfileRouterError("directory_already_exists", "directory already exists")
+    try:
+        resolved_path.mkdir(parents=parents, exist_ok=exist_ok)
+    except FileExistsError as exc:
+        raise ProfileRouterError("directory_already_exists", "directory already exists") from exc
+    except FileNotFoundError as exc:
+        raise ProfileRouterError("parent_directory_not_found", "parent directory does not exist") from exc
+    except OSError as exc:
+        raise ProfileRouterError("directory_not_writable", "directory could not be created") from exc
+
+    try:
+        resolved_after = resolved_path.resolve(strict=True)
+    except OSError as exc:
+        raise ProfileRouterError("directory_not_writable", "created directory is not accessible") from exc
+    resolved_root = _resolve_existing_local_path(workspace.root, "workspace root")
+    if not _path_is_relative_to(resolved_after, resolved_root):
+        raise ProfileRouterError("symlink_traversal_denied", "created directory escapes workspace root")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "path": posixpath.normpath(path.strip()),
+        "type": "directory",
+        "created": not existed,
+        "existed": existed,
+        "parents": parents,
+        "exist_ok": exist_ok,
+        "audit": {
+            "tool": "directory_create",
+            "llm_calls": 0,
+            "root_exposed": False,
+        },
+    }
 
 
 def _run_workspace_git(
@@ -2526,6 +4426,89 @@ def _literal_git_pathspecs(paths: Iterable[str]) -> list[str]:
     """Build Git literal pathspecs so odd filenames cannot expand matches."""
 
     return [f":(literal){path}" for path in paths]
+
+
+def _safe_git_public_text(value: str, *, max_chars: int = 240) -> str:
+    """Return a bounded, secret-redacted Git label/message."""
+
+    text = _redact_sensitive_text_fields(str(value or "").strip())
+    if _is_secret_path(text) or SENSITIVE_PATH_RE.search(text):
+        return "[REDACTED]"
+    return text[:max_chars]
+
+
+def _git_audit(tool_name: str, workspace: WorkspaceMetadata) -> dict:
+    return {
+        "tool": tool_name,
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "git_read_only": True,
+        "git_mutation_allowed": False,
+        "public_mcp_exposure": "disabled_pending_git_parity_policy_review",
+        "workspace_id": workspace.workspace_id,
+    }
+
+
+def _git_has_head(workspace: WorkspaceMetadata) -> bool:
+    return _run_workspace_git(workspace, ["rev-parse", "--verify", "HEAD"], timeout=5).returncode == 0
+
+
+def _git_short_head(workspace: WorkspaceMetadata) -> str | None:
+    result = _run_workspace_git(workspace, ["rev-parse", "--short", "HEAD"], timeout=5)
+    if result.returncode != 0:
+        return None
+    return _safe_git_public_text(result.stdout.strip(), max_chars=64) or None
+
+
+def _git_current_branch(workspace: WorkspaceMetadata) -> str | None:
+    result = _run_workspace_git(workspace, ["branch", "--show-current"], timeout=5)
+    if result.returncode != 0:
+        return None
+    return _safe_git_public_text(result.stdout.strip(), max_chars=200) or None
+
+
+def _parse_git_status_entries(
+    workspace: WorkspaceMetadata,
+    output: str,
+    *,
+    limit: int,
+) -> tuple[list[dict], list[dict], bool]:
+    raw_entries = _split_nul_output(output)
+    changes: list[dict] = []
+    skipped: list[dict] = []
+    truncated = False
+    index = 0
+    while index < len(raw_entries):
+        raw_entry = raw_entries[index]
+        status_code = raw_entry[:2]
+        raw_path = raw_entry[3:] if len(raw_entry) > 3 else ""
+        normalized, reason = _workspace_diff_path_status(workspace, raw_path)
+        public_path = normalized or _safe_git_public_text(raw_path)
+        if reason is not None or normalized is None:
+            skipped.append({"path": public_path, "reason": reason or "invalid_path"})
+        elif len(changes) >= limit:
+            truncated = True
+            skipped.append({"path": normalized, "reason": "entry_limit_exceeded"})
+        else:
+            changes.append({"status": status_code.strip() or status_code, "path": normalized})
+        if status_code[:1] in {"R", "C"} and index + 1 < len(raw_entries):
+            index += 2
+        else:
+            index += 1
+    return changes, skipped, truncated
+
+
+def _git_branch_summary(workspace: WorkspaceMetadata, route_policy: ProfileRoutePolicy) -> dict:
+    current_branch = _git_current_branch(workspace)
+    protected = set(route_policy.protected_branches)
+    return {
+        "current": current_branch,
+        "detached": current_branch is None and _git_has_head(workspace),
+        "head": _git_short_head(workspace),
+        "protected": bool(current_branch and current_branch in protected),
+        "protected_branches": sorted(protected),
+    }
 
 
 def _shell_command_tokens(command: str) -> list[str]:
@@ -3406,6 +5389,583 @@ def _run_preflighted_terminal_command(
     return _run_terminal_subprocess_plan(plan, workspace=workspace)
 
 
+@dataclass
+class WorkspaceProcessRecord:
+    """Server-side runtime-owned background process record.
+
+    ``process_id`` is the only identifier exposed to MCP clients. The host PID,
+    raw argv/command, host root, and env values remain server-side only.
+    """
+
+    process_id: str
+    workspace_id: str
+    profile_ref: str
+    plan: TerminalSubprocessPlan
+    process: Any
+    stdout_path: Path
+    stderr_path: Path
+    started_at_monotonic: float
+    timeout_seconds: int
+    public_cwd: str
+    killed: bool = False
+    timed_out: bool = False
+    stopped_at_monotonic: float | None = None
+    timer: threading.Timer | None = None
+
+
+class WorkspaceProcessRegistry:
+    """In-memory registry for processes launched by this no-model runtime only."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._records: dict[str, WorkspaceProcessRecord] = {}
+        self._log_dir = Path(tempfile.gettempdir()) / "hermes-profile-router-processes"
+
+    def _ensure_log_dir(self) -> Path:
+        self._log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return self._log_dir
+
+    def start(
+        self,
+        workspace: WorkspaceMetadata,
+        plan: TerminalSubprocessPlan,
+    ) -> WorkspaceProcessRecord:
+        if plan.uses_shell:
+            raise ProfileRouterError(
+                "terminal_shell_execution_not_allowed",
+                "process_start only supports shell=false subprocess execution",
+            )
+        process_id = f"proc_{uuid4().hex}"
+        log_dir = self._ensure_log_dir()
+        stdout_path = log_dir / f"{process_id}.stdout.log"
+        stderr_path = log_dir / f"{process_id}.stderr.log"
+        stdout_handle = stdout_path.open("w", encoding="utf-8")
+        stderr_handle = stderr_path.open("w", encoding="utf-8")
+        try:
+            process = subprocess.Popen(
+                list(plan.argv),
+                cwd=str(plan.cwd),
+                env=dict(plan.env),
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                text=True,
+                shell=False,
+            )
+        except FileNotFoundError as exc:
+            raise ProfileRouterError(
+                "terminal_executable_not_found",
+                "allowlisted process executable is not available in the sanitized PATH",
+            ) from exc
+        except OSError as exc:
+            raise ProfileRouterError(
+                "process_start_failed",
+                "background process could not be started safely",
+            ) from exc
+        finally:
+            stdout_handle.close()
+            stderr_handle.close()
+
+        record = WorkspaceProcessRecord(
+            process_id=process_id,
+            workspace_id=workspace.workspace_id,
+            profile_ref=workspace.profile_ref,
+            plan=replace(plan, executes=True),
+            process=process,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            started_at_monotonic=time.monotonic(),
+            timeout_seconds=plan.timeout_seconds,
+            public_cwd=plan.public_cwd,
+        )
+        timer = threading.Timer(plan.timeout_seconds, self._timeout_kill, args=(process_id,))
+        timer.daemon = True
+        record.timer = timer
+        with self._lock:
+            self._records[process_id] = record
+        timer.start()
+        return record
+
+    def _timeout_kill(self, process_id: str) -> None:
+        with self._lock:
+            record = self._records.get(process_id)
+        if record is None:
+            return
+        if record.process.poll() is not None:
+            self._mark_stopped(record)
+            return
+        record.timed_out = True
+        try:
+            record.process.terminate()
+            record.process.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            record.process.kill()
+            record.process.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+        except OSError:
+            pass
+        record.stopped_at_monotonic = record.stopped_at_monotonic or time.monotonic()
+
+    def _mark_stopped(self, record: WorkspaceProcessRecord) -> None:
+        if record.stopped_at_monotonic is None:
+            record.stopped_at_monotonic = time.monotonic()
+        if record.timer is not None:
+            record.timer.cancel()
+
+    def _get(self, workspace: WorkspaceMetadata, process_id: str) -> WorkspaceProcessRecord | None:
+        normalized = _normalize_process_id(process_id)
+        with self._lock:
+            record = self._records.get(normalized)
+        if record is None or record.workspace_id != workspace.workspace_id:
+            return None
+        if record.process.poll() is not None:
+            self._mark_stopped(record)
+        return record
+
+    def list(self, workspace: WorkspaceMetadata, *, limit: int) -> list[WorkspaceProcessRecord]:
+        with self._lock:
+            records = [
+                record
+                for record in self._records.values()
+                if record.workspace_id == workspace.workspace_id
+            ]
+        records.sort(key=lambda record: record.started_at_monotonic)
+        selected = records[:limit]
+        for record in selected:
+            if record.process.poll() is not None:
+                self._mark_stopped(record)
+        return selected
+
+    def poll(self, workspace: WorkspaceMetadata, process_id: str) -> WorkspaceProcessRecord | None:
+        return self._get(workspace, process_id)
+
+    def read_log(
+        self,
+        workspace: WorkspaceMetadata,
+        process_id: str,
+        *,
+        max_chars: int,
+    ) -> tuple[WorkspaceProcessRecord | None, dict | None]:
+        record = self._get(workspace, process_id)
+        if record is None:
+            return None, None
+        stdout = _read_process_log_file(record.stdout_path)
+        stderr = _read_process_log_file(record.stderr_path)
+        stdout = _redact_terminal_output_stream(
+            stdout,
+            workspace=workspace,
+            plan=record.plan,
+            stream_name="stdout",
+        )
+        stderr = _redact_terminal_output_stream(
+            stderr,
+            workspace=workspace,
+            plan=record.plan,
+            stream_name="stderr",
+        )
+        stdout_shape = _shape_terminal_output_stream(
+            stdout,
+            stream_name="stdout",
+            budget_chars=max_chars,
+        )
+        stderr_shape = _shape_terminal_output_stream(
+            stderr,
+            stream_name="stderr",
+            budget_chars=max_chars - stdout_shape.returned_chars,
+        )
+        return record, {
+            "available": True,
+            "max_chars": max_chars,
+            "stdout": asdict(stdout_shape),
+            "stderr": asdict(stderr_shape),
+            "returned_chars": stdout_shape.returned_chars + stderr_shape.returned_chars,
+            "truncated": stdout_shape.truncated or stderr_shape.truncated,
+            "root_exposed": False,
+            "host_pid_exposed": False,
+            "raw_command_exposed": False,
+        }
+
+    def kill(self, workspace: WorkspaceMetadata, process_id: str) -> WorkspaceProcessRecord | None:
+        record = self._get(workspace, process_id)
+        if record is None:
+            return None
+        if record.process.poll() is None:
+            record.killed = True
+            try:
+                record.process.terminate()
+                record.process.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                record.process.kill()
+                record.process.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+            except OSError:
+                pass
+        self._mark_stopped(record)
+        return record
+
+    def kill_all_for_workspace(self, workspace: WorkspaceMetadata) -> int:
+        with self._lock:
+            records = [
+                record
+                for record in self._records.values()
+                if record.workspace_id == workspace.workspace_id
+            ]
+        killed = 0
+        for record in records:
+            if self.kill(workspace, record.process_id) is not None:
+                killed += 1
+        return killed
+
+
+_WORKSPACE_PROCESS_REGISTRY = WorkspaceProcessRegistry()
+
+
+def _read_process_log_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _process_status(record: WorkspaceProcessRecord) -> str:
+    returncode = record.process.poll()
+    if record.timed_out:
+        return "timeout"
+    if returncode is None:
+        return "running"
+    if record.killed:
+        return "killed"
+    if returncode == 0:
+        return "success"
+    return "failed"
+
+
+def _process_returncode(record: WorkspaceProcessRecord) -> int | None:
+    returncode = record.process.poll()
+    return returncode if isinstance(returncode, int) else None
+
+
+def _process_public_record(record: WorkspaceProcessRecord) -> dict:
+    status = _process_status(record)
+    return {
+        "process_id": record.process_id,
+        "workspace_id": record.workspace_id,
+        "profile_ref": record.profile_ref,
+        "status": status,
+        "running": status == "running",
+        "returncode": _process_returncode(record),
+        "timed_out": record.timed_out,
+        "tracked_by_runtime": True,
+        "host_pid_exposed": False,
+        "raw_command_exposed": False,
+        "root_exposed": False,
+        "working_directory": record.public_cwd,
+        "timeout_seconds": record.timeout_seconds,
+    }
+
+
+def _process_registry_audit(tool_name: str, workspace: WorkspaceMetadata) -> dict:
+    return {
+        "tool": tool_name,
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "tracked_processes_only": True,
+        "host_process_listing": False,
+        "host_pid_exposed": False,
+        "raw_command_exposed": False,
+        "public_mcp_exposure": "disabled_pending_process_registry_policy_review",
+        "workspace_id": workspace.workspace_id,
+    }
+
+
+def _normalize_process_id(process_id: str) -> str:
+    if not isinstance(process_id, str):
+        raise ProfileRouterError("invalid_process_id", "process_id must be a string")
+    normalized = process_id.strip()
+    if not normalized:
+        raise ProfileRouterError("invalid_process_id", "process_id is required")
+    if len(normalized) > 128 or "\x00" in normalized or "\n" in normalized or "\r" in normalized:
+        raise ProfileRouterError("invalid_process_id", "process_id is not a valid opaque process id")
+    return normalized
+
+
+def start_workspace_process(
+    workspace_id: str,
+    command: str,
+    *,
+    timeout: int | None = 30,
+    working_directory: str = ".",
+    context_token: str | None = None,
+    max_output_chars: int | None = MAX_PROCESS_LOG_CHARS,
+    registry: WorkspaceRegistry | None = None,
+    process_registry: WorkspaceProcessRegistry | None = None,
+) -> dict:
+    """Start one allowlisted no-shell background process owned by this runtime."""
+
+    assert_default_tools_are_no_model()
+    preflight = preflight_terminal_command(
+        workspace_id,
+        command,
+        timeout=timeout,
+        working_directory=working_directory,
+        max_output_chars=max_output_chars,
+        context_token=context_token,
+        registry=registry,
+    )
+    if preflight.get("blocked") or not preflight.get("execution_plan", {}).get("available"):
+        return {
+            "ok": False,
+            "error": {
+                "code": "terminal_command_blocked",
+                "message": "process_start requires a fresh-context allowlisted no-shell execution plan",
+            },
+            "terminal_command": preflight,
+            "audit": {
+                **_process_registry_audit(
+                    "process_start",
+                    require_fresh_workspace_context(
+                        workspace_id,
+                        context_token=context_token,
+                        registry=registry,
+                    ),
+                ),
+                "process_started": False,
+            },
+        }
+
+    workspace, _route_policy = _require_workspace_terminal_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    resolved_cwd, public_cwd = _resolve_terminal_working_directory(workspace, working_directory)
+    timeout_seconds = _bounded_terminal_int(
+        preflight.get("timeout_seconds"),
+        "timeout",
+        default=30,
+        minimum=1,
+        maximum=MAX_TERMINAL_TIMEOUT_SECONDS,
+    )
+    capped_output_chars = _bounded_terminal_int(
+        preflight.get("max_output_chars"),
+        "max_output_chars",
+        default=MAX_PROCESS_LOG_CHARS,
+        minimum=1,
+        maximum=MAX_TERMINAL_OUTPUT_CHARS,
+    )
+    plan = _prepare_terminal_subprocess_plan(
+        command,
+        resolved_cwd=resolved_cwd,
+        public_cwd=public_cwd,
+        timeout_seconds=timeout_seconds,
+        max_output_chars=capped_output_chars,
+    )
+    record = (process_registry or _WORKSPACE_PROCESS_REGISTRY).start(workspace, plan)
+    return {
+        "ok": True,
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "process": _process_public_record(record),
+        "terminal_command": preflight,
+        "audit": {
+            **_process_registry_audit("process_start", workspace),
+            "process_started": True,
+            "timeout_seconds": timeout_seconds,
+            "max_output_chars": capped_output_chars,
+        },
+    }
+
+
+def list_workspace_processes(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    limit: int | None = MAX_PROCESS_LIST_RESULTS,
+    registry: WorkspaceRegistry | None = None,
+    process_registry: WorkspaceProcessRegistry | None = None,
+) -> dict:
+    """Return runtime-tracked process metadata without inspecting host processes."""
+
+    assert_default_tools_are_no_model()
+    workspace, _route_policy = _require_workspace_terminal_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    selected_limit = _bounded_int(
+        limit,
+        "limit",
+        default=MAX_PROCESS_LIST_RESULTS,
+        minimum=1,
+        maximum=MAX_PROCESS_LIST_RESULTS,
+    )
+    records = (process_registry or _WORKSPACE_PROCESS_REGISTRY).list(
+        workspace,
+        limit=selected_limit,
+    )
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "processes": [_process_public_record(record) for record in records],
+        "process_count": len(records),
+        "limit": selected_limit,
+        "truncated": len(records) >= selected_limit,
+        "registry": {
+            "enabled": True,
+            "tracked_processes_only": True,
+            "host_process_listing": False,
+            "launch_supported": True,
+            "status": "runtime_owned_background_process_registry",
+        },
+        "audit": _process_registry_audit("process_list", workspace),
+    }
+
+
+def _untracked_process_payload(
+    tool_name: str,
+    workspace_id: str,
+    process_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    workspace, _route_policy = _require_workspace_terminal_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    _normalize_process_id(process_id)
+    return {
+        "ok": False,
+        "error": {
+            "code": "process_not_found",
+            "message": "No runtime-tracked process exists for this opaque process id",
+        },
+        "process": {
+            "tracked_by_runtime": False,
+            "id_exposed": False,
+            "host_pid_exposed": False,
+            "workspace_id": workspace.workspace_id,
+        },
+        "audit": _process_registry_audit(tool_name, workspace),
+    }
+
+
+def poll_workspace_process(
+    workspace_id: str,
+    process_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+    process_registry: WorkspaceProcessRegistry | None = None,
+) -> dict:
+    """Poll only runtime-tracked processes; arbitrary host process polling is denied."""
+
+    assert_default_tools_are_no_model()
+    workspace, _route_policy = _require_workspace_terminal_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    record = (process_registry or _WORKSPACE_PROCESS_REGISTRY).poll(workspace, process_id)
+    if record is None:
+        return _untracked_process_payload(
+            "process_poll",
+            workspace_id,
+            process_id,
+            context_token=context_token,
+            registry=registry,
+        )
+    return {
+        "ok": True,
+        "process": _process_public_record(record),
+        "audit": _process_registry_audit("process_poll", workspace),
+    }
+
+
+def read_workspace_process_log(
+    workspace_id: str,
+    process_id: str,
+    *,
+    context_token: str | None = None,
+    max_chars: int | None = MAX_PROCESS_LOG_CHARS,
+    registry: WorkspaceRegistry | None = None,
+    process_registry: WorkspaceProcessRegistry | None = None,
+) -> dict:
+    """Read bounded logs only for runtime-tracked processes."""
+
+    assert_default_tools_are_no_model()
+    workspace, _route_policy = _require_workspace_terminal_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    selected_max_chars = _bounded_int(
+        max_chars,
+        "max_chars",
+        default=MAX_PROCESS_LOG_CHARS,
+        minimum=1,
+        maximum=MAX_PROCESS_LOG_CHARS,
+    )
+    record, log_payload = (process_registry or _WORKSPACE_PROCESS_REGISTRY).read_log(
+        workspace,
+        process_id,
+        max_chars=selected_max_chars,
+    )
+    if record is None or log_payload is None:
+        payload = _untracked_process_payload(
+            "process_log",
+            workspace_id,
+            process_id,
+            context_token=context_token,
+            registry=registry,
+        )
+        payload["log"] = {
+            "available": False,
+            "max_chars": selected_max_chars,
+            "truncated": False,
+            "root_exposed": False,
+        }
+        return payload
+    return {
+        "ok": True,
+        "process": _process_public_record(record),
+        "log": log_payload,
+        "audit": _process_registry_audit("process_log", workspace),
+    }
+
+
+def kill_workspace_process(
+    workspace_id: str,
+    process_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+    process_registry: WorkspaceProcessRegistry | None = None,
+) -> dict:
+    """Kill only runtime-tracked processes; arbitrary host process control is denied."""
+
+    assert_default_tools_are_no_model()
+    workspace, _route_policy = _require_workspace_terminal_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    record = (process_registry or _WORKSPACE_PROCESS_REGISTRY).kill(workspace, process_id)
+    if record is None:
+        return _untracked_process_payload(
+            "process_kill",
+            workspace_id,
+            process_id,
+            context_token=context_token,
+            registry=registry,
+        )
+    return {
+        "ok": True,
+        "process": _process_public_record(record),
+        "audit": _process_registry_audit("process_kill", workspace),
+    }
+
+
 def diff_workspace(
     workspace_id: str,
     *,
@@ -3503,6 +6063,247 @@ def diff_workspace(
     }
 
 
+def read_workspace_git_status(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    limit: int | None = MAX_GIT_STATUS_ENTRIES,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Return bounded read-only Git status after fresh context and git policy."""
+
+    assert_default_tools_are_no_model()
+    selected_limit = _bounded_int(
+        limit,
+        "limit",
+        default=MAX_GIT_STATUS_ENTRIES,
+        minimum=1,
+        maximum=MAX_GIT_STATUS_ENTRIES,
+    )
+    workspace, route_policy = _require_workspace_git_read_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    output = _git_output(
+        workspace,
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )
+    changes, skipped, truncated = _parse_git_status_entries(
+        workspace,
+        output,
+        limit=selected_limit,
+    )
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "branch": _git_branch_summary(workspace, route_policy),
+        "changes": changes,
+        "change_count": len(changes),
+        "skipped": skipped,
+        "limit": selected_limit,
+        "truncated": truncated,
+        "clean": not changes and not skipped,
+        "audit": _git_audit("git_status", workspace),
+    }
+
+
+def read_workspace_git_diff(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    max_files: int | None = MAX_WORKSPACE_DIFF_FILES,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Return bounded read-only Git diff after fresh context and git policy."""
+
+    assert_default_tools_are_no_model()
+    selected_max_files = _bounded_int(
+        max_files,
+        "max_files",
+        default=MAX_WORKSPACE_DIFF_FILES,
+        minimum=1,
+        maximum=MAX_WORKSPACE_DIFF_FILES,
+    )
+    workspace, route_policy = _require_workspace_git_read_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    del route_policy
+    head_probe = _run_workspace_git(workspace, ["rev-parse", "--verify", "HEAD"], timeout=5)
+    has_head = head_probe.returncode == 0
+    tracked_candidates: list[str] = []
+    if has_head:
+        tracked_candidates = _split_nul_output(
+            _git_output(
+                workspace,
+                [
+                    "diff",
+                    *SAFE_GIT_DIFF_FLAGS,
+                    "--name-only",
+                    "-z",
+                    "--relative",
+                    "HEAD",
+                    "--",
+                    ".",
+                ],
+            )
+        )
+    tracked_files, skipped_tracked, tracked_truncated = _filter_workspace_diff_paths(
+        workspace,
+        tracked_candidates,
+        max_files=selected_max_files,
+    )
+    diff_text = ""
+    if has_head and tracked_files:
+        diff_text = _git_output(
+            workspace,
+            [
+                "diff",
+                *SAFE_GIT_DIFF_FLAGS,
+                "--relative",
+                "HEAD",
+                "--",
+                *_literal_git_pathspecs(tracked_files),
+            ],
+        )
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "tracked_files": tracked_files,
+        "skipped": skipped_tracked,
+        "file_limit": selected_max_files,
+        "truncated_files": tracked_truncated,
+        "has_head": has_head,
+        "diff": _bounded_workspace_diff_text(diff_text),
+        "audit": _git_audit("git_diff", workspace),
+    }
+
+
+def read_workspace_git_log(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    limit: int | None = MAX_GIT_LOG_COUNT,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Return bounded read-only commit log metadata after git policy."""
+
+    assert_default_tools_are_no_model()
+    selected_limit = _bounded_int(
+        limit,
+        "limit",
+        default=MAX_GIT_LOG_COUNT,
+        minimum=1,
+        maximum=MAX_GIT_LOG_COUNT,
+    )
+    workspace, route_policy = _require_workspace_git_read_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    commits: list[dict] = []
+    has_head = _git_has_head(workspace)
+    if has_head:
+        raw_log = _git_output(
+            workspace,
+            [
+                "log",
+                f"--max-count={selected_limit}",
+                "--pretty=format:%H%x00%h%x00%ct%x00%s%x1e",
+                "--",
+            ],
+        )
+        for record in [item for item in raw_log.split("\x1e") if item]:
+            fields = record.strip("\n").split("\0")
+            if len(fields) < 4:
+                continue
+            full_sha, short_sha, timestamp, subject = fields[:4]
+            commits.append(
+                {
+                    "sha": _safe_git_public_text(full_sha, max_chars=64),
+                    "short_sha": _safe_git_public_text(short_sha, max_chars=24),
+                    "timestamp": _safe_git_public_text(timestamp, max_chars=32),
+                    "subject": _safe_git_public_text(subject, max_chars=240),
+                }
+            )
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "branch": _git_branch_summary(workspace, route_policy),
+        "commits": commits,
+        "commit_count": len(commits),
+        "limit": selected_limit,
+        "has_head": has_head,
+        "audit": _git_audit("git_log", workspace),
+    }
+
+
+def read_workspace_git_branch(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    limit: int | None = MAX_GIT_BRANCH_COUNT,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Return bounded local branch metadata after fresh context and git policy."""
+
+    assert_default_tools_are_no_model()
+    selected_limit = _bounded_int(
+        limit,
+        "limit",
+        default=MAX_GIT_BRANCH_COUNT,
+        minimum=1,
+        maximum=MAX_GIT_BRANCH_COUNT,
+    )
+    workspace, route_policy = _require_workspace_git_read_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    current_branch = _git_current_branch(workspace)
+    protected = set(route_policy.protected_branches)
+    raw = _git_output(
+        workspace,
+        ["for-each-ref", "--format=%(refname:short)%00%(objectname:short)", "refs/heads"],
+    )
+    branches: list[dict] = []
+    skipped: list[dict] = []
+    for line in [item for item in raw.splitlines() if item.strip()]:
+        fields = line.split("\0")
+        name = _safe_git_public_text(fields[0], max_chars=200) if fields else ""
+        short_sha = _safe_git_public_text(fields[1], max_chars=24) if len(fields) > 1 else None
+        if not name:
+            continue
+        if name == "[REDACTED]":
+            skipped.append({"reason": "secret_branch_name_denied"})
+            continue
+        if len(branches) >= selected_limit:
+            skipped.append({"name": name, "reason": "branch_limit_exceeded"})
+            continue
+        branches.append(
+            {
+                "name": name,
+                "current": name == current_branch,
+                "protected": name in protected,
+                "head": short_sha,
+            }
+        )
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "current": current_branch,
+        "branches": branches,
+        "branch_count": len(branches),
+        "limit": selected_limit,
+        "truncated": len(skipped) > 0,
+        "skipped": skipped,
+        "protected_branches": sorted(protected),
+        "audit": _git_audit("git_branch", workspace),
+    }
+
+
 def _safe_profile_summary(
     info: ProfileInfo,
     *,
@@ -3533,9 +6334,17 @@ def _safe_profile_summary(
                 "terminal": route_policy.allow_terminal,
                 "messaging": route_policy.allow_messaging,
                 "cron": route_policy.allow_cron,
+                "git": route_policy.capability_enabled("git"),
                 "git_push": route_policy.allow_git_push,
                 "deploy": route_policy.allow_deploy,
+                "skills": route_policy.capability_enabled("skills"),
+                "memory": route_policy.capability_enabled("memory"),
+                "session": route_policy.capability_enabled("session"),
+                "web": route_policy.capability_enabled("web"),
+                "browser": route_policy.capability_enabled("browser"),
+                "api": route_policy.capability_enabled("api"),
             },
+            "capability_groups": dict(route_policy.capability_groups),
             "context": {
                 "skills": {"read": route_policy.allow_context_skills_read},
                 "sessions": {"search": route_policy.allow_context_sessions_search},
@@ -3543,6 +6352,13 @@ def _safe_profile_summary(
             "messaging_recipients_configured": bool(
                 route_policy.messaging_allowed_recipients
             ),
+            "cron_policy": {
+                "enabled": route_policy.cron_policy.enabled,
+                "allowed_scripts_count": len(route_policy.cron_policy.allowed_scripts),
+                "allowlist_redacted": True,
+                "no_agent_only": True,
+                "model_backed_crons_allowed": False,
+            },
             "model_policy": {
                 "allow_model_tools": route_policy.allow_model_tools,
                 "allowed_cost_classes": list(route_policy.allowed_cost_classes),
@@ -3614,6 +6430,50 @@ def _tool_error(tool_name: str, exc: ProfileRouterError) -> str:
             "error": {"code": exc.code, "message": exc.message},
         },
     )
+
+
+def hermes_catalog_blocked_tool(tool_name: str) -> str:
+    """Return a no-model blocked response for a full-catalog Hermes tool name."""
+
+    name = str(tool_name or "").strip()
+    try:
+        if name not in HERMES_CATALOG_BLOCKED_TOOL_NAMES:
+            raise ProfileRouterError(
+                "unknown_catalog_tool",
+                "Requested tool is not a blocked Hermes catalog entry",
+            )
+        meta = ROUTER_TOOL_METADATA[name]
+        return _tool_envelope(
+            name,
+            {
+                "ok": False,
+                "error": {
+                    "code": meta.blocked_reason or "requires_no_model_implementation",
+                    "message": (
+                        "This Hermes tool is visible for catalog parity but is not "
+                        "executable through the ChatGPT no-model connector."
+                    ),
+                },
+                "catalog_tool": {
+                    "name": name,
+                    "execution_status": meta.execution_status,
+                    "native_side_effects": name in HERMES_CATALOG_SIDE_EFFECT_TOOL_NAMES,
+                    "capability_group": _router_capability_group(name),
+                    "root_exposed": False,
+                },
+            },
+        )
+    except ProfileRouterError as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": {"code": exc.code, "message": exc.message},
+                "cost_class": COST_CLASS_NO_MODEL,
+                "llm_calls": 0,
+            },
+            indent=2,
+            sort_keys=True,
+        )
 
 
 def _require_profile_context_policy(
@@ -5148,6 +8008,60 @@ def workspace_file_read(
         return _tool_error("workspace_file_read", exc)
 
 
+def workspace_file_stat(
+    workspace_id: str,
+    path: str,
+    context_token: str | None = None,
+) -> str:
+    """MCP-ready wrapper: stat a bounded sanitized path after context hydration."""
+
+    try:
+        return _tool_envelope(
+            "workspace_file_stat",
+            {
+                "ok": True,
+                "stat": stat_workspace_file(
+                    workspace_id,
+                    path,
+                    context_token=context_token,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_file_stat", exc)
+
+
+def workspace_file_search(
+    workspace_id: str,
+    pattern: str,
+    path: str | None = None,
+    file_glob: str | None = None,
+    output_mode: str = "content",
+    limit: int | None = MAX_FILE_SEARCH_RESULTS,
+    context_token: str | None = None,
+) -> str:
+    """MCP-ready wrapper: search bounded text files after context hydration."""
+
+    try:
+        require_fresh_workspace_context(workspace_id, context_token=context_token)
+        return _tool_envelope(
+            "workspace_file_search",
+            {
+                "ok": True,
+                "search": search_workspace_files(
+                    workspace_id,
+                    pattern,
+                    path=path,
+                    file_glob=file_glob,
+                    output_mode=output_mode,
+                    limit=limit,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_file_search", exc)
+
+
 def file_read(
     workspace_id: str,
     path: str,
@@ -5240,6 +8154,29 @@ def file_patch(
         return _tool_error("file_patch", exc)
 
 
+def patch_apply(
+    workspace_id: str,
+    patches: list[Mapping[str, Any]],
+    context_token: str | None = None,
+) -> str:
+    """Direct wrapper: apply a bounded multi-file literal patch batch."""
+
+    try:
+        return _tool_envelope(
+            "patch_apply",
+            {
+                "ok": True,
+                "patch_apply": apply_workspace_patch(
+                    workspace_id,
+                    patches,
+                    context_token=context_token,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("patch_apply", exc)
+
+
 def file_write(
     workspace_id: str,
     path: str,
@@ -5270,6 +8207,81 @@ def file_write(
         return _tool_error("file_write", exc)
 
 
+def file_move(
+    workspace_id: str,
+    source_path: str,
+    destination_path: str,
+    context_token: str | None = None,
+) -> str:
+    """Direct wrapper: move/rename one file after context/write-policy gates."""
+
+    try:
+        return _tool_envelope(
+            "file_move",
+            {
+                "ok": True,
+                "move": move_workspace_file(
+                    workspace_id,
+                    source_path,
+                    destination_path,
+                    context_token=context_token,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("file_move", exc)
+
+
+def file_delete(
+    workspace_id: str,
+    path: str,
+    context_token: str | None = None,
+) -> str:
+    """Direct wrapper: delete one file after context/write-policy gates."""
+
+    try:
+        return _tool_envelope(
+            "file_delete",
+            {
+                "ok": True,
+                "delete": delete_workspace_file(
+                    workspace_id,
+                    path,
+                    context_token=context_token,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("file_delete", exc)
+
+
+def directory_create(
+    workspace_id: str,
+    path: str,
+    parents: bool = False,
+    exist_ok: bool = False,
+    context_token: str | None = None,
+) -> str:
+    """Direct wrapper: create a directory after context/write-policy gates."""
+
+    try:
+        return _tool_envelope(
+            "directory_create",
+            {
+                "ok": True,
+                "directory": create_workspace_directory(
+                    workspace_id,
+                    path,
+                    parents=parents,
+                    exist_ok=exist_ok,
+                    context_token=context_token,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("directory_create", exc)
+
+
 def workspace_diff(
     workspace_id: str,
     context_token: str | None = None,
@@ -5296,6 +8308,391 @@ def workspace_diff(
         )
     except ProfileRouterError as exc:
         return _tool_error("workspace_diff", exc)
+
+
+def git_status(
+    workspace_id: str,
+    context_token: str | None = None,
+    limit: int | None = MAX_GIT_STATUS_ENTRIES,
+) -> str:
+    """Direct wrapper: return read-only Git status after context/git policy."""
+
+    try:
+        return _tool_envelope(
+            "git_status",
+            {
+                "ok": True,
+                "git_status": read_workspace_git_status(
+                    workspace_id,
+                    context_token=context_token,
+                    limit=limit,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_status", exc)
+
+
+def git_diff(
+    workspace_id: str,
+    context_token: str | None = None,
+    max_files: int | None = MAX_WORKSPACE_DIFF_FILES,
+) -> str:
+    """Direct wrapper: return read-only Git diff after context/git policy."""
+
+    try:
+        return _tool_envelope(
+            "git_diff",
+            {
+                "ok": True,
+                "git_diff": read_workspace_git_diff(
+                    workspace_id,
+                    context_token=context_token,
+                    max_files=max_files,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_diff", exc)
+
+
+def git_log(
+    workspace_id: str,
+    context_token: str | None = None,
+    limit: int | None = MAX_GIT_LOG_COUNT,
+) -> str:
+    """Direct wrapper: return read-only Git log after context/git policy."""
+
+    try:
+        return _tool_envelope(
+            "git_log",
+            {
+                "ok": True,
+                "git_log": read_workspace_git_log(
+                    workspace_id,
+                    context_token=context_token,
+                    limit=limit,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_log", exc)
+
+
+def git_branch(
+    workspace_id: str,
+    context_token: str | None = None,
+    limit: int | None = MAX_GIT_BRANCH_COUNT,
+) -> str:
+    """Direct wrapper: return read-only Git branch metadata after context/git policy."""
+
+    try:
+        return _tool_envelope(
+            "git_branch",
+            {
+                "ok": True,
+                "git_branch": read_workspace_git_branch(
+                    workspace_id,
+                    context_token=context_token,
+                    limit=limit,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("git_branch", exc)
+
+
+def cron_list(
+    workspace_id: str,
+    context_token: str | None = None,
+    include_disabled: bool = False,
+    limit: int | None = MAX_CRON_LIST_RESULTS,
+) -> str:
+    """Direct wrapper: list sanitized script/no-agent cron status after context/cron policy."""
+
+    try:
+        return _tool_envelope(
+            "cron_list",
+            {
+                "ok": True,
+                "cron": list_workspace_cron_jobs(
+                    workspace_id,
+                    context_token=context_token,
+                    include_disabled=include_disabled,
+                    limit=limit,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("cron_list", exc)
+
+
+def cron_pause(
+    workspace_id: str,
+    job_ref: str,
+    context_token: str | None = None,
+    reason: str | None = None,
+) -> str:
+    """Direct wrapper: pause a script-only no_agent cron job after context/cron policy."""
+
+    try:
+        return _tool_envelope(
+            "cron_pause",
+            {
+                "ok": True,
+                "cron": pause_workspace_cron_job(
+                    workspace_id,
+                    job_ref,
+                    context_token=context_token,
+                    reason=reason,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("cron_pause", exc)
+
+
+def cron_resume(
+    workspace_id: str,
+    job_ref: str,
+    context_token: str | None = None,
+) -> str:
+    """Direct wrapper: resume an allowlisted script-only no_agent cron job."""
+
+    try:
+        return _tool_envelope(
+            "cron_resume",
+            {
+                "ok": True,
+                "cron": resume_workspace_cron_job(
+                    workspace_id,
+                    job_ref,
+                    context_token=context_token,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("cron_resume", exc)
+
+
+def cron_run(
+    workspace_id: str,
+    job_ref: str,
+    context_token: str | None = None,
+) -> str:
+    """Direct wrapper: trigger an allowlisted script-only no_agent cron job next tick."""
+
+    try:
+        return _tool_envelope(
+            "cron_run",
+            {
+                "ok": True,
+                "cron": trigger_workspace_cron_job(
+                    workspace_id,
+                    job_ref,
+                    context_token=context_token,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("cron_run", exc)
+
+
+def cron_create_script_only(
+    workspace_id: str,
+    schedule: str,
+    script: str,
+    context_token: str | None = None,
+    name: str | None = None,
+    repeat: int | None = None,
+) -> str:
+    """Direct wrapper: create only allowlisted script-only no_agent cron jobs."""
+
+    try:
+        return _tool_envelope(
+            "cron_create_script_only",
+            {
+                "ok": True,
+                "cron": create_workspace_cron_script_job(
+                    workspace_id,
+                    schedule,
+                    script,
+                    context_token=context_token,
+                    name=name,
+                    repeat=repeat,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("cron_create_script_only", exc)
+
+
+def message_send(
+    workspace_id: str,
+    destination: str,
+    message: str,
+    context_token: str | None = None,
+    dry_run: bool = True,
+) -> str:
+    """Direct wrapper: validate an allowlisted messaging dry-run without delivery."""
+
+    try:
+        return _tool_envelope(
+            "message_send",
+            {
+                "ok": True,
+                **prepare_workspace_message_send(
+                    workspace_id,
+                    destination,
+                    message,
+                    context_token=context_token,
+                    dry_run=dry_run,
+                    tool_name="message_send",
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("message_send", exc)
+
+
+def telegram_send(
+    workspace_id: str,
+    recipient: str,
+    message: str,
+    context_token: str | None = None,
+    dry_run: bool = True,
+) -> str:
+    """Direct wrapper: validate an allowlisted Telegram dry-run without delivery."""
+
+    try:
+        return _tool_envelope(
+            "telegram_send",
+            {
+                "ok": True,
+                **prepare_workspace_message_send(
+                    workspace_id,
+                    f"telegram:{recipient}",
+                    message,
+                    context_token=context_token,
+                    dry_run=dry_run,
+                    required_platform="telegram",
+                    tool_name="telegram_send",
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("telegram_send", exc)
+
+
+def process_start(
+    workspace_id: str,
+    command: str,
+    timeout: int = 30,
+    working_directory: str = ".",
+    context_token: str | None = None,
+    max_output_chars: int | None = MAX_PROCESS_LOG_CHARS,
+) -> str:
+    """Direct wrapper: start an allowlisted runtime-owned background process."""
+
+    try:
+        return _tool_envelope(
+            "process_start",
+            start_workspace_process(
+                workspace_id,
+                command,
+                timeout=timeout,
+                working_directory=working_directory,
+                context_token=context_token,
+                max_output_chars=max_output_chars,
+            ),
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("process_start", exc)
+
+
+def process_list(
+    workspace_id: str,
+    context_token: str | None = None,
+    limit: int | None = MAX_PROCESS_LIST_RESULTS,
+) -> str:
+    """Direct wrapper: list only runtime-tracked workspace processes."""
+
+    try:
+        return _tool_envelope(
+            "process_list",
+            {
+                "ok": True,
+                "processes": list_workspace_processes(
+                    workspace_id,
+                    context_token=context_token,
+                    limit=limit,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("process_list", exc)
+
+
+def process_poll(
+    workspace_id: str,
+    process_id: str,
+    context_token: str | None = None,
+) -> str:
+    """Direct wrapper: poll only runtime-tracked workspace processes."""
+
+    try:
+        return _tool_envelope(
+            "process_poll",
+            poll_workspace_process(
+                workspace_id,
+                process_id,
+                context_token=context_token,
+            ),
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("process_poll", exc)
+
+
+def process_log(
+    workspace_id: str,
+    process_id: str,
+    context_token: str | None = None,
+    max_chars: int | None = MAX_PROCESS_LOG_CHARS,
+) -> str:
+    """Direct wrapper: read bounded logs only for runtime-tracked processes."""
+
+    try:
+        return _tool_envelope(
+            "process_log",
+            read_workspace_process_log(
+                workspace_id,
+                process_id,
+                context_token=context_token,
+                max_chars=max_chars,
+            ),
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("process_log", exc)
+
+
+def process_kill(
+    workspace_id: str,
+    process_id: str,
+    context_token: str | None = None,
+) -> str:
+    """Direct wrapper: kill only runtime-tracked workspace processes."""
+
+    try:
+        return _tool_envelope(
+            "process_kill",
+            kill_workspace_process(
+                workspace_id,
+                process_id,
+                context_token=context_token,
+            ),
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("process_kill", exc)
 
 
 def terminal_run(

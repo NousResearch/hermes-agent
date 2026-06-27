@@ -2225,25 +2225,69 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 last_activity = await _emit(delta)
 
-            # Get usage from completed agent
+            # Get usage from completed agent. The agent can fail two ways
+            # after the content queue terminates cleanly: (1) ``agent_task``
+            # raises, or (2) it returns a ``result`` dict flagged
+            # failed/partial/incomplete. Both previously fell through to a
+            # ``finish_reason: "stop"`` chunk, so OpenAI-compatible clients
+            # saw a fake success. Surface either as a non-"stop" finish so
+            # the failure is detectable — mirroring the non-streaming path's
+            # decision logic (see the finish_reason block above).
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            result = None
+            agent_error = None
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
             except Exception as exc:
-                logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+                agent_error = exc
+                logger.error(
+                    "Agent task %s failed during SSE streaming: %s", completion_id, exc
+                )
+
+            # Inspect the result dict for a flagged (non-exception) failure.
+            is_partial = bool(result.get("partial")) if isinstance(result, dict) else False
+            is_failed = bool(result.get("failed")) if isinstance(result, dict) else False
+            completed = bool(result.get("completed", True)) if isinstance(result, dict) else True
+            err_msg = result.get("error") if isinstance(result, dict) else None
+            if agent_error is not None:
+                is_failed = True
+                err_msg = err_msg or str(agent_error)
+
+            # Decide finish_reason, matching the non-streaming logic: "length"
+            # for truncation, "error" for failure, "stop" for normal completion.
+            if is_partial and err_msg and "truncat" in err_msg.lower():
+                finish_reason = "length"
+            elif agent_error is not None or is_failed or (not completed and err_msg):
+                finish_reason = "error"
+            else:
+                finish_reason = "stop"
 
             # Finish chunk
             finish_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                 "usage": {
                     "prompt_tokens": usage.get("input_tokens", 0),
                     "completion_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 },
             }
+            if finish_reason != "stop":
+                finish_chunk["choices"][0]["delta"] = {}
+                if err_msg:
+                    finish_chunk["error"] = {
+                        "message": err_msg,
+                        "type": type(agent_error).__name__ if agent_error else "agent_error",
+                    }
+                finish_chunk["hermes"] = {
+                    "completed": completed,
+                    "partial": is_partial,
+                    "failed": is_failed,
+                    "error": err_msg,
+                    "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
+                }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):

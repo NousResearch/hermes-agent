@@ -8756,33 +8756,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_goal_command(event)
 
         if canonical == "moa":
+            # /moa is one-shot sugar only: run a single prompt through the
+            # default MoA preset, then restore the prior model. To *switch* to a
+            # MoA preset for the session, pick it from the model picker (MoA
+            # presets surface as a virtual "Mixture of Agents" provider).
             from hermes_cli.moa_config import (
-                exact_moa_preset_name,
                 moa_usage,
                 normalize_moa_config,
-                resolve_moa_preset,
             )
             from hermes_cli.config import load_config
 
             moa_payload = event.get_command_args().strip()
+            if not moa_payload:
+                return moa_usage()
             try:
                 cfg = load_config()
                 moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
             except Exception:
                 moa_cfg = normalize_moa_config({})
-            matched_preset = exact_moa_preset_name(moa_cfg, moa_payload) if moa_payload else moa_cfg["default_preset"]
-            if matched_preset:
-                self._session_model_overrides[_quick_key] = {
-                    "provider": "moa",
-                    "model": matched_preset,
-                    "base_url": "moa://local",
-                    "api_key": "moa-virtual-provider",
-                    "api_mode": "chat_completions",
-                }
-                self._evict_cached_agent(_quick_key)
-                return f"Model switched to MoA preset: {matched_preset}."
-            if not moa_payload:
-                return moa_usage()
             preset = moa_cfg["default_preset"]
             try:
                 event.text = moa_payload
@@ -9029,16 +9020,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
-            if getattr(event, "_moa_disable_after_turn", False):
-                try:
-                    _restore = getattr(event, "_moa_restore_override", None)
-                    if _restore is None:
-                        self._session_model_overrides.pop(_quick_key, None)
-                    else:
-                        self._session_model_overrides[_quick_key] = _restore
-                    self._evict_cached_agent(_quick_key)
-                except Exception:
-                    pass
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -9069,6 +9050,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
         finally:
+            # MoA one-shot restore must run on EVERY exit path, not just
+            # success. The restore data lives on the per-turn event object
+            # (_moa_restore_override), which is discarded once the event goes
+            # out of scope — so if _handle_message_with_agent raises, a restore
+            # in the try block would be skipped and the MoA override would leak
+            # permanently (every later message silently fans out through MoA).
+            # Putting it in finally guarantees the revert on success, exception,
+            # and interrupt alike.
+            self._restore_moa_one_shot(event, _quick_key)
             # Unconditional release covers every exit path. _release_running_agent_state
             # is idempotent (pop-on-absent is harmless) and, called without a
             # run_generation guard, always clears the slot regardless of which
@@ -9077,6 +9067,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # inside _run_agent returns False, and the old sentinel-only check here
             # missed the leftover real agent — locking the session out forever (#28686).
             self._release_running_agent_state(_quick_key)
+
+    def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
+        """Revert a ``/moa <prompt>`` one-shot model override after its turn.
+
+        Called from the ``finally`` of the message-handling path so the revert
+        fires whether the turn succeeded, raised, or was interrupted. A no-op
+        unless ``event._moa_disable_after_turn`` is set. ``_moa_restore_override``
+        carries the prior per-session override (``None`` means the user had no
+        override, so the MoA override is cleared outright).
+        """
+        if not getattr(event, "_moa_disable_after_turn", False):
+            return
+        try:
+            _restore = getattr(event, "_moa_restore_override", None)
+            if _restore is None:
+                self._session_model_overrides.pop(quick_key, None)
+            else:
+                self._session_model_overrides[quick_key] = _restore
+            self._evict_cached_agent(quick_key)
+        except Exception:
+            pass
 
     async def _prepare_inbound_message_text(
         self,

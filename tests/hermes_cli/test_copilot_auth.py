@@ -199,3 +199,82 @@ class TestEnvVarOrder:
         assert copilot.api_key_env_vars == (
             "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"
         )
+
+
+class TestSuppressedSources:
+    """Regression tests for issue #53781: resolve_copilot_token() must
+    respect explicit source suppression from `hermes auth remove copilot`,
+    so dashboard/status-probe paths don't silently re-discover a removed
+    credential source (e.g. repeatedly invoking `gh auth token`, which can
+    spawn flashing console windows on Windows).
+    """
+
+    def test_suppressed_gh_cli_source_is_skipped(self, monkeypatch):
+        from hermes_cli import copilot_auth
+
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        with patch.object(copilot_auth, "_try_gh_cli_token") as mock_gh:
+            mock_gh.return_value = "gho_should_not_be_used"
+            with patch("hermes_cli.auth.is_source_suppressed", return_value=True):
+                token, source = copilot_auth.resolve_copilot_token()
+
+        assert token == ""
+        assert source == ""
+        mock_gh.assert_not_called()
+
+    def test_unsuppressed_gh_cli_source_is_used(self, monkeypatch):
+        from hermes_cli import copilot_auth
+
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        with patch.object(copilot_auth, "_try_gh_cli_token") as mock_gh:
+            mock_gh.return_value = "gho_from_gh_cli"
+            with patch("hermes_cli.auth.is_source_suppressed", return_value=False):
+                token, source = copilot_auth.resolve_copilot_token()
+
+        assert token == "gho_from_gh_cli"
+        assert source == "gh auth token"
+        mock_gh.assert_called_once()
+
+    def test_suppressed_env_var_source_is_skipped(self, monkeypatch):
+        from hermes_cli import copilot_auth
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_should_not_be_used")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        def _suppress_only_copilot_env(provider, source):
+            return source == "env:COPILOT_GITHUB_TOKEN"
+
+        with patch.object(copilot_auth, "_try_gh_cli_token", return_value=""):
+            with patch(
+                "hermes_cli.auth.is_source_suppressed",
+                side_effect=_suppress_only_copilot_env,
+            ):
+                token, source = copilot_auth.resolve_copilot_token()
+
+        # The suppressed env var must be skipped, falling through to no token
+        # (gh_cli also returns empty in this test) rather than using the
+        # suppressed value.
+        assert token == ""
+
+    def test_suppression_check_failure_does_not_block_resolution(self, monkeypatch):
+        """If is_source_suppressed() itself raises, resolution must still
+        proceed (fail open on the suppression check, not on token discovery)."""
+        from hermes_cli import copilot_auth
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_env_token")
+
+        with patch(
+            "hermes_cli.auth.is_source_suppressed",
+            side_effect=RuntimeError("auth store unavailable"),
+        ):
+            token, source = copilot_auth.resolve_copilot_token()
+
+        assert token == "gho_env_token"
+        assert source == "COPILOT_GITHUB_TOKEN"

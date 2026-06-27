@@ -64,14 +64,36 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _copilot_source_suppressed(source: str) -> bool:
+    """Return True when the user explicitly removed/suppressed a Copilot
+    credential source via `hermes auth remove copilot`.
+
+    Mirrors the suppression pattern already used by agent/credential_pool.py
+    for env credential discovery. Without this, dashboard / status-probe
+    paths can silently re-discover a gh_cli token even after a user opted
+    out, repeatedly invoking `gh auth token` -- on Windows this can spawn
+    short-lived console windows that flash and steal focus (issue #53781).
+    """
+    try:
+        from hermes_cli.auth import is_source_suppressed
+
+        return is_source_suppressed("copilot", source)
+    except Exception:
+        return False
+
+
 def resolve_copilot_token() -> tuple[str, str]:
     """Resolve a GitHub token suitable for Copilot API use.
 
     Returns (token, source) where source describes where the token came from.
     Raises ValueError if only a classic PAT is available.
     """
-    # 1. Check env vars in priority order
+    # 1. Check env vars in priority order. Respect explicit removals from
+    # `hermes auth remove copilot` so dashboard/status probes do not
+    # silently re-enable a suppressed source.
     for env_var in COPILOT_ENV_VARS:
+        if _copilot_source_suppressed(f"env:{env_var}"):
+            continue
         val = os.getenv(env_var, "").strip()
         if val:
             valid, msg = validate_copilot_token(val)
@@ -82,15 +104,16 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
-    token = _try_gh_cli_token()
-    if token:
-        valid, msg = validate_copilot_token(token)
-        if not valid:
-            raise ValueError(
-                f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
-            )
-        return token, "gh auth token"
+    # 2. Fall back to gh auth token unless the gh_cli source was suppressed.
+    if not _copilot_source_suppressed("gh_cli"):
+        token = _try_gh_cli_token()
+        if token:
+            valid, msg = validate_copilot_token(token)
+            if not valid:
+                raise ValueError(
+                    f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
+                )
+            return token, "gh auth token"
 
     return "", ""
 

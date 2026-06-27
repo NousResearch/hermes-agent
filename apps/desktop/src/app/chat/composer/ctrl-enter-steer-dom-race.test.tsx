@@ -24,7 +24,7 @@ function Harness({
   onSteer
 }: {
   busy?: boolean
-  onSteer: (text: string) => void
+  onSteer?: (text: string) => void
 }) {
   const editorRef = useRef<HTMLDivElement>(null)
   const draftRef = useRef('')
@@ -98,8 +98,8 @@ function Harness({
   )
 }
 
-describe('composer Ctrl+Enter steer — live DOM vs stale composer state (#53659)', () => {
-  it('steers the just-typed text on Ctrl+Enter even when composer state has not synced', async () => {
+describe('Ctrl+Enter steer reads live DOM text (not stale React state)', () => {
+  it('steers with DOM text even when React state is stale', async () => {
     const onSteer = vi.fn()
 
     const { getByTestId } = render(
@@ -108,8 +108,9 @@ describe('composer Ctrl+Enter steer — live DOM vs stale composer state (#53659
 
     const editor = getByTestId('editor')
 
-    // Fast typing: the DOM has the text but NO input event fired, so `draft`
-    // state is still empty (the exact stale-state race).
+    // Mutate the DOM directly WITHOUT firing an input event — React state
+    // stays empty (stale), but the DOM already holds the typed text.
+    // This is the exact race condition from #53659.
     await act(async () => {
       editor.textContent = 'steer this'
       fireEvent.keyDown(editor, { key: 'Enter', metaKey: true })
@@ -118,7 +119,7 @@ describe('composer Ctrl+Enter steer — live DOM vs stale composer state (#53659
     expect(onSteer).toHaveBeenCalledWith('steer this')
   })
 
-  it('steers on Ctrl+Enter with Ctrl key (Windows/Linux)', async () => {
+  it('steers with Ctrl+Enter (ctrlKey variant)', async () => {
     const onSteer = vi.fn()
 
     const { getByTestId } = render(
@@ -135,7 +136,7 @@ describe('composer Ctrl+Enter steer — live DOM vs stale composer state (#53659
     expect(onSteer).toHaveBeenCalledWith('ctrl steer')
   })
 
-  it('does NOT steer on Ctrl+Enter when editor is empty', async () => {
+  it('does NOT steer on Ctrl+Enter with empty text', async () => {
     const onSteer = vi.fn()
 
     const { getByTestId } = render(
@@ -152,7 +153,7 @@ describe('composer Ctrl+Enter steer — live DOM vs stale composer state (#53659
     expect(onSteer).not.toHaveBeenCalled()
   })
 
-  it('does NOT steer on Ctrl+Enter when not busy', async () => {
+  it('does NOT steer when not busy', async () => {
     const onSteer = vi.fn()
 
     const { getByTestId } = render(
@@ -169,7 +170,7 @@ describe('composer Ctrl+Enter steer — live DOM vs stale composer state (#53659
     expect(onSteer).not.toHaveBeenCalled()
   })
 
-  it('does NOT steer on Ctrl+Enter when onSteer is not provided', async () => {
+  it('does NOT steer on Ctrl+Shift+Enter (shift modifier blocks)', async () => {
     const onSteer = vi.fn()
 
     const { getByTestId } = render(
@@ -178,13 +179,44 @@ describe('composer Ctrl+Enter steer — live DOM vs stale composer state (#53659
 
     const editor = getByTestId('editor')
 
-    // Simulate onSteer being undefined by testing with empty text
     await act(async () => {
-      editor.textContent = '   '
+      editor.textContent = 'shift blocks'
+      fireEvent.keyDown(editor, { key: 'Enter', metaKey: true, shiftKey: true })
+    })
+
+    // Ctrl+Shift+Enter should NOT trigger steer (shiftKey blocks it)
+    expect(onSteer).not.toHaveBeenCalled()
+  })
+
+  it('does NOT steer when onSteer is not provided', async () => {
+    const { getByTestId } = render(
+      <Harness busy />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'no steer callback'
       fireEvent.keyDown(editor, { key: 'Enter', metaKey: true })
     })
 
-    // Whitespace-only text should not trigger steer
+    // Should not throw — just silently no-ops
+  })
+
+  it('does NOT steer on plain Enter (no modifier)', async () => {
+    const onSteer = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness busy onSteer={onSteer} />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'plain enter'
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
     expect(onSteer).not.toHaveBeenCalled()
   })
 })

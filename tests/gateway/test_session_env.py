@@ -375,20 +375,22 @@ async def test_run_in_executor_with_context_survives_default_executor_shutdown()
 
 
 @pytest.mark.asyncio
-async def test_run_in_executor_with_context_recreates_shutdown_gateway_executor():
-    """A stopped gateway-owned executor should be replaced on the next use."""
+async def test_gateway_executor_refuses_resurrection_after_shutdown():
+    """A real gateway shutdown must NOT be resurrected by the recreate path.
+
+    _shutdown_executor() means "we're stopping" — the recreate-on-shutdown
+    logic exists to survive an *external* teardown of the loop default
+    (test_..._survives_default_executor_shutdown), not to undo our own stop.
+    """
     runner = object.__new__(GatewayRunner)
 
     try:
         first = await runner._run_in_executor_with_context(lambda: "first")
-        first_executor = runner._executor
+        assert first == "first"
         runner._shutdown_executor()
 
-        second = await runner._run_in_executor_with_context(lambda: "second")
-        second_executor = runner._executor
+        with pytest.raises(RuntimeError, match="shutting down"):
+            await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
 
-    assert first == "first"
-    assert second == "second"
-    assert second_executor is not first_executor

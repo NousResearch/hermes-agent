@@ -580,6 +580,13 @@ class TelegramAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             return False
 
+    @staticmethod
+    def _looks_like_negative_chat_id(chat_id: Any) -> bool:
+        try:
+            return int(chat_id) < 0
+        except (TypeError, ValueError):
+            return False
+
     @classmethod
     def _is_private_dm_topic_send(
         cls,
@@ -606,6 +613,60 @@ class TelegramAdapter(BasePlatformAdapter):
     @staticmethod
     def _dm_topic_missing_anchor_error() -> str:
         return "Telegram DM topic delivery requires a reply anchor; refusing to send outside the requested topic"
+
+    @staticmethod
+    def _normalize_chat_type(chat_type: Any) -> str:
+        """Normalize PTB ChatType enum/string/test-double values.
+
+        python-telegram-bot has represented ``Chat.type`` as plain strings and
+        enum-like values across versions.  Tests may also inject a
+        ``SimpleNamespace``/mock.  Prefer ``.value`` when available, then
+        ``.name``, and finally a conservative string fallback.
+        """
+        value = getattr(chat_type, "value", None)
+        if value is None:
+            value = getattr(chat_type, "name", None)
+        if value is None:
+            value = chat_type
+        raw = str(value or "").strip().lower()
+        raw = raw.split(".")[-1]
+        raw = raw.strip("<>'\" ")
+        if raw in {"private", "dm"}:
+            return "private"
+        if raw in {"group", "supergroup", "channel"}:
+            return raw
+        # Some test harnesses install ``telegram`` as a MagicMock before this
+        # module is imported.  In that case ChatType.SUPERGROUP stringifies to
+        # something like ``<MagicMock name='...SUPERGROUP' ...>``; still infer
+        # the intended type rather than defaulting to DM.
+        if "supergroup" in raw:
+            return "supergroup"
+        if "private" in raw:
+            return "private"
+        if "channel" in raw:
+            return "channel"
+        if "group" in raw:
+            return "group"
+        return raw
+
+    def _telegram_message_is_own(self, message: Any) -> bool:
+        """True when a Telegram message object was sent by this bot.
+
+        Reply context needs this so gateway.run can inject
+        ``[Replying to your previous message: ...]`` instead of the generic
+        ``[Replying to: ...]`` when the user replies to Hermes' own answer.
+        """
+        author = getattr(message, "from_user", None)
+        if author is None:
+            return False
+        bot = getattr(self, "_bot", None)
+        bot_id = getattr(bot, "id", None)
+        author_id = getattr(author, "id", None)
+        if bot_id is not None and author_id is not None:
+            return str(author_id) == str(bot_id)
+        bot_username = (getattr(bot, "username", None) or "").lstrip("@").lower()
+        author_username = (getattr(author, "username", None) or "").lstrip("@").lower()
+        return bool(bot_username and author_username and bot_username == author_username)
 
     @classmethod
     def _reply_to_message_id_for_send(
@@ -3627,6 +3688,58 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_busy_prompt(
+        self,
+        chat_id: str,
+        prompt: str,
+        prompt_id: str,
+        session_key: str = "",
+        can_steer: bool = True,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a busy-input decision prompt with inline buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            rows = [
+                [
+                    InlineKeyboardButton("➕ Queue", callback_data=f"bp:queue:{prompt_id}"),
+                    InlineKeyboardButton("⚡ Interrupt", callback_data=f"bp:interrupt:{prompt_id}"),
+                ]
+            ]
+            if can_steer:
+                rows.append([InlineKeyboardButton("⏩ Steer", callback_data=f"bp:steer:{prompt_id}")])
+            rows.append([InlineKeyboardButton("✖ Ignore", callback_data=f"bp:ignore:{prompt_id}")])
+            keyboard = InlineKeyboardMarkup(rows)
+
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(
+                reply_to, metadata, reply_to_mode=self._reply_to_mode
+            )
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": self.format_message(prompt),
+                "parse_mode": ParseMode.MARKDOWN_V2,
+                "reply_markup": keyboard,
+                "reply_to_message_id": reply_to_id,
+                **self._link_preview_kwargs(),
+            }
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                )
+            )
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_busy_prompt failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -4253,6 +4366,61 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- Busy-input callbacks (bp:choice:prompt_id) ---
+        if data.startswith("bp:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                choice = parts[1]
+                prompt_id = parts[2]
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                label_map = {
+                    "queue": "➕ Queued",
+                    "interrupt": "⚡ Interrupting",
+                    "steer": "⏩ Steered",
+                    "ignore": "✖ Ignored",
+                }
+                label = label_map.get(choice, "Resolved")
+                user_display = getattr(query.from_user, "first_name", "User")
+
+                runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+                resolver = getattr(runner, "resolve_busy_prompt_choice", None)
+                if not callable(resolver):
+                    await query.answer(text="Busy prompt resolver unavailable.")
+                    return
+
+                resolved = await resolver(prompt_id, choice)
+                if not resolved:
+                    await query.answer(text="This prompt has already been resolved.")
+                    return
+
+                await query.answer(text=label)
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(f"{label} by {user_display}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                logger.info(
+                    "Telegram busy prompt resolved (id=%s, choice=%s, user=%s)",
+                    prompt_id,
+                    choice,
+                    user_display,
+                )
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
@@ -7051,12 +7219,18 @@ class TelegramAdapter(BasePlatformAdapter):
         # Determine chat type.  Normalize through ``str`` so tests/mocks and
         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
         # string-like, but mocks often provide plain strings).
-        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        telegram_chat_type = self._normalize_chat_type(getattr(chat, "type", ""))
         chat_type = "dm"
         if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"
         elif telegram_chat_type == "channel":
             chat_type = "channel"
+        elif self._looks_like_negative_chat_id(getattr(chat, "id", None)):
+            # Defensive fallback for mocked/unknown ChatType values. Telegram
+            # private chats use positive ids; groups/supergroups/channels use
+            # negative ids. Treat unknown negative chats as groups so reply
+            # routing cannot accidentally collapse shared chats into a DM lane.
+            chat_type = "group"
 
         # Resolve Telegram topic name and skill binding.
         # Only preserve message_thread_id when Telegram marks the message as
@@ -7145,8 +7319,20 @@ class TelegramAdapter(BasePlatformAdapter):
         # / caption when no native quote is present.
         reply_to_id = None
         reply_to_text = None
+        reply_to_author_id = None
+        reply_to_author_name = None
+        reply_to_is_own = False
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
+            reply_author = getattr(message.reply_to_message, "from_user", None)
+            if reply_author is not None:
+                reply_to_author_id = str(getattr(reply_author, "id", "") or "") or None
+                reply_to_author_name = (
+                    getattr(reply_author, "full_name", None)
+                    or getattr(reply_author, "username", None)
+                    or None
+                )
+            reply_to_is_own = self._telegram_message_is_own(message.reply_to_message)
             quote = getattr(message, "quote", None)
             quote_text = getattr(quote, "text", None) if quote is not None else None
             if quote_text:
@@ -7189,6 +7375,9 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
+            reply_to_is_own_message=reply_to_is_own,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

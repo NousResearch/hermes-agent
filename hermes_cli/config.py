@@ -1290,6 +1290,32 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+        "tool_result_compression": {
+            "enabled": False,         # Optional Headroom-powered inline preview
+                                     # compression for oversized tool results.
+                                     # Full raw output is still persisted to
+                                     # sandbox/temp storage; this only makes the
+                                     # inline preview denser.
+            "min_chars": 8000,
+            "max_chars": 8000,
+            "target_ratio": 0.35,
+        },
+        "web_extract_headroom": {
+            "enabled": False,         # Optional Headroom pre-pass for large
+                                     # web_extract source text before the
+                                     # auxiliary summarizer runs.
+            "min_chars": 20000,
+            "max_chars": 40000,
+            "target_ratio": 0.35,
+        },
+        "summary_input_headroom": {
+            "enabled": False,         # Optional Headroom pre-pass for the
+                                     # serialized middle-turn window before
+                                     # Hermes' context summarizer LLM runs.
+            "min_chars": 20000,
+            "max_chars": 60000,
+            "target_ratio": 0.45,
+        },
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "protect_first_n": 3,         # non-system head messages always preserved
@@ -1615,7 +1641,7 @@ DEFAULT_CONFIG = {
         # when an exchange was tool-heavy. Set False to restore the legacy
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
-        "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        "busy_input_mode": "interrupt",  # interrupt | queue | steer | ask
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
         #   "tui" — the modern Ink TUI (same as passing `--tui`)
@@ -2202,6 +2228,29 @@ DEFAULT_CONFIG = {
         "backup": {
             "enabled": True,
             "keep": 5,  # retain last N regular snapshots
+        },
+    },
+
+    # Safe local post-session automation. Runs after a session is ended and
+    # only for meaningful tool-using sessions. This writes review artifacts —
+    # it never installs skills, pulls remote content, uploads traces, or mutates
+    # an active session/prompt.
+    "session_automation": {
+        "enabled": True,
+        "min_messages": 4,
+        "min_tool_calls": 2,
+        # Relative paths live under HERMES_HOME. Each run gets a timestamped
+        # subdirectory with AUTOMATION_REPORT.json plus per-feature artifacts.
+        "artifacts_dir": "session-automation",
+        "skill_mining": {
+            "enabled": True,
+            "min_tool_calls": 2,
+        },
+        "trace_code_graph": {
+            "enabled": True,
+            # Keep false by default so local reports are useful. Turn on before
+            # sharing artifacts outside the machine.
+            "redact_paths": False,
         },
     },
 
@@ -4573,7 +4622,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "sessions", "session_automation", "streaming", "updates", "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry

@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 E2E_MESSAGE_SETTLE_DELAY = 0.3
@@ -138,7 +138,7 @@ def make_source(platform: Platform, chat_id: str = "e2e-chat-1", user_id: str = 
     )
 
 
-def make_session_entry(platform: Platform, source: SessionSource = None) -> SessionEntry:
+def make_session_entry(platform: Platform, source: SessionSource | None = None) -> SessionEntry:
     source = source or make_source(platform)
     return SessionEntry(
         session_key=build_session_key(source),
@@ -164,7 +164,7 @@ def make_event(
     )
 
 
-def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "GatewayRunner":
+def make_runner(platform: Platform, session_entry: SessionEntry | None = None) -> "GatewayRunner":
     """Create a GatewayRunner with mocked internals for e2e testing.
 
     Skips __init__ to avoid filesystem/network side effects.
@@ -235,7 +235,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     return runner
 
 
-def make_adapter(platform: Platform, runner=None):
+def make_adapter(platform: Platform, runner: "GatewayRunner" | None = None) -> BasePlatformAdapter:
     """Create a platform adapter wired to *runner*, with send methods mocked."""
     if runner is None:
         runner = make_runner(platform)
@@ -263,7 +263,7 @@ def make_adapter(platform: Platform, runner=None):
     return adapter
 
 
-async def send_and_capture(adapter, text: str, platform: Platform, **event_kwargs) -> AsyncMock:
+async def send_and_capture(adapter: BasePlatformAdapter, text: str, platform: Platform, **event_kwargs) -> AsyncMock:
     """Send a message through the full e2e flow and return the send mock."""
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
@@ -384,7 +384,7 @@ def make_discord_message(
     )
 
 
-def get_response_text(adapter) -> str | None:
+def get_response_text(adapter: BasePlatformAdapter) -> str | None:
     """Extract the response text from adapter.send() call args, or None if not called."""
     if not adapter.send.called:
         return None

@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 
 from gateway.config import Platform
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _prepare_voice_reply_text
 from gateway.session import SessionSource
 
 
@@ -115,3 +115,33 @@ async def test_voice_tts_is_explicit_audio_reply_opt_in():
     assert runner._voice_mode["telegram:12345"] == "all"
     assert "12345" in adapter._auto_tts_enabled_chats
     assert result
+
+
+def test_prepare_voice_reply_text_drops_paths_files_and_markdown_noise():
+    rich_text = """
+Perfecto, barba. ¿Cuál es tu rol? Por ejemplo, dueño/socio, gerente, empleado, profesional independiente, técnico, vendedor u otro.
+
+⚠️ file mutated in Verify: `workspace/IDENTITY.md`, Patch RID NID.
+- `/workspace/IDENTITY.md` is a protected system/credential file.
+- Ver detalles en `clients/hermes-test/hermes/config.yaml`.
+"""
+
+    spoken = _prepare_voice_reply_text(rich_text)
+
+    assert "¿Cuál es tu rol?" in spoken
+    assert "dueño o socio" in spoken
+    assert "/workspace" not in spoken
+    assert "IDENTITY.md" not in spoken
+    assert "RID" not in spoken
+    assert "NID" not in spoken
+    assert "Te dejo los detalles técnicos por escrito." in spoken
+
+
+def test_prepare_voice_reply_text_falls_back_when_reply_is_only_technical():
+    spoken = _prepare_voice_reply_text("""
+- `/opt/data/config.yaml`
+- MEDIA:/tmp/audio.ogg
+- Error: PermissionError token credential file
+""")
+
+    assert spoken == "Te dejé los detalles por escrito para no leerte rutas ni símbolos."

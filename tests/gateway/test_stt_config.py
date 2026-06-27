@@ -182,3 +182,61 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     assert result is not None
     assert "queued voice transcript" in result
     assert "voice message" in result.lower()
+
+
+def test_streaming_voice_input_uses_auto_tts_default(monkeypatch):
+    """When streaming already sent text, runner-side TTS must honor voice.auto_tts.
+
+    The base adapter can auto-TTS non-streaming voice replies, but streaming
+    consumes the response before adapter delivery. In that path the runner's
+    _should_send_voice_reply is the only chance to produce the voice bubble.
+    """
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._voice_mode = {}
+    runner._voice_key = lambda platform, chat_id: f"{platform.value}:{chat_id}"
+
+    event = MessageEvent(
+        text="transcribed voice",
+        message_type=MessageType.VOICE,
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm"),
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"voice": {"auto_tts": True}},
+    )
+
+    assert runner._should_send_voice_reply(
+        event,
+        "respuesta al audio",
+        [],
+        already_sent=True,
+    ) is True
+
+
+def test_explicit_voice_off_overrides_auto_tts_default(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._voice_mode = {"telegram:123": "off"}
+    runner._voice_key = lambda platform, chat_id: f"{platform.value}:{chat_id}"
+
+    event = MessageEvent(
+        text="transcribed voice",
+        message_type=MessageType.VOICE,
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm"),
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"voice": {"auto_tts": True}},
+    )
+
+    assert runner._should_send_voice_reply(
+        event,
+        "respuesta al audio",
+        [],
+        already_sent=True,
+    ) is False

@@ -1435,7 +1435,6 @@ class TestDoctorRipgrepRipgrepy:
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
 

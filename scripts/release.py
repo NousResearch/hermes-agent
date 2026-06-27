@@ -49,6 +49,10 @@ AUTHOR_MAP = {
     "eynzof@gmail.com": "Eynzof",
     "hermes@local": "dfty99",
     "maxwellgeng@outlook.com": "MaxwellGengYF",
+    # upstream contributors picked up via the 2026-06-27 sync (PR #57)
+    "DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",
+    "SJWATTS89@OUTLOOK.COM": "lEWFkRAD",
+    "poli.koltsova@gmail.com": "wnuuee1",
     "blaryx@gmail.com": "Blaryxoff",  # PR #32602 salvage (deep-merge PUT /api/config to preserve unrelated sections; #13396)
     "diamondeyesfox@gmail.com": "DiamondEyesFox",  # PR #53351 salvage (rebaseline in-place compression flushes to prevent duplicate compacted rows; #9096)
     "piyrw9754@gmail.com": "rlaope",  # PR #35075 salvage (align cron invisible-unicode set with install-time scanner; #35075)

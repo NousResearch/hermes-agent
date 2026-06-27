@@ -981,7 +981,10 @@ class TestKillProcess:
                 result = registry.kill_process(s.id)
 
             assert result["status"] == "killed"
-            mock_terminate.assert_called_once_with(424242)
+            # Upstream's _terminate_host_pid takes (pid, expected_start); assert
+            # it was called once for the host pid, tolerating the 2nd arg.
+            mock_terminate.assert_called_once()
+            assert mock_terminate.call_args.args[0] == 424242
         finally:
             registry._running.pop(s.id, None)
 

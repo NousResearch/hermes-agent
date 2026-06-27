@@ -112,7 +112,7 @@ def test_classify_port_conflict_local_owner(runtime_dir, monkeypatch):
 # feishu._classify_address_in_use
 # --------------------------------------------------------------------------- #
 def test_classify_address_in_use_detects_eaddrinuse(runtime_dir):
-    from gateway.platforms.feishu import _classify_address_in_use
+    from plugins.platforms.feishu.adapter import _classify_address_in_use
 
     wrapped = RuntimeError("startup failed")
     wrapped.__cause__ = OSError(errno.EADDRINUSE, "Address already in use")
@@ -123,7 +123,7 @@ def test_classify_address_in_use_detects_eaddrinuse(runtime_dir):
 
 
 def test_classify_address_in_use_windows_code(runtime_dir):
-    from gateway.platforms.feishu import _classify_address_in_use
+    from plugins.platforms.feishu.adapter import _classify_address_in_use
 
     win = OSError()
     win.errno = 10048  # WSAEADDRINUSE
@@ -131,7 +131,7 @@ def test_classify_address_in_use_windows_code(runtime_dir):
 
 
 def test_classify_address_in_use_ignores_other_errors(runtime_dir):
-    from gateway.platforms.feishu import _classify_address_in_use
+    from plugins.platforms.feishu.adapter import _classify_address_in_use
 
     assert _classify_address_in_use(ValueError("nope"), 8765) is None
 

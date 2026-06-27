@@ -2253,6 +2253,24 @@ def list_authenticated_providers(
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 
+    # Surface a custom / uncurated model the user selected via the CLI.
+    # Each row's model list is its curated/live catalog, so a model the user set
+    # with `/model <provider>/<uncurated-name>` would otherwise be invisible in
+    # every picker — the main model picker AND the MoA reference/aggregator slot
+    # pickers, which read these same rows. Inject it at the front of the current
+    # provider's row (matched by slug) so it is selectable and shown. Done as a
+    # post-pass so it covers every provider section uniformly, regardless of
+    # which branch emitted the row.
+    if current_model:
+        for _row in results:
+            if not _row.get("is_current"):
+                continue
+            _models = _row.get("models") or []
+            if current_model not in _models:
+                _row["models"] = [current_model, *_models]
+                _row["total_models"] = _row.get("total_models", len(_models)) + 1
+            break
+
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 

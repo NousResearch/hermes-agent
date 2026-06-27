@@ -15,6 +15,63 @@ from typing import Any, Iterable
 
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
 
+# Non-code file extensions whose edits carry no verifiable runtime behavior:
+# documentation, prose, and data/markup that no test/build exercises. When a
+# turn touches ONLY these, verify-on-stop has nothing to check, so the nudge is
+# suppressed (this is fix "C" for the doc/markdown/skill false-positive — a
+# SKILL.md or README edit must never demand a /tmp verification script). A turn
+# that edits any non-listed path (a real source/code/config file) still nudges.
+_NON_CODE_VERIFY_EXTENSIONS = frozenset(
+    {
+        ".md",
+        ".markdown",
+        ".mdx",
+        ".rst",
+        ".txt",
+        ".text",
+        ".adoc",
+        ".asciidoc",
+        ".org",
+        ".log",
+        ".csv",
+        ".tsv",
+    }
+)
+
+# Filenames (case-insensitive, extension-less or otherwise) that are pure prose
+# even without a recognized doc extension.
+_NON_CODE_VERIFY_FILENAMES = frozenset(
+    {
+        "license",
+        "licence",
+        "notice",
+        "authors",
+        "contributors",
+        "changelog",
+        "codeowners",
+    }
+)
+
+
+def _is_non_code_path(raw: str) -> bool:
+    """Return True when a changed path is documentation/prose with nothing to verify."""
+    try:
+        p = Path(str(raw))
+    except Exception:
+        return False
+    suffix = p.suffix.lower()
+    if suffix in _NON_CODE_VERIFY_EXTENSIONS:
+        return True
+    if not suffix and p.name.lower() in _NON_CODE_VERIFY_FILENAMES:
+        return True
+    return False
+
+
+def _filter_verifiable_paths(paths: Iterable[str]) -> list[str]:
+    """Drop documentation/prose paths; keep paths that could have verifiable behavior."""
+    return [p for p in paths if p and not _is_non_code_path(p)]
+
+
 # Session identities (platform or source) that are NOT human conversational
 # messaging surfaces: interactive coding surfaces (CLI, TUI, desktop, codex,
 # local, gateway) and programmatic callers (API server, webhooks, tools).
@@ -79,12 +136,13 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether edit -> verify-before-finish behavior is enabled.
 
     Precedence: an explicit ``HERMES_VERIFY_ON_STOP`` env var wins, then an
-    explicit boolean ``agent.verify_on_stop`` config value, then a surface-aware
-    default. The config default is the sentinel ``"auto"`` (see
-    ``DEFAULT_CONFIG``), which resolves to ON for interactive coding surfaces
+    explicit ``agent.verify_on_stop`` config value. The config default is
+    ``False`` (see ``DEFAULT_CONFIG``) — verify-on-stop is OFF unless the user
+    opts in. The legacy ``"auto"`` sentinel is still honored for anyone who
+    sets it explicitly: it resolves to ON for interactive coding surfaces
     (CLI, TUI, desktop) and programmatic callers, and OFF for conversational
-    messaging surfaces (Telegram, Discord, etc.) where the verification
-    narrative would otherwise reach a human as chat noise.
+    messaging surfaces (Telegram, Discord, etc.). A missing/unknown value
+    falls back to OFF.
     """
     env = os.environ.get("HERMES_VERIFY_ON_STOP")
     if env is not None:
@@ -106,8 +164,11 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
             return True
         if token in {"0", "false", "no", "off"}:
             return False
-    # "auto", missing, or any other value -> surface-aware default.
-    return not _session_is_messaging_surface()
+        if token == "auto":
+            # Explicit opt-in to the legacy surface-aware behavior.
+            return not _session_is_messaging_surface()
+    # Missing or unknown value -> OFF (the new default).
+    return False
 
 
 def _candidate_cwds(paths: Iterable[str]) -> list[Path]:
@@ -190,7 +251,10 @@ def build_verify_on_stop_nudge(
     max_attempts: int = 2,
 ) -> str | None:
     """Return a synthetic follow-up when edited code lacks fresh verification."""
-    paths = sorted({str(p) for p in changed_paths if p})
+    # Drop documentation/prose paths (markdown, skills, README, LICENSE, ...) —
+    # they carry no verifiable behavior, so a turn that touched only those has
+    # nothing to verify and must not nudge.
+    paths = sorted({str(p) for p in _filter_verifiable_paths(changed_paths)})
     if not paths or attempts >= max_attempts:
         return None
 

@@ -1482,11 +1482,12 @@ class TelegramAdapter(BasePlatformAdapter):
     def _content_is_pipe_table_primary(self, content: str) -> bool:
         """True when pipe tables are the only rich construct in *content*.
 
-        Tables are auto-routed to ``sendRichMessage`` even when the full
-        ``rich_messages`` opt-in is off — MarkdownV2 has no table syntax and
-        the legacy path rewrites them into bullet lists, which reads like a
-        regression when users enable Telegram Topics and expect native tables.
-        Task lists, ``<details>``, and block math still require the full opt-in.
+        Used downstream to decide rendering strategy *after* the
+        ``rich_messages`` config gate has already approved rich delivery.
+        MarkdownV2 has no table syntax — the legacy path rewrites them into
+        bullet lists — so callers may choose native table rendering when the
+        opt-in is active.  Task lists, ``<details>``, and block math indicate
+        composite rich content and return ``False``.
         """
         if not content or not any(
             _TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()
@@ -1504,7 +1505,6 @@ class TelegramAdapter(BasePlatformAdapter):
         """Whether rich delivery is allowed for this payload."""
         return bool(
             getattr(self, "_rich_messages_enabled", True)
-            or self._content_is_pipe_table_primary(content)
         )
 
     def _rich_eligible(self, content: str) -> bool:

@@ -63,6 +63,7 @@ class TestFailoverReason:
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
+            "vllm_tool_choice_unconfigured",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}
@@ -1129,6 +1130,26 @@ class TestClassifyApiError:
         e = MockAPIError("input is too long for model", status_code=400)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
+
+    def test_vllm_tool_choice_flags_missing(self):
+        """vLLM 400 when --enable-auto-tool-choice / parser not configured."""
+        e = MockAPIError(
+            '"auto" tool choice requires --enable-auto-tool-choice and '
+            "--tool-call-parser to be set",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="nemotron")
+        assert result.reason == FailoverReason.vllm_tool_choice_unconfigured
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_vllm_tool_choice_flags_missing_without_status_code(self):
+        e = MockAPIError(
+            "tool choice requires --enable-auto-tool-choice and "
+            "--tool-call-parser to be set"
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.vllm_tool_choice_unconfigured
 
     def test_ollama_context_length_exceeded(self):
         """Ollama 'context length exceeded' error → context_overflow."""

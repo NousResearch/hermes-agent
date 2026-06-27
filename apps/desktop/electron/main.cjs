@@ -2632,10 +2632,17 @@ async function ensureRuntime(backend) {
       hermesHome: HERMES_HOME,
       logRoot: path.join(HERMES_HOME, 'logs'),
       abortSignal: bootstrapAbortController.signal,
-      // Packaged ApexNodes targets mainland China: install via our COS mirror +
-      // CN package mirrors so a fresh, VPN-less machine can bootstrap. Dev runs
-      // (unpackaged) keep the upstream GitHub/PyPI/npm path.
-      cnMirrors: IS_PACKAGED,
+      // Region (CN mirrors vs upstream defaults) is auto-detected per machine by
+      // install.sh / install.ps1 themselves (IP/timezone heuristic), so a
+      // packaged build serves both foreign and mainland-China users correctly —
+      // we deliberately do NOT force cnMirrors here (the old "packaged == China"
+      // assumption wrongly gave every overseas user the slow/blocked CN
+      // mirrors). Escape hatches still win: an explicit HERMES_CN_MIRRORS in the
+      // environment, or APEXNODES_REGION=cn|global, override auto-detection.
+      //
+      // We DO always thread the COS base through (decoupled from the mirror
+      // flag) so that when the installer auto-detects CN it can fetch the
+      // runtime tarball + uv from our public bucket instead of github.com.
       runtimeCosBase: RUNTIME_COS_BASE,
       onEvent: ev => {
         // Tee every bootstrap event to (a) the desktop log for forensics

@@ -187,28 +187,45 @@ test('resolveInstallScript prefers the bundled installer over the GitHub downloa
   }
 })
 
-test('cnInstallEnv is empty when CN mode is off and populated when on', () => {
+test('cnInstallEnv decouples the COS base from the mirror flag for auto-detection', () => {
   const savedFlag = process.env.HERMES_CN_MIRRORS
   const savedBase = process.env.HERMES_RUNTIME_COS_BASE
   try {
     delete process.env.HERMES_CN_MIRRORS
     delete process.env.HERMES_RUNTIME_COS_BASE
 
-    // Off by default (no opt-in, no env) -> spawn env untouched.
+    // No opt-in, no env, no COS base -> spawn env untouched.
     assert.deepEqual(cnInstallEnv(), {})
     assert.deepEqual(cnInstallEnv({ cnMirrors: false }), {})
 
-    // On via the passed flag, with the COS base threaded through.
+    // KEY CHANGE: a packaged build passes runtimeCosBase WITHOUT forcing the
+    // mirror flag. The COS base must still be threaded through (so install.sh's
+    // own auto-detection can fetch from COS when it picks CN), and the mirror
+    // flag must be OMITTED so install.sh runs its region auto-detection.
+    assert.deepEqual(cnInstallEnv({ cnMirrors: false, runtimeCosBase: 'https://cos.example/runtime' }), {
+      HERMES_RUNTIME_COS_BASE: 'https://cos.example/runtime'
+    })
+
+    // Caller forces CN on (e.g. an explicit user/region choice upstream).
     assert.deepEqual(cnInstallEnv({ cnMirrors: true, runtimeCosBase: 'https://cos.example/runtime' }), {
       HERMES_CN_MIRRORS: '1',
       HERMES_RUNTIME_COS_BASE: 'https://cos.example/runtime'
     })
 
-    // An explicit env flag of '0' forces CN mode off even when the caller opts in.
+    // Escape hatch: an explicit env flag of '0' is forwarded verbatim (install.sh
+    // treats a set flag as authoritative and stays on upstream defaults without
+    // probing) even when the caller opts in. The COS base still rides along.
     process.env.HERMES_CN_MIRRORS = '0'
-    assert.deepEqual(cnInstallEnv({ cnMirrors: true }), {})
+    assert.deepEqual(cnInstallEnv({ cnMirrors: true, runtimeCosBase: 'https://cos.example/runtime' }), {
+      HERMES_CN_MIRRORS: '0',
+      HERMES_RUNTIME_COS_BASE: 'https://cos.example/runtime'
+    })
+    // ...and with no COS base, just the forwarded flag.
+    delete process.env.HERMES_RUNTIME_COS_BASE
+    assert.deepEqual(cnInstallEnv({ cnMirrors: true }), { HERMES_CN_MIRRORS: '0' })
 
-    // An explicit env flag of '1' forces it on and the env COS base wins.
+    // Escape hatch: an explicit env flag of '1' forces it on and the env COS
+    // base wins over a passed value.
     process.env.HERMES_CN_MIRRORS = '1'
     process.env.HERMES_RUNTIME_COS_BASE = 'https://override.example/r'
     assert.deepEqual(cnInstallEnv({ cnMirrors: false, runtimeCosBase: 'https://passed/r' }), {

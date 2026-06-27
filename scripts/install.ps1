@@ -76,6 +76,109 @@ $ErrorActionPreference = "Stop"
 # mirror via the real environment.
 function Test-CnEnabled { return ($env:HERMES_CN_MIRRORS -eq "1") }
 
+# ===========================================================================
+# ApexNodes region detection (decides whether CN mirror mode turns on)
+# ===========================================================================
+# Twin of the "ApexNodes region detection" block in install.sh. It only ever
+# decides a region and, from it, sets $env:HERMES_CN_MIRRORS -- the mirror URLs
+# stay defined solely in the CN block below. Precedence (highest first):
+#   1. $env:HERMES_CN_MIRRORS already set -> respect verbatim, skip detection.
+#      (The packaged desktop / ops set this, so existing behavior is unchanged.)
+#   2. $env:APEXNODES_REGION = cn|global -> explicit operator/user override.
+#   3. neither set -> auto-detect mainland China, defaulting to "global" on any
+#      doubt (a wrong guess only slows a download; it must never break install).
+# Decision is cached in $HermesHome\.apexnodes-region so per-stage processes
+# probe the network at most once. Diagnostics use Write-Info/Write-Warn, which
+# write to the PowerShell information stream -- never stdout -- so the manifest /
+# stage JSON frames the bootstrap runner parses stay clean.
+
+# Cheap offline gate: is the machine's timezone plausibly mainland China? CST
+# (UTC+8) also covers HK/Taiwan/Singapore, so this only gates the network probe.
+function Test-TimezoneSuggestsCn {
+    try {
+        $tz = Get-TimeZone
+        if ($tz.Id -match 'China|Taipei' ) { return $true }  # "China Standard Time"
+        # Numeric offset fallback (UTC+08:00). Combined with the probe this still
+        # isolates the mainland from other +0800 regions.
+        if ($tz.BaseUtcOffset -eq ([TimeSpan]::FromHours(8))) { return $true }
+    } catch { }
+    return $false
+}
+
+# Decisive probe: race a domestic endpoint against a foreign one with short
+# timeouts. Classify CN only when domestic SUCCEEDS and foreign FAILS -- a
+# conservative AND, so transient flakiness biases toward "global" (defaults).
+function Test-NetworkSuggestsCn {
+    $cnUrl = "https://registry.npmmirror.com/"
+    $foreignUrl = "https://registry.npmjs.org/"
+    $cnOk = $false
+    $foreignOk = $false
+    try { Invoke-WebRequest -Uri $cnUrl -Method Head -TimeoutSec 4 -UseBasicParsing | Out-Null; $cnOk = $true } catch { }
+    try { Invoke-WebRequest -Uri $foreignUrl -Method Head -TimeoutSec 4 -UseBasicParsing | Out-Null; $foreignOk = $true } catch { }
+    return ($cnOk -and -not $foreignOk)
+}
+
+function Resolve-ApexRegion {
+    # Rule 1: explicit HERMES_CN_MIRRORS wins; do not touch it, do not probe.
+    if (-not [string]::IsNullOrEmpty($env:HERMES_CN_MIRRORS)) { return }
+
+    # Rule 2: explicit region knob.
+    $region = ("$env:APEXNODES_REGION").Trim().ToLowerInvariant()
+    switch ($region) {
+        { $_ -in @('cn','china','mainland') } {
+            $env:HERMES_CN_MIRRORS = '1'
+            Write-Info "ApexNodes region: cn (from APEXNODES_REGION) -- using China mirrors"
+            return
+        }
+        { $_ -in @('global','intl','international','foreign','row') } {
+            $env:HERMES_CN_MIRRORS = '0'
+            Write-Info "ApexNodes region: global (from APEXNODES_REGION) -- using default sources"
+            return
+        }
+        '' { }  # fall through to auto-detect
+        default {
+            Write-Warn "Unknown APEXNODES_REGION='$env:APEXNODES_REGION' (expected cn|global) -- auto-detecting"
+        }
+    }
+
+    # Rule 3: auto-detect. Reuse a cached decision from an earlier stage process.
+    $cache = Join-Path $HermesHome ".apexnodes-region"
+    if (Test-Path $cache) {
+        $cached = (Get-Content $cache -ErrorAction SilentlyContinue | Select-Object -First 1)
+        $cached = ("$cached").Trim().ToLowerInvariant()
+        if ($cached -eq 'cn')     { $env:HERMES_CN_MIRRORS = '1'; return }
+        if ($cached -eq 'global') { $env:HERMES_CN_MIRRORS = '0'; return }
+    }
+
+    # No cache: decide now. Gate the probe on the cheap timezone hint so the
+    # common (non-CN) case skips the network entirely.
+    $detected = 'global'
+    if (Test-TimezoneSuggestsCn) {
+        if (Test-NetworkSuggestsCn) { $detected = 'cn' }
+    }
+
+    # Persist for sibling stage processes (best-effort; never fail the install).
+    try {
+        if (-not (Test-Path $HermesHome)) { New-Item -ItemType Directory -Force -Path $HermesHome | Out-Null }
+        Set-Content -Path $cache -Value $detected -Encoding ASCII -ErrorAction SilentlyContinue
+    } catch { }
+
+    if ($detected -eq 'cn') {
+        $env:HERMES_CN_MIRRORS = '1'
+        Write-Info "ApexNodes region: cn (auto-detected) -- using China mirrors"
+        Write-Info "  (override with APEXNODES_REGION=global if this is wrong)"
+    } else {
+        $env:HERMES_CN_MIRRORS = '0'
+        # Quiet on the global path to keep upstream/CI output byte-clean.
+    }
+}
+
+# Skip region detection for -Manifest (pure metadata; a probe there would only
+# slow the bootstrap runner's first call). Every other invocation resolves it.
+if (-not $Manifest) {
+    Resolve-ApexRegion
+}
+
 if (Test-CnEnabled) {
     # Python package index -> Tsinghua TUNA (PyPI mirror).
     if (-not $env:UV_DEFAULT_INDEX)         { $env:UV_DEFAULT_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -1616,9 +1719,29 @@ function Install-Venv {
     }
     
     Write-Info "Creating virtual environment with Python $PythonVersion..."
-    
+
     Push-Location $InstallDir
-    
+
+    # Skip recreation when a healthy venv already exists at the right Python
+    # version. Previously this unconditionally removed + recreated venv on every
+    # run (and forced a full dep reinstall behind it) even on idempotent stage
+    # retries. We still re-pin UV_PYTHON so the python-deps stage stays correct.
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (Test-Path $venvPythonExe) {
+        $venvVer = $null
+        try {
+            $venvVer = (& $venvPythonExe -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null)
+        } catch { }
+        if ($venvVer -eq $PythonVersion) {
+            $env:UV_PYTHON = $venvPythonExe
+            Pop-Location
+            Write-Success "Virtual environment already present (Python $venvVer) -- skipping"
+            $script:_StageSkippedReason = "venv already present (Python $venvVer)"
+            return
+        }
+        Write-Info "Existing venv is Python $venvVer, need $PythonVersion -- recreating..."
+    }
+
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
         # On Windows, native Python extensions (e.g. _bcrypt.pyd) are loaded as
@@ -1686,6 +1809,25 @@ function Install-Dependencies {
         $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
         if (Test-Path $venvPythonExe) {
             $env:UV_PYTHON = $venvPythonExe
+        }
+    }
+
+    # Fast path: if the venv already exactly matches the lockfile, skip the whole
+    # install. `uv sync --locked --check` is read-only -- it verifies the env
+    # against uv.lock and exits non-zero if anything would change -- so this can
+    # never mask a stale or partial environment (those fall through and
+    # reinstall). Correctness-preserving by construction: we only skip when uv
+    # itself confirms nothing would change. Mirrors install.sh::install_deps.
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if ((-not $NoVenv) -and (Test-Path "uv.lock") -and (Test-Path $venvPythonExe)) {
+        $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+        Invoke-NativeWithRelaxedErrorAction { & $UvCmd sync --extra all --locked --check *> $null }
+        if ($LASTEXITCODE -eq 0) {
+            Pop-Location
+            Write-Success "Python dependencies already satisfied (uv.lock) -- skipping"
+            $script:InstalledTier = "already satisfied (uv.lock)"
+            $script:_StageSkippedReason = "Python dependencies already satisfied (uv.lock)"
+            return
         }
     }
 

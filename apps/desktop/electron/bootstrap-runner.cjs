@@ -119,16 +119,44 @@ function bundledInstallScript(resourcesPath) {
   }
 }
 
-// Build the extra environment handed to the install.sh spawn that activates its
-// CN mirror mode (see the "ApexNodes China mirror mode" block in install.sh).
-// Returns {} when CN mode is off so the spawn env is untouched. An explicit
-// HERMES_CN_MIRRORS / HERMES_RUNTIME_COS_BASE in the real environment always
-// wins over the passed defaults (tests, ops overrides, opting out).
+// Build the extra environment handed to the install.sh / install.ps1 spawn.
+//
+// Two INDEPENDENT pieces, deliberately decoupled (see PR #23 follow-up):
+//
+//   1. HERMES_RUNTIME_COS_BASE — the public-read COS base that hosts the runtime
+//      tarball + uv binary. This is threaded through *regardless of the mirror
+//      decision* so that when install.sh's OWN region auto-detection picks CN,
+//      it has the COS base it needs (install.sh has no built-in default; without
+//      it the CN runtime fetch silently falls back to git clone / astral.sh,
+//      which are blocked in mainland China). An explicit env value wins.
+//
+//   2. HERMES_CN_MIRRORS — only set when the mirror region is being FORCED, via
+//      either an explicit process.env.HERMES_CN_MIRRORS (ops/CI escape hatch) or
+//      the caller passing cnMirrors:true. When neither forces it we OMIT the
+//      flag entirely so install.sh runs its IP/timezone region auto-detection
+//      (precedence rule #3 in install.sh). This is the whole point: packaged
+//      desktop builds must auto-detect per machine, not statically assume China.
+//
+// Forwarding an explicit '0' is intentional — install.sh treats a set
+// HERMES_CN_MIRRORS as authoritative (rule #1) and stays on upstream defaults
+// without probing, which is what an operator who set '0' wants.
 function cnInstallEnv({ cnMirrors = false, runtimeCosBase = '' } = {}) {
-  const flag = process.env.HERMES_CN_MIRRORS != null ? process.env.HERMES_CN_MIRRORS : cnMirrors ? '1' : '0'
-  if (flag !== '1') return {}
+  const env = {}
+
+  // COS base: env override first, then the passed value. Only include it when
+  // non-empty so we never blank out an inherited value with ''.
   const base = process.env.HERMES_RUNTIME_COS_BASE != null ? process.env.HERMES_RUNTIME_COS_BASE : runtimeCosBase || ''
-  return { HERMES_CN_MIRRORS: '1', HERMES_RUNTIME_COS_BASE: base }
+  if (base) env.HERMES_RUNTIME_COS_BASE = base
+
+  // Mirror flag: forward an explicit env value verbatim; otherwise only force it
+  // on when the caller opts in. Unset => let install.sh auto-detect the region.
+  if (process.env.HERMES_CN_MIRRORS != null) {
+    env.HERMES_CN_MIRRORS = process.env.HERMES_CN_MIRRORS
+  } else if (cnMirrors) {
+    env.HERMES_CN_MIRRORS = '1'
+  }
+
+  return env
 }
 
 function cachedScriptPath(hermesHome, commit) {

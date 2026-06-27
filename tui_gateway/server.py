@@ -358,11 +358,13 @@ class _SlashWorker:
             # _drain_stdout/_drain_stderr hits EOF and the threads exit
             # promptly. The timeout is a safety net for edge cases where
             # the subprocess is mid-write (#53303).
-            for t in (self._drain_thread_stdout, self._drain_thread_stderr):
-                try:
-                    t.join(timeout=2)
-                except Exception:
-                    pass
+            for t in (getattr(self, '_drain_thread_stdout', None),
+                      getattr(self, '_drain_thread_stderr', None)):
+                if t is not None:
+                    try:
+                        t.join(timeout=2)
+                    except Exception:
+                        pass
 
 
 def _load_busy_input_mode() -> str:

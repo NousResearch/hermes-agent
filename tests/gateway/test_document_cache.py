@@ -16,6 +16,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cleanup_document_cache,
     get_document_cache_dir,
+    resolve_document_types,
 )
 
 # ---------------------------------------------------------------------------
@@ -168,6 +169,42 @@ class TestSupportedDocumentTypes:
         assert ext in SUPPORTED_DOCUMENT_TYPES
 
 
+class TestResolveDocumentTypes:
+    def test_defaults_match_builtin_allowlist(self):
+        assert resolve_document_types() == SUPPORTED_DOCUMENT_TYPES
+
+    def test_global_config_can_add_and_remove_extensions(self):
+        effective = resolve_document_types({
+            "_global_document_types": {
+                "add": {".epub": "application/epub+zip", "foo": "text/plain"},
+                "remove": [".doc"],
+            }
+        })
+        assert effective[".epub"] == "application/epub+zip"
+        assert effective[".foo"] == "text/plain"
+        assert ".doc" not in effective
+
+    def test_platform_config_applies_after_global_config(self):
+        effective = resolve_document_types({
+            "_global_document_types": {
+                "add": {".foo": "application/x-global"},
+                "remove": [".pdf"],
+            },
+            "document_types": {
+                "add": {".foo": "application/x-platform", ".pdf": "application/pdf"},
+                "remove": [".doc"],
+            },
+        })
+        assert effective[".foo"] == "application/x-platform"
+        assert effective[".pdf"] == "application/pdf"
+        assert ".doc" not in effective
+
+    def test_invalid_extension_entries_are_ignored(self):
+        effective = resolve_document_types({"document_types": {"add": {"bad/name": "text/plain", ".ok": ""}}})
+        assert "bad/name" not in effective
+        assert effective[".ok"] == "application/octet-stream"
+
+
 # ---------------------------------------------------------------------------
 # TestCacheMediaBytes — the unified, platform-agnostic caching primitive
 # ---------------------------------------------------------------------------
@@ -237,6 +274,28 @@ class TestCacheMediaBytes:
         assert result is not None
         assert result.kind == "document"
         assert result.media_type == "application/octet-stream"
+
+    def test_custom_document_type_routes_to_document(self):
+        from gateway.platforms.base import cache_media_bytes
+        result = cache_media_bytes(
+            b"PK\x03\x04 fake epub",
+            filename="book.epub",
+            mime_type="application/epub+zip",
+            document_type_config={"document_types": {"add": {".epub": "application/epub+zip"}}},
+        )
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "application/epub+zip"
+
+    def test_removed_document_type_returns_none(self):
+        from gateway.platforms.base import cache_media_bytes
+        result = cache_media_bytes(
+            b"%PDF-1.4 body",
+            filename="report.pdf",
+            mime_type="application/pdf",
+            document_type_config={"document_types": {"remove": [".pdf"]}},
+        )
+        assert result is None
 
     def test_invalid_image_returns_none(self):
         from gateway.platforms.base import cache_media_bytes

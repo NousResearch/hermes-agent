@@ -245,7 +245,7 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
 # Tool schemas + registration
 # --------------------------------------------------------------------------
 
-_SCHEMAS = {
+_SCHEMAS: dict[str, dict[str, Any]] = {
     "a2a_discover": {
         "type": "function",
         "function": {

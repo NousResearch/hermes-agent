@@ -510,11 +510,17 @@ def classify_api_error(
     # the body message so patterns like "try again" in 402 disambiguation
     # are detected even when only present in the structured body.
     #
+    # Walk the __cause__/__context__ chain for the raw text too (mirroring the
+    # status-code and body traversals above): a transport/SDK layer may
+    # re-raise ``... from inner`` where the overload/rate-limit signal lives
+    # only in str(inner) with no structured body, so reading str(outer) alone
+    # would miss it and the 429-overload disambiguation below would not fire.
+    #
     # Also extract metadata.raw — OpenRouter wraps upstream provider errors
     # inside {"error": {"message": "Provider returned error", "metadata":
     # {"raw": "<actual error JSON>"}}} and the real error message (e.g.
     # "context length exceeded") is only in the inner JSON.
-    _raw_msg = str(error).lower()
+    _raw_msg = _extract_error_text(error).lower()
     _body_msg = ""
     _metadata_msg = ""
     if isinstance(body, dict):
@@ -1371,6 +1377,28 @@ def _extract_error_body(error: Exception) -> dict:
             break
         current = cause
     return {}
+
+
+def _extract_error_text(error: Exception) -> str:
+    """Join ``str()`` of the error and its cause chain.
+
+    Mirrors the ``_extract_status_code`` / ``_extract_error_body`` traversal
+    depth so overload/rate-limit signals carried only in an inner exception's
+    text (e.g. a transport layer re-raising ``... from inner`` where ``inner``
+    holds the "overloaded" message with no structured body) are visible to
+    pattern matching, not just ``str(outer)``.
+    """
+    parts: list = []
+    current = error
+    for _ in range(5):  # Match _extract_status_code() traversal depth.
+        text = str(current)
+        if text and text not in parts:
+            parts.append(text)
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
+    return " ".join(parts)
 
 
 def _extract_error_code(body: dict) -> str:

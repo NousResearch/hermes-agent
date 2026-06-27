@@ -410,6 +410,44 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_rotate_credential is True
 
+    def test_wrapped_429_overloaded_in_inner_text_is_overloaded(self):
+        """A transport/SDK layer that re-raises a 429 ``... from inner`` where
+        the overload signal lives only in the inner exception's text (no
+        structured body) must still classify as overloaded — back off + retry
+        the same key — NOT rate_limit (which would rotate and exhaust the pool).
+
+        _extract_status_code / _extract_error_body already walk the cause chain;
+        the pattern-matching text must too, otherwise the inner 429 status is
+        found but the overload signal is invisible and the error mis-rotates the
+        credential pool (the wrapped-path twin of #14038)."""
+        inner = MockAPIError(
+            "The service may be temporarily overloaded, please try again later",
+            status_code=429,
+        )  # MockAPIError defaults body={}, so the signal is str-only.
+        outer = Exception("upstream request failed")
+        outer.__cause__ = inner
+
+        result = classify_api_error(outer, provider="zai")
+
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
+    def test_wrapped_429_genuine_rate_limit_still_rotates(self):
+        """Guard: a wrapped genuine 429 rate limit (inner text has no overload
+        language) must still classify as rate_limit and rotate — proves the
+        cause-chain text traversal doesn't over-broaden the overload path."""
+        inner = MockAPIError(
+            "Rate limit exceeded: too many requests", status_code=429
+        )
+        outer = Exception("upstream request failed")
+        outer.__cause__ = inner
+
+        result = classify_api_error(outer, provider="zai")
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
     # request-validation failures with a 5xx status. These are

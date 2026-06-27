@@ -42,7 +42,7 @@ def _expand_tilde(path: str) -> str:
     except Exception:
         home = None
     if home and (path == "~" or path.startswith("~/")):
-        return home if path == "~" else os.path.join(home, path[2:])
+        return home if path == "~" else os.path.join(home, path[2:].lstrip("/"))
     return os.path.expanduser(path)
 
 

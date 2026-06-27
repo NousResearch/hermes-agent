@@ -36,6 +36,12 @@ class TestExpandTilde:
             result = ft._expand_tilde("~/scratch/file.txt")
         assert result == "/opt/data/profiles/coder/home/scratch/file.txt"
 
+    def test_consecutive_slashes_after_tilde_stay_under_profile_home(self):
+        """~//path still resolves under the profile home."""
+        with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
+            result = ft._expand_tilde("~//scratch/file.txt")
+        assert result == os.path.join("/opt/data/profiles/coder/home", "scratch/file.txt")
+
     def test_bare_tilde_expands_to_profile_home(self):
         """Bare ~ expands to the profile home."""
         with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):

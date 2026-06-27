@@ -264,6 +264,44 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_with_natural_weekday_schedule(self):
+        # The documented "every monday 9am" form must create a real cron job
+        # through the tool path, not error out (issue: parser rejected it).
+        pytest.importorskip("croniter")
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Weekly report",
+                schedule="every monday 9am",
+                name="Weekly Report",
+            )
+        )
+        assert created["success"] is True
+        # Display keeps the user's natural phrasing.
+        assert created["schedule"] == "every monday 9am"
+        # A recurring job must have a computed next run.
+        assert created["next_run_at"]
+
+        # The stored schedule is a cron expression.
+        from cron.jobs import get_job
+        stored = get_job(created["job_id"])
+        assert stored["schedule"]["kind"] == "cron"
+        assert stored["schedule"]["expr"] == "0 9 * * 1"
+
+    def test_update_to_natural_weekday_schedule(self):
+        pytest.importorskip("croniter")
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+
+        updated = json.loads(
+            cronjob(action="update", job_id=job_id, schedule="every day at 9am")
+        )
+        assert updated["success"] is True
+        assert updated["job"]["schedule"] == "every day at 9am"
+
+        from cron.jobs import get_job
+        assert get_job(job_id)["schedule"]["expr"] == "0 9 * * *"
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

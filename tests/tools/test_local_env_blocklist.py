@@ -679,3 +679,43 @@ class TestAuxiliarySecretStripping:
         assert not _is_hermes_internal_secret("AUXILIARY_VISION_PROVIDER")
         assert not _is_hermes_internal_secret("PATH")
         assert not _is_hermes_internal_secret("HOME")
+
+    def test_make_run_env_blocks_auxiliary_even_when_passthrough_registered(self):
+        """Auxiliary secrets must be blocked even if registered in env_passthrough.
+
+        The passthrough registry is an opt-in escape hatch for non-secret env
+        vars. It must NOT be able to override the blocklist for Hermes-internal
+        secrets like AUXILIARY_*_API_KEY and AUXILIARY_*_BASE_URL.
+        """
+        from tools.environments.local import _make_run_env
+
+        mock_passthrough = MagicMock(return_value=True)
+        with patch.dict(os.environ, {
+            "AUXILIARY_VISION_API_KEY": "sk-aux-secret-1234567890",
+            "AUXILIARY_VISION_BASE_URL": "https://api.example.com",
+            "PATH": "/usr/bin:/bin",
+        }, clear=True):
+            with patch("tools.environments.local.is_env_passthrough", mock_passthrough, create=True):
+                with patch("tools.env_passthrough.is_env_passthrough", mock_passthrough):
+                    result = _make_run_env({})
+
+        assert "AUXILIARY_VISION_API_KEY" not in result, \
+            "AUXILIARY_*_API_KEY must be blocked even when passthrough-registered"
+        assert "AUXILIARY_VISION_BASE_URL" not in result, \
+            "AUXILIARY_*_BASE_URL must be blocked even when passthrough-registered"
+
+    def test_sanitize_blocks_auxiliary_even_when_passthrough_registered(self):
+        """_sanitize_subprocess_env must block auxiliary secrets even with passthrough."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        mock_passthrough = MagicMock(return_value=True)
+        base_env = {
+            "AUXILIARY_TITLE_API_KEY": "sk-title-secret-1234567890",
+            "AUXILIARY_TITLE_BASE_URL": "https://api.title.com",
+            "PATH": "/usr/bin:/bin",
+        }
+        with patch("tools.env_passthrough.is_env_passthrough", mock_passthrough):
+            result = _sanitize_subprocess_env(base_env)
+
+        assert "AUXILIARY_TITLE_API_KEY" not in result
+        assert "AUXILIARY_TITLE_BASE_URL" not in result

@@ -190,6 +190,29 @@ const logger = pino({ level: 'warn' });
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
 
+// Cache of group JID -> subject (real group name). Populated lazily on first
+// message in a group; refreshed if Baileys emits groups.update.
+const groupSubjectCache = new Map();
+
+async function getGroupSubject(sock, chatId) {
+  if (!chatId.endsWith('@g.us')) return null;
+  const cached = groupSubjectCache.get(chatId);
+  if (cached) return cached;
+  try {
+    const metadata = await sock.groupMetadata(chatId);
+    const subject = metadata?.subject;
+    if (subject && subject.trim()) {
+      groupSubjectCache.set(chatId, subject);
+      return subject;
+    }
+  } catch (err) {
+    if (process.env.WHATSAPP_DEBUG === 'true') {
+      console.error('groupMetadata failed for', chatId, err?.message || err);
+    }
+  }
+  return null;
+}
+
 // Track recently sent message IDs to prevent echo-back loops with media
 const recentlySentIds = new Set();
 const MAX_RECENT_IDS = 50;
@@ -219,6 +242,13 @@ async function startSocket() {
   });
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+
+  // Invalidate cached group subjects when admins rename groups.
+  sock.ev.on('groups.update', (updates) => {
+    for (const u of updates || []) {
+      if (u?.id) groupSubjectCache.delete(u.id);
+    }
+  });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -445,7 +475,7 @@ async function startSocket() {
         chatId,
         senderId,
         senderName: msg.pushName || senderNumber,
-        chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || senderNumber),
+        chatName: isGroup ? (await getGroupSubject(sock, chatId) || chatId.split('@')[0]) : (msg.pushName || senderNumber),
         isGroup,
         body,
         hasMedia,

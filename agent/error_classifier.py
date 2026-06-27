@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -83,6 +84,12 @@ class ClassifiedError:
     should_compress: bool = False
     should_rotate_credential: bool = False
     should_fallback: bool = False
+
+    # Optional explicit retry delay (seconds) parsed from the error body, e.g.
+    # a proxy soft-throttle that embeds "(reset after 2m)" in its message
+    # rather than sending a standard HTTP Retry-After header. The retry loop
+    # prefers this over exponential backoff when present.
+    retry_after_seconds: Optional[float] = None
 
     @property
     def is_auth(self) -> bool:
@@ -177,6 +184,50 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "periodic",
     "window",
 ]
+
+# Matches an embedded retry-delay hint some proxies put in the error BODY
+# instead of a standard HTTP Retry-After header, e.g. "(reset after 2m)",
+# "reset after 30s", "reset after 1h". Capture group 1 = magnitude, 2 = unit.
+_RESET_AFTER_RE = re.compile(
+    r"reset\s+after\s+(\d+(?:\.\d+)?)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\b",
+    re.IGNORECASE,
+)
+
+# Cap parsed delays so a hostile/buggy proxy advertising "reset after 99h"
+# can't wedge the retry loop. Mirrors the 120s cap already used for the
+# HTTP Retry-After header path in conversation_loop.py.
+_RESET_AFTER_MAX_SECONDS = 120.0
+
+
+def _parse_reset_after(error_msg: str) -> Optional[float]:
+    """Return the embedded "reset after N<unit>" delay in seconds, or None.
+
+    Proxies (e.g. local model routers) sometimes signal a soft throttle as an
+    HTTP 403/429 whose body says "(reset after 2m)" rather than sending a
+    standard ``Retry-After`` header. Surfacing that delay lets the retry loop
+    wait the advertised window instead of aborting or using a too-short
+    exponential backoff. The result is capped at ``_RESET_AFTER_MAX_SECONDS``.
+    """
+    if not error_msg:
+        return None
+    match = _RESET_AFTER_RE.search(error_msg)
+    if not match:
+        return None
+    try:
+        magnitude = float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    unit = match.group(2).lower()
+    if unit.startswith("h"):
+        seconds = magnitude * 3600.0
+    elif unit.startswith("m") and unit != "s":
+        # "m", "min", "mins", "minute", "minutes" — but NOT "s" units.
+        seconds = magnitude * 60.0
+    else:
+        seconds = magnitude
+    if seconds <= 0:
+        return None
+    return min(seconds, _RESET_AFTER_MAX_SECONDS)
 
 # Payload-too-large patterns detected from message text (no status_code attr).
 # Proxies and some backends embed the HTTP status in the error message.
@@ -829,6 +880,19 @@ def _classify_by_status(
                 retryable=False,
                 should_rotate_credential=True,
                 should_fallback=True,
+            )
+        # Some proxies (e.g. local model routers fronting Claude/Kiro) signal a
+        # SOFT THROTTLE as HTTP 403 with an embedded "(reset after Nm)" hint in
+        # the body, not a real credential rejection. Treat that as a transient
+        # rate limit so the retry loop waits the advertised window instead of
+        # aborting as a permanent auth failure. Real auth 403s (no reset hint)
+        # still fall through to the abort path below.
+        _reset_after = _parse_reset_after(error_msg)
+        if _reset_after is not None:
+            return result_fn(
+                FailoverReason.rate_limit,
+                retryable=True,
+                retry_after_seconds=_reset_after,
             )
         return result_fn(
             FailoverReason.auth,

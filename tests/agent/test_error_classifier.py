@@ -1717,3 +1717,84 @@ class TestMultimodalToolContentUnsupported:
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
         assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+
+
+class TestResetAfterThrottle403:
+    """403 soft-throttles that embed a "(reset after N)" body hint.
+
+    Some proxies (e.g. a local model router fronting Claude/Kiro) signal a
+    transient throttle as HTTP 403 with the delay in the body text rather
+    than a real credential rejection or a standard Retry-After header.
+    These must be classified as retryable rate_limit, NOT permanent auth.
+    Regression for the desktop.log abort: provider=custom:9router-proxy,
+    "HTTP 403 (reset after 2m)" was aborting the session.
+    """
+
+    def test_403_reset_after_minutes_is_retryable_rate_limit(self):
+        e = MockAPIError(
+            "[kiro/claude-opus-4.8-thinking-agentic] [403]: HTTP 403 (reset after 2m)",
+            status_code=403,
+        )
+        result = classify_api_error(
+            e, provider="custom:9router-proxy", model="kr/claude-opus-4.8-thinking-agentic"
+        )
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.retry_after_seconds == 120.0
+
+    def test_403_reset_after_seconds(self):
+        e = MockAPIError("HTTP 403 (reset after 30s)", status_code=403)
+        result = classify_api_error(e, provider="custom", model="m")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retry_after_seconds == 30.0
+
+    def test_403_reset_after_hours_is_capped(self):
+        e = MockAPIError("HTTP 403 (reset after 1h)", status_code=403)
+        result = classify_api_error(e, provider="custom", model="m")
+        assert result.reason == FailoverReason.rate_limit
+        # Capped at 120s so a hostile/buggy proxy can't wedge the retry loop.
+        assert result.retry_after_seconds == 120.0
+
+    def test_403_billing_still_wins_over_reset_hint(self):
+        """A 403 that is genuinely billing must NOT be downgraded to a
+        transient throttle even if a reset hint is also present."""
+        e = MockAPIError(
+            "403 insufficient credits (reset after 2m)", status_code=403
+        )
+        result = classify_api_error(e, provider="openrouter", model="m")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_403_real_auth_without_reset_hint_still_aborts(self):
+        """A real credential-rejection 403 (no reset hint) must remain a
+        non-retryable auth failure so the session fails fast with guidance."""
+        e = MockAPIError("403 Forbidden: invalid api key", status_code=403)
+        result = classify_api_error(e, provider="custom", model="m")
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+        assert result.retry_after_seconds is None
+
+
+class TestParseResetAfter:
+    """Unit coverage for the _parse_reset_after body-hint parser."""
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("HTTP 403 (reset after 2m)", 120.0),
+            ("reset after 30s", 30.0),
+            ("reset after 45 seconds", 45.0),
+            ("reset after 2 minutes", 120.0),
+            ("reset after 1h", 120.0),  # capped
+            ("reset after 90s", 90.0),
+            ("RESET AFTER 10S", 10.0),  # case-insensitive
+            ("no hint here", None),
+            ("reset after 0s", None),  # non-positive ignored
+            ("reset after soon", None),  # non-numeric ignored
+            ("", None),
+        ],
+    )
+    def test_parse_reset_after(self, text, expected):
+        from agent.error_classifier import _parse_reset_after
+        assert _parse_reset_after(text) == expected
+

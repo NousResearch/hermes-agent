@@ -403,6 +403,7 @@ def _scan_gateway_pids(
                         encoding="utf-8",
                         errors="ignore",
                         timeout=10,
+                        creationflags=windows_hide_flags(),
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     result = None

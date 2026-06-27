@@ -79,10 +79,12 @@ def _detect_openclaw_processes() -> list[str]:
     # -- process scan ------------------------------------------------------
     if sys.platform == "win32":
         try:
+            from hermes_cli._subprocess_compat import windows_hide_flags
             for exe in ("openclaw.exe", "clawd.exe"):
                 result = subprocess.run(
                     ["tasklist", "/FI", f"IMAGENAME eq {exe}"],
                     capture_output=True, text=True, timeout=5,
+                    creationflags=windows_hide_flags(),
                 )
                 if exe in result.stdout.lower():
                     found.append(f"process: {exe}")

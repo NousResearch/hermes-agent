@@ -82,11 +82,13 @@ def terminate_pid(pid: int, *, force: bool = False) -> None:
     """
     if force and _IS_WINDOWS:
         try:
+            from hermes_cli._subprocess_compat import windows_hide_flags
             result = subprocess.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
                 timeout=10,
+                creationflags=windows_hide_flags(),
             )
         except FileNotFoundError:
             os.kill(pid, signal.SIGTERM)

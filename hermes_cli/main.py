@@ -258,6 +258,7 @@ import json
 import shutil
 import stat
 import subprocess
+from hermes_cli._subprocess_compat import windows_hide_flags
 from pathlib import Path
 from typing import Optional
 
@@ -5721,6 +5722,7 @@ def _find_stale_dashboard_pids(
                 timeout=10,
                 encoding="utf-8",
                 errors="ignore",
+                creationflags=windows_hide_flags() if sys.platform == "win32" else 0,
             )
             if result.returncode != 0 or result.stdout is None:
                 return []
@@ -5961,6 +5963,7 @@ def _kill_stale_dashboard_processes(
                     capture_output=True,
                     text=True,
                     timeout=10,
+                    creationflags=windows_hide_flags(),
                 )
                 if result.returncode == 0:
                     killed.append(pid)

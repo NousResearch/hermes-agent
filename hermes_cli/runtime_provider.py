@@ -265,14 +265,144 @@ _VALID_API_MODES = {
     "codex_app_server",
 }
 
+# Common aliases / typos for ``api_mode`` values that operators reach for
+# but Hermes does not support directly. Used by ``_parse_api_mode`` to
+# give an actionable hint instead of silently dropping the value and
+# falling back to OpenAI SDK ``chat_completions`` — the silent fallback
+# is exactly the failure mode reported in #30152, where ``api_mode:
+# gemini`` was paired with a Vertex ``:generateContent`` base_url and
+# the OpenAI SDK's trailing-slash normalisation produced HTTP 404 on
+# every call with no actionable error in the log.
+_API_MODE_ALIASES: Dict[str, str] = {
+    "gemini": (
+        "Gemini providers use api_mode='chat_completions' with either "
+        "(a) Vertex's OpenAI-compatible endpoint "
+        "(base_url='https://aiplatform.googleapis.com/v1/projects/<PROJECT>"
+        "/locations/<LOC>/endpoints/openapi'), or "
+        "(b) Google AI Studio's native API "
+        "(base_url='https://generativelanguage.googleapis.com/v1beta'). "
+        "Hermes routes both through the existing chat_completions pipeline; "
+        "there is no separate 'gemini' api_mode."
+    ),
+    "google": "Use api_mode='chat_completions' (see the 'gemini' note in #30152).",
+    "openai": "Use api_mode='chat_completions'.",
+    "anthropic": "Use api_mode='anthropic_messages'.",
+    "bedrock": "Use api_mode='bedrock_converse'.",
+    "codex": "Use api_mode='codex_responses'.",
+}
+
+# Vertex AI / Gemini REST action verbs that can appear at the tail of a
+# full endpoint URL. When an operator copies the full Vertex action URL
+# into ``base_url`` (instead of the API root), the OpenAI SDK appends a
+# trailing slash to that URL — which Vertex answers with HTTP 404. Used
+# by ``_validate_base_url_for_openai_sdk`` (and exposed for tests) to
+# detect this misuse before any request is issued. See #30152.
+_VERTEX_ACTION_VERBS = (
+    ":generateContent",
+    ":streamGenerateContent",
+    ":countTokens",
+    ":embedContent",
+    ":batchEmbedContents",
+    ":predict",
+    ":rawPredict",
+    ":serverStreamingPredict",
+)
+
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
-    """Validate an api_mode value from config. Returns None if invalid."""
-    if isinstance(raw, str):
-        normalized = raw.strip().lower()
-        if normalized in _VALID_API_MODES:
-            return normalized
+    """Validate an api_mode value from config. Returns None if invalid.
+
+    Logs a single ``WARNING`` for non-empty values that don't match the
+    allowlist so operators don't lose hours diagnosing a silent fall
+    through to ``chat_completions`` — see #30152 ("api_mode: gemini
+    providers route through OpenAI SDK; URL trailing-slash breaks
+    :generateContent"). The hint for known aliases (``gemini``,
+    ``openai``, …) points the operator at the correct mode +
+    ``base_url`` pairing.
+    """
+    if not isinstance(raw, str):
+        return None
+    normalized = raw.strip().lower()
+    if not normalized:
+        return None
+    if normalized in _VALID_API_MODES:
+        return normalized
+
+    hint = _API_MODE_ALIASES.get(normalized)
+    valid_list = ", ".join(sorted(_VALID_API_MODES))
+    if hint:
+        logger.warning(
+            "Ignoring unsupported api_mode=%r. %s "
+            "Falling back to autodetection (which usually picks chat_completions).",
+            raw, hint,
+        )
+    else:
+        logger.warning(
+            "Ignoring unsupported api_mode=%r. Valid values: %s. "
+            "Falling back to autodetection (which usually picks chat_completions).",
+            raw, valid_list,
+        )
     return None
+
+
+def _base_url_has_vertex_action_verb(base_url: Any) -> Optional[str]:
+    """Return the offending action verb if *base_url* tail-ends with one.
+
+    The OpenAI SDK rewrites ``base_url`` to end with ``/`` before
+    concatenating ``/chat/completions``; when the base URL is actually a
+    full Vertex action endpoint (``.../models/<m>:generateContent``),
+    Vertex returns HTTP 404 because there is no
+    ``:generateContent/chat/completions`` route. Used by
+    ``_validate_base_url_for_openai_sdk`` to short-circuit this misuse
+    before any request is dispatched. See #30152.
+    """
+    if not isinstance(base_url, str):
+        return None
+    trimmed = base_url.strip().rstrip("/")
+    if not trimmed:
+        return None
+    for verb in _VERTEX_ACTION_VERBS:
+        if trimmed.endswith(verb):
+            return verb
+    return None
+
+
+def _validate_base_url_for_openai_sdk(
+    *,
+    base_url: Any,
+    provider: str = "",
+) -> None:
+    """Raise ``ValueError`` if *base_url* would silently break the OpenAI SDK.
+
+    Currently catches the #30152 failure mode: a Vertex AI action-verb
+    endpoint (``.../models/<m>:generateContent``) passed where Hermes
+    expects an OpenAI-compatible base_url. The OpenAI SDK normalises the
+    URL by appending ``/`` to it before concatenating ``/chat/
+    completions``, and Vertex returns HTTP 404 — the operator only saw
+    a fallback cascade with no root cause unless they tailed the
+    gateway log.
+    """
+    verb = _base_url_has_vertex_action_verb(base_url)
+    if verb is None:
+        return
+    suffix = f" (provider={provider!r})" if provider else ""
+    raise ValueError(
+        f"Invalid base_url for the OpenAI-compatible transport{suffix}: "
+        f"{base_url!r} ends with the Vertex AI action verb {verb!r}, which "
+        f"is a full endpoint URL — not a base URL. The OpenAI SDK appends "
+        f"'/chat/completions' to base URLs, and Vertex responds HTTP 404 to "
+        f"'{verb}/chat/completions'.\n"
+        f"Use one of these instead:\n"
+        f"  (a) Vertex OpenAI-compatible endpoint:\n"
+        f"      base_url: https://aiplatform.googleapis.com/v1/projects/<PROJECT>"
+        f"/locations/<LOC>/endpoints/openapi\n"
+        f"      api_mode: chat_completions   (model: google/<model-id>)\n"
+        f"  (b) Google AI Studio native Gemini API:\n"
+        f"      base_url: https://generativelanguage.googleapis.com/v1beta\n"
+        f"      api_mode: chat_completions   (Hermes auto-routes through the "
+        f"native adapter)\n"
+        f"See https://github.com/NousResearch/hermes-agent/issues/30152."
+    )
 
 
 def _maybe_apply_codex_app_server_runtime(

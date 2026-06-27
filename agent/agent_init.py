@@ -359,6 +359,30 @@ def init_agent(
     else:
         agent.api_mode = "chat_completions"
 
+    # ── Misconfiguration tripwire (#30152) ────────────────────────────
+    # The OpenAI SDK rewrites any ``base_url`` to end with ``/`` before
+    # appending ``/chat/completions``. When the operator pastes a full
+    # Vertex AI action URL (e.g. ``.../models/<m>:generateContent``)
+    # into ``base_url`` and lands on ``chat_completions`` (either
+    # explicitly or via the autodetect fallback above), every request
+    # 404s and the only signal is the fallback cascade. Surface the
+    # configuration error at init time with the correct alternatives
+    # instead of letting the cascade hide the root cause.
+    if agent.api_mode == "chat_completions" and agent.base_url:
+        try:
+            from hermes_cli.runtime_provider import (
+                _validate_base_url_for_openai_sdk,
+            )
+            _validate_base_url_for_openai_sdk(
+                base_url=agent.base_url,
+                provider=agent.provider,
+            )
+        except ValueError as exc:
+            # ValueError → ConfigurationError-ish; re-raise so the caller
+            # (CLI / gateway) surfaces it to the operator instead of
+            # swallowing it into a generic startup failure.
+            raise ValueError(str(exc)) from exc
+
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
     try:

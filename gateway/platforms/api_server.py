@@ -2126,7 +2126,15 @@ class APIServerAdapter(BasePlatformAdapter):
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg:
-                response_headers["X-Hermes-Error"] = err_msg[:200]
+                # HTTP header values MUST NOT contain newlines/CR/null — aiohttp
+                # raises ValueError("...header injection attack") at serialize
+                # time and crashes the whole response handler if they do. Upstream
+                # provider errors (e.g. a 502 whose body embeds a multi-line
+                # error string) routinely carry newlines, so strip them
+                # via the same sanitizer used for audit-log values before this
+                # ever reaches _write_headers. The full multi-line detail is still
+                # preserved untouched in the JSON body's hermes.error field above.
+                response_headers["X-Hermes-Error"] = self._clean_log_value(err_msg)
 
         return web.json_response(response_data, headers=response_headers)
 

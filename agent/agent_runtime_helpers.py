@@ -1710,14 +1710,19 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         )
         return client
     if agent.provider == "gemini":
-        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+        from agent.gemini_native_adapter import (
+            DEFAULT_GEMINI_BASE_URL,
+            GeminiNativeClient,
+            is_native_gemini_base_url,
+        )
 
-        base_url = str(client_kwargs.get("base_url", "") or "")
+        base_url = str(client_kwargs.get("base_url", "") or "").strip() or DEFAULT_GEMINI_BASE_URL
         if is_native_gemini_base_url(base_url):
             safe_kwargs = {
                 k: v for k, v in client_kwargs.items()
                 if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
             }
+            safe_kwargs["base_url"] = base_url
             if "http_client" not in safe_kwargs:
                 keepalive_http = agent._build_keepalive_http_client(
                     base_url, verify=httpx_verify,

@@ -1230,6 +1230,40 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             _resolve_delegation_credentials(cfg, parent)
         self.assertIn("no API key", str(ctx.exception))
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolution_forwards_configured_api_key_when_base_url_empty(self, mock_resolve):
+        """delegation.api_key must be honored when provider routing supplies the endpoint."""
+        def fake_resolve(**kwargs):
+            return {
+                "provider": "gemini",
+                "model": kwargs.get("target_model"),
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                "api_key": kwargs.get("explicit_api_key") or "",
+                "api_mode": "chat_completions",
+            }
+
+        mock_resolve.side_effect = fake_resolve
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "gemma-4-31b-it",
+            "provider": "gemini",
+            "base_url": "",
+            "api_key": "delegation-gemini-key",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["provider"], "gemini")
+        self.assertEqual(creds["model"], "gemma-4-31b-it")
+        self.assertEqual(creds["base_url"], "https://generativelanguage.googleapis.com/v1beta")
+        self.assertEqual(creds["api_key"], "delegation-gemini-key")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+        mock_resolve.assert_called_once_with(
+            requested="gemini",
+            target_model="gemma-4-31b-it",
+            explicit_api_key="delegation-gemini-key",
+        )
+
     def test_missing_config_keys_inherit_parent(self):
         """When config dict has no model/provider keys at all, inherits parent."""
         parent = _make_mock_parent(depth=0)

@@ -35,3 +35,32 @@ def test_create_openai_client_does_not_mutate_input_kwargs(mock_openai):
     assert kwargs == snapshot, (
         f"_create_openai_client mutated input kwargs; expected {snapshot}, got {kwargs}"
     )
+
+
+@patch("run_agent.OpenAI")
+@patch("agent.gemini_native_adapter.GeminiNativeClient")
+def test_create_openai_client_routes_empty_gemini_base_url_to_native_client(mock_gemini, mock_openai):
+    from agent.gemini_native_adapter import DEFAULT_GEMINI_BASE_URL
+
+    native_client = MagicMock()
+    mock_gemini.return_value = native_client
+
+    agent = AIAgent.__new__(AIAgent)
+    agent.provider = "gemini"
+    agent.model = "gemini-2.5-flash"
+    agent.base_url = ""
+    agent._client_kwargs = {}
+    agent._build_keepalive_http_client = lambda base_url="", **_kwargs: None
+
+    kwargs = {"api_key": "AIza-test-key", "base_url": ""}
+    snapshot = dict(kwargs)
+
+    client = agent._create_openai_client(kwargs, reason="test", shared=False)
+
+    assert client is native_client
+    mock_openai.assert_not_called()
+    mock_gemini.assert_called_once_with(
+        api_key="AIza-test-key",
+        base_url=DEFAULT_GEMINI_BASE_URL,
+    )
+    assert kwargs == snapshot

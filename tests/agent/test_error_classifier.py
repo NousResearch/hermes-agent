@@ -358,11 +358,13 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.server_error
         assert result.retryable is True
+        assert result.should_fallback is True
 
     def test_502_server_error(self):
         e = MockAPIError("Bad Gateway", status_code=502)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.server_error
+        assert result.should_fallback is True
 
     def test_503_overloaded(self):
         e = MockAPIError("Service Unavailable", status_code=503)

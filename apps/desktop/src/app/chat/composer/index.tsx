@@ -1164,11 +1164,19 @@ export function ChatBar({
 
     // Cmd/Ctrl+Enter is reserved for steering the live run — never a send.
     // Steer when there's a steerable draft, otherwise swallow it so it can't
-    // surprise-send. (Plain Enter still queues while busy / sends when idle.)
+    // surprise-send. Decide from the DOM, not React state, so Ctrl+Enter right
+    // after typing doesn't miss the last keystroke while composer state lags.
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
       event.preventDefault()
 
-      if (canSteer) {
+      const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+      const trimmedEditorText = editorText.trim()
+      const liveCanSteer =
+        busy && !!onSteer && attachments.length === 0 && trimmedEditorText.length > 0 && !SLASH_COMMAND_RE.test(trimmedEditorText)
+
+      if (liveCanSteer) {
+        draftRef.current = editorText
+        setComposerText(editorText)
         steerDraft()
       }
 
@@ -1624,11 +1632,15 @@ export function ChatBar({
   // for snappy feedback; if the gateway rejects (no live tool window) the words
   // are re-queued so nothing is lost — same safety net as a plain queue.
   const steerDraft = useCallback(() => {
-    if (!onSteer || !canSteer) {
+    if (!onSteer) {
       return
     }
 
     const text = draftRef.current.trim()
+
+    if (!busy || attachments.length > 0 || !text || SLASH_COMMAND_RE.test(text)) {
+      return
+    }
 
     triggerHaptic('submit')
     clearDraft()
@@ -1638,7 +1650,7 @@ export function ChatBar({
         enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
       }
     })
-  }, [activeQueueSessionKey, canSteer, clearDraft, onSteer])
+  }, [activeQueueSessionKey, attachments.length, busy, clearDraft, onSteer])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.

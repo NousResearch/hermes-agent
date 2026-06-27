@@ -29,7 +29,8 @@ function Harness({
   onSubmit,
   onQueue,
   onCancel,
-  onDrain
+  onDrain,
+  onSteer
 }: {
   busy?: boolean
   disabled?: boolean
@@ -38,6 +39,7 @@ function Harness({
   onQueue: (text: string) => void
   onCancel: () => void
   onDrain: () => void
+  onSteer?: (text: string) => void
 }) {
   const editorRef = useRef<HTMLDivElement>(null)
   const draftRef = useRef('')
@@ -85,7 +87,38 @@ function Harness({
     }
   }
 
+  const steerDraft = () => {
+    if (!onSteer) {
+      return
+    }
+
+    const text = draftRef.current.trim()
+
+    if (!busy || attachments.length > 0 || !text || text.startsWith('/')) {
+      return
+    }
+
+    onSteer(text)
+  }
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+      event.preventDefault()
+
+      const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+      const trimmedEditorText = editorText.trim()
+      const liveCanSteer =
+        busy && !!onSteer && attachments.length === 0 && trimmedEditorText.length > 0 && !trimmedEditorText.startsWith('/')
+
+      if (liveCanSteer) {
+        draftRef.current = editorText
+        setDraft(editorText)
+        steerDraft()
+      }
+
+      return
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
 
@@ -204,6 +237,27 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     })
 
     expect(onDrain).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('steers the just-typed text on Ctrl+Enter even when composer state has not synced', async () => {
+    const onSteer = vi.fn()
+    const onQueue = vi.fn()
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness busy onCancel={vi.fn()} onDrain={vi.fn()} onQueue={onQueue} onSteer={onSteer} onSubmit={onSubmit} />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'tighten this up'
+      fireEvent.keyDown(editor, { ctrlKey: true, key: 'Enter' })
+    })
+
+    expect(onSteer).toHaveBeenCalledWith('tighten this up')
+    expect(onQueue).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
   })
 

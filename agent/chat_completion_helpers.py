@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
+from agent.prompt_builder import build_temporal_context_prompt
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
@@ -1391,8 +1392,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             api_messages.append(api_msg)
 
         effective_system = agent._cached_system_prompt or ""
+        # Inject current wall-clock time — per-API-call so it doesn't
+        # invalidate the prefix-cache KV of the stable system prompt.
+        _temporal = build_temporal_context_prompt()
         if agent.ephemeral_system_prompt:
-            effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+            effective_system = (effective_system + "\n\n" + _temporal + "\n\n" + agent.ephemeral_system_prompt).strip()
+        else:
+            effective_system = (effective_system + "\n\n" + _temporal).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
         if agent.prefill_messages:

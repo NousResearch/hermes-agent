@@ -35,6 +35,7 @@ from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
+from agent.prompt_builder import build_temporal_context_prompt
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
     _repair_tool_call_arguments,
@@ -812,8 +813,13 @@ def run_conversation(
         # bytes are byte-stable across turns and upstream prompt caches
         # stay warm.
         effective_system = active_system_prompt or ""
+        # Inject current wall-clock time — per-API-call so it doesn't
+        # invalidate the prefix-cache KV of the stable system prompt.
+        _temporal = build_temporal_context_prompt()
         if agent.ephemeral_system_prompt:
-            effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+            effective_system = (effective_system + "\n\n" + _temporal + "\n\n" + agent.ephemeral_system_prompt).strip()
+        else:
+            effective_system = (effective_system + "\n\n" + _temporal).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

@@ -1915,3 +1915,17 @@ def build_context_files_prompt(
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+
+
+def build_temporal_context_prompt() -> str:
+    """Return the current wall-clock time for ephemeral injection.
+
+    Injected per-API-call via ``ephemeral_system_prompt`` so it does NOT
+    invalidate the prefix-cache KV of the stable system prompt.
+
+    Uses ``hermes_time.now()`` for timezone awareness (respects
+    ``HERMES_TIMEZONE`` env var and ``config.yaml timezone``).
+    """
+    from hermes_time import now as _hermes_now
+    now = _hermes_now()
+    return f"Current time: {now.strftime('%A, %B %d, %Y %I:%M %p %Z')}"

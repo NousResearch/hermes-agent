@@ -1569,3 +1569,44 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+# =========================================================================
+# Temporal context injection
+# =========================================================================
+
+
+class TestBuildTemporalContextPrompt:
+    """Tests for build_temporal_context_prompt()."""
+
+    def test_returns_current_time_string(self):
+        """Should return a string containing the current time."""
+        from agent.prompt_builder import build_temporal_context_prompt
+
+        result = build_temporal_context_prompt()
+        assert isinstance(result, str)
+        assert "Current time:" in result
+
+    def test_includes_date(self):
+        """Should include the current year and month."""
+        from agent.prompt_builder import build_temporal_context_prompt
+
+        result = build_temporal_context_prompt()
+        assert "2026" in result or "2025" in result
+        assert "June" in result or "January" in result or any(
+            m in result for m in [
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"
+            ]
+        )
+
+    def test_includes_time_and_timezone(self):
+        """Should include time (HH:MM) and timezone."""
+        from agent.prompt_builder import build_temporal_context_prompt
+
+        result = build_temporal_context_prompt()
+        # Should have time like "09:53 AM" or "14:30"
+        assert ":" in result
+        # Should have timezone like "CST", "PDT", "UTC"
+        import re
+        assert re.search(r'\b[A-Z]{2,5}\b', result.split()[-1])
+
+

@@ -611,3 +611,71 @@ class TestHermesBinDirOnPath:
         entries = result["PATH"].split(os.pathsep)
         assert entries[0] == "/opt/hermes/bin"
         assert "/usr/bin" in entries
+
+
+class TestAuxiliarySecretStripping:
+    """Verify AUXILIARY_*_API_KEY and GATEWAY_RELAY_* are stripped from subprocess env.
+
+    The name-based _HERMES_PROVIDER_ENV_BLOCKLIST does not include dynamic
+    AUXILIARY_<TASK>_API_KEY vars injected by gateway/run.py and cli.py from
+    config.yaml[auxiliary]. These are separate, often higher-spend inference
+    credentials (vision, title-gen, web-extract) that must never reach
+    model-authored shell commands.
+    """
+
+    def test_make_run_env_strips_auxiliary_api_key(self):
+        """_make_run_env must not pass AUXILIARY_*_API_KEY to the subprocess."""
+        from tools.environments.local import _make_run_env
+        with patch.dict(os.environ, {
+            "AUXILIARY_VISION_API_KEY": "sk-aux-secret-1234567890",
+            "AUXILIARY_VISION_BASE_URL": "https://api.example.com",
+            "AUXILIARY_VISION_MODEL": "gpt-4o",
+            "AUXILIARY_VISION_PROVIDER": "openai",
+            "PATH": "/usr/bin:/bin",
+        }, clear=True):
+            result = _make_run_env({})
+        assert "AUXILIARY_VISION_API_KEY" not in result, \
+            "AUXILIARY_*_API_KEY must be stripped from subprocess env"
+        assert "AUXILIARY_VISION_BASE_URL" not in result, \
+            "AUXILIARY_*_BASE_URL must be stripped from subprocess env"
+        assert result.get("AUXILIARY_VISION_MODEL") == "gpt-4o", \
+            "Non-secret AUXILIARY vars must pass through"
+        assert result.get("AUXILIARY_VISION_PROVIDER") == "openai", \
+            "Non-secret AUXILIARY vars must pass through"
+
+    def test_make_run_env_strips_gateway_relay_secret(self):
+        """_make_run_env must not pass GATEWAY_RELAY_SECRET to the subprocess."""
+        from tools.environments.local import _make_run_env
+        with patch.dict(os.environ, {
+            "GATEWAY_RELAY_ID": "gw-123",
+            "GATEWAY_RELAY_SECRET": "relay-secret-value",
+            "GATEWAY_RELAY_DELIVERY_KEY": "delivery-key-value",
+            "PATH": "/usr/bin:/bin",
+        }, clear=True):
+            result = _make_run_env({})
+        assert "GATEWAY_RELAY_SECRET" not in result
+        assert "GATEWAY_RELAY_DELIVERY_KEY" not in result
+        assert "GATEWAY_RELAY_ID" not in result
+
+    def test_sanitize_subprocess_env_strips_auxiliary_api_key(self):
+        """_sanitize_subprocess_env must not pass AUXILIARY_*_API_KEY through."""
+        from tools.environments.local import _sanitize_subprocess_env
+        base_env = {
+            "AUXILIARY_TITLE_API_KEY": "sk-title-secret-1234567890",
+            "AUXILIARY_TITLE_PROVIDER": "openai",
+            "PATH": "/usr/bin:/bin",
+        }
+        result = _sanitize_subprocess_env(base_env)
+        assert "AUXILIARY_TITLE_API_KEY" not in result
+        assert result.get("AUXILIARY_TITLE_PROVIDER") == "openai"
+
+    def test_is_hermes_internal_secret_patterns(self):
+        """_is_hermes_internal_secret catches AUXILIARY_*_API_KEY and _BASE_URL."""
+        from tools.environments.local import _is_hermes_internal_secret
+        assert _is_hermes_internal_secret("AUXILIARY_VISION_API_KEY")
+        assert _is_hermes_internal_secret("AUXILIARY_VISION_BASE_URL")
+        assert _is_hermes_internal_secret("auxiliary_title_api_key")
+        assert not _is_hermes_internal_secret("AUXILIARY_VISION_MODEL")
+        assert not _is_hermes_internal_secret("AUXILIARY_VISION_PROVIDER")
+        assert not _is_hermes_internal_secret("PATH")
+        assert not _is_hermes_internal_secret("HOME")

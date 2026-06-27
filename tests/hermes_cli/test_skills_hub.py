@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_audit, do_check, do_install, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -369,6 +369,48 @@ def test_do_install_scans_official_bundles_with_source_provenance(
     do_install("official/agent/prunus-gaia", console=console, skip_confirm=True)
 
     assert scanned["source"] == "official"
+
+
+def test_do_audit_replays_official_lock_entries_with_source_provenance(
+    monkeypatch, tmp_path, hub_env
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skill_dir = hub.SKILLS_DIR / "autonomous-ai-agents" / "honcho"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Honcho\nRun `hermes honcho setup`.\n")
+
+    entry = {
+        "name": "honcho",
+        "source": "official",
+        "identifier": "official/autonomous-ai-agents/honcho",
+        "trust_level": "builtin",
+        "install_path": "autonomous-ai-agents/honcho",
+    }
+
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community"):
+        scanned["source"] = source
+        return guard.ScanResult(
+            skill_name="honcho",
+            source=source,
+            trust_level="builtin" if source == "official" else "community",
+            verdict="dangerous",
+        )
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: f"source={result.source} trust={result.trust_level}")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_audit("honcho", console=console)
+
+    assert scanned["source"] == "official"
+    assert "trust=builtin" in sink.getvalue()
 
 
 def test_do_install_preserves_nested_official_optional_path(

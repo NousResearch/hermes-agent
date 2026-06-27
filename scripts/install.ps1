@@ -1932,6 +1932,20 @@ except Exception:
         throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
     }
 
+    # Attach-app sidecar deps (hermes-eats-world). The desktop composer's
+    # "attach app/window" + dock feature drives windows via the bundled
+    # hermes-eats-world sidecar, which needs these Windows-only Python packages
+    # in this venv. Best-effort: a failure here must NOT fail the install -- the
+    # feature is runtime-gated and degrades gracefully when the deps are absent.
+    $sidecarDeps = @("uiautomation==2.0.19", "mss==10.0.0", "Pillow>=10.0.0")
+    Write-Info "Installing attach-app sidecar deps: $($sidecarDeps -join ', ') ..."
+    Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install @sidecarDeps }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "Attach-app sidecar deps installed"
+    } else {
+        Write-Warn "Attach-app sidecar deps failed (exit $LASTEXITCODE) -- the attach-app feature will be unavailable. Non-fatal; continuing."
+    }
+
     # Baseline-import gate. Even if a tier reported success above, the
     # actual deps may have landed somewhere other than $InstallDir\venv\
     # (e.g. uv 0.5+ syncing into a sibling .venv\ when UV_PROJECT_ENVIRONMENT

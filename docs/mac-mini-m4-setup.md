@@ -224,6 +224,47 @@ launchctl unload ~/Library/LaunchAgents/com.rapid-mlx.server.plist
 launchctl load ~/Library/LaunchAgents/com.rapid-mlx.server.plist
 ```
 
+## MCP Servers
+
+### Vestaboard
+
+Repo: https://github.com/kfezer/vestaboard-mcp
+
+```bash
+cd ~/hermes/vestaboard-mcp
+uv venv && uv pip install -r requirements.txt
+```
+
+Add to `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  vestaboard:
+    command: /Users/YOUR_USERNAME/hermes/vestaboard-mcp/.venv/bin/python3
+    args:
+      - /Users/YOUR_USERNAME/hermes/vestaboard-mcp/vestaboard_mcp.py
+    env:
+      VESTABOARD_HOST: http://<board-ip>:7000
+      VESTABOARD_API_KEY: <your-key>
+    enabled: true
+```
+
+Use the board's IP address directly — mDNS can be unreliable. To get the API key, POST to `/local-api/enablement` with the enablement token shown on the board.
+
+**Tools:**
+
+| Tool | Description |
+|---|---|
+| `vestaboard_weather_forecast` | Fetches live weather, shows matching icon for 4s then data |
+| `vestaboard_send_text` | Send centered text (up to 6 rows × 22 chars) |
+| `vestaboard_send_long_text` | Auto-splits long text across multiple screens, cycles in background |
+| `vestaboard_show_icon` | Display a weather icon directly: sunny, cloudy, rainy, snowy, stormy, foggy, windy, hot |
+| `vestaboard_read` | Read current board contents |
+| `vestaboard_clear` | Blank the display |
+| `vestaboard_send_raw` | Send a raw 6×22 color-code grid |
+
+---
+
 ## Performance reference (Mac Mini M4, 24 GB)
 
 Benchmarked with 3-run average, 300-token response, Hermes system prompt (~18K tokens):

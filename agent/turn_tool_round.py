@@ -141,7 +141,17 @@ def run_tool_round(
     # A UI must never observe an assistant/tool-call row that is only an in-memory
     # projection: emit interim commentary after the DB append.
     if not duplicate_previous_interim:
-        agent._emit_interim_assistant_message(assistant_msg)
+        from agent.conversation_loop import _looks_like_material_interim_content
+
+        interim_delivered = agent._emit_interim_assistant_message(assistant_msg)
+        clean_turn_content = agent._strip_think_blocks(assistant_message.content or "").strip()
+        if (
+            clean_turn_content
+            and not interim_delivered
+            and _looks_like_material_interim_content(clean_turn_content)
+        ):
+            agent._undelivered_tool_call_content = clean_turn_content
+            agent._undelivered_tool_call_content_nudged = False
 
     # Flush open streaming boxes before tools so early content doesn't wrap tool feed
     # lines. Display callback only — TTS (_stream_callback) must NOT receive None (EOS).

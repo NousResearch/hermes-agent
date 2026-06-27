@@ -2742,6 +2742,77 @@ def _apply_model_switch(
     }
 
 
+def _moa_model_override(preset: str) -> dict[str, Any]:
+    return {
+        "model": preset,
+        "provider": "moa",
+        "base_url": "moa://local",
+        "api_key": "moa-virtual-provider",
+        "api_mode": "chat_completions",
+    }
+
+
+def _agent_model_override(agent: Any) -> dict[str, Any]:
+    return {
+        "model": getattr(agent, "model", "") or "",
+        "provider": getattr(agent, "provider", "") or "",
+        "base_url": getattr(agent, "base_url", "") or "",
+        "api_key": getattr(agent, "api_key", "") or "",
+        "api_mode": getattr(agent, "api_mode", "") or "chat_completions",
+    }
+
+
+def _apply_live_model_override(
+    sid: str,
+    session: dict,
+    override: dict[str, Any],
+    *,
+    label: str,
+) -> None:
+    agent = session.get("agent")
+    if agent is None:
+        return
+    try:
+        agent.switch_model(
+            new_model=override.get("model") or "",
+            new_provider=override.get("provider") or "",
+            api_key=override.get("api_key"),
+            base_url=override.get("base_url"),
+            api_mode=override.get("api_mode"),
+        )
+    except Exception as exc:
+        logger.warning("In-place %s switch failed for TUI agent: %s", label, exc)
+        raise ValueError(
+            f"{label} switch to {override.get('provider')}:{override.get('model')} "
+            f"failed ({exc}); staying on {getattr(agent, 'model', '')}."
+        ) from exc
+    _restart_slash_worker(sid, session)
+    _persist_live_session_runtime(session)
+    _persist_live_session_system_prompt(session)
+    _emit("session.info", sid, _session_info(agent, session))
+
+
+def _restore_moa_one_shot(sid: str, session: dict) -> None:
+    if "moa_one_shot_restore" not in session:
+        return
+    restore_override = session.pop("moa_one_shot_restore", None)
+    restore_agent = session.pop("moa_one_shot_restore_agent", None)
+    if restore_override is None:
+        session.pop("model_override", None)
+    else:
+        session["model_override"] = restore_override
+    if isinstance(restore_agent, dict):
+        try:
+            _apply_live_model_override(
+                sid,
+                session,
+                restore_agent,
+                label="MoA restore",
+            )
+        except Exception as exc:
+            logger.warning("MoA one-shot restore failed: %s", exc)
+
+
 def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     """Adopt a config.yaml model change at turn start, like gateways do per
     message. Sessions pinned with /model keep their choice; a failed switch
@@ -8424,12 +8495,6 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             except (TypeError, ValueError):
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)
-            if "moa_one_shot_restore" in session:
-                _restore = session.pop("moa_one_shot_restore", None)
-                if _restore is None:
-                    session.pop("model_override", None)
-                else:
-                    session["model_override"] = _restore
 
             last_reasoning = None
             status_note = None
@@ -8647,6 +8712,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
             _emit("error", sid, {"message": str(e)})
         finally:
+            _restore_moa_one_shot(sid, session)
             try:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)
@@ -11121,7 +11187,8 @@ def _(rid, params: dict) -> dict:
     resolved = _resolve_name(name)
     if resolved != name:
         name = resolved
-    session = _sessions.get(params.get("session_id", ""))
+    sid = params.get("session_id", "")
+    session = _sessions.get(sid)
 
     qcmds = _load_cfg().get("quick_commands", {})
     if name in qcmds:
@@ -11207,7 +11274,7 @@ def _(rid, params: dict) -> dict:
     if name == "moa":
         try:
             from hermes_cli.moa_config import (
-                build_moa_turn_prompt, exact_moa_preset_name, moa_usage, normalize_moa_config
+                exact_moa_preset_name, moa_usage, normalize_moa_config
             )
 
             moa_cfg = normalize_moa_config(_load_cfg().get("moa") or {})
@@ -11215,28 +11282,36 @@ def _(rid, params: dict) -> dict:
             if matched:
                 if not session:
                     return _err(rid, 4001, "no active session")
-                session["model_override"] = {
-                    "model": matched,
-                    "provider": "moa",
-                    "base_url": "moa://local",
-                    "api_key": "moa-virtual-provider",
-                    "api_mode": "chat_completions",
-                }
+                override = _moa_model_override(matched)
+                previous_override = session.get("model_override")
+                session["model_override"] = override
                 session["moa_active_preset"] = matched
+                try:
+                    _apply_live_model_override(sid, session, override, label="MoA")
+                except Exception:
+                    if previous_override is None:
+                        session.pop("model_override", None)
+                    else:
+                        session["model_override"] = previous_override
+                    session.pop("moa_active_preset", None)
+                    raise
                 return _ok(rid, {"type": "exec", "output": f"Model switched to MoA preset: {matched}."})
             if not arg:
                 return _err(rid, 4004, moa_usage())
             if not session:
                 return _err(rid, 4001, "no active session")
             preset = moa_cfg["default_preset"]
+            agent = session.get("agent")
             session["moa_one_shot_restore"] = session.get("model_override")
-            session["model_override"] = {
-                "model": preset,
-                "provider": "moa",
-                "base_url": "moa://local",
-                "api_key": "moa-virtual-provider",
-                "api_mode": "chat_completions",
-            }
+            if agent is not None:
+                session["moa_one_shot_restore_agent"] = _agent_model_override(agent)
+            override = _moa_model_override(preset)
+            session["model_override"] = override
+            try:
+                _apply_live_model_override(sid, session, override, label="MoA")
+            except Exception:
+                _restore_moa_one_shot(sid, session)
+                raise
             return _ok(
                 rid,
                 {

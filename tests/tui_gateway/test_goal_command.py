@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -77,6 +78,36 @@ def session(server):
 def _call(server, method, **params):
     handler = server._methods[method]
     return handler(1, params)
+
+
+class _FakeAgent:
+    def __init__(self):
+        self.model = "base-model"
+        self.provider = "base-provider"
+        self.base_url = "https://base.example/v1"
+        self.api_key = "base-key"
+        self.api_mode = "chat_completions"
+        self.switches = []
+
+    def switch_model(self, **kwargs):
+        self.switches.append(kwargs)
+        self.model = kwargs["new_model"]
+        self.provider = kwargs["new_provider"]
+        self.base_url = kwargs.get("base_url") or ""
+        self.api_key = kwargs.get("api_key") or ""
+        self.api_mode = kwargs.get("api_mode") or "chat_completions"
+
+
+@contextmanager
+def _patch_live_switch_side_effects(server):
+    with (
+        patch.object(server, "_restart_slash_worker"),
+        patch.object(server, "_persist_live_session_runtime"),
+        patch.object(server, "_persist_live_session_system_prompt"),
+        patch.object(server, "_emit"),
+        patch.object(server, "_session_info", return_value={}),
+    ):
+        yield
 
 
 # ── command.dispatch /goal ────────────────────────────────────────────
@@ -225,11 +256,15 @@ moa:
         model: anthropic/claude-opus-4.8
 """)
     sid, _, s = session
-    r = _call(server, "command.dispatch", name="moa", arg="", session_id=sid)
+    s["agent"] = _FakeAgent()
+    with _patch_live_switch_side_effects(server):
+        r = _call(server, "command.dispatch", name="moa", arg="", session_id=sid)
     assert r["result"]["type"] == "exec"
     assert "Model switched to MoA preset: default" in r["result"]["output"]
     assert s["model_override"]["provider"] == "moa"
     assert s["model_override"]["model"] == "default"
+    assert s["agent"].provider == "moa"
+    assert s["agent"].model == "default"
 
 
 def test_moa_exact_preset_switches_to_named_preset_model(server, session, hermes_home):
@@ -247,10 +282,14 @@ moa:
         model: anthropic/claude-opus-4.8
 """)
     sid, _, s = session
-    r = _call(server, "command.dispatch", name="moa", arg="review", session_id=sid)
+    s["agent"] = _FakeAgent()
+    with _patch_live_switch_side_effects(server):
+        r = _call(server, "command.dispatch", name="moa", arg="review", session_id=sid)
     assert r["result"]["type"] == "exec"
     assert s["model_override"]["provider"] == "moa"
     assert s["model_override"]["model"] == "review"
+    assert s["agent"].provider == "moa"
+    assert s["agent"].model == "review"
 
 
 def test_moa_non_preset_returns_one_shot_send(server, session, hermes_home):
@@ -266,12 +305,25 @@ moa:
         provider: openrouter
         model: anthropic/claude-opus-4.8
 """)
-    sid, _, _ = session
-    r = _call(server, "command.dispatch", name="moa", arg="inspect this project", session_id=sid)
+    sid, _, s = session
+    s["agent"] = _FakeAgent()
+    with _patch_live_switch_side_effects(server):
+        r = _call(server, "command.dispatch", name="moa", arg="inspect this project", session_id=sid)
     result = r["result"]
     assert result["type"] == "send"
     assert result["message"] == "inspect this project"
     assert "one-shot" in result["notice"]
+    assert s["model_override"]["provider"] == "moa"
+    assert s["model_override"]["model"] == "default"
+    assert s["agent"].provider == "moa"
+    assert s["agent"].model == "default"
+
+    with _patch_live_switch_side_effects(server):
+        server._restore_moa_one_shot(sid, s)
+
+    assert "model_override" not in s
+    assert s["agent"].provider == "base-provider"
+    assert s["agent"].model == "base-model"
 
 
 def test_pending_input_commands_includes_moa(server):

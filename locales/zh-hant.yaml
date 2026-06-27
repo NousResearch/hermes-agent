@@ -232,6 +232,12 @@ gateway:
   restart:
     in_progress:           "⏳ 閘道重新啟動已在進行中……"
     restarting:            "♻ 正在重新啟動閘道。如果 60 秒內未收到通知，請在主控台執行 `hermes gateway restart` 重新啟動。"
+    completed:             "♻ 閘道已成功重新啟動。你的工作階段會繼續。"
+    online:                "♻️ 閘道已上線 — Hermes 已準備就緒。"
+
+  shutdown_notice:
+    shutdown:              "⚠️ 閘道正在關閉 — 目前任務將被中斷。"
+    restart:               "⚠️ 閘道正在重新啟動 — 目前任務將被中斷。重新啟動後傳送任意訊息，我會嘗試從中斷處繼續。"
 
   resume:
     db_unavailable:        "工作階段資料庫無法使用。"
@@ -329,11 +335,20 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "無效的數量「{arg}」—— 請使用 /undo 或 /undo N。"
 
   update:
-    platform_not_messaging:  "✗ /update 僅在訊息平台上可用。請在終端機執行 `hermes update`。"
-    not_git_repo:            "✗ 不是 git 儲存庫 — 無法更新。"
-    hermes_cmd_not_found:    "✗ 找不到 `hermes` 指令。Hermes 正在執行，但更新指令無法在 PATH 上或透過目前的 Python 解譯器找到執行檔。請嘗試在終端機中手動執行 `hermes update`。"
+    platform_not_messaging:  "✗ /update 只能從訊息平台使用。請在終端機執行 `hermes update`。"
+    not_git_repo:            "✗ 不是 Git 儲存庫 — 無法更新。"
+    hermes_cmd_not_found:    "✗ 找不到 `hermes` 命令。Hermes 正在執行，但更新命令無法在 PATH 或目前 Python 直譯器中找到可執行檔。請嘗試在終端機手動執行 `hermes update`。"
     start_failed:            "✗ 啟動更新失敗：{error}"
-    starting:                "⚕ 正在啟動 Hermes 更新…… 進度將在此處顯示。"
+    starting:                "⚕ 正在啟動 Hermes 更新…我會在這裡串流顯示進度。"
+    finished:                "✅ Hermes 更新已完成。"
+    failed_exit:             "❌ Hermes 更新失敗（結束代碼 {exit_code}）。"
+    timed_out:               "❌ Hermes 更新在 30 分鐘後逾時。"
+    prompt_default_hint:     "（預設：{default}）"
+    prompt_fallback:         "⚕ **更新需要你的輸入：**\n\n{prompt}{default_hint}\n\n回覆 `{prefix}approve`（yes）或 `{prefix}deny`（no），也可以直接輸入你的回答。"
+    finished_with_output:    "✅ Hermes 更新已完成。\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes 更新失敗。\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes 更新已成功完成。"
+    failed_generic:          "❌ Hermes 更新失敗。請查看 gateway 日誌，或手動執行 `hermes update` 了解詳情。"
 
   usage:
     rate_limits:              "⏱️ **速率限制：** {state}"

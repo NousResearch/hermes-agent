@@ -15,6 +15,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
+from agent import i18n
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
@@ -286,6 +287,81 @@ class TestWatchUpdateProgress:
         assert mock_adapter.send.call_count >= 1
         all_sent = " ".join(str(c) for c in mock_adapter.send.call_args_list)
         assert "update finished" in all_sent.lower()
+
+    @pytest.mark.asyncio
+    async def test_streaming_final_status_uses_active_language(self, tmp_path, monkeypatch):
+        """Live update watcher final status notification uses the active UI language."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+
+        assert mock_adapter.send.call_args_list[-1].args[1] == "✅ Hermes の更新が完了しました。"
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_fallback_uses_active_language(self, tmp_path, monkeypatch):
+        """Text fallback around update prompts uses the active UI language."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.typed_command_prefix = "/"
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        async def simulate_prompt_cycle():
+            await asyncio.sleep(0.2)
+            (hermes_home / ".update_prompt.json").write_text(json.dumps({
+                "prompt": "Restore local changes? [Y/n]",
+                "default": "y",
+                "id": "ja-prompt",
+            }))
+            await asyncio.sleep(0.3)
+            (hermes_home / ".update_response").write_text("y")
+            (hermes_home / ".update_prompt.json").unlink(missing_ok=True)
+            (hermes_home / ".update_exit_code").write_text("0")
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            task = asyncio.create_task(simulate_prompt_cycle())
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+            await task
+
+        prompt_messages = [
+            call.args[1]
+            for call in mock_adapter.send.call_args_list
+            if "Restore local changes" in call.args[1]
+        ]
+        assert prompt_messages
+        assert prompt_messages[0].startswith("⚕ **更新には入力が必要です:**")
+        assert "返信は `/approve`（yes）または `/deny`（no）" in prompt_messages[0]
 
     @pytest.mark.asyncio
     async def test_detects_and_forwards_prompt(self, tmp_path):

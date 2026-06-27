@@ -247,6 +247,12 @@ gateway:
   restart:
     in_progress:           "⏳ Gateway restart already in progress..."
     restarting:            "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
+    completed:             "♻ Gateway restarted successfully. Your session continues."
+    online:                "♻️ Gateway online — Hermes is back and ready."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Gateway shutting down — Your current task will be interrupted."
+    restart:               "⚠️ Gateway restarting — Your current task will be interrupted. Send any message after restart and I'll try to resume where you left off."
 
   resume:
     db_unavailable:        "Session database not available."
@@ -346,6 +352,15 @@ gateway:
     hermes_cmd_not_found:    "✗ Could not locate the `hermes` command. Hermes is running, but the update command could not find the executable on PATH or via the current Python interpreter. Try running `hermes update` manually in your terminal."
     start_failed:            "✗ Failed to start update: {error}"
     starting:                "⚕ Starting Hermes update… I'll stream progress here."
+    finished:                "✅ Hermes update finished."
+    failed_exit:             "❌ Hermes update failed (exit code {exit_code})."
+    timed_out:               "❌ Hermes update timed out after 30 minutes."
+    prompt_default_hint:     " (default: {default})"
+    prompt_fallback:         "⚕ **Update needs your input:**\n\n{prompt}{default_hint}\n\nReply `{prefix}approve` (yes) or `{prefix}deny` (no), or type your answer directly."
+    finished_with_output:    "✅ Hermes update finished.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes update failed.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes update finished successfully."
+    failed_generic:          "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
 
   usage:
     rate_limits:              "⏱️ **Rate Limits:** {state}"

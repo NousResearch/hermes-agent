@@ -232,6 +232,12 @@ gateway:
   restart:
     in_progress:           "⏳ Перезапуск шлюза уже выполняется..."
     restarting:            "♻ Перезапуск шлюза. Если уведомление не придёт в течение 60 секунд, перезапустите из консоли командой `hermes gateway restart`."
+    completed:             "♻ Шлюз успешно перезапущен. Ваш сеанс продолжается."
+    online:                "♻️ Шлюз в сети — Hermes готов."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Шлюз завершает работу — Текущая задача будет прервана."
+    restart:               "⚠️ Шлюз перезапускается — Текущая задача будет прервана. Отправьте любое сообщение после перезапуска, и я попробую продолжить с того места, где вы остановились."
 
   resume:
     db_unavailable:        "База данных сеансов недоступна."
@@ -334,6 +340,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Не удалось найти команду `hermes`. Hermes запущен, но команда обновления не нашла исполняемый файл в PATH или через текущий интерпретатор Python. Попробуйте выполнить `hermes update` вручную в терминале."
     start_failed:            "✗ Не удалось запустить обновление: {error}"
     starting:                "⚕ Запуск обновления Hermes… Я буду транслировать прогресс сюда."
+    finished:                "✅ Обновление Hermes завершено."
+    failed_exit:             "❌ Обновление Hermes завершилось ошибкой (код выхода {exit_code})."
+    timed_out:               "❌ Обновление Hermes превысило тайм-аут 30 минут."
+    prompt_default_hint:     " (по умолчанию: {default})"
+    prompt_fallback:         "⚕ **Для обновления требуется ваш ввод:**\n\n{prompt}{default_hint}\n\nОтветьте `{prefix}approve` (yes) или `{prefix}deny` (no), либо введите ответ напрямую."
+    finished_with_output:    "✅ Обновление Hermes завершено.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Обновление Hermes завершилось ошибкой.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Обновление Hermes успешно завершено."
+    failed_generic:          "❌ Обновление Hermes завершилось ошибкой. Подробности см. в логах gateway или выполните `hermes update` вручную."
 
   usage:
     rate_limits:              "⏱️ **Ограничения скорости:** {state}"

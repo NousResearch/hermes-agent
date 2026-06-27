@@ -232,6 +232,12 @@ gateway:
   restart:
     in_progress:           "⏳ Gateway-herbegin reeds aan die gang..."
     restarting:            "♻ Herbegin van gateway. As jy nie binne 60 sekondes in kennis gestel word nie, herbegin vanaf die konsole met `hermes gateway restart`."
+    completed:             "♻ Gateway suksesvol herbegin. Jou sessie gaan voort."
+    online:                "♻️ Gateway aanlyn — Hermes is terug en gereed."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Gateway sluit af — Jou huidige taak sal onderbreek word."
+    restart:               "⚠️ Gateway herbegin — Jou huidige taak sal onderbreek word. Stuur enige boodskap ná die herbegin en ek sal probeer hervat waar jy opgehou het."
 
   resume:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
@@ -334,6 +340,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Kon nie die `hermes`-opdrag vind nie. Hermes loop, maar die opdateeropdrag kon nie die uitvoerbare lêer op PATH of via die huidige Python-vertolker vind nie. Probeer `hermes update` met die hand in jou terminale uitvoer."
     start_failed:            "✗ Kon nie opdatering begin nie: {error}"
     starting:                "⚕ Begin Hermes-opdatering… Ek sal vordering hier stroom."
+    finished:                "✅ Hermes-opdatering voltooi."
+    failed_exit:             "❌ Hermes-opdatering het misluk (uitgangskode {exit_code})."
+    timed_out:               "❌ Hermes-opdatering het ná 30 minute uitgetel."
+    prompt_default_hint:     " (verstek: {default})"
+    prompt_fallback:         "⚕ **Opdatering het jou invoer nodig:**\n\n{prompt}{default_hint}\n\nAntwoord `{prefix}approve` (yes) of `{prefix}deny` (no), of tik jou antwoord direk."
+    finished_with_output:    "✅ Hermes-opdatering voltooi.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes-opdatering het misluk.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes-opdatering suksesvol voltooi."
+    failed_generic:          "❌ Hermes-opdatering het misluk. Gaan die gateway-logboeke na of voer `hermes update` handmatig uit vir besonderhede."
 
   usage:
     rate_limits:              "⏱️ **Tariefperke:** {state}"

@@ -232,6 +232,12 @@ gateway:
   restart:
     in_progress:           "⏳ ゲートウェイの再起動はすでに進行中です..."
     restarting:            "♻ ゲートウェイを再起動しています。60 秒以内に通知が届かない場合は、コンソールで `hermes gateway restart` を実行してください。"
+    completed:             "♻ ゲートウェイの再起動が完了しました。セッションは継続します。"
+    online:                "♻️ ゲートウェイはオンラインです — Hermes の準備ができました。"
+
+  shutdown_notice:
+    shutdown:              "⚠️ ゲートウェイを停止しています — 現在のタスクは中断されます。"
+    restart:               "⚠️ ゲートウェイを再起動しています — 現在のタスクは中断されます。再起動後に任意のメッセージを送ると、中断した位置からの再開を試みます。"
 
   resume:
     db_unavailable:        "セッションデータベースは利用できません。"
@@ -329,11 +335,20 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "無効な数値「{arg}」— /undo または /undo N を使用してください。"
 
   update:
-    platform_not_messaging:  "✗ /update はメッセージングプラットフォームでのみ利用可能です。ターミナルで `hermes update` を実行してください。"
+    platform_not_messaging:  "✗ /update はメッセージングプラットフォームからのみ利用できます。ターミナルで `hermes update` を実行してください。"
     not_git_repo:            "✗ Git リポジトリではありません — 更新できません。"
-    hermes_cmd_not_found:    "✗ `hermes` コマンドが見つかりません。Hermes は実行中ですが、更新コマンドは PATH 上にも現在の Python インタープリタ経由でも実行可能ファイルを見つけられませんでした。ターミナルで `hermes update` を手動で実行してみてください。"
+    hermes_cmd_not_found:    "✗ `hermes` コマンドを見つけられません。Hermes は実行中ですが、更新コマンドが PATH または現在の Python インタープリタ経由で実行ファイルを見つけられませんでした。ターミナルで `hermes update` を手動実行してください。"
     start_failed:            "✗ 更新の開始に失敗しました: {error}"
-    starting:                "⚕ Hermes の更新を開始しています… 進捗をここにストリーミングします。"
+    starting:                "⚕ Hermes の更新を開始しています…進捗をここにストリームします。"
+    finished:                "✅ Hermes の更新が完了しました。"
+    failed_exit:             "❌ Hermes の更新に失敗しました（終了コード {exit_code}）。"
+    timed_out:               "❌ Hermes の更新は 30 分でタイムアウトしました。"
+    prompt_default_hint:     "（デフォルト: {default}）"
+    prompt_fallback:         "⚕ **更新には入力が必要です:**\n\n{prompt}{default_hint}\n\n返信は `{prefix}approve`（yes）または `{prefix}deny`（no）、または回答を直接入力してください。"
+    finished_with_output:    "✅ Hermes の更新が完了しました。\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes の更新に失敗しました。\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes の更新が正常に完了しました。"
+    failed_generic:          "❌ Hermes の更新に失敗しました。詳細は gateway ログを確認するか、`hermes update` を手動で実行してください。"
 
   usage:
     rate_limits:              "⏱️ **レート制限:** {state}"

@@ -232,6 +232,12 @@ gateway:
   restart:
     in_progress:           "⏳ Gateway-Neustart läuft bereits..."
     restarting:            "♻ Gateway wird neu gestartet. Falls Sie nicht innerhalb von 60 Sekunden benachrichtigt werden, starten Sie über die Konsole mit `hermes gateway restart` neu."
+    completed:             "♻ Gateway wurde erfolgreich neu gestartet. Ihre Sitzung wird fortgesetzt."
+    online:                "♻️ Gateway online — Hermes ist bereit."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Gateway wird heruntergefahren — Ihre aktuelle Aufgabe wird unterbrochen."
+    restart:               "⚠️ Gateway wird neu gestartet — Ihre aktuelle Aufgabe wird unterbrochen. Senden Sie nach dem Neustart eine beliebige Nachricht, dann versuche ich dort fortzufahren, wo Sie aufgehört haben."
 
   resume:
     db_unavailable:        "Sitzungsdatenbank nicht verfügbar."
@@ -329,11 +335,20 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "Ungültige Anzahl \"{arg}\" — verwenden Sie /undo oder /undo N."
 
   update:
-    platform_not_messaging:  "✗ /update ist nur auf Messaging-Plattformen verfügbar. Führen Sie `hermes update` im Terminal aus."
-    not_git_repo:            "✗ Kein Git-Repository — Update nicht möglich."
-    hermes_cmd_not_found:    "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte das ausführbare Programm weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manuell im Terminal auszuführen."
-    start_failed:            "✗ Update konnte nicht gestartet werden: {error}"
-    starting:                "⚕ Hermes-Update wird gestartet… Ich streame den Fortschritt hier."
+    platform_not_messaging:  "✗ /update ist nur über Messaging-Plattformen verfügbar. Führen Sie `hermes update` im Terminal aus."
+    not_git_repo:            "✗ Kein Git-Repository — Aktualisierung nicht möglich."
+    hermes_cmd_not_found:    "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte die ausführbare Datei weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manuell im Terminal auszuführen."
+    start_failed:            "✗ Aktualisierung konnte nicht gestartet werden: {error}"
+    starting:                "⚕ Hermes-Aktualisierung wird gestartet… Fortschritt wird hier gestreamt."
+    finished:                "✅ Hermes-Aktualisierung abgeschlossen."
+    failed_exit:             "❌ Hermes-Aktualisierung fehlgeschlagen (Exit-Code {exit_code})."
+    timed_out:               "❌ Hermes-Aktualisierung nach 30 Minuten abgebrochen."
+    prompt_default_hint:     " (Standard: {default})"
+    prompt_fallback:         "⚕ **Aktualisierung benötigt Ihre Eingabe:**\n\n{prompt}{default_hint}\n\nAntworten Sie mit `{prefix}approve` (yes) oder `{prefix}deny` (no), oder geben Sie Ihre Antwort direkt ein."
+    finished_with_output:    "✅ Hermes-Aktualisierung abgeschlossen.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes-Aktualisierung fehlgeschlagen.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes-Aktualisierung erfolgreich abgeschlossen."
+    failed_generic:          "❌ Hermes-Aktualisierung fehlgeschlagen. Prüfen Sie die Gateway-Logs oder führen Sie `hermes update` manuell aus."
 
   usage:
     rate_limits:              "⏱️ **Ratenlimits:** {state}"

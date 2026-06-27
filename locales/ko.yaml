@@ -232,6 +232,12 @@ gateway:
   restart:
     in_progress:           "⏳ 게이트웨이 재시작이 이미 진행 중입니다..."
     restarting:            "♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요."
+    completed:             "♻ 게이트웨이가 성공적으로 재시작되었습니다. 세션은 계속됩니다."
+    online:                "♻️ 게이트웨이가 온라인입니다 — Hermes 준비가 완료되었습니다."
+
+  shutdown_notice:
+    shutdown:              "⚠️ 게이트웨이를 종료하는 중입니다 — 현재 작업이 중단됩니다."
+    restart:               "⚠️ 게이트웨이를 재시작하는 중입니다 — 현재 작업이 중단됩니다. 재시작 후 아무 메시지나 보내면 중단된 지점부터 이어서 진행해 보겠습니다."
 
   resume:
     db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."
@@ -334,6 +340,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ `hermes` 명령을 찾을 수 없습니다. Hermes는 실행 중이지만 PATH나 현재 Python 인터프리터를 통해 실행 파일을 찾을 수 없습니다. 터미널에서 `hermes update`를 직접 실행해 보세요."
     start_failed:            "✗ 업데이트 시작 실패: {error}"
     starting:                "⚕ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
+    finished:                "✅ Hermes 업데이트가 완료되었습니다."
+    failed_exit:             "❌ Hermes 업데이트가 실패했습니다(종료 코드 {exit_code})."
+    timed_out:               "❌ Hermes 업데이트가 30분 후 시간 초과되었습니다."
+    prompt_default_hint:     " (기본값: {default})"
+    prompt_fallback:         "⚕ **업데이트에 입력이 필요합니다:**\n\n{prompt}{default_hint}\n\n`{prefix}approve`(yes) 또는 `{prefix}deny`(no)로 답장하거나, 답변을 직접 입력하세요."
+    finished_with_output:    "✅ Hermes 업데이트가 완료되었습니다.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes 업데이트가 실패했습니다.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes 업데이트가 성공적으로 완료되었습니다."
+    failed_generic:          "❌ Hermes 업데이트가 실패했습니다. 자세한 내용은 gateway 로그를 확인하거나 `hermes update`를 직접 실행하세요."
 
   usage:
     rate_limits:              "⏱️ **요청 제한:** {state}"

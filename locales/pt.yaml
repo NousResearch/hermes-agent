@@ -232,6 +232,12 @@ gateway:
   restart:
     in_progress:           "⏳ O reinício do gateway já está em curso..."
     restarting:            "♻ A reiniciar o gateway. Se não fores notificado em 60 segundos, reinicia a partir da consola com `hermes gateway restart`."
+    completed:             "♻ Gateway reiniciado com sucesso. A tua sessão continua."
+    online:                "♻️ Gateway online — Hermes está pronto."
+
+  shutdown_notice:
+    shutdown:              "⚠️ O gateway está a encerrar — A tua tarefa atual será interrompida."
+    restart:               "⚠️ O gateway está a reiniciar — A tua tarefa atual será interrompida. Envia qualquer mensagem após o reinício e tentarei retomar onde ficaste."
 
   resume:
     db_unavailable:        "Base de dados de sessões indisponível."
@@ -334,6 +340,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Não foi possível localizar o comando `hermes`. O Hermes está em execução, mas o comando de atualização não conseguiu encontrar o executável no PATH nem através do interpretador Python atual. Tenta executar `hermes update` manualmente no teu terminal."
     start_failed:            "✗ Falha ao iniciar a atualização: {error}"
     starting:                "⚕ A iniciar a atualização do Hermes… Vou transmitir o progresso aqui."
+    finished:                "✅ Atualização do Hermes concluída."
+    failed_exit:             "❌ A atualização do Hermes falhou (código de saída {exit_code})."
+    timed_out:               "❌ A atualização do Hermes expirou após 30 minutos."
+    prompt_default_hint:     " (predefinição: {default})"
+    prompt_fallback:         "⚕ **A atualização precisa da tua entrada:**\n\n{prompt}{default_hint}\n\nResponde `{prefix}approve` (yes) ou `{prefix}deny` (no), ou escreve a resposta diretamente."
+    finished_with_output:    "✅ Atualização do Hermes concluída.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ A atualização do Hermes falhou.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ A atualização do Hermes foi concluída com sucesso."
+    failed_generic:          "❌ A atualização do Hermes falhou. Consulta os logs do gateway ou executa `hermes update` manualmente para detalhes."
 
   usage:
     rate_limits:              "⏱️ **Limites de taxa:** {state}"

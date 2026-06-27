@@ -236,6 +236,12 @@ gateway:
   restart:
     in_progress:           "⏳ Tá atosú gateway ar siúl cheana féin..."
     restarting:            "♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `hermes gateway restart`."
+    completed:             "♻ Atosaíodh an gateway go rathúil. Leanann do sheisiún ar aghaidh."
+    online:                "♻️ Tá an gateway ar líne — Tá Hermes réidh."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Tá an gateway á mhúchadh — Cuirfear isteach ar do thasc reatha."
+    restart:               "⚠️ Tá an gateway á atosú — Cuirfear isteach ar do thasc reatha. Seol teachtaireacht ar bith tar éis an atosaithe agus déanfaidh mé iarracht leanúint ón áit ar stop tú."
 
   resume:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
@@ -338,6 +344,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ag rith, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a rith de láimh i do theirminéal."
     start_failed:            "✗ Theip ar nuashonrú a thosú: {error}"
     starting:                "⚕ Ag tosú nuashonrú Hermes… Cuirfidh mé an dul chun cinn ar shruth anseo."
+    finished:                "✅ Nuashonrú Hermes críochnaithe."
+    failed_exit:             "❌ Theip ar nuashonrú Hermes (cód scoir {exit_code})."
+    timed_out:               "❌ Chuaigh nuashonrú Hermes thar am tar éis 30 nóiméad."
+    prompt_default_hint:     " (réamhshocrú: {default})"
+    prompt_fallback:         "⚕ **Teastaíonn d'ionchur ón nuashonrú:**\n\n{prompt}{default_hint}\n\nFreagair `{prefix}approve` (yes) nó `{prefix}deny` (no), nó clóscríobh do fhreagra go díreach."
+    finished_with_output:    "✅ Nuashonrú Hermes críochnaithe.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Theip ar nuashonrú Hermes.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Nuashonrú Hermes críochnaithe go rathúil."
+    failed_generic:          "❌ Theip ar nuashonrú Hermes. Seiceáil logaí an gateway nó rith `hermes update` de láimh le haghaidh sonraí."
 
   usage:
     rate_limits:              "⏱️ **Teorainneacha Ráta:** {state}"

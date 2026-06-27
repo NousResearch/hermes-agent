@@ -32,6 +32,53 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def _strip_nonsandbox_file_handlers(sandbox_prefix=None):
+    """Remove any logging file handler (root + named loggers) whose target file
+    lives OUTSIDE the per-test sandbox — chiefly the real ``~/.hermes/logs/
+    agent.log`` handler that ``hermes_logging.setup_logging()`` may have attached
+    to the root logger before HERMES_HOME was redirected.
+
+    Without this, a WARNING emitted by code-under-test (e.g.
+    ``COMPACTION_STATS_RECONCILE_FAILED``) appends to the PRODUCTION log and trips
+    the compaction-stats watcher cron with false pages. Also flips
+    ``hermes_logging._logging_initialized`` back to False so a later in-test
+    ``setup_logging()`` re-attaches against the (now sandboxed) HERMES_HOME.
+    """
+    import logging as _logging
+
+    sandbox_root = Path(sandbox_prefix).resolve() if sandbox_prefix else None
+    loggers = [_logging.getLogger()] + [
+        _logging.getLogger(name) for name in list(_logging.root.manager.loggerDict)
+        if isinstance(_logging.getLogger(name), _logging.Logger)
+    ]
+    for lg in loggers:
+        for h in list(getattr(lg, "handlers", [])):
+            base = getattr(h, "baseFilename", None)
+            if not base:
+                continue
+            # keep handlers that write INSIDE the test sandbox; strip the rest.
+            # Use real path-containment (relative_to), NOT str.startswith — a
+            # string prefix would treat sibling dirs (/tmp/x/t0 vs /tmp/x/t01) as
+            # inside (Greptile #114).
+            if sandbox_root is not None:
+                try:
+                    Path(base).resolve().relative_to(sandbox_root)
+                    continue  # inside the sandbox → keep
+                except ValueError:
+                    pass  # outside → fall through to strip
+            try:
+                lg.removeHandler(h)
+                h.close()
+            except Exception:
+                pass
+    # force re-init so a later setup_logging() re-attaches against sandboxed home
+    try:
+        import hermes_logging
+        hermes_logging._logging_initialized = False
+    except Exception:
+        pass
+
+
 # ── Per-file process isolation ──────────────────────────────────────────────
 # Tests run via ``scripts/run_tests_parallel.py``, which spawns a fresh
 # ``python -m pytest <file>`` subprocess per test file. Cross-file state
@@ -374,6 +421,18 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+
+    # 3b. Strip any root-logger file handler pointing OUTSIDE the test sandbox.
+    #     hermes_logging.setup_logging() attaches a RotatingFileHandler at
+    #     ``<home>/logs/agent.log`` to the ROOT logger and remembers it via a
+    #     module global. If any module under test calls it (directly, or by
+    #     building a real AIAgent) before HERMES_HOME is redirected — an
+    #     import-order race — the handler targets the REAL ~/.hermes/logs and
+    #     every WARNING a test emits (e.g. COMPACTION_STATS_RECONCILE_FAILED)
+    #     appends to the PRODUCTION log, which then trips the compaction-stats
+    #     watcher cron with false pages (2026-06-27). Strip those handlers at the
+    #     start of every test so a leaked WARNING can never reach the live log.
+    _strip_nonsandbox_file_handlers(str(tmp_path))
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.

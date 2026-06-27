@@ -45,6 +45,58 @@ class TestCredentialFingerprint:
         assert "config-token" not in fp
 
 
+    def test_reads_config_token(self):
+        """Adapters like Discord store token on `config`, not on self.
+
+        Without the config-token fallback, every Discord adapter in a
+        multiplexed gateway returns None here and the same-token conflict
+        check is silently skipped — N adapters start polling the same bot
+        token and race on every inbound message.
+        """
+        class _Config:
+            token = "discord-bot-token"
+        class _ConfigBackedAdapter:
+            config = _Config()
+        fp = GatewayRunner._adapter_credential_fingerprint(_ConfigBackedAdapter())
+        assert fp is not None
+        assert "discord-bot-token" not in fp
+        assert len(fp) == 16
+
+    def test_distinct_config_tokens_distinct_fp(self):
+        class _CfgA:
+            token = "tok-A"
+        class _CfgB:
+            token = "tok-B"
+        class _A:
+            config = _CfgA()
+        class _B:
+            config = _CfgB()
+        a = GatewayRunner._adapter_credential_fingerprint(_A())
+        b = GatewayRunner._adapter_credential_fingerprint(_B())
+        assert a is not None and b is not None
+        assert a != b
+
+    def test_direct_token_takes_precedence_over_config(self):
+        """If both `adapter.token` and `adapter.config.token` exist, direct wins."""
+        class _Cfg:
+            token = "from-config"
+        class _Both:
+            token = "from-direct"
+            config = _Cfg()
+        fp = GatewayRunner._adapter_credential_fingerprint(_Both())
+        import hashlib
+        expected = hashlib.sha256(b"hermes-mux:from-direct").hexdigest()[:16]
+        assert fp == expected
+
+    def test_config_without_token_returns_none(self):
+        """config present but no token attribute → None (no false positive)."""
+        class _Cfg:
+            pass
+        class _Adapter:
+            config = _Cfg()
+        assert GatewayRunner._adapter_credential_fingerprint(_Adapter()) is None
+
+
 class TestProfileMessageHandler:
     @pytest.mark.asyncio
     async def test_stamps_profile_on_unstamped_source(self):

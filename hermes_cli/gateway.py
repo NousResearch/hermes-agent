@@ -3647,6 +3647,16 @@ def generate_launchd_plist() -> str:
         )
     )
 
+    # Preserve proxy env vars from the invoking shell — launchd does not
+    # inherit the interactive shell environment, so explicit proxy settings
+    # are silently lost without this.  See #41906.
+    _PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+    proxy_entries = "\n".join(
+        f"        <key>{k}</key>\n        <string>{os.environ[k]}</string>"
+        for k in _PROXY_ENV_VARS if k in os.environ
+    )
+    proxy_xml = f"\n{proxy_entries}" if proxy_entries else ""
+
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
         f"<string>{python_path}</string>",
@@ -3687,7 +3697,7 @@ def generate_launchd_plist() -> str:
         <key>VIRTUAL_ENV</key>
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{hermes_home}</string>{proxy_xml}
     </dict>
 
     <key>LimitLoadToSessionType</key>

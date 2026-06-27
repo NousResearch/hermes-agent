@@ -3332,3 +3332,61 @@ class TestServiceWorkingDirIsStable:
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
         assert "<key>KeepAlive</key>\n    <dict>" not in plist
+
+
+class TestLaunchdPlistProxyEnvVars:
+    """generate_launchd_plist must preserve proxy env vars from the invoking shell.
+
+    launchd does not inherit the interactive shell environment, so explicit
+    proxy settings (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY) are silently
+    lost without explicit forwarding.  See #41906.
+    """
+
+    def test_proxy_env_vars_included_when_set(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("ALL_PROXY", "socks5h://127.0.0.1:7897")
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>HTTP_PROXY</key>" in plist
+        assert "http://127.0.0.1:7897" in plist
+        assert "<key>HTTPS_PROXY</key>" in plist
+        assert "<key>ALL_PROXY</key>" in plist
+        assert "socks5h://127.0.0.1:7897" in plist
+
+    def test_proxy_env_vars_omitted_when_unset(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+            monkeypatch.delenv(var, raising=False)
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>HTTP_PROXY</key>" not in plist
+        assert "<key>HTTPS_PROXY</key>" not in plist
+        assert "<key>ALL_PROXY</key>" not in plist
+        assert "<key>NO_PROXY</key>" not in plist
+
+    def test_no_proxy_included_when_set(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setenv("HTTP_PROXY", "http://proxy:8080")
+        monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>NO_PROXY</key>" in plist
+        assert "localhost,127.0.0.1" in plist
+
+    def test_partial_proxy_vars_only_present_set_ones(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy:443")
+        monkeypatch.delenv("HTTP_PROXY", raising=False)
+        monkeypatch.delenv("ALL_PROXY", raising=False)
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>HTTPS_PROXY</key>" in plist
+        assert "<key>HTTP_PROXY</key>" not in plist
+        assert "<key>ALL_PROXY</key>" not in plist

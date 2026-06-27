@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 # ── _clean_for_display unit tests ────────────────────────────────────────
@@ -2112,3 +2114,49 @@ class TestFreshFinalRespectsAdapterDecline:
             f"Expected 2 send calls (initial + fresh-final), got {adapter.send.call_count}"
         )
 
+
+class _RichCapEditAdapter(BasePlatformAdapter):
+    """Minimal adapter whose rich streaming cap exceeds its edit cap."""
+
+    MAX_MESSAGE_LENGTH = 4096
+
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id: str, content: str, reply_to=None, metadata=None) -> SendResult:
+        return SendResult(success=True, message_id="msg_1")
+
+    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False, metadata=None) -> SendResult:
+        return SendResult(success=True, message_id=message_id)
+
+    async def get_chat_info(self, chat_id: str) -> dict:
+        return {}
+
+    def streaming_overflow_limit(self):
+        return 32768
+
+
+class TestRichCapEditStreamingOverflow:
+    def test_edit_transport_ignores_rich_overflow_cap(self):
+        """Regression: Telegram rich cap must not drive edit-based streaming.
+
+        If edit transport accumulates to the 32k rich cap, Telegram's 4096-char
+        edit path repeatedly split-delivers the same full prefix; users see many
+        duplicate ``(1/2)`` chunks before the tail. The rich cap is only safe
+        for native draft streaming, where frames/final delivery use rich send
+        endpoints instead of progressive edits.
+        """
+        consumer = GatewayStreamConsumer(_RichCapEditAdapter(), "chat")
+        consumer._use_draft_streaming = False
+        assert consumer._raw_message_limit() == _RichCapEditAdapter.MAX_MESSAGE_LENGTH
+
+    def test_draft_transport_can_use_rich_overflow_cap(self):
+        consumer = GatewayStreamConsumer(_RichCapEditAdapter(), "chat")
+        consumer._use_draft_streaming = True
+        assert consumer._raw_message_limit() == 32768

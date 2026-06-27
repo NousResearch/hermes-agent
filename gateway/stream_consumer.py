@@ -471,18 +471,26 @@ class GatewayStreamConsumer:
             if isinstance(self.adapter, _BasePlatformAdapter)
             else len
         )
+        # Resolve native draft streaming before choosing the overflow budget.
+        # Rich-capable adapters (Telegram rich messages) can raise the budget
+        # above the legacy edit limit ONLY when native drafts are active: draft
+        # frames/final sends can use the rich endpoint, while editMessageText
+        # still has the 4096-ish legacy cap for progressive edits.  If we let
+        # edit-based streaming accumulate to the rich cap, Telegram's adapter
+        # has to split the same full prefix on every edit and users see many
+        # duplicate "(1/2)" chunks before the tail arrives.
+        self._use_draft_streaming = self._resolve_draft_streaming()
         # Rich-capable adapters (Telegram rich messages) raise this above the
-        # legacy per-message limit so a reply that fits one rich send/draft
-        # isn't fragmented at 4096 while streaming.  See _raw_message_limit.
+        # legacy per-message limit so a reply that fits one rich draft/final
+        # send isn't fragmented at 4096 while draft-streaming. See
+        # _raw_message_limit.
         _raw_limit = self._raw_message_limit()
         _safe_limit = max(500, _raw_limit - _len_fn(self.cfg.cursor) - 100)
 
-        # Resolve native draft streaming once per run.  When enabled the
-        # consumer routes mid-stream frames through adapter.send_draft and
-        # leaves _message_id=None so the existing got_done path delivers the
-        # final answer as a regular sendMessage (drafts have no message_id
-        # to edit).
-        self._use_draft_streaming = self._resolve_draft_streaming()
+        # When native draft streaming is enabled the consumer routes mid-stream
+        # frames through adapter.send_draft and leaves _message_id=None so the
+        # existing got_done path delivers the final answer as a regular
+        # sendMessage (drafts have no message_id to edit).
         if self._use_draft_streaming:
             type(self)._draft_id_counter += 1
             self._draft_id = type(self)._draft_id_counter
@@ -1213,7 +1221,10 @@ class GatewayStreamConsumer:
         base = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
         # isinstance gate: MagicMock adapters return mock objects (truthy, not
         # ints) for arbitrary attribute access — keep them on the base limit.
-        if isinstance(self.adapter, _BasePlatformAdapter):
+        # Also keep edit-based streaming on the legacy edit limit.  A higher
+        # rich-message cap is safe only for native draft streaming because
+        # draft/final sends can use rich endpoints; progressive edits cannot.
+        if isinstance(self.adapter, _BasePlatformAdapter) and self._use_draft_streaming:
             try:
                 cap = self.adapter.streaming_overflow_limit()
             except Exception as e:

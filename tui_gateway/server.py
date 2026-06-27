@@ -16358,8 +16358,9 @@ def _(rid, params: dict) -> dict:
     try:
         from tools.wake_word import pause_listening
         pause_listening()
-    except Exception:
-        pass
+        logger.info("wake.pause: detector paused")
+    except Exception as e:
+        logger.debug("wake.pause failed: %s", e)
     return _ok(rid, {"paused": True})
 
 
@@ -16369,6 +16370,9 @@ def _(rid, params: dict) -> dict:
     active = _wake_is_active()
     if active:
         _wake_resume_if_active()
+        logger.info("wake.resume: detector resumed")
+    else:
+        logger.info("wake.resume: ignored (listener not armed)")
     return _ok(rid, {"resumed": active})
 
 

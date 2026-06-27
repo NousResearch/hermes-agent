@@ -160,16 +160,15 @@ _CFG_ANCHORED_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-# Unquoted YAML / colon config (``password: secret``): keyword in the KEY
-# (anchored to line start) and a single whitespace-free value, so ``note:
-# secret meeting`` is left alone. Bare ``auth`` excluded so ``Authorization:``
-# (masked by _AUTH_HEADER_RE) / ``author:`` don't match; ``auth_token`` still
-# matches via ``token``. Quoted values defer to _JSON_FIELD_RE (lookahead).
+# YAML / colon config: bare-key quoted scalars cannot match _JSON_FIELD_RE.
+# Match escaped double quotes, doubled single quotes, or an unquoted token.
+# An unterminated quote masks to end-of-line; no branch crosses LF or CRLF.
 # NOTE(perf): possessive where the successor is disjoint; the leading class
 # stays backtrackable (see _CFG_DOTTED_RE).
 _YAML_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential)"
 _YAML_ASSIGN_RE = re.compile(
-    rf"(^[ \t]*+[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)(?!['\"])([^\s&]++)",
+    rf"(^[ \t]*+[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)"
+    r"(\"(?:\\[^\r\n]|[^\"\\\r\n])*\"|'(?:''|[^'\r\n])*'|['\"][^\r\n]*|[^\s&]++)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -529,10 +528,17 @@ def _redact_assignments(text: str) -> str:
         text = _JSON_FIELD_RE.sub(
             _assignment_sub(lambda g: f'{g[0]}: "{_mask_token(g[1])}"', check_keyword=False), text)
 
-    # YAML after JSON: quoted values are handled there (_YAML_ASSIGN_RE skips quotes).
+    # YAML after JSON; unwrap scalars before the shared assignment gate so
+    # quoted programmatic env lookups retain the same exemption as bare ones.
     if ":" in text and "://" not in text:
-        text = _YAML_ASSIGN_RE.sub(
-            _assignment_sub(lambda g: f"{g[0]}{g[1]}{_mask_token(g[2])}", check_keyword=True), text)
+        def _redact_yaml(m):
+            key, sep, value = m.groups()
+            quote = value[0] if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0] else ""
+            inner = value[1:-1] if quote else value
+            if not _should_redact_assignment(key, inner, check_keyword=True):
+                return m.group(0)
+            return f"{key}{sep}{quote}{_mask_token(inner)}{quote}"
+        text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
     return text
 
 

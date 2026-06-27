@@ -6222,7 +6222,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self._session_db is not None and self.session_id:
             try:
                 self.conversation_history = self._session_db.get_messages_as_conversation(
-                    self.session_id
+                    self.session_id, include_timestamp=True
                 )
             except Exception as e:
                 logger.debug("rewind: active history reload failed: %s", e)

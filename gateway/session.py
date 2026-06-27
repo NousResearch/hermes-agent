@@ -1393,7 +1393,7 @@ class SessionStore:
         if not self._db:
             return []
         try:
-            return self._db.get_messages_as_conversation(session_id)
+            return self._db.get_messages_as_conversation(session_id, include_timestamp=True)
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)
             return []

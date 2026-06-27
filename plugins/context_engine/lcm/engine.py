@@ -3407,6 +3407,179 @@ class LCMEngine(ContextEngine):
             return False
         return stored_head[: len(incoming_identities)] == incoming_identities
 
+    def _compacted_replay_stored_tail_overlap(
+        self,
+        new_messages: List[Dict[str, Any]],
+        original_new_messages: List[Dict[str, Any]],
+        full_replay: List[Dict[str, Any]],
+    ) -> int:
+        """Count leading ``new_messages`` rows that already exist as the stored tail.
+
+        Dup-on-replay fix. After a compaction the replayed active context is
+        ``[scaffold/summary head] + [fresh tail of already-stored rows]``. The
+        cursor only skips the scaffold *system* head, so the (already-stored)
+        fresh tail — and any summary node row — get re-ingested as duplicates.
+        Return how many leading rows of ``new_messages`` form a contiguous run
+        that exactly matches the END of the durable store; those are already
+        persisted and must be skipped.
+
+        Hard safety gates (preserve the deliberate dup-over-loss guarantee):
+        - Returns 0 unless the FULL replay carries scaffold evidence in its head
+          (``_is_replayed_context_scaffold_message``). A genuinely-new
+          tail-only delta has no scaffold head and is NEVER de-duplicated, so a
+          real new message that coincidentally repeats the durable tail is
+          still ingested (dup-over-loss).
+        - Only a contiguous run anchored at the exact stored tail counts; a
+          partial/interior match returns 0.
+        """
+        if not new_messages or not self._session_id:
+            return 0
+
+        # Identities of the candidate rows. Skip scaffold rows AND summary-node
+        # rows (the compaction summary assistant message), which are active
+        # context only and never stored as durable transcript rows.
+        candidate = [
+            (idx, self._message_replay_identity(msg))
+            for idx, msg in enumerate(new_messages)
+            if not self._is_replayed_context_scaffold_message(msg)
+            and not self._is_summary_node_replay_message(msg)
+            and not self._matches_ignore_message_patterns(msg)
+        ]
+        if not candidate:
+            return 0
+
+        # 🔴 SCAFFOLD MUST BE IN THE HEAD THAT PRECEDES THE STORED-TAIL RUN
+        # (Greptile #107 P1, 2nd): the overlap skip is only safe for a genuine
+        # post-compaction replay, whose shape is [scaffold/summary head] +
+        # [already-stored fresh tail]. So the scaffold evidence must sit in the
+        # head BEFORE the first candidate row — every new_messages row up to the
+        # first candidate must be scaffold/summary-only, and the head (incl. the
+        # part of full_replay that precedes new_messages) must contain real
+        # scaffold evidence. `_is_replayed_context_scaffold_message` also matches
+        # a preserved-objective message regardless of role/position; if such a
+        # message appears INTERLEAVED with genuinely-new turns (not as a clean
+        # compaction head), this gate must NOT fire, or we'd drop real new rows
+        # that coincidentally match the stored tail.
+        first_candidate_idx = candidate[0][0]
+        head_before_run = new_messages[:first_candidate_idx]
+        # Every row before the first candidate must be scaffold/summary scaffolding
+        # (i.e. the candidate run starts immediately after a pure scaffold head).
+        if any(
+            not self._is_replayed_context_scaffold_message(msg)
+            and not self._is_summary_node_replay_message(msg)
+            for msg in head_before_run
+        ):
+            return 0
+        # And real scaffold evidence must exist in that head — either in the
+        # rows preceding new_messages within the full replay (the scaffold system
+        # row is typically cut by the cursor) or in head_before_run itself.
+        # 🔴 Require the STRONG compaction signal (the LCM system note or an
+        # actual summary-node row), NOT the weak preserved-objective prefix
+        # alone: a genuinely-new user turn can legitimately start with
+        # "[Current user objective preserved from compacted history]" and
+        # `_is_replayed_context_scaffold_message` matches it regardless of
+        # role/position, so trusting it as proof-of-replay drops real new rows
+        # (Greptile #107 P1, 2nd). The strong signal only appears in a true
+        # post-compaction active context.
+        replay_head = list(full_replay or [])
+        if new_messages:
+            cut = len(replay_head) - len(new_messages)
+            preceding = replay_head[:cut] if cut > 0 else []
+        else:
+            preceding = replay_head
+        has_scaffold = any(
+            self._is_strong_compaction_scaffold(msg)
+            for msg in (list(preceding) + list(head_before_run))
+        )
+        if not has_scaffold:
+            return 0
+
+        try:
+            session_count = self._store.get_session_count(self._session_id)
+        except Exception:  # pragma: no cover - defensive
+            return 0
+        if session_count <= 0:
+            return 0
+
+        # Pull a stored tail at least as long as the candidate run.
+        tail_limit = min(max(len(candidate) * 2, 64), session_count)
+        stored_rows = self._store.get_session_tail(self._session_id, limit=tail_limit)
+        stored_tail = [
+            self._message_replay_identity(row, stored_row=True)
+            for row in stored_rows
+            if not self._matches_ignore_message_patterns(row, stored_row=True)
+        ]
+        if not stored_tail:
+            return 0
+
+        # Match the leading candidate run against a suffix of the stored tail
+        # that ends at the true end of the store.
+        #
+        # 🔴 DUP-OVER-LOSS (Greptile #107 P1): pick the SMALLEST matching run,
+        # never the largest. When the stored tail contains a REPEATING identity
+        # pattern (e.g. store ends [A,B,A,B,A,B] and the replay is the kept fresh
+        # tail [A,B,A,B] followed by GENUINELY-NEW turns [A,B]), the longest
+        # match overshoots the real fresh-tail boundary and skips the new turns
+        # as "overlap" — silent data loss. Content alone cannot distinguish a
+        # replayed stored row from a new row with identical content, so we bias
+        # toward NEW: the real kept-fresh-tail length T is always in the matching
+        # set, so the smallest matching run is provably <= T and therefore never
+        # skips a genuinely-new row. Worst case under repetition we skip too few
+        # (a few residual dups the dedup pass cleans), never too many.
+        best = 0
+        max_run = min(len(candidate), len(stored_tail))
+        for run in range(1, max_run + 1):
+            cand_ids = [ident for _idx, ident in candidate[:run]]
+            if cand_ids == stored_tail[-run:]:
+                best = run
+                break
+        if best == 0:
+            return 0
+
+        # Translate the candidate-run length back to an absolute count of leading
+        # new_messages rows (including any interleaved scaffold/summary rows up
+        # to the last matched candidate row).
+        last_matched_new_idx = candidate[best - 1][0]
+        return last_matched_new_idx + 1
+
+    def _is_strong_compaction_scaffold(self, msg: Dict[str, Any]) -> bool:
+        """Return true ONLY for the strong post-compaction active-context markers.
+
+        Unlike ``_is_replayed_context_scaffold_message`` (which also matches the
+        weak ``[Current user objective preserved from compacted history]``
+        prefix that a genuinely-new user turn could legitimately start with),
+        this recognizes only signals that appear EXCLUSIVELY in a real
+        post-compaction active context: the LCM system note, or a synthesized
+        summary-node row. Used to gate the stored-tail overlap skip so a
+        non-compaction replay carrying a preserved-objective message can never
+        trigger a (data-losing) overlap skip. (Greptile #107 P1, 2nd.)
+        """
+        role = str(msg.get("role") or "")
+        content = normalize_content_value(msg.get("content")) or ""
+        if role == "system" and (
+            "[Note: This conversation uses Lossless Context Management (LCM)." in content
+            and "Earlier turns have been compacted into hierarchical summaries below." in content
+        ):
+            return True
+        return self._is_summary_node_replay_message(msg)
+
+    @staticmethod
+    def _is_summary_node_replay_message(msg: Dict[str, Any]) -> bool:
+        """Return true for a compaction summary-node row in the active replay.
+
+        These are synthesized at compaction (``[Recent Summary (dN, node …)]`` /
+        ``[Session Arc …]`` / ``[Durable …]`` with ``[Expand for details: …]``)
+        and live in active context only — never persisted as durable transcript
+        rows, so they must not anchor or block the stored-tail overlap scan.
+        """
+        content = normalize_content_value(msg.get("content")) or ""
+        stripped = content.lstrip()
+        return (
+            stripped.startswith("[Recent Summary")
+            or stripped.startswith("[Session Arc")
+            or stripped.startswith("[Durable")
+        ) and "[Expand for details:" in content
+
     def _reconcile_ingest_cursor_from_store(self, messages: List[Dict[str, Any]]) -> int:
         """Infer the in-memory cursor for an existing session after process restart."""
         if not self._session_id or not messages:
@@ -3572,6 +3745,11 @@ class LCMEngine(ContextEngine):
             prefer_existing_externalized=prefer_existing_externalized,
         )
         replay_messages = self._redact_active_replay_messages(replay_messages)
+        # When the cursor reconcile advances PAST durable (non-scaffold) rows the
+        # already-stored fresh tail is accounted for by the cursor itself, so the
+        # stored-tail overlap guard (the fallback for a *scaffold-only* advance)
+        # must be suppressed to avoid double-counting (Greptile #107 P1, 3rd).
+        reconcile_consumed_durable_tail = False
         if self._ingest_cursor_needs_reconcile:
             reconcile_messages = replay_messages
             if self._compiled_ignore_message_patterns:
@@ -3581,6 +3759,17 @@ class LCMEngine(ContextEngine):
                 ]
             self._ingest_cursor = self._reconcile_ingest_cursor_from_store(reconcile_messages)
             self._ingest_cursor_needs_reconcile = False
+            # Did the reconcile advance the cursor PAST durable (non-scaffold)
+            # rows? If so the already-stored fresh tail is ALREADY accounted for
+            # by the cursor, and the stored-tail overlap guard below — which is
+            # only the fallback for a *scaffold-only* cursor advance — must NOT
+            # run, or it double-counts and strips a genuinely-new row that
+            # coincidentally repeats the last stored identity (Greptile #107 P1,
+            # 3rd). When the reconcile only skipped the scaffold head
+            # (no durable rows consumed), the guard is still needed.
+            reconcile_consumed_durable_tail = bool(self._ingest_cursor) and bool(
+                self._effective_replay_identities(reconcile_messages[: self._ingest_cursor])
+            )
         cursor = min(max(self._ingest_cursor, 0), n)
         logger.debug(
             "Ingest: session=%s cursor=%d incoming=%d",
@@ -3591,6 +3780,45 @@ class LCMEngine(ContextEngine):
         original_new_messages = messages[cursor:] if cursor < n else []
 
         if not new_messages:
+            return replay_messages
+
+        # --- Compacted-replay suffix-overlap guard (dup-on-replay fix) ---------
+        # After a compaction the active context replayed on a restart/re-bind is
+        # [scaffold/summary head] + [fresh tail of already-stored rows]. The
+        # scaffold head breaks prefix-based replay proof, so the cursor only
+        # skips the head and the (already-stored) fresh tail gets re-ingested as
+        # duplicates. When — and ONLY when — the head carries scaffold evidence
+        # (proving this is a post-compaction replay, never a genuinely-new
+        # tail-only delta), drop the leading run of new_messages that already
+        # exists as the stored tail. Gating on scaffold evidence preserves the
+        # deliberate dup-over-loss guarantee for anchorless deltas.
+        overlap = (
+            0
+            if reconcile_consumed_durable_tail
+            else self._compacted_replay_stored_tail_overlap(
+                new_messages, original_new_messages, replay_messages
+            )
+        )
+        if overlap > 0:
+            self._record_ingest_reconciliation(
+                action="skipped overlap",
+                reason="skipped already-stored compacted tail",
+                cursor=cursor + overlap,
+                incoming=n,
+                session_count=self._store.get_session_count(self._session_id),
+                stored_tail_count=overlap,
+            )
+            logger.debug(
+                "LCM skipped %d already-stored rows after compacted replay: session=%s",
+                overlap,
+                self._session_id,
+            )
+            new_messages = new_messages[overlap:]
+            original_new_messages = original_new_messages[overlap:]
+            cursor += overlap
+
+        if not new_messages:
+            self._ingest_cursor = n
             return replay_messages
 
         messages_to_store_with_index: list[tuple[int, Dict[str, Any]]] = [

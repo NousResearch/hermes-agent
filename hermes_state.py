@@ -2976,6 +2976,7 @@ class SessionDB:
         session_id: str,
         include_ancestors: bool = False,
         include_inactive: bool = False,
+        include_timestamp: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -2995,7 +2996,7 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY id",
                 tuple(session_ids),
@@ -3026,6 +3027,13 @@ class SessionDB:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            # Surface the durable per-message arrival timestamp ONLY when the
+            # caller opts in (LCM ingest/replay path). Off by default so every
+            # other consumer (CLI/TUI/ACP/gateway display) gets the byte-stable
+            # legacy shape — and the key can never reach a model payload or a
+            # prompt-cache key. Metadata only; never sent to the model.
+            if include_timestamp and row["timestamp"] is not None:
+                msg["timestamp"] = row["timestamp"]
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.

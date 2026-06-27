@@ -765,6 +765,11 @@ def run_conversation(
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:
                 api_msg.pop("finish_reason")
+            # Strip session/transcript metadata that must never reach the wire
+            # (and must never enter a prompt-cache key): durable arrival
+            # timestamp, platform message id, observed flag. These are carried
+            # on the message dict for persistence/replay bookkeeping only.
+            api_msg.pop("timestamp", None)
             # Strip internal thinking-prefill marker
             api_msg.pop("_thinking_prefill", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for

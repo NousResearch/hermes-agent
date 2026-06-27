@@ -510,7 +510,7 @@ class SessionManager:
 
         # Load conversation history.
         try:
-            history = db.get_messages_as_conversation(session_id)
+            history = db.get_messages_as_conversation(session_id, include_timestamp=True)
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []

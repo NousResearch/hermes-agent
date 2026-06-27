@@ -622,6 +622,20 @@ class TestMessageStorage:
         conv = db.get_messages_as_conversation("s1")
         assert conv == [{"role": "assistant", "content": "Visible answer"}]
 
+    def test_get_messages_as_conversation_timestamp_opt_in(self, db):
+        """include_timestamp surfaces the durable arrival time for LCM ingest;
+        default OFF keeps the byte-stable legacy shape for every other caller."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="hi")
+        # default: no timestamp key (legacy shape, byte-stable)
+        default_conv = db.get_messages_as_conversation("s1")
+        assert "timestamp" not in default_conv[0]
+        # opt-in: timestamp present and numeric
+        ts_conv = db.get_messages_as_conversation("s1", include_timestamp=True)
+        assert "timestamp" in ts_conv[0]
+        assert isinstance(ts_conv[0]["timestamp"], (int, float))
+        assert ts_conv[0]["timestamp"] > 0
+
     def test_reasoning_persisted_and_restored(self, db):
         """Reasoning text is stored for assistant messages and restored by
         get_messages_as_conversation() so providers receive coherent multi-turn

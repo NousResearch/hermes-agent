@@ -125,14 +125,20 @@ def test_cached_agent_evicted_after_undo_and_after_redo(store):
 
     assert "Undid" in undo_msg or "Removed" in undo_msg
     assert cache_key not in runner._agent_cache
-    assert store.load_transcript(entry.session_id) == store._db.get_messages_as_conversation(entry.session_id)
+    # load_transcript loads with include_timestamp=True (LCM ingest path); compare
+    # against the canonical reader using the same flag so the equality holds.
+    assert store.load_transcript(entry.session_id) == store._db.get_messages_as_conversation(
+        entry.session_id, include_timestamp=True
+    )
 
     runner._agent_cache[cache_key] = ("stale-before-redo", "sig")
     redo_msg = asyncio.run(runner._handle_redo_command(_event("/redo", src)))
 
     assert "Redid" in redo_msg
     assert cache_key not in runner._agent_cache
-    assert store.load_transcript(entry.session_id) == store._db.get_messages_as_conversation(entry.session_id)
+    assert store.load_transcript(entry.session_id) == store._db.get_messages_as_conversation(
+        entry.session_id, include_timestamp=True
+    )
 
 
 def test_null_content_tail_confirmation_does_not_stringify_none(store):

@@ -17,7 +17,7 @@ from typing import Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 _MIN_DISK_SPACE_BYTES = 50 * 1024 * 1024
 REQUIRED_CORE_TABLES = (
@@ -632,6 +632,33 @@ def ensure_external_content_fts(
     repair_external_content_fts(conn, spec, now=now, throttle=True)
 
 
+def ensure_messages_dedup_columns(conn: sqlite3.Connection) -> None:
+    """Add the replay-dedup + timestamp-fidelity columns to ``messages``.
+
+    Idempotent (additive, ignored by older readers). These back the historical
+    replay-block dedup soft-hide (``superseded_by``) and the timestamp backfill
+    provenance flags. The search/grep read path filters ``superseded_by IS NULL``
+    so a soft-hidden replay copy never resurfaces as a duplicate hit.
+    """
+    # The messages table is created by the store before migrations run in the
+    # normal path, but some callers run migrations on a bare connection — skip
+    # cleanly if it's not there yet (the columns are added when it next exists).
+    has_messages = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
+    ).fetchone()
+    if not has_messages:
+        return
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "superseded_by" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN superseded_by TEXT")
+    if "timestamp_original" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN timestamp_original REAL")
+    if "timestamp_reconstructed" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN timestamp_reconstructed INTEGER DEFAULT 0")
+    if "timestamp_verified" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN timestamp_verified INTEGER DEFAULT 0")
+
+
 def run_versioned_migrations(conn: sqlite3.Connection) -> None:
     ensure_metadata_table(conn)
     ensure_migration_state_table(conn)
@@ -652,5 +679,10 @@ def run_versioned_migrations(conn: sqlite3.Connection) -> None:
     if current_version < 4:
         mark_migration_step_complete(conn, "v4_lifecycle_debt_columns")
         current_version = 4
+
+    ensure_messages_dedup_columns(conn)
+    if current_version < 5:
+        mark_migration_step_complete(conn, "v5_messages_dedup_timestamp_columns")
+        current_version = 5
 
     set_schema_version(conn, current_version)

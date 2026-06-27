@@ -501,7 +501,15 @@ class TestPersistence:
 
         restored = manager.get_session(state.session_id)
         assert restored is not None
-        assert restored.history == [{
+        # `timestamp` is durable per-message metadata surfaced for the LCM
+        # ingest/replay path (include_timestamp=True); it is not part of the
+        # reasoning-preservation contract this test asserts, so drop it before
+        # the shape comparison.
+        restored_history = [
+            {k: v for k, v in msg.items() if k != "timestamp"}
+            for msg in restored.history
+        ]
+        assert restored_history == [{
             "role": "assistant",
             "content": "hello",
             "reasoning": "step-by-step",

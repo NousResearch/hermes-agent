@@ -241,7 +241,13 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
     assert kwargs["session_id"] == session_id
     assert kwargs["gateway_session_key"] == "client-42"
     assert kwargs["ephemeral_system_prompt"] == "stay focused"
-    assert kwargs["conversation_history"] == [
+    # `timestamp` is durable per-message metadata surfaced for the LCM ingest
+    # path (include_timestamp=True); not part of this test's history contract.
+    loaded_history = [
+        {k: v for k, v in msg.items() if k != "timestamp"}
+        for msg in kwargs["conversation_history"]
+    ]
+    assert loaded_history == [
         {"role": "user", "content": "earlier"},
         {"role": "assistant", "content": "prior answer"},
     ]

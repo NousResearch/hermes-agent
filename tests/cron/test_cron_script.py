@@ -587,7 +587,7 @@ class TestNoAgentFailureRecovery:
             lambda *args: recovery_called.append(args) or (True, "", "", None),
         )
 
-        ok, doc, final, err = scheduler._run_job_impl({
+        ok, doc, final, err = scheduler.run_job({
             "id": "job1",
             "name": "cc nudge",
             "no_agent": True,
@@ -621,7 +621,7 @@ class TestNoAgentFailureRecovery:
         monkeypatch.setattr(scheduler, "_run_job_script", fake_run_script)
         monkeypatch.setattr(scheduler, "_run_no_agent_failure_recovery", fake_recovery)
 
-        ok, doc, final, err = scheduler._run_job_impl({
+        ok, doc, final, err = scheduler.run_job({
             "id": "job2",
             "name": "cc-task-17-pokracuj-opravit-host",
             "no_agent": True,

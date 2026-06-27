@@ -544,6 +544,8 @@ class TestRoutingIntents:
 
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
+        monkeypatch.delenv("EMAIL_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("EMAIL_HOME_ADDRESS", raising=False)
 
         for token in ("ALL", "All", "all"):
             targets = _resolve_delivery_targets({"deliver": token, "origin": None})

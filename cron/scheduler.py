@@ -1363,6 +1363,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 route_metadata = {"job_id": job["id"]}
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 
+            # Only email adapters use `subject`; passing it to chat adapters is
+            # noisy and broke thread-delivery assertions. Email fallback keeps
+            # cron mail subjects descriptive instead of "Hermes Agent".
+            if platform_name.lower() == "email":
+                route_metadata["subject"] = job.get("name") or "Hermes cron"
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
                 # Route through the gateway's DeliveryRouter so the live send
@@ -2190,9 +2195,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 )
 
             alert = (
-                f"⚠ Cron watchdog '{job_name}' script failed\n\n"
-                f"{output}\n\n"
-                f"Time: {now_iso}"
+                f"⚠️ Kontrola ‘{job_name}’ skončila technickou chybou. "
+                f"Detail je v cron logu.\n\nTime: {now_iso}"
             )
             doc = (
                 f"# Cron Job: {job_name}\n\n"

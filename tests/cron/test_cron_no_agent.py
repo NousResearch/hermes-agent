@@ -12,7 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -278,6 +278,162 @@ def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
         run_job(job)
 
     ai_mock.assert_not_called()
+
+
+def test_run_job_no_agent_command_center_tracking_is_opt_in(hermes_env):
+    """Untracked no_agent jobs must not create dashboard registry state."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "alert.sh"
+    script_path.write_text("#!/bin/bash\necho alert\n")
+
+    job = create_job(
+        prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
+    )
+    run_job(job)
+
+    assert not (hermes_env / "state" / "agent_registry.json").exists()
+
+
+def test_run_job_no_agent_command_center_tracking_records_status(hermes_env):
+    """Opt-in no_agent scripts show up in Command Center registry."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "alert.sh"
+    script_path.write_text("#!/bin/bash\necho alert\n")
+
+    job = create_job(
+        prompt=None,
+        name="Health Watchdog",
+        schedule="every 5m",
+        script="alert.sh",
+        no_agent=True,
+        deliver="local",
+    )
+    job["command_center"] = {"track": True, "team": "ops", "risk_level": "read_only"}
+
+    success, _doc, _final_response, error = run_job(job)
+
+    registry = json.loads((hermes_env / "state" / "agent_registry.json").read_text())
+    agent = registry["agents"][0]
+    assert success is True
+    assert error is None
+    assert agent["agent_id"] == f"cron-{job['id']}"
+    assert agent["team"] == "ops"
+    assert agent["runner"] == "cron"
+    assert agent["model"] == "no_agent-script"
+    assert agent["mission"] == "Health Watchdog"
+    assert agent["status"] == "completed"
+    assert agent["current_step"] == "completed with output"
+    assert agent["risk_level"] == "read_only"
+
+
+def test_run_one_job_command_center_tracking_links_output_artifact(hermes_env):
+    """End-to-end cron firing links the saved cron output to the registry record."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_one_job
+
+    script_path = hermes_env / "scripts" / "alert.sh"
+    script_path.write_text("#!/bin/bash\necho alert\n")
+
+    job = create_job(
+        prompt=None,
+        name="Tracked Cron",
+        schedule="every 5m",
+        script="alert.sh",
+        no_agent=True,
+        deliver="local",
+    )
+    job["command_center_track"] = True
+
+    assert run_one_job(job) is True
+
+    registry = json.loads((hermes_env / "state" / "agent_registry.json").read_text())
+    agent = registry["agents"][0]
+    assert agent["status"] == "completed"
+    assert agent["artifact"]
+    assert agent["artifact"].endswith(".md")
+    assert "cron/output" in agent["artifact"]
+    assert (hermes_env / "cron" / "output" / job["id"]).exists()
+
+
+def test_run_job_agent_command_center_tracking_records_success(hermes_env):
+    """Opt-in LLM cron jobs show their agent lifecycle in Command Center."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    job = create_job(
+        prompt="say hi",
+        name="LLM Digest",
+        schedule="every 5m",
+        deliver="local",
+        model="test-model",
+    )
+    job["command_center"] = {"track": True, "team": "ops", "risk_level": "read_only"}
+
+    agent = MagicMock()
+    agent.run_conversation.return_value = {"final_response": "hi", "completed": True}
+    agent.get_activity_summary.return_value = {
+        "seconds_since_activity": 0,
+        "last_activity_desc": "api response",
+        "current_tool": None,
+    }
+
+    with (
+        patch("run_agent.AIAgent", return_value=agent),
+        patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={"provider": "test"}),
+        patch("tools.mcp_tool.discover_mcp_tools", return_value=[]),
+    ):
+        success, _doc, final_response, error = run_job(job)
+
+    registry = json.loads((hermes_env / "state" / "agent_registry.json").read_text())
+    record = registry["agents"][0]
+    assert success is True
+    assert final_response == "hi"
+    assert error is None
+    assert record["agent_id"] == f"cron-{job['id']}"
+    assert record["model"] == "cron-agent"
+    assert record["status"] == "completed"
+    assert record["current_step"] == "agent completed"
+    assert record["risk_level"] == "read_only"
+
+
+def test_run_job_agent_command_center_tracking_records_failure(hermes_env):
+    """Tracked LLM cron failures should leave a visible blocker."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    job = create_job(
+        prompt="say hi",
+        name="Broken LLM Digest",
+        schedule="every 5m",
+        deliver="local",
+        model="test-model",
+    )
+    job["command_center_track"] = True
+
+    agent = MagicMock()
+    agent.run_conversation.side_effect = RuntimeError("model down")
+    agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+
+    with (
+        patch("run_agent.AIAgent", return_value=agent),
+        patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={"provider": "test"}),
+        patch("tools.mcp_tool.discover_mcp_tools", return_value=[]),
+    ):
+        success, _doc, final_response, error = run_job(job)
+
+    registry = json.loads((hermes_env / "state" / "agent_registry.json").read_text())
+    record = registry["agents"][0]
+    assert success is False
+    assert final_response == ""
+    assert error is not None
+    assert "model down" in error
+    assert record["status"] == "failed"
+    assert record["current_step"] == "agent failed"
+    assert "model down" in record["blocker"]
 
 
 # ---------------------------------------------------------------------------

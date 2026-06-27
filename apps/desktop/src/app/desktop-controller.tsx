@@ -746,7 +746,10 @@ export function DesktopController() {
   const handleGatewayEventWithWake = useCallback(
     (event: Parameters<typeof handleDesktopGatewayEvent>[0]) => {
       if (event.type === 'wake.detected') {
-        startFreshSessionDraft()
+        const payload = event.payload as { start_new_session?: boolean } | undefined
+        if (payload?.start_new_session !== false) {
+          startFreshSessionDraft()
+        }
         requestVoiceConversationStart()
         return
       }

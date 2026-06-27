@@ -1,8 +1,11 @@
 import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { ComposerStatusItem } from '@/store/composer-status'
+import { $todosBySession } from '@/store/todos'
 
+import { ComposerStatusStack } from './index'
 import { StatusItemRow } from './status-row'
 
 const inProgressTodo: ComposerStatusItem = {
@@ -18,8 +21,19 @@ function renderRow(item: ComposerStatusItem, sessionWorking: boolean) {
 }
 
 describe('StatusItemRow in-progress todo spinner', () => {
+  beforeAll(() => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        disconnect() {}
+        observe() {}
+      }
+    )
+  })
+
   afterEach(() => {
     cleanup()
+    $todosBySession.set({})
   })
 
   it('spins while the owning session is working', () => {
@@ -30,6 +44,35 @@ describe('StatusItemRow in-progress todo spinner', () => {
 
   it('settles when the owning session is idle', () => {
     renderRow(inProgressTodo, false)
+
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByText('Wire the status stack')).toBeTruthy()
+  })
+
+  it('keeps the visible session todo spinning from the chat busy signal', () => {
+    $todosBySession.set({
+      'session-1': [{ content: 'Wire the status stack', id: '1', status: 'in_progress' }]
+    })
+
+    render(
+      <MemoryRouter>
+        <ComposerStatusStack busy queue={null} sessionId="session-1" />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByRole('status')).toBeTruthy()
+  })
+
+  it('settles the visible session todo when the chat is idle', () => {
+    $todosBySession.set({
+      'session-1': [{ content: 'Wire the status stack', id: '1', status: 'in_progress' }]
+    })
+
+    render(
+      <MemoryRouter>
+        <ComposerStatusStack queue={null} sessionId="session-1" />
+      </MemoryRouter>
+    )
 
     expect(screen.queryByRole('status')).toBeNull()
     expect(screen.getByText('Wire the status stack')).toBeTruthy()

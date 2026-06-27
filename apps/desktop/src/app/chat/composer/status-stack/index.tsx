@@ -20,7 +20,6 @@ import {
   stopBackgroundProcess
 } from '@/store/composer-status'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
-import { $workingSessionIds } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
@@ -53,6 +52,9 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
 }
 
 interface ComposerStatusStackProps {
+  /** Foreground turn state from ChatBar; in-progress todos animate only while
+   *  the visible session is actually running. */
+  busy?: boolean
   /** The queue, built by the composer (it owns the queue's callbacks). Rendered
    *  as the last group so it stays fused to the composer like before. */
   queue: ReactNode
@@ -64,13 +66,12 @@ interface ComposerStatusStackProps {
  * every session-scoped status — subagents, background tasks, queue — grouped by
  * type and separated by light dividers. Collapses to nothing when empty.
  */
-export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackProps) {
+export function ComposerStatusStack({ busy = false, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const itemsBySession = useStore($statusItemsBySession)
   const previewsBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
-  const workingSessionIds = useStore($workingSessionIds)
 
   const groups = useMemo(
     () => groupStatusItems(sessionId ? (itemsBySession[sessionId] ?? []) : []),
@@ -78,7 +79,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   )
 
   const previews = sessionId ? (previewsBySession[sessionId] ?? []) : []
-  const sessionWorking = !!sessionId && workingSessionIds.includes(sessionId)
+  const sessionWorking = busy
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream.

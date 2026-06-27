@@ -1,9 +1,12 @@
 /**
- * Bounded LRU set of outbound message IDs.
+ * Bounded FIFO set of outbound message IDs.
  *
  * Used by the WhatsApp bridge to distinguish "echo of our own /send" from
  * "owner-typed message on the linked device" when forwarding `fromMe`
  * inbound events back to the Python adapter.
+ *
+ * Eviction drops the oldest insertion-order entry when the cap is exceeded.
+ * Re-remembering an existing id is a no-op for ordering (not LRU refresh).
  *
  * Heuristic limitation (intentional, documented for future debugging):
  * the set is in-memory only.  On bridge restart it is empty, so for the
@@ -15,6 +18,9 @@
  */
 
 export function createOutboundIdTracker(maxSize = 512) {
+  if (!Number.isInteger(maxSize) || maxSize < 1) {
+    throw new RangeError('createOutboundIdTracker: maxSize must be a positive integer');
+  }
   const ids = new Set();
 
   function remember(id) {

@@ -2708,6 +2708,59 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_outbound_payload_routes_markdown_tables_to_post_md(self):
+        """Markdown tables must go through post+tag:md, not be force-downgraded to text.
+
+        Regression for the historic ``_MARKDOWN_TABLE_RE`` workaround that
+        force-downgraded the *entire* message to ``msg_type: text`` whenever
+        a GFM table appeared. That side-effect stripped formatting from
+        every other markdown element in the same message (headings, bold,
+        code blocks, lists), making mixed-content replies render as raw
+        markdown source.  Feishu's post + ``tag: md`` element renders GFM
+        tables today, so the table-detector must NOT trigger a text
+        fallback at payload-build time; the call-site already handles
+        post rejection via ``_POST_CONTENT_INVALID_RE``.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        content = (
+            "## Heading\n"
+            "Some **bold** prose.\n\n"
+            "| col1 | col2 |\n"
+            "|------|------|\n"
+            "| a    | b    |\n\n"
+            "Trailing text."
+        )
+        msg_type, payload_json = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "post")
+        payload = json.loads(payload_json)
+        rows = payload["zh_cn"]["content"]
+        # Whole markdown body (table included) lives inside a single md tag.
+        self.assertEqual(rows, [[{"tag": "md", "text": content}]])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_outbound_payload_keeps_plain_text_for_non_markdown(self):
+        """Plain text without any markdown stays on msg_type: text.
+
+        Guards the second branch of ``_build_outbound_payload`` so that
+        the table-routing change doesn't accidentally widen the post
+        path to messages that have no markdown signal at all (which
+        would cost the receiver a richer-rendering message for nothing).
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload_json = adapter._build_outbound_payload("just plain words")
+
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload_json), {"text": "just plain words"})
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_post_payload_is_rejected(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

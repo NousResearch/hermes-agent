@@ -154,8 +154,13 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Detect markdown tables. Feishu post-type 'md' elements now render GFM tables
+# (verified against open.feishu.cn/document/server-docs/im-v1/message-content-description/create_json
+# which lists tables under the `tag: md` example). Older Hermes builds forced
+# table content to plain text because the renderer used to drop it; that
+# workaround now strips formatting from every other element in the same
+# message. We keep the detector so we can still observe table content for
+# logging/metrics, but the outbound payload path uses post + tag:md.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
@@ -4375,13 +4380,13 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+        # Feishu post + tag:md renders the full GFM surface (tables, bold,
+        # headings, code blocks, lists, quotes). Route any markdown-shaped
+        # content — including content with tables — through the post payload.
+        # If Feishu ever rejects the post (handled upstream via
+        # _POST_CONTENT_INVALID_RE), the send loop already falls back to
+        # plain text, so we don't need a pre-emptive force-text path here.
+        if _MARKDOWN_TABLE_RE.search(content) or _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)

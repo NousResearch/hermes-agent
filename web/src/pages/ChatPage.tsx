@@ -946,7 +946,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             onClick={closeMobilePanel}
             className={cn(
               "fixed inset-0 z-[55] p-0 block",
-              "bg-black/60 backdrop-blur-sm",
+              "bg-black/60 backdrop-blur-sm hover:bg-black/60",
             )}
           />
         )}

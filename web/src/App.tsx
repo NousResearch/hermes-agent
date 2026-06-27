@@ -529,7 +529,7 @@ export default function App() {
           onClick={closeMobile}
           className={cn(
             "lg:hidden fixed inset-0 z-40 p-0 block",
-            "bg-black/60 backdrop-blur-sm",
+            "bg-black/60 backdrop-blur-sm hover:bg-black/60",
           )}
         />
       )}

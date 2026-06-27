@@ -1137,6 +1137,10 @@ def init_agent(
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
     
+    # Active context store for session-scoped task tracking (one per agent/session)
+    from tools.active_context_tool import ActiveContextStore
+    agent._active_context_store = ActiveContextStore()
+    
     # Load config once for memory, skills, and compression sections
     try:
         from hermes_cli.config import load_config as _load_agent_config

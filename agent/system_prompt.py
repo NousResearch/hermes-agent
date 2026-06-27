@@ -443,6 +443,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    # Active context (session-scoped task tracking)
+    _active_ctx_store = getattr(agent, "_active_context_store", None)
+    if _active_ctx_store is not None:
+        _active_ctx_prompt = _active_ctx_store.format_for_prompt()
+        if _active_ctx_prompt:
+            volatile_parts.append(_active_ctx_prompt)
+
     from hermes_time import now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable

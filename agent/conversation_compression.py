@@ -545,6 +545,13 @@ def compress_context(
     if todo_snapshot:
         compressed.append({"role": "user", "content": todo_snapshot})
 
+    # Preserve active context through compression
+    active_ctx = getattr(agent, "_active_context_store", None)
+    if active_ctx is not None:
+        active_ctx_prompt = active_ctx.format_for_prompt()
+        if active_ctx_prompt:
+            compressed.append({"role": "user", "content": active_ctx_prompt})
+
     agent._invalidate_system_prompt()
     new_system_prompt = agent._build_system_prompt(system_message)
     agent._cached_system_prompt = new_system_prompt

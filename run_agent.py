@@ -658,6 +658,10 @@ class AIAgent:
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
+        # Clear active context on session reset (auto-reset, /new)
+        if hasattr(self, "_active_context_store") and self._active_context_store is not None:
+            self._active_context_store.reset()
+
         # Context engine reset/transition (works for built-in compressor and plugins)
         self._transition_context_engine_session(
             old_session_id=old_session_id,

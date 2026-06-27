@@ -143,6 +143,7 @@ class DrainSecretProvider(DashboardAuthProvider):
     name = "drain-secret"
     display_name = "Drain Control (service credential)"
     supports_token = True
+    supports_session = False
 
     def __init__(self, *, secret: str, scope: str = "drain") -> None:
         # Defence in depth: construction also enforces the entropy bar, so a

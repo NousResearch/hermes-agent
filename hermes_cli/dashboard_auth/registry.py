@@ -66,6 +66,15 @@ def list_token_providers() -> List[DashboardAuthProvider]:
         return [p for p in _providers.values() if getattr(p, "supports_token", False)]
 
 
+def list_session_providers() -> List[DashboardAuthProvider]:
+    """Registered providers with supports_session True (interactive cookie
+    sessions). The login page, /auth/login, and the gate's verify/refresh loops
+    consult only these. Mirror of list_token_providers.
+    """
+    with _lock:
+        return [p for p in _providers.values() if getattr(p, "supports_session", True)]
+
+
 def clear_providers() -> None:
     """Test-only: drop all registrations."""
     with _lock:

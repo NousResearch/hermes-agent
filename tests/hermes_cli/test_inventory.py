@@ -446,6 +446,87 @@ def test_canonical_order_with_unconfigured_preserves_full_universe():
 # ─── Integration: end-to-end through real load_picker_context ──────────
 
 
+def test_capabilities_include_configured_reasoning_policy():
+    """Curated proxy models can expose their real default/fixed policy.
+
+    Without this metadata the desktop assumes every uncatalogued model has an
+    adjustable medium-effort control, even when the upstream gateway enforces a
+    different fixed setting.
+    """
+    rows = [
+        {
+            "slug": "my-proxy",
+            "name": "My proxy",
+            "models": ["fixed-model", "adjustable-model"],
+            "total_models": 2,
+            "is_current": True,
+            "is_user_defined": True,
+            "source": "user-config",
+        }
+    ]
+    ctx = ConfigContext(
+        current_provider="my-proxy",
+        current_model="adjustable-model",
+        current_base_url="http://proxy/v1",
+        user_providers={
+            "my-proxy": {
+                "models": {
+                    "fixed-model": {
+                        "display_name": "Fixed Model",
+                        "reasoning": {
+                            "configurable": False,
+                            "default": "high",
+                            "label": "High reasoning",
+                        },
+                    },
+                    "adjustable-model": {
+                        "reasoning": {"configurable": True, "default": "high"},
+                    },
+                }
+            }
+        },
+        custom_providers=[],
+    )
+
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx, capabilities=True)
+
+    provider = next(row for row in payload["providers"] if row["slug"] == "my-proxy")
+    caps = provider["capabilities"]
+    assert caps["fixed-model"] == {
+        "fast": False,
+        "reasoning": True,
+        "display_name": "Fixed Model",
+        "reasoning_configurable": False,
+        "reasoning_default": "high",
+        "reasoning_label": "High reasoning",
+    }
+    assert caps["adjustable-model"] == {
+        "fast": False,
+        "reasoning": True,
+        "reasoning_configurable": True,
+        "reasoning_default": "high",
+    }
+
+
+def test_capabilities_keep_catalog_defaults_without_configured_policy():
+    rows = [_nous_row()]
+    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
+
+    with (
+        _list_auth_returning(rows),
+        patch("agent.models_dev.get_model_capabilities") as mock_get_caps,
+    ):
+        mock_get_caps.return_value.supports_reasoning = True
+        payload = build_models_payload(ctx, capabilities=True)
+
+    provider = next(row for row in payload["providers"] if row["slug"] == "nous")
+    assert provider["capabilities"]["openai/gpt-5.5"] == {
+        "fast": True,
+        "reasoning": True,
+    }
+
+
 def test_end_to_end_with_real_context_no_credentials_leak(monkeypatch):
     """Full pipeline: real load_picker_context + real
     list_authenticated_providers. Verify no credential string ever
@@ -766,4 +847,3 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
-

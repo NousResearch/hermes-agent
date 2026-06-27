@@ -281,8 +281,17 @@ export interface ModelOptionProvider {
 }
 
 export interface ModelCapabilities {
+  /** Optional operator-curated name for custom/provider-proxied model ids. */
+  display_name?: string
   fast: boolean
   reasoning: boolean
+  /** Whether the picker may override reasoning for this model. Defaults to
+   *  `reasoning` for backward compatibility. */
+  reasoning_configurable?: boolean
+  /** Effort applied when the model has no remembered preset. */
+  reasoning_default?: string
+  /** Static policy text shown when reasoning is externally managed/fixed. */
+  reasoning_label?: string
 }
 
 export interface ModelOptionsResponse {

@@ -221,7 +221,7 @@ def build_models_payload(
     if pricing:
         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
     if capabilities:
-        _apply_capabilities(rows)
+        _apply_capabilities(rows, ctx)
 
     return {
         "providers": rows,
@@ -230,7 +230,46 @@ def build_models_payload(
     }
 
 
-def _apply_capabilities(rows: list[dict]) -> None:
+def _configured_model_metadata(
+    ctx: ConfigContext,
+    provider: str,
+    model: str,
+) -> dict:
+    """Return UI metadata declared for one configured provider model.
+
+    The keyed ``providers:`` schema lets operators curate a model list with
+    per-model metadata (``models.<id>``).  Keep picker policy beside that model
+    instead of guessing it from the provider/model name.  The compatibility
+    view is checked as a fallback so legacy ``custom_providers:`` entries get
+    the same behavior.
+    """
+    entry = ctx.user_providers.get(provider)
+    if isinstance(entry, dict):
+        models = entry.get("models")
+        if isinstance(models, dict):
+            metadata = models.get(model)
+            if isinstance(metadata, dict):
+                return metadata
+
+    provider_lower = provider.strip().lower()
+    for entry in ctx.custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        provider_key = str(entry.get("provider_key", "") or "").strip().lower()
+        name = str(entry.get("name", "") or "").strip().lower().replace(" ", "-")
+        if provider_lower not in {provider_key, f"custom:{name}"}:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        metadata = models.get(model)
+        if isinstance(metadata, dict):
+            return metadata
+
+    return {}
+
+
+def _apply_capabilities(rows: list[dict], ctx: ConfigContext) -> None:
     """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
 
     `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
@@ -238,6 +277,21 @@ def _apply_capabilities(rows: list[dict]) -> None:
     defaults to True otherwise — the effort dial is broadly accepted and a
     no-op on models that ignore it, whereas hiding it from a capable-but-
     uncatalogued model is the worse failure.
+
+    User-configured models may also declare picker policy beside their existing
+    per-model metadata::
+
+        models:
+          my-model:
+            display_name: My Model
+            reasoning:
+              configurable: false
+              default: high
+              label: High reasoning
+
+    ``configurable`` controls whether the UI may send a reasoning override;
+    ``default`` replaces the generic medium fallback; and ``label`` describes
+    an externally enforced/fixed policy without presenting a fake control.
     """
     from hermes_cli.models import model_supports_fast_mode
 
@@ -260,10 +314,31 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
-            caps[model] = {
+            model_caps: dict[str, bool | str] = {
                 "fast": bool(model_supports_fast_mode(model)),
                 "reasoning": reasoning,
             }
+
+            metadata = _configured_model_metadata(ctx, slug, model)
+            display_name = metadata.get("display_name")
+            if isinstance(display_name, str) and display_name.strip():
+                model_caps["display_name"] = display_name.strip()
+
+            reasoning_config = metadata.get("reasoning")
+            if isinstance(reasoning_config, dict):
+                configurable = reasoning_config.get("configurable")
+                if isinstance(configurable, bool):
+                    model_caps["reasoning_configurable"] = configurable
+
+                default = reasoning_config.get("default")
+                if isinstance(default, str) and default.strip():
+                    model_caps["reasoning_default"] = default.strip()
+
+                label = reasoning_config.get("label")
+                if isinstance(label, str) and label.strip():
+                    model_caps["reasoning_label"] = label.strip()
+
+            caps[model] = model_caps
 
         row["capabilities"] = caps
 

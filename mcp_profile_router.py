@@ -3027,6 +3027,14 @@ def list_workspace_files(
     entries: list[dict] = []
     skipped: list[dict] = []
     truncated = False
+    stop_walk = False
+
+    def _add_skipped(path: str, reason: str) -> None:
+        nonlocal truncated
+        if len(skipped) < max_results:
+            skipped.append({"path": path, "reason": reason})
+        else:
+            truncated = True
 
     if root.is_file():
         rel_path = _workspace_relative_path(workspace, root)
@@ -3053,7 +3061,7 @@ def list_workspace_files(
             try:
                 resolve_workspace_path(workspace, child_rel)
             except ProfileRouterError as exc:
-                skipped.append({"path": child_rel, "reason": exc.code})
+                _add_skipped(child_rel, exc.code)
                 continue
             safe_dirnames.append(dirname)
         dirnames[:] = safe_dirnames
@@ -3069,13 +3077,17 @@ def list_workspace_files(
             try:
                 resolve_workspace_path(workspace, rel_path)
             except ProfileRouterError as exc:
-                skipped.append({"path": rel_path, "reason": exc.code})
+                _add_skipped(rel_path, exc.code)
                 continue
             if len(entries) >= max_results:
                 truncated = True
-                skipped.append({"path": rel_path, "reason": "file_limit_exceeded"})
-                continue
+                _add_skipped(rel_path, "file_limit_exceeded")
+                dirnames[:] = []
+                stop_walk = True
+                break
             entries.append(_list_workspace_file_entry(workspace, candidate))
+        if stop_walk:
+            break
 
     return {
         "workspace_id": workspace.workspace_id,

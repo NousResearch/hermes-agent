@@ -1132,6 +1132,41 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
     assert missing_workspace["llm_calls"] == 0
 
 
+def test_workspace_file_list_stops_after_limit_without_oversized_skipped(hermes_home, tmp_path):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    for index in range(40):
+        (workspace_root / f"file-{index:02d}.md").write_text("alpha\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    listed = json.loads(workspace_file_list(workspace_id, limit=5, context_token=token))
+
+    assert listed["ok"] is True
+    assert listed["llm_calls"] == 0
+    file_list = listed["file_list"]
+    assert len(file_list["entries"]) == 5
+    assert file_list["truncated"] is True
+    assert len(file_list["skipped"]) <= 5
+    assert any(item["reason"] == "file_limit_exceeded" for item in file_list["skipped"])
+    assert str(workspace_root) not in json.dumps(listed)
+
+
 def test_workspace_get_and_close_inspect_and_cleanup_registry(hermes_home, tmp_path):
     allowed_root = tmp_path / "allowed"
     workspace_root = allowed_root / "project"

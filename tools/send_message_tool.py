@@ -177,7 +177,6 @@ SEND_MESSAGE_SCHEMA = {
     }
 }
 
-
 def send_message_tool(args, **kw):
     """Handle cross-channel send_message tool calls."""
     action = args.get("action", "send")

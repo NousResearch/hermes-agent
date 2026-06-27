@@ -663,7 +663,6 @@ async def test_fetch_channel_context_stops_at_self_message_and_reverses_to_chron
 
     assert result == (
         "[Recent channel messages]\n"
-        "[Gemini [bot]] latest bot note\n"
         "[Alice] latest human note"
     )
 
@@ -715,10 +714,13 @@ async def test_fetch_channel_context_skips_self_improvement_boundary_message(ada
 
     result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
 
+    # Maintained-fork policy: Discord bot-authored messages are not an
+    # interaction surface, even when historical DISCORD_ALLOW_BOTS settings are
+    # present. The human messages around the delayed lifecycle bumps must still
+    # survive in chronological order.
     assert result == (
         "[Recent channel messages]\n"
         "[Alice] prompt before reply\n"
-        "[Codex [bot]] Codex final answer\n"
         "[Alice] question after reply"
     )
 
@@ -901,7 +903,7 @@ async def test_fetch_channel_context_cache_uses_latest_window_when_after_set(ada
 
     result = await adapter._fetch_channel_context(channel, before=trigger)
 
-    assert "[Codex [bot]] final analysis" in result
+    assert "[Codex [bot]] final analysis" not in result
     assert "[Alice] latest follow-up" in result
     assert "old tool trace 1" not in result
     assert "old tool trace 2" not in result

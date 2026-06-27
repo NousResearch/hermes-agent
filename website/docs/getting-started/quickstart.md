@@ -62,7 +62,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 Run in powershell:
 ```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1) 
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
 :::tip Android / Termux

@@ -249,18 +249,59 @@ _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
 _loop_lock = threading.Lock()
 
+_PROCESS_SHUTTING_DOWN = threading.Event()
+_PROVIDERS_LOCK = threading.Lock()
+_PROVIDERS: set[Any] = set()
+_ATEXIT_LOCK = threading.Lock()
+_ATEXIT_REGISTERED = False
+_LOOP_STOPPED = False
+
 # Sentinel pushed to the per-provider retain queue to wake the writer for a
 # clean exit. A unique object so it can never collide with a real job.
 _WRITER_SENTINEL = object()
 
 
-def _get_loop() -> asyncio.AbstractEventLoop:
+def _close_coroutine(coro: Any) -> None:
+    close = getattr(coro, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def _register_provider(provider: Any) -> None:
+    with _PROVIDERS_LOCK:
+        _PROVIDERS.add(provider)
+
+
+def _unregister_provider(provider: Any) -> None:
+    with _PROVIDERS_LOCK:
+        _PROVIDERS.discard(provider)
+
+
+def _register_process_atexit() -> None:
+    """Register one process finalizer for all Hindsight providers."""
+    global _ATEXIT_REGISTERED
+    with _ATEXIT_LOCK:
+        if _ATEXIT_REGISTERED:
+            return
+        _ATEXIT_REGISTERED = True
+        atexit.register(_process_atexit_shutdown)
+
+
+def _get_loop(*, allow_during_shutdown: bool = False) -> asyncio.AbstractEventLoop:
     """Return a long-lived event loop running on a background thread."""
-    global _loop, _loop_thread
+    global _loop, _loop_thread, _LOOP_STOPPED
+    if _PROCESS_SHUTTING_DOWN.is_set() and not allow_during_shutdown:
+        raise RuntimeError("Hindsight is shutting down; refusing to start async loop")
     with _loop_lock:
         if _loop is not None and _loop.is_running():
             return _loop
+        if _PROCESS_SHUTTING_DOWN.is_set():
+            raise RuntimeError("Hindsight is shutting down; refusing to start async loop")
         _loop = asyncio.new_event_loop()
+        _LOOP_STOPPED = False
 
         def _run():
             asyncio.set_event_loop(_loop)
@@ -271,14 +312,96 @@ def _get_loop() -> asyncio.AbstractEventLoop:
         return _loop
 
 
-def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
+def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT, *, allow_during_shutdown: bool = False):
     """Schedule *coro* on the shared loop and block until done."""
+    if _PROCESS_SHUTTING_DOWN.is_set() and not allow_during_shutdown:
+        _close_coroutine(coro)
+        raise RuntimeError("Hindsight is shutting down; refusing async operation")
     from agent.async_utils import safe_schedule_threadsafe
-    loop = _get_loop()
-    future = safe_schedule_threadsafe(coro, loop)
-    if future is None:
-        raise RuntimeError("Hindsight loop unavailable")
+    try:
+        loop = _get_loop(allow_during_shutdown=allow_during_shutdown)
+        future = safe_schedule_threadsafe(coro, loop)
+        if future is None:
+            _close_coroutine(coro)
+            raise RuntimeError("Hindsight loop unavailable")
+    except RuntimeError:
+        _close_coroutine(coro)
+        raise
     return future.result(timeout=timeout)
+
+
+async def _cancel_pending_loop_tasks() -> None:
+    """Cancel tasks left on the shared Hindsight loop before closing it."""
+    current = asyncio.current_task()
+    tasks = [
+        task for task in asyncio.all_tasks()
+        if task is not current and not task.done()
+    ]
+    if not tasks:
+        return
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _stop_shared_loop(timeout: float = 5.0) -> None:
+    """Stop the module-global Hindsight asyncio loop once."""
+    global _loop, _loop_thread, _LOOP_STOPPED
+    with _loop_lock:
+        loop = _loop
+        thread = _loop_thread
+        if _LOOP_STOPPED:
+            return
+        _LOOP_STOPPED = True
+        if loop is not None and loop.is_running():
+            try:
+                cancel_coro = _cancel_pending_loop_tasks()
+                future = asyncio.run_coroutine_threadsafe(cancel_coro, loop)
+                future.result(timeout=min(timeout, 2.0))
+            except Exception as exc:
+                _close_coroutine(locals().get("cancel_coro"))
+                logger.debug("Hindsight shared loop task cancellation did not finish cleanly: %s", exc)
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            logger.warning("Hindsight shared loop thread did not stop within %.1fs", timeout)
+    with _loop_lock:
+        if _loop is not None and not _loop.is_closed():
+            try:
+                _loop.close()
+            except Exception:
+                pass
+        _loop = None
+        _loop_thread = None
+
+
+def _process_atexit_shutdown() -> None:
+    """Drain all Hindsight providers before CPython tears down threads/futures."""
+    _PROCESS_SHUTTING_DOWN.set()
+    with _PROVIDERS_LOCK:
+        providers = list(_PROVIDERS)
+    for provider in providers:
+        try:
+            provider.shutdown()
+        except Exception as exc:
+            logger.debug("Hindsight process shutdown failed for provider: %s", exc)
+    _stop_shared_loop()
+
+
+def _reset_shutdown_state_for_tests() -> None:
+    """Reset module lifecycle state for tests only."""
+    global _ATEXIT_REGISTERED, _LOOP_STOPPED
+    _stop_shared_loop(timeout=1.0)
+    _PROCESS_SHUTTING_DOWN.clear()
+    with _PROVIDERS_LOCK:
+        _PROVIDERS.clear()
+    with _ATEXIT_LOCK:
+        _ATEXIT_REGISTERED = False
+    _LOOP_STOPPED = False
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +653,22 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
 
+    # Local embedded Hindsight is spawned as a standalone daemon, so environment-only
+    # Hindsight API controls must be materialized into the profile env file. This is
+    # load-bearing for local Ollama stability: Hindsight's package defaults are
+    # cloud-style concurrent, while a local Ollama memory model should usually be
+    # single-lane with a small queue and observations disabled.
+    daemon_env = config.get("daemon_env") or config.get("hindsight_daemon_env") or {}
+    if isinstance(daemon_env, dict):
+        for key, value in daemon_env.items():
+            key_str = str(key).strip()
+            if not key_str.startswith("HINDSIGHT_API_") and not key_str.startswith("HINDSIGHT_EMBED_"):
+                logger.warning("Ignoring unsupported Hindsight daemon env key: %s", key_str)
+                continue
+            if value is None:
+                continue
+            env_values[key_str] = str(value)
+
     idle_timeout = (
         config.get("idle_timeout")
         if config.get("idle_timeout") is not None
@@ -668,7 +807,6 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_queue: queue.Queue = queue.Queue()
         self._writer_thread: threading.Thread | None = None
         self._shutting_down = threading.Event()
-        self._atexit_registered = False
         # Legacy alias — older tests/callers reference _sync_thread directly.
         # Points at _writer_thread once the writer is running.
         self._sync_thread = None
@@ -1062,9 +1200,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = Hindsight(**kwargs)
         return self._client
 
-    def _run_sync(self, coro):
+    def _run_sync(self, coro, *, allow_during_shutdown: bool = False):
         """Schedule *coro* on the shared loop using the configured timeout."""
-        return _run_sync(coro, timeout=self._timeout)
+        return _run_sync(coro, timeout=self._timeout, allow_during_shutdown=allow_during_shutdown)
 
     def _is_retriable_embedded_connection_error(self, exc: Exception) -> bool:
         """Return True for stale embedded-daemon connection failures."""
@@ -1087,11 +1225,14 @@ class HindsightMemoryProvider(MemoryProvider):
         We don't start the writer in initialize() so providers that never
         retain (e.g. tools-only mode) don't pay for an idle thread.
         """
+        if _PROCESS_SHUTTING_DOWN.is_set():
+            logger.debug("Hindsight writer: skipped (process shutting down)")
+            return
         thread = self._writer_thread
         if thread is not None and thread.is_alive():
             return
-        # If the previous writer exited (e.g. after a prior shutdown), reset
-        # the flag so this fresh writer is allowed to drain new jobs.
+        # If the previous writer exited (e.g. after a prior provider shutdown),
+        # reset the provider-local flag only while the process remains live.
         self._shutting_down.clear()
         thread = threading.Thread(
             target=self._writer_loop,
@@ -1128,28 +1269,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._retain_queue.task_done()
 
     def _register_atexit(self) -> None:
-        """Register an idempotent atexit hook to drain the writer.
-
-        Without this, a CLI exit that doesn't go through MemoryManager.
-        shutdown_all() would leave in-flight retain jobs racing interpreter
-        teardown, producing "cannot schedule new futures" warnings and
-        unclosed aiohttp sessions.
-        """
-        if self._atexit_registered:
-            return
-        self._atexit_registered = True
-        atexit.register(self._atexit_shutdown)
-
-    def _atexit_shutdown(self) -> None:
-        if self._shutting_down.is_set():
-            return
-        try:
-            self.shutdown()
-        except Exception as exc:
-            logger.debug("Hindsight atexit shutdown failed: %s", exc)
+        """Register the process-wide Hindsight shutdown finalizer."""
+        _register_process_atexit()
 
     def _run_hindsight_operation(self, operation):
         """Run an async Hindsight client operation, retrying once after idle shutdown."""
+        if _PROCESS_SHUTTING_DOWN.is_set():
+            raise RuntimeError("Hindsight is shutting down; refusing operation")
         client = self._get_client()
         try:
             return self._run_sync(operation(client))
@@ -1200,6 +1326,8 @@ class HindsightMemoryProvider(MemoryProvider):
         return fallback_document_id, None
 
     def initialize(self, session_id: str, **kwargs) -> None:
+        _register_provider(self)
+        _register_process_atexit()
         self._session_id = str(session_id or "").strip()
         self._parent_session_id = str(kwargs.get("parent_session_id", "") or "").strip()
 
@@ -1488,7 +1616,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if not self._auto_recall:
             logger.debug("Prefetch: skipped (auto_recall disabled)")
             return
-        if self._shutting_down.is_set():
+        if self._shutting_down.is_set() or _PROCESS_SHUTTING_DOWN.is_set():
             logger.debug("Prefetch: skipped (shutting down)")
             return
         # Truncate query to max chars
@@ -1496,6 +1624,9 @@ class HindsightMemoryProvider(MemoryProvider):
             query = query[:self._recall_max_input_chars]
 
         def _run():
+            if self._shutting_down.is_set() or _PROCESS_SHUTTING_DOWN.is_set():
+                logger.debug("Prefetch: skipped in worker (shutting down)")
+                return
             try:
                 if self._prefetch_method == "reflect":
                     logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
@@ -1611,7 +1742,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if not self._auto_retain:
             logger.debug("sync_turn: skipped (auto_retain disabled)")
             return
-        if self._shutting_down.is_set():
+        if self._shutting_down.is_set() or _PROCESS_SHUTTING_DOWN.is_set():
             logger.debug("sync_turn: skipped (shutting down)")
             return
 
@@ -1688,6 +1819,8 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Hindsight retain succeeded")
 
         self._ensure_writer()
+        if self._shutting_down.is_set() or _PROCESS_SHUTTING_DOWN.is_set():
+            return
         self._register_atexit()
         self._retain_queue.put(_do_retain)
         # Advance the append watermark only after the delta is queued, so a
@@ -1701,6 +1834,8 @@ class HindsightMemoryProvider(MemoryProvider):
         return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
+        if self._shutting_down.is_set() or _PROCESS_SHUTTING_DOWN.is_set():
+            return tool_error("Hindsight is shutting down; memory tools are unavailable")
         if tool_name == "hindsight_retain":
             content = args.get("content", "")
             if not content:
@@ -1819,7 +1954,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # 1. Flush any buffered turns under the OLD identifiers. Snapshot
         # everything before mutating self._* so metadata + tags + doc_id
         # all reference the old session consistently.
-        if self._session_turns:
+        if self._session_turns and not self._shutting_down.is_set() and not _PROCESS_SHUTTING_DOWN.is_set():
             old_turns = list(self._session_turns)
             old_session_id = self._session_id
             old_parent_session_id = self._parent_session_id
@@ -1875,9 +2010,9 @@ class HindsightMemoryProvider(MemoryProvider):
             # two threads on aretain_batch against the same document, and
             # keeps shutdown's drain semantics intact. Skip enqueue if
             # shutdown has already fired — the writer is draining/gone.
-            if not self._shutting_down.is_set():
-                self._ensure_writer()
-                self._register_atexit()
+            self._ensure_writer()
+            self._register_atexit()
+            if not self._shutting_down.is_set() and not _PROCESS_SHUTTING_DOWN.is_set():
                 self._retain_queue.put(_flush)
 
         # 2. Drain any in-flight prefetch from the old session and drop
@@ -1904,52 +2039,55 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
-        # Stop accepting new retain jobs first so anyone still calling
-        # sync_turn() during teardown is dropped, not enqueued.
-        self._shutting_down.set()
-        # Drain the writer: it will finish in-flight work, then exit on
-        # the sentinel. Bounded join keeps shutdown predictable even if
-        # the daemon is wedged.
-        writer = self._writer_thread
-        if writer is not None and writer.is_alive():
-            try:
-                self._retain_queue.put(_WRITER_SENTINEL)
-            except Exception:
-                pass
-            writer.join(timeout=10.0)
-            if writer.is_alive():
-                logger.warning(
-                    "Hindsight writer did not stop within 10s; "
-                    "abandoning %d pending retain(s)",
-                    self._retain_queue.qsize(),
-                )
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=5.0)
-        if self._client is not None:
-            try:
-                if self._mode == "local_embedded":
-                    # HindsightEmbedded.close() delegates to its sync client.close().
-                    # When Hermes created/used that client on the shared async loop,
-                    # closing it from this thread can raise "attached to a different
-                    # loop" before aiohttp releases the session. Close the embedded
-                    # inner async client on the shared loop first, then let the
-                    # wrapper clean up daemon/UI bookkeeping.
-                    inner_client = getattr(self._client, "_client", None)
-                    if inner_client is not None and hasattr(inner_client, "aclose"):
-                        _run_sync(inner_client.aclose())
+        try:
+            # Stop accepting new retain jobs first so anyone still calling
+            # sync_turn() during teardown is dropped, not enqueued.
+            self._shutting_down.set()
+            # Drain the writer: it will finish in-flight work, then exit on
+            # the sentinel. Bounded join keeps shutdown predictable even if
+            # the daemon is wedged.
+            writer = self._writer_thread
+            if writer is not None and writer.is_alive():
+                try:
+                    self._retain_queue.put(_WRITER_SENTINEL)
+                except Exception:
+                    pass
+                writer.join(timeout=10.0)
+                if writer.is_alive():
+                    logger.warning(
+                        "Hindsight writer did not stop within 10s; "
+                        "abandoning %d pending retain(s)",
+                        self._retain_queue.qsize(),
+                    )
+            if self._prefetch_thread and self._prefetch_thread.is_alive():
+                self._prefetch_thread.join(timeout=5.0)
+            if self._client is not None:
+                try:
+                    if self._mode == "local_embedded":
+                        # HindsightEmbedded.close() delegates to its sync client.close().
+                        # When Hermes created/used that client on the shared async loop,
+                        # closing it from this thread can raise "attached to a different
+                        # loop" before aiohttp releases the session. Close the embedded
+                        # inner async client on the shared loop first, then let the
+                        # wrapper clean up daemon/UI bookkeeping.
+                        inner_client = getattr(self._client, "_client", None)
+                        if inner_client is not None and hasattr(inner_client, "aclose"):
+                            self._run_sync(inner_client.aclose(), allow_during_shutdown=True)
+                            try:
+                                self._client._client = None
+                            except Exception:
+                                pass
                         try:
-                            self._client._client = None
-                        except Exception:
+                            self._client.close()
+                        except RuntimeError:
                             pass
-                    try:
-                        self._client.close()
-                    except RuntimeError:
-                        pass
-                else:
-                    self._run_sync(self._client.aclose())
-            except Exception:
-                pass
-            self._client = None
+                    else:
+                        self._run_sync(self._client.aclose(), allow_during_shutdown=True)
+                except Exception:
+                    pass
+                self._client = None
+        finally:
+            _unregister_provider(self)
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin

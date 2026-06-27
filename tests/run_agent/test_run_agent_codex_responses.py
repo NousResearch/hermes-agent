@@ -2332,6 +2332,35 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
         assert "id" not in it
 
 
+def test_chat_messages_to_responses_input_replays_codex_compaction_items():
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    messages = [{
+        "role": "assistant",
+        "content": "",
+        "codex_compaction_items": [
+            {"id": "cmp_1", "type": "compaction_summary", "encrypted_content": "opaque", "summary": []},
+        ],
+    }]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    assert items == [
+        {"type": "compaction_summary", "encrypted_content": "opaque"},
+        {"role": "assistant", "content": ""},
+    ]
+
+
+def test_preflight_codex_input_items_preserves_compaction_summary():
+    from agent.codex_responses_adapter import _preflight_codex_input_items
+
+    items = _preflight_codex_input_items([
+        {"id": "cmp_1", "type": "compaction_summary", "encrypted_content": "opaque"},
+    ])
+
+    assert items == [{"type": "compaction_summary", "encrypted_content": "opaque"}]
+
+
 def test_run_conversation_codex_disables_reasoning_replay_after_invalid_encrypted_content(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.provider = "custom"

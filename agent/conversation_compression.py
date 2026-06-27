@@ -77,6 +77,16 @@ _ANNOUNCE_STATUS_CONDITIONAL = frozenset({"degraded_fail_open", "sanitized"})
 # Statuses carrying a degraded-summary caveat.
 _DEGRADED_STATUSES = frozenset({"degraded_fallback_compressed", "degraded_fail_open"})
 
+# A-floor approximate-attribution gross-error ceiling (in-turn granular announce).
+# The A-floor (fallback single-walk partition in build_inturn_stats) reconciles
+# TOTALS by construction but its kept/folded SPLIT is signature-approximate. The
+# split error is provably bounded by the kept-tail fraction of pre (the folded bulk
+# is a contiguous prefix that always classifies correctly), so when the kept tail
+# exceeds this fraction the displayed split could be materially wrong and the render
+# degrades to the honest two-line form instead. On real failing sessions the kept
+# tail is ≤~7% of pre, so this never trips in practice — it is the honest backstop.
+_APPROX_GROSS_MAX_FRAC = 0.10
+
 
 def _warn_compaction_stats_once(agent, message: str, *, exc_info: bool = False) -> None:
     """Emit a compaction-stats degrade ``warning`` at most once per (cause, session).
@@ -1193,7 +1203,51 @@ def compress_context(
             )
             _ok2, _why2 = _cand.validate()
             if _ok2:
-                _inturn_stats = _cand
+                # A-floor (approx_attribution) reconciles by construction but its
+                # kept/folded SPLIT is signature-approximate. The split error is
+                # bounded by the kept-tail fraction (the folded bulk is a contiguous
+                # prefix and always classifies correctly), so a kept-tail that is a
+                # large fraction of pre is the only case where the displayed split
+                # could be materially wrong. Degrade THAT render to two-line when the
+                # kept tail exceeds the gross-error threshold; otherwise show the
+                # granular split LABELED approximate + emit the observability marker.
+                if getattr(_cand, "approx_attribution", False):
+                    # Gross-error magnitude = the RAW kept-tail size
+                    # (estimator(messages[-fresh_tail_count:]) — match- AND
+                    # sanitize-independent). kept_tokens (comp-side) is stripped small
+                    # on a heavily-sanitized tail and _kept_pre_tokens is 0 when the
+                    # signature match fails, so BOTH can under-report the true raw tail
+                    # (Greptile P1 ×2, PR #109). Use raw_tail_tokens as the primary
+                    # bound, with the other two as a floor in case it's unavailable.
+                    _gross_tok = max(
+                        _cand.raw_tail_tokens or 0,
+                        _cand.kept_tokens or 0,
+                        _cand._kept_pre_tokens or 0,
+                    )
+                    _pre_tok = _cand.pre_tokens or 0
+                    _gross_frac = (_gross_tok / _pre_tok) if _pre_tok > 0 else 0.0
+                    if _gross_frac > _APPROX_GROSS_MAX_FRAC:
+                        # split could be materially wrong → honest two-line degrade
+                        _warn_compaction_stats_once(
+                            agent,
+                            f"COMPACTION_STATS_APPROX_ATTRIBUTION in-turn "
+                            f"degraded (kept_tail {_gross_tok} / pre {_pre_tok} "
+                            f"= {_gross_frac:.1%} > {_APPROX_GROSS_MAX_FRAC:.0%}); two-line",
+                        )
+                        _inturn_stats = None
+                    else:
+                        _inturn_stats = _cand
+                        # observability: the floor produced the numbers (not exact
+                        # alignment / engine record). A heavy LCM session running the
+                        # floor is now visible (watcher rate-alerts), never silent.
+                        _warn_compaction_stats_once(
+                            agent,
+                            f"COMPACTION_STATS_APPROX_ATTRIBUTION in-turn "
+                            f"(engine={_engine_name}; kept_tail {_gross_tok} / "
+                            f"pre {_pre_tok} = {_gross_frac:.1%})",
+                        )
+                else:
+                    _inturn_stats = _cand
             else:
                 _warn_compaction_stats_once(
                     agent, f"COMPACTION_STATS_RECONCILE_FAILED in-turn {_why2}"

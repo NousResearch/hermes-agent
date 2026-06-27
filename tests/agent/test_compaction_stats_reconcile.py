@@ -1304,9 +1304,10 @@ def test_message_axis_two_populations_measured_independently():
     assert not bad_pre.validate()[0], "corrupting pre-side kept_pre_messages must fail PRE"
 
 
-def test_inturn_kept_pre_messages_defaults_to_comp_side():
-    """In-turn path doesn't set kept_pre_messages → it defaults to comp-side
-    kept_messages, so the in-turn (already-correct) reconcile is unchanged."""
+def test_inturn_kept_pre_messages_matches_comp_side_on_clean_tail():
+    """In-turn path with a verbatim (non-sanitized) tail: the A-floor sets
+    kept_pre_messages explicitly, and on a clean tail it equals the comp-side
+    kept_messages, so the in-turn reconcile is correct + unchanged."""
     from agent.compaction_stats import build_inturn_stats
     anchor = {"role": "system", "content": "SYS " * 50}
     summary = {"role": "assistant", "content": "[Recent Summary (d0, node 1)] x", "_lcm_summary": True}
@@ -1315,13 +1316,13 @@ def test_inturn_kept_pre_messages_defaults_to_comp_side():
     compressed = [anchor, summary] + msgs[-3:]
     stats = build_inturn_stats(messages=msgs, compressed=compressed, estimator=_est)
     assert stats.validate()[0]
-    assert stats.kept_pre_messages is None  # not set → property falls back to kept_messages
-    assert stats._kept_pre_messages == stats.kept_messages
+    assert stats._kept_pre_messages == stats.kept_messages  # clean tail → equal
+    assert stats.folded_count + stats._kept_pre_messages == stats.pre_messages
 
 
-def test_inturn_kept_pre_defaults_to_comp_side():
-    """In-turn path doesn't set kept_pre_tokens → it defaults to comp-side kept_tokens,
-    so the in-turn (already-correct) reconcile is unchanged."""
+def test_inturn_kept_pre_tokens_matches_comp_side_on_clean_tail():
+    """In-turn path with a verbatim tail: the A-floor sets kept_pre_tokens explicitly
+    and on a clean tail it equals the comp-side kept_tokens (reconcile unchanged)."""
     from agent.compaction_stats import build_inturn_stats
     anchor = {"role": "system", "content": "SYS " * 50}
     summary = {"role": "assistant", "content": "[Recent Summary (d0, node 1)] x", "_lcm_summary": True}
@@ -1330,8 +1331,7 @@ def test_inturn_kept_pre_defaults_to_comp_side():
     compressed = [anchor, summary] + msgs[-3:]
     stats = build_inturn_stats(messages=msgs, compressed=compressed, estimator=_est)
     assert stats.validate()[0]
-    assert stats.kept_pre_tokens is None  # not set → property falls back to kept_tokens
-    assert stats._kept_pre_tokens == stats.kept_tokens
+    assert stats._kept_pre_tokens == stats.kept_tokens  # clean tail → equal
 
 
 

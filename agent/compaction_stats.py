@@ -92,6 +92,26 @@ class CompactionStats:
     # for the in-turn path + legacy/direct-construction callers (kept is comp-side there).
     kept_pre_messages: Optional[int] = None
 
+    # ── A-floor approximate-attribution flag (in-turn) ──
+    # True when the kept_pre/folded split came from the exhaustive single-walk
+    # fallback (``_partition_pre_by_comp_kept``) rather than exact whole-tail
+    # alignment or an authoritative engine record. TOTALS still reconcile exactly;
+    # only the kept/folded *split* is signature-approximate (bounded by the kept-tail
+    # fraction). The caller labels the render + emits COMPACTION_STATS_APPROX_ATTRIBUTION
+    # so a heavy session silently running the floor is observable, never silent.
+    approx_attribution: bool = False
+
+    # ── RAW kept-tail token UPPER BOUND (in-turn A-floor guard) ──
+    # estimator(messages[-fresh_tail_count:]) — the raw (pre-sanitize) size of the
+    # tail region the engine keeps. This is the TRUE magnitude of the A-floor's
+    # possible gross misattribution, and unlike kept_tokens (sanitized comp-side,
+    # can be stripped small) or kept_pre_tokens (0 when signature match fails), it is
+    # match- AND sanitize-INDEPENDENT — computed straight from the raw input suffix.
+    # The render-vs-degrade guard keys off this so a heavily-sanitized large tail
+    # can't slip under the threshold (Greptile P1 ×2, PR #109). None on the aligned
+    # / legacy paths (guard only applies to the approx_attribution floor).
+    raw_tail_tokens: Optional[int] = None
+
     # NOTE: deliberately NO validation in __post_init__ (keeps any raise off the
     # hot path; callers invoke validate()/assert_reconciles() explicitly).
 
@@ -606,6 +626,109 @@ def _fold_rows(eligible: List[dict], kept: List[dict]) -> List[dict]:
     return out
 
 
+def _partition_pre_by_comp_kept(
+    eligible: List[dict], kept: List[dict]
+) -> Tuple[List[dict], List[dict]]:
+    """Single consume-once partition of ``eligible`` into (kept_pre, folded).
+
+    The A-floor (fallback) partition for the in-turn path. Walks ``eligible``
+    ONCE, classifying each row as *matched* (a pre-side row whose signature is in
+    the comp-kept multiset → ``kept_pre``) or *unmatched* (→ ``folded``). The two
+    buckets are disjoint and together exhaust ``eligible`` BY CONSTRUCTION
+    (``len(kept_pre) + len(folded) == len(eligible)``) — so a separate
+    ``estimator()`` over each bucket reconciles to ``estimator(eligible)`` within
+    estimator rounding, regardless of WHY whole-tail alignment failed.
+
+    Prefers ``id()``-identity when the same row objects flow through; falls back to
+    a collision-resistant ``(role, full-content-hash)`` **multiset** (consume-once,
+    decrement on match) so a duplicated signature (repeated tool scaffolds, short
+    identical turns on heavy sessions) cannot be matched twice or steal another
+    row's slot. This is the can-never-RECONCILE-fail floor for any path that lacks
+    Option B's authoritative engine record (built-in engine, overflow, a future
+    engine, or an LCM generation mismatch).
+
+    NOTE: the kept_pre/folded *attribution* here is signature-approximate (a
+    sanitized-then-unmatchable kept row lands in ``folded``); the TOTALS reconcile
+    exactly. The caller labels A-floor renders as approximate and measures the
+    gross bound (degrade-to-two-line above threshold).
+    """
+    from collections import Counter
+
+    kept_ids = {id(m) for m in kept}
+    matched = [m for m in eligible if id(m) in kept_ids]
+    if len(matched) == len(kept):
+        # identity lined up cleanly — complement is exact
+        folded = [m for m in eligible if id(m) not in kept_ids]
+        return matched, folded
+    # copies / sanitized tail: consume-once signature multiset (collision-safe)
+    want = Counter(_row_signature(m) for m in kept)
+    kept_pre: List[dict] = []
+    folded: List[dict] = []
+    for m in eligible:
+        s = _row_signature(m)
+        if want.get(s, 0) > 0:
+            want[s] -= 1
+            kept_pre.append(m)
+        else:
+            folded.append(m)
+    return kept_pre, folded
+
+
+def _read_engine_b_partition(engine, messages, *, generation=None):
+    """Option B: read the engine's AUTHORITATIVE kept-tail partition record.
+
+    The LCM engine records, at the single-pass kept-tail slice site, the indices
+    into the ORIGINAL ``messages`` that became the kept tail (pre-side, before the
+    in-context sanitize) — see ``LCMEngine`` ``_last_compaction_kept_pre_indices``.
+    The transform from ``messages`` to the engine's ``working_messages`` is
+    position-preserving 1:1 (``quarantine_suspicious_assistant_messages`` is a 1:1
+    list comprehension) AND the record is written ONLY on a single-pass compaction
+    (``leaf_passes == 1``), so the recorded indices map back to ``messages`` exactly.
+
+    Returns ``kept_pre_indices`` (a list[int]) when the record is present, fresh
+    (generation matches) and consistent (``pre_len == len(messages)``); else
+    ``None`` → caller falls to the A-floor. This is ground truth, not inference —
+    no replay, no alignment guessing.
+    """
+    if engine is None:
+        return None
+    idx = getattr(engine, "_last_compaction_kept_pre_indices", None)
+    if idx is None:
+        return None
+    rec_gen = getattr(engine, "_last_compaction_generation", None)
+    rec_pre_len = getattr(engine, "_last_compaction_pre_len", None)
+    if generation is not None and rec_gen != generation:
+        return None  # stale record from an earlier compaction generation
+    if rec_pre_len is not None and rec_pre_len != len(messages):
+        return None  # messages re-listed/shifted since compaction → unsafe
+    n = len(messages)
+    if not all(isinstance(i, int) and 0 <= i < n for i in idx):
+        return None
+    return list(idx)
+
+
+def _engine_in_context_sanitize(engine, anchor_rows, summary_rows, kept_pre_rows):
+    """Re-run the engine's IN-CONTEXT sanitize over the assembled context.
+
+    The ground-truth gate (below) must reproduce the engine's kept tail the SAME
+    way the engine produced it: by sanitizing the *assembled* context
+    ``[anchor] + [summaries] + kept_pre_rows`` (the adjacency the engine used),
+    then taking the kept region of the result — NOT a standalone
+    ``sanitize(kept_pre_rows)``, which would reintroduce the exact
+    in-context-vs-standalone divergence that broke whole-tail replay and would make
+    the gate false-reject on every real heavy shape. Returns the sanitized kept
+    region (rows that are neither the leading anchor system row nor summary rows),
+    or ``None`` if the engine lacks the sanitizer.
+    """
+    san = getattr(engine, "_sanitize_active_context_messages", None)
+    if san is None:
+        return None
+    assembled = list(anchor_rows) + list(summary_rows) + list(kept_pre_rows)
+    out = san(assembled)
+    n_head = len(anchor_rows) + len(summary_rows)
+    return out[n_head:]
+
+
 def _is_tool_message(m) -> bool:
     """True when a message is a tool-result / tool-call carrier.
 
@@ -814,6 +937,8 @@ def build_inturn_stats(
     # non-sanitizing) so the _kept_pre_* property defaults to comp-side.
     kept_pre_messages = None
     kept_pre_tokens = None
+    approx_attribution = False
+    raw_tail_tokens = None
     cut = None
     if sanitize is not None and fresh_tail_count:
         cut = find_inturn_kept_cut(pre_msgs, kept_rows, sanitize, fresh_tail_count)
@@ -824,12 +949,30 @@ def build_inturn_stats(
         kept_pre_tokens = int(estimator(kept_pre_rows)) if kept_pre_rows else 0
         folded_count = len(fold_rows)
     else:
-        # Fallback: folded = pre rows NOT signature-matching the comp-kept tail.
-        # (Correct when the engine does not sanitize the tail — built-in / legacy;
-        # on a sanitizing engine with no sanitize fn passed, this is the OLD
-        # mixed-side behavior and validate() will fail → safe two-line degrade.)
-        fold_rows = _fold_rows(pre_msgs, kept_rows)
-        folded_count = eligible_count - kept_messages
+        # A-floor: exhaustive single-walk pre-side partition. When whole-tail
+        # alignment can't reproduce the in-context-sanitized comp tail (the real
+        # heavy-session failure mode), partition ``pre`` ONCE into (kept_pre, folded)
+        # against the comp-kept multiset. Both buckets are measured pre-side over a
+        # disjoint exhaustive partition, so ``folded_tokens + kept_pre_tokens ==
+        # pre_tokens`` BY CONSTRUCTION (within estimator rounding) — validate()
+        # reconciles instead of re-exhibiting the old mixed pre/comp-side gap. The
+        # kept/folded *attribution* is signature-approximate (bounded by the kept-tail
+        # fraction, which is a small contiguous suffix — the folded bulk is a prefix
+        # and always classifies correctly), so totals are exact and only the split is
+        # approximate. ``approx_attribution`` flags the caller to label + watch it.
+        kept_pre_rows, fold_rows = _partition_pre_by_comp_kept(pre_msgs, kept_rows)
+        kept_pre_messages = len(kept_pre_rows)
+        kept_pre_tokens = int(estimator(kept_pre_rows)) if kept_pre_rows else 0
+        folded_count = len(fold_rows)
+        approx_attribution = True
+        # RAW kept-tail upper bound for the caller's gross-error guard: the raw
+        # (pre-sanitize) size of the tail region the engine keeps. Match- AND
+        # sanitize-independent (computed from the raw suffix), so a heavily-stripped
+        # tail can't make the guard under-report (Greptile P1 ×2). Use the engine's
+        # fresh_tail_count when known, else the comp-side kept count as a proxy.
+        _tail_n = int(fresh_tail_count) if fresh_tail_count else kept_messages
+        if _tail_n > 0:
+            raw_tail_tokens = int(estimator(pre_msgs[-_tail_n:])) if pre_msgs else 0
 
     folded_tokens = int(estimator(fold_rows)) if fold_rows else 0
     # Optional tool/other sub-split of the folded population (derive-by-subtraction,
@@ -862,4 +1005,6 @@ def build_inturn_stats(
         folded_tool_tokens=_ftt,
         folded_other_count=_foc,
         folded_other_tokens=_fot,
+        approx_attribution=approx_attribution,
+        raw_tail_tokens=raw_tail_tokens,
     )

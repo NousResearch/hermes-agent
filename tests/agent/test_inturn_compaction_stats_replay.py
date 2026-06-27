@@ -75,16 +75,21 @@ def test_inturn_reconciles_sanitized_stubbed_tail():
     assert ok, why
 
 
-def test_inturn_old_mixed_side_would_fail():
-    """Without the sanitizer (the OLD mixed-side path) validate() fails on this shape —
-    proving the alignment is load-bearing (RED-on-revert equivalent)."""
+def test_inturn_old_mixed_side_now_reconciles_via_a_floor():
+    """Without the sanitizer (the fallback path), the A-floor single-walk partition
+    now RECONCILES this real fixture shape (the old mixed-side bug is fixed) and
+    flags ``approx_attribution`` so the caller labels + watches it. The aligned
+    path (with sanitizer) remains the EXACT, non-approx path (see tests below)."""
     fx = _load_fixture()
     stats = build_inturn_stats(
         messages=fx["messages"], compressed=fx["compressed"], estimator=_est,
-        engine_is_lcm=True,  # no sanitize / fresh_tail → fallback (old behavior)
+        engine_is_lcm=True,  # no sanitize / fresh_tail → A-floor fallback
     )
-    ok, _ = stats.validate()
-    assert ok is False
+    ok, why = stats.validate()
+    assert ok, why                         # A-floor reconciles by construction
+    assert stats.approx_attribution is True
+    # exhaustive pre-side partition
+    assert stats.folded_count + stats._kept_pre_messages == stats.pre_messages
 
 
 # ───────────────────────── uniqueness / determinism (pass-4 RC#1/#2) ──────────
@@ -178,8 +183,11 @@ def test_inturn_post_messages_measured_not_derived():
 
 # ───────────────────────── fail-safe degrade ─────────────────────────
 
-def test_inturn_alignment_ambiguous_degrades():
-    """An unrecognizable comp shape (no cut reproduces comp_kept) → validate() False → two-line."""
+def test_inturn_alignment_unreproducible_uses_a_floor():
+    """An unrecognizable comp shape (no cut reproduces comp_kept) no longer degrades
+    to two-line — the A-floor reconciles the TOTALS via the exhaustive single-walk
+    partition and flags ``approx_attribution`` (the split is approximate, the totals
+    exact). The caller decides render-vs-degrade by the gross-error bound."""
     san = _sanitizer()
     pre = [{"role": "user", "content": f"u{i}"} for i in range(100)]
     # comp_kept rows that no slice of `pre` can reproduce (alien content)
@@ -192,15 +200,20 @@ def test_inturn_alignment_ambiguous_degrades():
         messages=pre, compressed=comp, estimator=_est,
         engine_is_lcm=True, sanitize=san, fresh_tail_count=32,
     )
-    ok, _ = stats.validate()
-    assert ok is False
+    ok, why = stats.validate()
+    assert ok, why                          # A-floor reconciles totals
+    assert stats.approx_attribution is True
+    assert stats.folded_count + stats._kept_pre_messages == stats.pre_messages
 
 
 # ───────────────────────── back-compat (INV-3) ─────────────────────────
 
 def test_inturn_no_sanitize_built_in_back_compat():
     """Built-in / legacy caller (no sanitize, non-sanitizing comp) still reconciles via
-    the comp-kept-complement fallback; kept_pre defaults to comp-side."""
+    the A-floor exhaustive partition. Because the built-in tail is verbatim (no
+    sanitize mutation), the partition matches the comp-kept rows exactly → kept_pre
+    equals the comp-side kept and the split is correct (approx_attribution flagged,
+    but the verbatim tail means the split is in fact exact)."""
     pre = [{"role": "user", "content": f"u{i}"} for i in range(50)]
     # built-in style: comp = summary + verbatim last-5 tail (no sanitize mutation)
     tail = pre[-5:]
@@ -210,8 +223,9 @@ def test_inturn_no_sanitize_built_in_back_compat():
     stats = build_inturn_stats(messages=pre, compressed=comp, estimator=_est, engine_is_lcm=True)
     ok, why = stats.validate()
     assert ok, why
-    assert stats.kept_pre_messages is None  # fallback path leaves it unset
-    assert stats._kept_pre_messages == stats.kept_messages  # property defaults to comp-side
+    # A-floor sets kept_pre explicitly (exhaustive partition); verbatim tail → matches comp-side
+    assert stats._kept_pre_messages == stats.kept_messages
+    assert stats.folded_count + stats._kept_pre_messages == stats.pre_messages
 
 
 # ───────────────────────── fixture provenance (D-6) ─────────────────────────

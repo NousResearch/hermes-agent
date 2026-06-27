@@ -13235,7 +13235,16 @@ def main():
     # so introspection/management commands (hermes hooks list, cron
     # list, gateway status, mcp add, ...) don't pay discovery cost or
     # trigger consent prompts for hooks the user is still inspecting.
-    _prepare_agent_startup(args)
+    #
+    # KeyboardInterrupt is a BaseException (not Exception), so the
+    # ``except Exception`` guards inside _prepare_agent_startup do not
+    # catch it.  A Ctrl-C during plugin discovery would otherwise
+    # propagate out of main() and dump a full traceback.  Catch it here
+    # and exit cleanly with the conventional SIGINT exit code.  (#53704)
+    try:
+        _prepare_agent_startup(args)
+    except KeyboardInterrupt:
+        sys.exit(130)
 
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.

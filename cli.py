@@ -4271,6 +4271,41 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         idle = max(0.0, time.time() - last_finished_at)
         return f"✓ {format_duration_compact(idle)}"
 
+    _STATUS_BAR_PROVIDER_ALIASES = {
+        "openai-codex": "codex",
+    }
+
+    def _resolve_status_bar_provider_short(self, agent: Any) -> str:
+        """Return a compact provider slug for the status bar, or ``""``."""
+        candidates: list[str] = []
+
+        agent_provider = getattr(agent, "provider", None)
+        if agent_provider and str(agent_provider).strip().lower() not in {"auto", "custom"}:
+            candidates.append(str(agent_provider))
+
+        cli_provider = getattr(self, "provider", None)
+        if cli_provider:
+            candidates.append(str(cli_provider))
+
+        requested_provider = getattr(self, "requested_provider", None)
+        if requested_provider:
+            candidates.append(str(requested_provider))
+
+        provider_source = getattr(self, "_provider_source", None)
+        if provider_source:
+            tail = str(provider_source).split(":", 1)[-1].strip()
+            if tail:
+                candidates.append(tail.lower())
+
+        for raw in candidates:
+            slug = raw.strip()
+            if slug.startswith("custom:"):
+                slug = slug.split(":", 1)[1].strip()
+            if not slug or slug.lower() in {"auto", "custom", "unknown"}:
+                continue
+            return self._STATUS_BAR_PROVIDER_ALIASES.get(slug, slug)
+        return ""
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -4281,12 +4316,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
+
+        provider_short = self._resolve_status_bar_provider_short(agent)
+        if provider_short:
+            model_short = f"{provider_short}/{model_short}"
+
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
+            "provider_short": provider_short,
             "model_short": model_short,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(

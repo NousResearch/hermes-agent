@@ -545,6 +545,85 @@ class TestLowercaseDottedConfigKeys:
         result = redact_sensitive_text(text)
         assert "hunter2pass" not in result
 
+    def test_yaml_double_quoted_password(self):
+        # #53590 added the YAML rule but its lookahead skipped ALL quoted values,
+        # claiming they "defer to _JSON_FIELD_RE" — but that rule requires a
+        # *quoted key*, which bare-key YAML never has, so `password: "secret"`
+        # leaked verbatim with redaction nominally on.
+        text = 'password: "hunter2secretval"'
+        result = redact_sensitive_text(text)
+        assert "hunter2secretval" not in result
+        assert "password:" in result
+
+    def test_yaml_single_quoted_api_key(self):
+        text = "api_key: 'ak_live_998877secretvalue'"
+        result = redact_sensitive_text(text)
+        assert "ak_live_998877secretvalue" not in result
+
+    def test_yaml_dotted_quoted_password(self):
+        text = 'spring.datasource.password: "Sup3rS3cret!"'
+        result = redact_sensitive_text(text)
+        assert "Sup3rS3cret!" not in result
+        assert "spring.datasource.password:" in result
+
+    def test_yaml_quoted_value_with_spaces(self):
+        # A quoted scalar may contain spaces (special-char passwords are forced
+        # to be quoted in YAML); the whole secret must be masked, not just the
+        # first whitespace-free token.
+        text = 'password: "correct horse battery staple"'
+        result = redact_sensitive_text(text)
+        assert "correct horse battery staple" not in result
+        assert "horse battery" not in result
+
+    def test_yaml_quoted_value_keeps_quotes(self):
+        # The wrapping quotes are preserved while the inner secret is masked,
+        # mirroring the JSON path's ``"key": "***"`` form.
+        text = 'token: "shortsecret"'
+        result = redact_sensitive_text(text)
+        assert result == 'token: "***"'
+
+    def test_yaml_double_quoted_embedded_escape(self):
+        # An escaped quote inside a double-quoted scalar must not end the match
+        # early and leak the suffix.
+        text = 'password: "abc\\"defsecretvalue"'
+        result = redact_sensitive_text(text)
+        assert "defsecretvalue" not in result
+
+    def test_yaml_single_quoted_doubled_quote(self):
+        # YAML escapes a single quote by doubling it; must not end the match early.
+        text = "password: 'abc''defsecretvalue'"
+        result = redact_sensitive_text(text)
+        assert "defsecretvalue" not in result
+
+    def test_yaml_unterminated_quote_fails_closed(self):
+        # A quote-started but unterminated value is masked to end-of-line rather
+        # than leaking the rest of a space-containing secret.
+        text = 'password: "secret value unterminated'
+        result = redact_sensitive_text(text)
+        assert "secret value unterminated" not in result
+        assert "value unterminated" not in result
+
+    def test_yaml_quoted_match_is_line_bounded(self):
+        # The quoted match must not cross a newline into the next line.
+        text = 'password: "secretval"\nhost: example.com'
+        result = redact_sensitive_text(text)
+        assert "secretval" not in result
+        assert "host: example.com" in result
+
+    def test_yaml_double_quoted_crlf_backslash_does_not_cross(self):
+        # A trailing backslash before CRLF must not let the escape branch consume
+        # the carriage return and cross into the next line.
+        text = 'password: "abc\\\r\nhost: example.com'
+        result = redact_sensitive_text(text)
+        assert "host: example.com" in result
+
+    def test_yaml_quoted_crlf_line_terminated(self):
+        # A normal CRLF-terminated quoted value masks and stays on its own line.
+        text = 'password: "secretval"\r\nhost: example.com'
+        result = redact_sensitive_text(text)
+        assert "secretval" not in result
+        assert "host: example.com" in result
+
     def test_properties_file_dump(self):
         text = (
             "server.port=8080\n"

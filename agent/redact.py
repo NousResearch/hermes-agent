@@ -147,17 +147,26 @@ _CFG_ANCHORED_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-# Unquoted YAML / colon config (e.g. ``password: secret``,
+# YAML / colon config (e.g. ``password: secret``, ``password: "secret"``,
 # ``spring.datasource.password: hunter2``). The secret keyword must be part of
-# the KEY (anchored to the start of the line/indent), and the value is a single
-# whitespace-free token — so prose like ``note: secret meeting`` (keyword in the
-# value) and ``error: token expired`` are left alone. Bare ``auth`` is excluded
-# from the key set so ``Authorization:`` / ``author:`` don't match (the former
-# is masked by _AUTH_HEADER_RE); ``auth_token``/``auth-token`` still match via
-# the ``token`` keyword. Quoted values defer to _JSON_FIELD_RE via the lookahead.
+# the KEY (anchored to the start of the line/indent), so prose like
+# ``note: secret meeting`` (keyword in the value) and ``error: token expired``
+# are left alone. Bare ``auth`` is excluded from the key set so
+# ``Authorization:`` / ``author:`` don't match (the former is masked by
+# _AUTH_HEADER_RE); ``auth_token``/``auth-token`` still match via the ``token``
+# keyword. The value is either a quoted scalar (which may contain spaces, e.g. a
+# password with special characters that YAML forces to be quoted) or a single
+# whitespace-free token. Quoted values are matched here directly: _JSON_FIELD_RE
+# requires a *quoted key*, which bare-key YAML never has, so it cannot catch
+# ``password: "secret"`` — without this the quoted value leaked. The quoted
+# alternatives are escape-aware (double-quote ``\"`` / single-quote doubling
+# ``''``) and bounded to one line; a quote-started but unterminated value falls
+# through to a fail-closed match that masks to end-of-line rather than leaking
+# the rest of the value.
 _YAML_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential)"
 _YAML_ASSIGN_RE = re.compile(
-    rf"(^[ \t]*[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*)(:[ \t]*)(?!['\"])([^\s&]+)",
+    rf"(^[ \t]*[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*)(:[ \t]*)"
+    r"(\"(?:\\[^\r\n]|[^\"\\\r\n])*\"|'(?:''|[^'\r\n])*'|['\"][^\r\n]*|[^\s&]+)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -445,12 +454,18 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
-        # Unquoted YAML / colon config: password: ***  (after JSON so quoted
-        # values are handled there; the lookahead in _YAML_ASSIGN_RE skips
-        # quotes). Skip URLs — web-URL query params pass through by design.
+        # YAML / colon config: password: ***  /  password: "***"  (runs after
+        # JSON; bare-key quoted values are handled here since _JSON_FIELD_RE only
+        # matches quoted keys). Skip URLs — web-URL query params pass through by
+        # design.
         if ":" in text and "://" not in text:
             def _redact_yaml(m):
                 key, sep, value = m.group(1), m.group(2), m.group(3)
+                # Quoted scalar: mask the inner secret, keep the wrapping quotes
+                # (mirrors the JSON path's ``"key": "***"`` form).
+                if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+                    quote = value[0]
+                    return f"{key}{sep}{quote}{_mask_token(value[1:-1])}{quote}"
                 return f"{key}{sep}{_mask_token(value)}"
             text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
 

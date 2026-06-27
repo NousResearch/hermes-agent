@@ -2145,6 +2145,59 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     return None
 
 
+def _whatsapp_owner_tool_gate(source, platform_key, user_config, disabled_toolsets):
+    """Optionally restrict the toolset for non-owner senders on a shared WhatsApp line.
+
+    When ``whatsapp.nonowner_disabled_toolsets`` is set (a list of tool names),
+    every sender that is NOT an owner has those tools disabled -- so a shared /
+    community WhatsApp number can answer friends and family without exposing
+    terminal / code execution / file / etc. to them. An owner is the configured
+    ``whatsapp.home_channel`` chat_id or any id in ``whatsapp.owner_users``.
+
+    No-op (returns ``disabled_toolsets`` unchanged) unless the platform is
+    WhatsApp *and* ``nonowner_disabled_toolsets`` is configured, so existing
+    deployments are unaffected. Once the feature is active it fails closed: any
+    error restricts rather than grants.
+    """
+    if platform_key != "whatsapp" or not isinstance(user_config, dict):
+        return disabled_toolsets
+    wa = user_config.get("whatsapp") or {}
+    drop = wa.get("nonowner_disabled_toolsets")
+    if not (isinstance(drop, list) and drop):
+        return disabled_toolsets  # feature disabled -> no behavior change
+
+    def _restrict():
+        base = list(disabled_toolsets or [])
+        for name in drop:
+            if name not in base:
+                base.append(name)
+        return base
+
+    try:
+        import re as _re
+
+        def _norm(value):
+            text = str(value or "").strip()
+            text = _re.sub(r":.*@", "@", text)
+            text = _re.sub(r"@.*", "", text)
+            return text.lstrip("+")
+
+        owners = set()
+        home = wa.get("home_channel") or {}
+        if isinstance(home, dict) and home.get("chat_id"):
+            owners.add(_norm(home.get("chat_id")))
+        for owner_id in (wa.get("owner_users") or []):
+            if owner_id:
+                owners.add(_norm(owner_id))
+
+        sender = getattr(source, "chat_id", None) or getattr(source, "sender_id", None) or ""
+        if sender and owners and _norm(sender) in owners:
+            return disabled_toolsets  # owner -> full toolset
+        return _restrict()
+    except Exception:
+        return _restrict()  # fail closed
+
+
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
@@ -11849,6 +11902,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+            disabled_toolsets = _whatsapp_owner_tool_gate(
+                source, platform_key, user_config, disabled_toolsets
+            )
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
@@ -15163,6 +15219,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        disabled_toolsets = _whatsapp_owner_tool_gate(
+            source, platform_key, user_config, disabled_toolsets
+        )
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):

@@ -1289,3 +1289,59 @@ class TestWriteApprovalMigration:
             # gate ends up off and there's no leftover write_mode key.
             assert raw["memory"].get("write_approval", False) is False
             assert "write_mode" not in raw.get("memory", {})
+
+
+class TestVerifyOnStopMigration:
+    """v30 → v31: switch verify_on_stop OFF once, preserving explicit choices."""
+
+    def _write(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+
+    def test_auto_sentinel_flipped_to_false(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 30\nagent:\n  verify_on_stop: auto\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["agent"]["verify_on_stop"] is False
+
+    def test_missing_key_seeded_false(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 30\nagent:\n  max_turns: 5\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["agent"]["verify_on_stop"] is False
+            assert raw["agent"]["max_turns"] == 5
+
+    def test_no_agent_section_seeded_false(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 30\nmodel:\n  provider: openrouter\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["agent"]["verify_on_stop"] is False
+
+    def test_explicit_true_preserved(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 30\nagent:\n  verify_on_stop: true\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["agent"]["verify_on_stop"] is True
+
+    def test_explicit_false_preserved(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 30\nagent:\n  verify_on_stop: false\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["agent"]["verify_on_stop"] is False
+
+    def test_already_current_version_is_noop(self, tmp_path):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                f"_config_version: {DEFAULT_CONFIG['_config_version']}\n"
+                "agent:\n  verify_on_stop: true\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["agent"]["verify_on_stop"] is True

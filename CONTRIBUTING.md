@@ -106,6 +106,8 @@ install method for `hermes update`, and clones the full git project into
 development environment on the same layout the CLI, updater, lazy dependency
 installer, gateway, and docs assume.
 
+**Internal contributors** (write access) can clone directly:
+
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
@@ -135,7 +137,20 @@ packages.
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
+```
 
+**External contributors** should fork first:
+
+1. Fork the repo on GitHub (click **Fork** on the repository page).
+2. Clone your fork:
+
+```bash
+git clone --recurse-submodules https://github.com/YOUR_USERNAME/hermes-agent.git
+cd hermes-agent
+git remote add upstream https://github.com/NousResearch/hermes-agent.git
+```
+
+```bash
 # Create venv with Python 3.11
 uv venv venv --python 3.11
 export VIRTUAL_ENV="$(pwd)/venv"
@@ -906,6 +921,74 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 ---
 
 ## Pull Request Process
+
+### Fork & branch
+
+Most contributors should work from a fork so they can push branches without
+needing write access to `NousResearch/hermes-agent`:
+
+```bash
+# Fork the repository on GitHub, then clone your fork
+gh repo fork NousResearch/hermes-agent --clone
+cd hermes-agent
+
+# Verify the remotes (origin = your fork, upstream = NousResearch)
+git remote -v
+```
+
+If you already cloned the repo directly and have write access, skip the fork step and push branches to `origin` instead.
+
+Start from the latest upstream main and create a focused branch:
+
+```bash
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git checkout -b fix/my-description
+```
+
+### Make changes & commit
+
+```bash
+# Make your changes, then:
+git add <changed-files>
+git commit -m "fix(scope): description"
+```
+
+See [Commit messages](#commit-messages) below for the required format.
+
+### Push & open a PR
+
+```bash
+git push -u origin HEAD
+gh pr create --repo NousResearch/hermes-agent
+```
+
+The PR template will be auto-populated. Fill in:
+- **What does this PR do** — explain the change and why
+- **Related Issue** — link with `Fixes #NNNN`
+- **Changes Made** — list specific files/changes
+- **How to Test** — reproduction steps or usage examples
+
+After opening the PR, CI will run automatically. A maintainer will review and may request changes — address feedback with additional commits (avoid force-pushing during review).
+
+### Keeping your fork up to date
+
+```bash
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git push origin main
+```
+
+Rebase your feature branch on the latest `main` before opening a PR to avoid merge conflicts:
+
+```bash
+git checkout fix/my-description
+git rebase main
+```
+
+> **Fine-grained PAT gotcha:** GitHub fine-grained personal access tokens cannot fork repositories you don't own (the API returns 403). If you hit this, use OAuth authentication instead: `gh auth login --web -p https`
 
 ### Branch naming
 

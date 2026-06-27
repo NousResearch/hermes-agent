@@ -5730,6 +5730,8 @@ def _find_stale_dashboard_pids(
 
     try:
         if sys.platform == "win32":
+            from hermes_cli import _subprocess_compat
+
             # wmic may emit text in the system code page (for example cp936
             # on zh-CN systems), not UTF-8. In text mode, subprocess output
             # decoding depends on Python's configuration (locale-dependent
@@ -5737,7 +5739,7 @@ def _find_stale_dashboard_pids(
             # here is errors="ignore": it prevents a reader-thread
             # UnicodeDecodeError from leaving result.stdout=None and turning
             # the later .split() into an AttributeError (#17049).
-            result = subprocess.run(
+            result = _subprocess_compat.run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
                 capture_output=True,
                 text=True,
@@ -5977,9 +5979,11 @@ def _kill_stale_dashboard_processes(
     failed: list[tuple[int, str]] = []
 
     if sys.platform == "win32":
+        from hermes_cli import _subprocess_compat
+
         for pid in pids:
             try:
-                result = subprocess.run(
+                result = _subprocess_compat.run(
                     ["taskkill", "/PID", str(pid), "/F"],
                     capture_output=True,
                     text=True,

@@ -618,20 +618,25 @@ class TestGetProcessStartTime:
 
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
+        from hermes_cli import _subprocess_compat
+
         calls = []
         monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
 
-        def fake_run(cmd, capture_output=False, text=False, timeout=None):
-            calls.append((cmd, capture_output, text, timeout))
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, **kwargs):
+            calls.append((cmd, capture_output, text, timeout, kwargs))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
 
         status.terminate_pid(123, force=True)
 
-        assert calls == [
-            (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10)
-        ]
+        assert len(calls) == 1
+        cmd, capture_output, text, timeout, kwargs = calls[0]
+        assert cmd == ["taskkill", "/PID", "123", "/T", "/F"]
+        assert (capture_output, text, timeout) == (True, True, 10)
+        assert kwargs["creationflags"] & 0x08000000
 
     def test_force_falls_back_to_sigterm_when_taskkill_missing(self, monkeypatch):
         calls = []

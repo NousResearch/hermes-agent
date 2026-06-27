@@ -260,6 +260,13 @@ def join_mcp_discovery(timeout: float | None = None) -> bool:
 
 
 def main():
+    # Stdio backend spawned by Node/Electron: drop any console a uv
+    # pythonw→python re-exec auto-allocated. No-op on POSIX.
+    try:
+        hermes_bootstrap.detach_orphan_console()
+    except Exception:
+        pass
+
     _install_sidecar_publisher()
 
     # MCP tool discovery — runs in a background daemon thread so a slow or

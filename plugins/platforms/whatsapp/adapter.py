@@ -78,8 +78,10 @@ def _kill_port_process(port: int) -> None:
     """Kill any process *listening* on the given TCP port (a stale bridge)."""
     try:
         if _IS_WINDOWS:
+            from hermes_cli import _subprocess_compat
+
             # Use netstat to find the PID bound to this port, then taskkill
-            result = subprocess.run(
+            result = _subprocess_compat.run(
                 ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True, text=True, timeout=5,
             )
@@ -89,7 +91,7 @@ def _kill_port_process(port: int) -> None:
                     local_addr = parts[1]
                     if local_addr.endswith(f":{port}"):
                         try:
-                            subprocess.run(
+                            _subprocess_compat.run(
                                 ["taskkill", "/PID", parts[4], "/F"],
                                 capture_output=True, timeout=5,
                             )
@@ -207,11 +209,13 @@ def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
     """Terminate the bridge process using process-tree semantics where possible."""
     if _IS_WINDOWS:
+        from hermes_cli import _subprocess_compat
+
         cmd = ["taskkill", "/PID", str(proc.pid), "/T"]
         if force:
             cmd.append("/F")
         try:
-            result = subprocess.run(
+            result = _subprocess_compat.run(
                 cmd,
                 capture_output=True,
                 text=True,

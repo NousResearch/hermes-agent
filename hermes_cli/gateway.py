@@ -380,6 +380,24 @@ def _scan_gateway_pids(
 
     try:
         if is_windows():
+            try:
+                import psutil  # type: ignore
+
+                for proc in psutil.process_iter(["pid", "cmdline"]):
+                    pid = int(proc.info.get("pid") or 0)
+                    if pid == os.getpid() or pid in exclude_pids:
+                        continue
+                    command = " ".join(proc.info.get("cmdline") or [])
+                    if _matches_gateway_runtime(command) and (
+                        all_profiles or _matches_current_profile(command)
+                    ):
+                        _append_unique_pid(pids, pid, exclude_pids)
+                return _filter_venv_launcher_stubs(pids) if len(pids) > 1 else pids
+            except Exception:
+                pass
+
+            from hermes_cli import _subprocess_compat
+
             # Prefer wmic when present (fast, stable output format).  On
             # modern Windows 11 / Win 10 late builds, wmic has been
             # removed as part of the WMIC deprecation — fall back to
@@ -390,7 +408,7 @@ def _scan_gateway_pids(
             result = None
             if wmic_path is not None:
                 try:
-                    result = subprocess.run(
+                    result = _subprocess_compat.run(
                         [
                             wmic_path,
                             "process",
@@ -421,7 +439,7 @@ def _scan_gateway_pids(
                     "}"
                 )
                 try:
-                    result = subprocess.run(
+                    result = _subprocess_compat.run(
                         [powershell, "-NoProfile", "-Command", ps_cmd],
                         capture_output=True,
                         text=True,
@@ -6632,7 +6650,6 @@ def _gateway_command_inner(args):
             # path that can be reaped with the old gateway process.  If the
             # Windows backend raises, intentionally preserve the existing
             # generic failure fallback below.
-            service_configured = gateway_windows.is_installed()
             try:
                 gateway_windows.restart()
                 return

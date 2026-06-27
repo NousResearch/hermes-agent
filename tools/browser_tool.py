@@ -68,7 +68,7 @@ from agent.auxiliary_client import call_llm
 from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli import _subprocess_compat
 
 try:
     from tools.website_policy import check_website_access
@@ -905,23 +905,19 @@ def _run_chrome_fallback_command(
             #   fileno=1 (stderr dup'd onto stdout at the OS level).
             # * close_fds=True → block inheritance of every other handle.
             #   (Default on POSIX; must be explicit on Windows for stdio.)
+            # CREATE_NO_WINDOW is applied by _subprocess_compat.popen. We do NOT
+            # add CREATE_NEW_PROCESS_GROUP: on Python 3.11 Windows it interacts
+            # with asyncio's ProactorEventLoop such that the subprocess creation
+            # cancels the running loop task, surfacing as KeyboardInterrupt in
+            # app.run() and tearing down the CLI mid-turn (diag:
+            # "asyncio.CancelledError → KeyboardInterrupt").
             _popen_extra: dict = {}
             if os.name == "nt":
-                # CREATE_NO_WINDOW → don't attach a console (cmd.exe would
-                # otherwise briefly allocate one for the .cmd shim).
-                # Do NOT add CREATE_NEW_PROCESS_GROUP: on Python 3.11 Windows
-                # it interacts with asyncio's ProactorEventLoop such that the
-                # subprocess creation cancels the running loop task, which
-                # surfaces as KeyboardInterrupt in app.run() and tears down
-                # the CLI mid-turn. The agent thread's subprocess spawn
-                # unwound MainThread's prompt_toolkit loop that way — see
-                # diag log: "asyncio.CancelledError → KeyboardInterrupt".
-                _popen_extra["creationflags"] = windows_hide_flags()
                 _popen_extra["close_fds"] = True
                 _si = subprocess.STARTUPINFO()
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
                 _popen_extra["startupinfo"] = _si
-            proc = subprocess.Popen(
+            proc = _subprocess_compat.popen(
                 full, stdout=stdout_fd, stderr=stderr_fd,
                 stdin=subprocess.DEVNULL, env=browser_env,
                 **_popen_extra,
@@ -1942,6 +1938,12 @@ def _find_agent_browser() -> str:
     repo_root = Path(__file__).parent.parent
     local_bin_dir = repo_root / "node_modules" / ".bin"
     if local_bin_dir.is_dir():
+        if sys.platform == "win32":
+            native = repo_root / "node_modules" / "agent-browser" / "bin" / "agent-browser-win32-x64.exe"
+            if native.exists() and agent_browser_runnable(str(native)):
+                _cached_agent_browser = str(native)
+                _agent_browser_resolved = True
+                return _cached_agent_browser
         local_which = shutil.which("agent-browser", path=str(local_bin_dir))
         if local_which and agent_browser_runnable(local_which):
             _cached_agent_browser = local_which
@@ -2191,17 +2193,16 @@ def _run_browser_command(
             # three explicit handles (no leaked parent-console handles to
             # confuse the Rust binary's daemon-spawn), and close_fds=True to
             # block inheritance of everything else.
+            # CREATE_NO_WINDOW via _subprocess_compat.popen; NO
+            # CREATE_NEW_PROCESS_GROUP (cancels asyncio loop task on Python 3.11
+            # Windows → KeyboardInterrupt in CLI MainThread).
             _popen_extra: dict = {}
             if os.name == "nt":
-                # See matching block at the other Popen site — CREATE_NO_WINDOW
-                # only, NO CREATE_NEW_PROCESS_GROUP (cancels asyncio loop task
-                # on Python 3.11 Windows → KeyboardInterrupt in CLI MainThread).
-                _popen_extra["creationflags"] = windows_hide_flags()
                 _popen_extra["close_fds"] = True
                 _si = subprocess.STARTUPINFO()
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
                 _popen_extra["startupinfo"] = _si
-            proc = subprocess.Popen(
+            proc = _subprocess_compat.popen(
                 cmd_parts,
                 stdout=stdout_fd,
                 stderr=stderr_fd,

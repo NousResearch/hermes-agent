@@ -77,9 +77,11 @@ def _detect_openclaw_processes() -> list[str]:
 
     # -- process scan ------------------------------------------------------
     if sys.platform == "win32":
+        from hermes_cli import _subprocess_compat
+
         try:
             for exe in ("openclaw.exe", "clawd.exe"):
-                result = subprocess.run(
+                result = _subprocess_compat.run(
                     ["tasklist", "/FI", f"IMAGENAME eq {exe}"],
                     capture_output=True, text=True, timeout=5,
                 )
@@ -93,7 +95,7 @@ def _detect_openclaw_processes() -> list[str]:
                 'Where-Object { $_.CommandLine -match "openclaw|clawd" } | '
                 'Select-Object -First 1 ProcessId'
             )
-            result = subprocess.run(
+            result = _subprocess_compat.run(
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
                 capture_output=True, text=True, timeout=5,
             )

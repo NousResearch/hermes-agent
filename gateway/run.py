@@ -18593,6 +18593,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
 def main():
     """CLI entry point for the gateway."""
+    # Background daemon: drop any console auto-allocated by a uv pythonw→python
+    # re-exec so no terminal lingers. No-op on POSIX / when already detached.
+    try:
+        hermes_bootstrap.detach_orphan_console()
+    except Exception:
+        pass
+
     # Force UTF-8 stdio on Windows — gateway logs and startup banner would
     # otherwise UnicodeEncodeError on cp1252 consoles.  No-op on POSIX.
     try:

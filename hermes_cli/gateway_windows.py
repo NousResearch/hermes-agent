@@ -39,10 +39,10 @@ import time
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from hermes_cli import _subprocess_compat
 from hermes_cli._subprocess_compat import (
     windows_detach_flags,
     windows_detach_flags_without_breakaway,
-    windows_hide_flags,
 )
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
@@ -157,7 +157,7 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
     if schtasks is None:
         return (1, "", "schtasks.exe not found on PATH")
     try:
-        proc = subprocess.run(
+        proc = _subprocess_compat.run(
             [schtasks, *args],
             capture_output=True,
             text=True,
@@ -168,10 +168,6 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
             encoding=_schtasks_encoding(),
             errors="replace",
             timeout=_SCHTASKS_TIMEOUT_S,
-            # CREATE_NO_WINDOW avoids a flashing console window when the CLI
-            # is itself hosted in a TUI. See tools/browser_tool.py for the
-            # same pattern and the windows-subprocess-sigint-storm.md ref.
-            creationflags=windows_hide_flags(),
         )
         return (proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired:
@@ -1605,7 +1601,17 @@ def stop() -> None:
         drained = _drain_gateway_pid(pid, _windows_stop_drain_timeout())
 
     stopped_any = drained
-    if is_task_registered():
+    has_service_artifact = (
+        get_task_script_path().exists()
+        or get_task_script_path().with_suffix(".vbs").exists()
+        or get_startup_entry_path().exists()
+        or _legacy_startup_entry_path().exists()
+    )
+    if (
+        has_service_artifact
+        and os.getenv("HERMES_NONINTERACTIVE") != "1"
+        and is_task_registered()
+    ):
         code, _out, err = _exec_schtasks(["/End", "/TN", get_task_name()])
         # schtasks returns nonzero when the task isn't currently running — don't treat that as an error.
         if code == 0:
@@ -1673,7 +1679,8 @@ def restart() -> None:
 
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)
-    start()
+    pid = _spawn_detached()
+    _report_gateway_start(f"direct spawn (PID {pid})")
 
     if not _wait_for_gateway_ready(timeout_s=15.0):
         raise RuntimeError(

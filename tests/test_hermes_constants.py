@@ -1,6 +1,8 @@
 """Tests for hermes_constants module."""
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -610,6 +612,30 @@ class TestAgentBrowserRunnable:
         # the package at run time, so the validator trusts it without stat.
         assert agent_browser_runnable("npx agent-browser") is True
         assert agent_browser_runnable("/usr/local/bin/npx agent-browser") is True
+
+
+class TestAgentBrowserRunnableWindows:
+    def test_windows_validation_hides_console_subprocess(self, tmp_path, monkeypatch):
+        from hermes_cli import _subprocess_compat
+
+        exe = tmp_path / "agent-browser-win32-x64.exe"
+        exe.write_text("", encoding="utf-8")
+        exe.chmod(0o755)
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured.update(kwargs)
+            return type("Result", (), {"returncode": 0})()
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert agent_browser_runnable(str(exe)) is True
+        assert captured["args"] == [str(exe), "--version"]
+        assert "creationflags" in captured
+        assert captured["stdin"] is subprocess.DEVNULL
 
 
 class TestGetHermesDir:

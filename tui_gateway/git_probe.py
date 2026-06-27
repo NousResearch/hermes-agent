@@ -46,7 +46,9 @@ def run_git(cwd: str, *args: str) -> str:
     if not cwd:
         return ""
     try:
-        result = subprocess.run(
+        from hermes_cli import _subprocess_compat
+
+        result = _subprocess_compat.run(
             ["git", "-C", cwd, *args],
             capture_output=True,
             text=True,

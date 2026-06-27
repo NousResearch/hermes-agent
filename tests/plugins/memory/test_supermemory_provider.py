@@ -610,3 +610,25 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+def test_write_thread_is_daemon(provider):
+    """Write thread must be daemon=True so it cannot block process exit.
+
+    All other memory providers (hindsight, honcho, mem0, byterover, etc.)
+    create daemon threads for background work.  A non-daemon write thread
+    blocks process shutdown if it is stuck on a network call, causing the
+    entire gateway to hang on SIGTERM / /exit.
+
+    Regression test for the non-daemon write thread oversight.
+    """
+    provider.sync_turn("hello", "hi")
+    # Allow the thread creation to happen (sync_turn triggers _spawn_write_thread)
+    import time
+    time.sleep(0.05)
+    thread = provider._write_thread
+    if thread is not None:
+        assert thread.daemon is True, (
+            f"supermemory write thread must be daemon=True to avoid blocking "
+            f"process exit; got daemon={thread.daemon}"
+        )

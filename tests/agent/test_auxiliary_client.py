@@ -698,6 +698,78 @@ class TestResolveProviderClientUniversalModelFallback:
         assert mock_build.call_args.args[0] == "grok-4.20-multi-agent"
 
 
+class TestResolveProviderClientMoA:
+    def _moa_config(self):
+        return {
+            "moa": {
+                "default_preset": "review",
+                "presets": {
+                    "review": {
+                        "reference_models": [
+                            {"provider": "vibeproxy", "model": "gpt-5.5"},
+                            {"provider": "zai", "model": "glm-5.2"},
+                        ],
+                        "aggregator": {
+                            "provider": "openrouter",
+                            "model": "anthropic/claude-opus-4.8",
+                        },
+                        "enabled": True,
+                    }
+                },
+            }
+        }
+
+    def test_moa_provider_resolves_to_aggregator_without_virtual_credentials(self):
+        seen = {}
+
+        def fake_try_openrouter(*, explicit_api_key=None, model=None):
+            seen["explicit_api_key"] = explicit_api_key
+            seen["model"] = model
+            return MagicMock(name="openrouter-client"), "openrouter-default"
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=self._moa_config()),
+            patch("agent.auxiliary_client._try_openrouter", side_effect=fake_try_openrouter),
+        ):
+            client, model = resolve_provider_client(
+                "moa",
+                "review",
+                explicit_base_url="moa://virtual-provider/review",
+                explicit_api_key="moa-virtual-provider",
+                api_mode="chat_completions",
+            )
+
+        assert client is not None
+        assert model == "anthropic/claude-opus-4.8"
+        assert seen == {"explicit_api_key": None, "model": None}
+
+    def test_auto_with_moa_main_returns_aggregator_model_not_preset_name(self):
+        seen = {}
+
+        def fake_try_openrouter(*, explicit_api_key=None, model=None):
+            seen["explicit_api_key"] = explicit_api_key
+            seen["model"] = model
+            return MagicMock(name="openrouter-client"), "openrouter-default"
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=self._moa_config()),
+            patch("agent.auxiliary_client._try_openrouter", side_effect=fake_try_openrouter),
+        ):
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "moa",
+                    "model": "review",
+                    "base_url": "moa://virtual-provider/review",
+                    "api_key": "moa-virtual-provider",
+                    "api_mode": "chat_completions",
+                }
+            )
+
+        assert client is not None
+        assert model == "anthropic/claude-opus-4.8"
+        assert seen == {"explicit_api_key": None, "model": None}
+
+
 class TestExpiredCodexFallback:
     """Test that expired Codex tokens don't block the auto chain."""
 

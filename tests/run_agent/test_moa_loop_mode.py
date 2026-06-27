@@ -154,6 +154,28 @@ def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
     assert rt["api_key"] == "key-for-minimax"
 
 
+def test_moa_openai_codex_slot_uses_auxiliary_wrapper_not_raw_runtime(monkeypatch):
+    """Codex references must not receive raw ChatGPT backend credentials.
+
+    The regular openai-codex auxiliary client adds the right wrapper/headers.
+    Passing resolve_runtime_provider's raw base_url/api_key into call_llm
+    bypasses that path and can trigger Cloudflare HTML challenges.
+    """
+    from agent import moa_loop
+
+    def fail_if_called(*, requested, target_model=None):
+        raise AssertionError("openai-codex should not use raw runtime resolution")
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fail_if_called
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "openai-codex", "model": "gpt-5.5"})
+    assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
+    assert "base_url" not in rt
+    assert "api_key" not in rt
+
+
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     """A slot whose provider can't be resolved still attempts the call with the
     bare provider/model rather than aborting the whole MoA turn."""

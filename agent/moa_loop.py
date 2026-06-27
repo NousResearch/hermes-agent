@@ -51,6 +51,13 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     model = str(slot.get("model") or "").strip()
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
+        # Codex's ChatGPT-account backend needs the specialized auxiliary
+        # wrapper/headers from resolve_provider_client(). Passing the raw
+        # runtime URL/token here bypasses that wrapper and can hit Cloudflare
+        # HTML challenges even though the normal Codex path works.
+        if provider == "openai-codex":
+            return out
+
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         rt = resolve_runtime_provider(requested=provider, target_model=model)

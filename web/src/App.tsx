@@ -99,6 +99,7 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { getDashboardBranding } from "@/lib/dashboard-branding";
 import { api } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
 
@@ -348,6 +349,7 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 
 export default function App() {
   const { t } = useI18n();
+  const branding = useMemo(() => getDashboardBranding(), []);
   const { pathname } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
@@ -378,6 +380,10 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
+
+  useEffect(() => {
+    document.title = branding.title;
+  }, [branding.title]);
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -518,7 +524,7 @@ export default function App() {
           className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
           style={{ mixBlendMode: "plus-lighter" }}
         >
-          {t.app.brand}
+          {branding.appName}
         </Typography>
       </header>
 
@@ -577,9 +583,12 @@ export default function App() {
                   className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
                   style={{ mixBlendMode: "plus-lighter" }}
                 >
-                  Hermes
-                  <br />
-                  Agent
+                  {branding.wordmarkLines.map((line, idx) => (
+                    <span key={`${idx}-${line}`}>
+                      {idx > 0 && <br />}
+                      {line}
+                    </span>
+                  ))}
                 </Typography>
               </div>
 

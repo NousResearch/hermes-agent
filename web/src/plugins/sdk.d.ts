@@ -97,6 +97,8 @@ export interface HermesPluginSDK {
 
   /** React core — use instead of importing/bundling react. */
   React: typeof import("react").default;
+  /** Portal helper for overlays that must escape dashboard/sidebar stacking contexts. */
+  createPortal: typeof import("react-dom").createPortal;
   hooks: {
     useState: typeof import("react").useState;
     useEffect: typeof import("react").useEffect;

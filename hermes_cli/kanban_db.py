@@ -576,7 +576,7 @@ def board_metadata_path(board: Optional[str] = None) -> Path:
     """Return the path to ``board.json`` for ``board``.
 
     Stores display metadata (display name, description, icon, color,
-    created_at). The on-disk slug is the canonical identity; this file
+    priority_rank, created_at). The on-disk slug is the canonical identity; this file
     is purely for presentation in the CLI / dashboard.
     """
     slug = _normalize_board_slug(board) or DEFAULT_BOARD
@@ -609,6 +609,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        "priority_rank": None,
         "created_at": None,
         "archived": False,
     }
@@ -636,6 +637,7 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    priority_rank: Any = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -659,6 +661,12 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if priority_rank is not None:
+        try:
+            rank = int(priority_rank)
+        except (TypeError, ValueError):
+            rank = 0
+        meta["priority_rank"] = rank if rank > 0 else None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -679,6 +687,7 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    priority_rank: Optional[int] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -696,6 +705,7 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        priority_rank=priority_rank,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -710,8 +720,8 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
     Other boards are discovered by scanning ``boards/`` for subdirectories
     that either contain a ``kanban.db`` or a ``board.json``.
 
-    Returns a list of metadata dicts, sorted with ``default`` first and
-    the rest alphabetically.
+    Returns a list of metadata dicts, sorted with ``default`` first, then
+    prioritized boards by ascending ``priority_rank``, then alphabetically.
     """
     entries: list[dict] = []
     seen: set[str] = set()
@@ -743,6 +753,20 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
                 continue
             entries.append(meta)
             seen.add(normed)
+    if len(entries) > 1:
+        default_entries = [b for b in entries if b.get("slug") == DEFAULT_BOARD]
+        other_entries = [b for b in entries if b.get("slug") != DEFAULT_BOARD]
+
+        def _board_sort_key(meta: dict) -> tuple[int, int, str]:
+            raw_rank = meta.get("priority_rank")
+            try:
+                rank = int(raw_rank) if raw_rank is not None else 0
+            except (TypeError, ValueError):
+                rank = 0
+            # Ranked boards first (rank 1 before rank 2), unranked after.
+            return (0 if rank > 0 else 1, rank if rank > 0 else 999_999, str(meta.get("slug") or ""))
+
+        entries = default_entries + sorted(other_entries, key=_board_sort_key)
     return entries
 
 

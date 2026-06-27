@@ -17,6 +17,7 @@ import React, {
   useContext,
   createContext,
 } from "react";
+import { createPortal } from "react-dom";
 import { api, fetchJSON, authedFetch, buildWsUrl, buildWsAuthParam } from "@/lib/api";
 import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -113,6 +114,8 @@ export function exposePluginSDK() {
     sdkVersion: SDK_CONTRACT_VERSION,
     // React core — plugins use these instead of importing react
     React,
+    // Portal helper for overlays that must escape dashboard/sidebar stacking contexts.
+    createPortal,
     hooks: {
       useState,
       useEffect,

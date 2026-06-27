@@ -232,15 +232,43 @@ class TestBoardCRUD:
             description="desc",
             icon="📦",
             color="#abcdef",
+            priority_rank=2,
         )
         assert meta["slug"] == "baz"
         assert meta["name"] == "Baz"
         assert meta["icon"] == "📦"
+        assert meta["priority_rank"] == 2
         # Round-trip via read_board_metadata.
         again = kb.read_board_metadata("baz")
         assert again["name"] == "Baz"
         assert again["description"] == "desc"
         assert again["icon"] == "📦"
+        assert again["priority_rank"] == 2
+
+    def test_priority_rank_sorts_boards_before_unranked(self, fresh_home):
+        kb.create_board("z-last")
+        kb.create_board("priority-two", priority_rank=2)
+        kb.create_board("priority-one", priority_rank=1)
+        kb.create_board("a-unranked")
+
+        slugs = [b["slug"] for b in kb.list_boards()]
+
+        assert slugs == [
+            "default",
+            "priority-one",
+            "priority-two",
+            "a-unranked",
+            "z-last",
+        ]
+
+    def test_clearing_priority_rank_restores_unranked_sorting(self, fresh_home):
+        kb.create_board("beta", priority_rank=1)
+        kb.create_board("alpha")
+        kb.write_board_metadata("beta", priority_rank=0)
+
+        slugs = [b["slug"] for b in kb.list_boards()]
+
+        assert slugs == ["default", "alpha", "beta"]
 
     def test_remove_archive(self, fresh_home):
         kb.create_board("toremove")

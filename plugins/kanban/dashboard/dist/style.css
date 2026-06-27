@@ -60,6 +60,204 @@
   color: var(--color-muted-foreground) !important;
 }
 
+
+/* ---- Agent Runner-style board overview --------------------------------
+ * High-level status rail: replaces "where do I look?" guessing with a
+ * visible progress bar, hot counters, Now card, and workflow flow chips. */
+.hermes-kanban-overview {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.15fr) minmax(320px, 1.2fr) minmax(260px, 1fr);
+  gap: 0.75rem;
+  align-items: stretch;
+  padding: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: calc(var(--radius, 0.5rem) + 0.25rem);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-card) 94%, transparent), color-mix(in srgb, var(--color-ring) 5%, var(--color-card))),
+    var(--color-card);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-foreground) 7%, transparent) inset;
+}
+.hermes-kanban-overview-main,
+.hermes-kanban-focus-card,
+.hermes-kanban-overview-kpis {
+  border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+  border-radius: var(--radius, 0.5rem);
+  background: color-mix(in srgb, var(--color-background, #000) 24%, transparent);
+}
+.hermes-kanban-overview-main {
+  padding: 0.7rem 0.8rem;
+  min-width: 0;
+}
+.hermes-kanban-overview-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.hermes-kanban-eyebrow {
+  font-size: 0.62rem;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--color-muted-foreground);
+  font-weight: 700;
+}
+.hermes-kanban-overview-title {
+  margin-top: 0.25rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-foreground);
+  letter-spacing: 0.01em;
+}
+.hermes-kanban-overview-percent {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 1.6rem;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--color-foreground);
+}
+.hermes-kanban-progressbar {
+  position: relative;
+  height: 0.55rem;
+  margin: 0.75rem 0 0.45rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-muted-foreground) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+}
+.hermes-kanban-progressbar-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #3fb97d, color-mix(in srgb, var(--color-ring) 72%, #3fb97d));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--color-ring) 35%, transparent);
+  transition: width 180ms ease;
+}
+.hermes-kanban-overview-caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.65rem;
+  font-size: 0.72rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-filter-flag {
+  color: var(--color-foreground);
+  border: 1px solid color-mix(in srgb, var(--color-ring) 45%, transparent);
+  border-radius: 999px;
+  padding: 0 0.35rem;
+}
+.hermes-kanban-overview-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
+  padding: 0.5rem;
+}
+.hermes-kanban-kpi {
+  min-width: 0;
+  padding: 0.55rem 0.45rem;
+  border-radius: var(--radius-sm, 0.25rem);
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 62%, transparent);
+}
+.hermes-kanban-kpi--running { border-color: color-mix(in srgb, #3fb97d 48%, var(--color-border)); }
+.hermes-kanban-kpi--ready { border-color: color-mix(in srgb, #d4b348 55%, var(--color-border)); }
+.hermes-kanban-kpi--blocked { border-color: color-mix(in srgb, var(--color-destructive, #d14a4a) 55%, var(--color-border)); }
+.hermes-kanban-kpi--review { border-color: color-mix(in srgb, #4a8cd1 48%, var(--color-border)); }
+.hermes-kanban-kpi-value {
+  display: block;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 1.45rem;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--color-foreground);
+}
+.hermes-kanban-kpi-label {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-focus-card {
+  appearance: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0.7rem 0.8rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.28rem;
+}
+.hermes-kanban-focus-card:hover:not(:disabled) {
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-ring) 45%, transparent) inset;
+}
+.hermes-kanban-focus-card:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+.hermes-kanban-focus-status {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.76rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-focus-title {
+  font-size: 0.9rem;
+  font-weight: 650;
+  line-height: 1.25;
+  color: var(--color-foreground);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.hermes-kanban-flow-strip {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.35rem;
+  overflow-x: auto;
+  padding-top: 0.05rem;
+}
+.hermes-kanban-flow-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.33rem;
+  min-height: 1.75rem;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: 999px;
+  color: var(--color-muted-foreground);
+  background: color-mix(in srgb, var(--color-background, #000) 12%, transparent);
+}
+.hermes-kanban-flow-chip--hot {
+  color: var(--color-foreground);
+  background: color-mix(in srgb, var(--color-foreground) 5%, transparent);
+}
+.hermes-kanban-flow-name {
+  font-size: 0.68rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.hermes-kanban-flow-count {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  font-weight: 800;
+  min-width: 1.2rem;
+  text-align: center;
+}
+@media (max-width: 1180px) {
+  .hermes-kanban-overview { grid-template-columns: 1fr 1fr; }
+  .hermes-kanban-focus-card { grid-column: 1 / -1; }
+}
+@media (max-width: 760px) {
+  .hermes-kanban-overview { grid-template-columns: 1fr; }
+  .hermes-kanban-overview-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
@@ -300,6 +498,200 @@
 }
 .hermes-kanban-ago {
   margin-left: auto;
+}
+
+.hermes-kanban-card-log {
+  margin-top: 0.15rem;
+  border: 1px solid color-mix(in srgb, var(--color-ring) 34%, var(--color-border));
+  border-radius: var(--radius-sm, 0.25rem);
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #000 28%, transparent), transparent),
+    color-mix(in srgb, var(--color-background, #000) 78%, var(--color-card));
+  cursor: default;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-foreground) 4%, transparent) inset;
+}
+
+.hermes-kanban-card-log--expanded {
+  position: fixed;
+  z-index: 2147483000;
+  left: clamp(0.75rem, 2vw, 1.5rem);
+  right: clamp(0.75rem, 2vw, 1.5rem);
+  top: clamp(0.75rem, 2vh, 1.5rem);
+  bottom: clamp(0.75rem, 2vh, 1.5rem);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg, 0.75rem);
+  box-shadow:
+    0 1.5rem 4rem color-mix(in srgb, #000 62%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-ring) 52%, transparent) inset;
+}
+
+.hermes-kanban-card-log-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.35rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  background: color-mix(in srgb, var(--color-ring) 10%, transparent);
+}
+
+.hermes-kanban-card-log-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-foreground) 84%, var(--color-muted-foreground));
+}
+
+.hermes-kanban-card-log-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.04rem 0.36rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8ff0b6;
+  background: color-mix(in srgb, #3fb97d 18%, transparent);
+  border: 1px solid color-mix(in srgb, #3fb97d 38%, transparent);
+}
+
+.hermes-kanban-card-log-state::before {
+  content: "";
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+}
+
+.hermes-kanban-card-log-state--paused {
+  color: color-mix(in srgb, var(--color-muted-foreground) 88%, var(--color-foreground));
+  background: color-mix(in srgb, var(--color-muted-foreground) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-muted-foreground) 28%, transparent);
+}
+
+.hermes-kanban-card-log-action {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  border-radius: 0.25rem;
+  width: 1.55rem;
+  height: 1.45rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: color-mix(in srgb, var(--color-card) 72%, transparent);
+  color: var(--color-muted-foreground);
+  font-size: 0.78rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.hermes-kanban-card-log-action:hover {
+  color: var(--color-foreground);
+  border-color: var(--color-ring);
+}
+
+.hermes-kanban-card-log-insights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.28rem 0.35rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 46%, transparent);
+  background: color-mix(in srgb, #000 16%, transparent);
+}
+
+.hermes-kanban-card-log-chip {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.08rem 0.32rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 64%, transparent);
+  border-radius: 999px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--color-foreground) 78%, var(--color-muted-foreground));
+  background: color-mix(in srgb, var(--color-card) 66%, transparent);
+}
+
+.hermes-kanban-card-log-chip--ok,
+.hermes-kanban-card-log-chip--completed {
+  color: #8ff0b6;
+  border-color: color-mix(in srgb, #3fb97d 38%, transparent);
+  background: color-mix(in srgb, #3fb97d 14%, transparent);
+}
+
+.hermes-kanban-card-log-chip--warn,
+.hermes-kanban-card-log-chip--review,
+.hermes-kanban-card-log-chip--blocked {
+  color: #ffd37a;
+  border-color: color-mix(in srgb, #f59e0b 42%, transparent);
+  background: color-mix(in srgb, #f59e0b 14%, transparent);
+}
+
+.hermes-kanban-card-log--expanded .hermes-kanban-card-log-chip {
+  max-width: 40rem;
+}
+
+.hermes-kanban-card-log-body {
+  max-height: 15rem;
+  min-height: 4.2rem;
+  overflow: auto;
+}
+
+.hermes-kanban-card-log--expanded .hermes-kanban-card-log-body {
+  flex: 1;
+  max-height: none;
+  min-height: 0;
+}
+
+.hermes-kanban-card-log-pre {
+  margin: 0;
+  padding: 0.6rem 0.7rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.78rem;
+  line-height: 1.42;
+  color: color-mix(in srgb, var(--color-foreground) 90%, #8ff0b6);
+}
+
+.hermes-kanban-card-log--expanded .hermes-kanban-card-log-pre {
+  font-size: 0.95rem;
+  line-height: 1.48;
+}
+
+.hermes-kanban-card-log-message {
+  padding: 0.7rem 0.75rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+
+.hermes-kanban-card-log-message--error {
+  color: var(--color-destructive, #ef4444);
+  font-style: normal;
+}
+
+.hermes-kanban-card-log-foot {
+  padding: 0.2rem 0.45rem 0.28rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+  font-size: 0.6rem;
+  color: var(--color-muted-foreground);
+  text-align: right;
 }
 
 /* ---- Inline create --------------------------------------------------- */

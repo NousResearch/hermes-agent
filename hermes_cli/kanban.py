@@ -267,6 +267,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Switch to the new board after creating it")
     b_create.add_argument("--default-workdir", default=None,
                           help="Default workspace path for tasks created on this board")
+    b_create.add_argument("--priority-rank", type=int, default=None,
+                          help="Optional board priority rank (1 = highest). Ranked boards sort first.")
 
     b_rm = boards_sub.add_parser(
         "rm", aliases=["remove", "delete"],
@@ -294,6 +296,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     b_rename.add_argument("slug")
     b_rename.add_argument("name", help="New display name")
+
+    b_priority = boards_sub.add_parser(
+        "prioritize", aliases=["set-priority"],
+        help="Set or clear a board priority rank used by boards list sorting",
+    )
+    b_priority.add_argument("slug")
+    b_priority.add_argument("rank", nargs="?", type=int, default=1,
+                            help="Priority rank; 1 is highest. Use 0 or --clear to clear.")
+    b_priority.add_argument("--clear", action="store_true",
+                            help="Clear the board priority rank")
 
     b_set_wd = boards_sub.add_parser(
         "set-default-workdir",
@@ -1029,6 +1041,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_show(args)
     if sub == "rename":
         return _cmd_boards_rename(args)
+    if sub in {"prioritize", "set-priority"}:
+        return _cmd_boards_prioritize(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
@@ -1062,11 +1076,11 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         print(json.dumps(boards, indent=2, ensure_ascii=False))
         return 0
-    # Human table: marker (•) for current, slug, display name, counts.
+    # Human table: marker (•) for current, slug, priority rank, display name, counts.
     if not boards:
         print("(no boards — create one with `hermes kanban boards create <slug>`)")
         return 0
-    print(f"{'':2s}  {'SLUG':24s}  {'NAME':28s}  COUNTS")
+    print(f"{'':2s}  {'SLUG':24s}  {'PRI':3s}  {'NAME':28s}  COUNTS")
     for b in boards:
         marker = "●" if b["is_current"] else " "
         counts = b["counts"] or {}
@@ -1077,7 +1091,9 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
         name = b.get("name") or ""
         if b.get("archived"):
             name += " [archived]"
-        print(f"{marker:2s}  {b['slug']:24s}  {name:28s}  {counts_str}")
+        rank = b.get("priority_rank")
+        pri = f"P{rank}" if rank else ""
+        print(f"{marker:2s}  {b['slug']:24s}  {pri:3s}  {name:28s}  {counts_str}")
     print()
     print(f"Current board: {current}")
     if len(boards) > 1:
@@ -1102,6 +1118,7 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         icon=args.icon,
         color=args.color,
         default_workdir=args.default_workdir,
+        priority_rank=args.priority_rank,
     )
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")
@@ -1184,6 +1201,25 @@ def _cmd_boards_rename(args: argparse.Namespace) -> int:
         return 1
     meta = kb.write_board_metadata(normed, name=args.name)
     print(f"Board {normed!r} renamed to {meta['name']!r}.")
+    return 0
+
+
+def _cmd_boards_prioritize(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards prioritize: {exc}", file=sys.stderr)
+        return 2
+    if not normed or not kb.board_exists(normed):
+        print(f"kanban boards prioritize: board {args.slug!r} does not exist",
+              file=sys.stderr)
+        return 1
+    rank = 0 if getattr(args, "clear", False) else int(getattr(args, "rank", 1) or 0)
+    meta = kb.write_board_metadata(normed, priority_rank=rank)
+    if meta.get("priority_rank"):
+        print(f"Board {normed!r} priority rank set to P{meta['priority_rank']}.")
+    else:
+        print(f"Board {normed!r} priority rank cleared.")
     return 0
 
 

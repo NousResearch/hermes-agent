@@ -38,6 +38,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import sqlite3
 import time
 from dataclasses import asdict
@@ -151,6 +153,25 @@ BOARD_COLUMNS: list[str] = [
     "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
 ]
 
+BOARDFORGE_CORE_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "seeds": ("1-SEEDS", "SEEDS", "seeds"),
+    "proposals": ("2-PROPOSALS", "PROPOSALS", "proposals"),
+    "tickets": ("3-TICKETS", "TICKETS", "tickets"),
+}
+
+BOARDFORGE_RELEVANT_MARKERS = (
+    "SEED",
+    "PROPOSAL",
+    "TICKET",
+    "INTAKE",
+    "QUESTION",
+    "DEFER",
+    "STALE",
+    "BACKLOG",
+)
+
+BOARDFORGE_CACHE_TTL_SECONDS = float(os.getenv("HERMES_BOARDFORGE_CACHE_TTL", "2.0"))
+_boardforge_inventory_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
@@ -372,6 +393,166 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# BoardForge filesystem inventory
+# ---------------------------------------------------------------------------
+
+def _resolve_boardforge_paths(configured_root: Optional[str] = None) -> tuple[Path, Path]:
+    """Resolve the configured GM-MBOP-TEAM root and nested BoardForge root.
+
+    The caller may pass either the GM-MBOP-TEAM/project root or the
+    ``_TOOLS/BOARDFORGE`` directory itself. When omitted, environment variables
+    win and the process cwd is the fallback so dashboard polling works when
+    Hermes is launched from the project checkout.
+    """
+    raw = (
+        configured_root
+        or os.getenv("HERMES_BOARDFORGE_ROOT")
+        or os.getenv("GM_MBOP_TEAM_ROOT")
+        or os.getenv("GM_MBOP_PROJECT_ROOT")
+        or os.getcwd()
+    )
+    root = Path(raw).expanduser().resolve()
+    if root.name.upper() == "BOARDFORGE":
+        return root.parent.parent.resolve(), root
+    return root, (root / "_TOOLS" / "BOARDFORGE").resolve()
+
+
+def _boardforge_category_key(dirname: str) -> str:
+    """Turn ``1-SEEDS`` / ``4-QUESTIONS`` into stable API keys."""
+    key = re.sub(r"^\d+[-_\s]*", "", dirname).strip("-_ ").lower()
+    key = re.sub(r"[^a-z0-9]+", "_", key).strip("_")
+    return key or dirname.lower()
+
+
+def _is_relevant_boardforge_category(path: Path) -> bool:
+    upper = path.name.upper()
+    return any(marker in upper for marker in BOARDFORGE_RELEVANT_MARKERS)
+
+
+def _count_boardforge_files(category_path: Path) -> tuple[int, dict[str, int], list[dict[str, Any]], int]:
+    """Count regular files below one BoardForge category.
+
+    Hidden files/directories are ignored to avoid editor caches and VCS state.
+    ``by_status`` is keyed by the first path component under the category (or
+    ``_root`` for files directly inside the category), matching the common
+    BoardForge layout where the first child directory is lane/status.
+    """
+    by_status: dict[str, int] = {}
+    newest: list[dict[str, Any]] = []
+    high_priority = 0
+    total = 0
+    newest_limit = int(os.getenv("HERMES_BOARDFORGE_NEWEST_LIMIT", "10"))
+
+    for dirpath, dirnames, filenames in os.walk(category_path):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "__pycache__"]
+        current = Path(dirpath)
+        for filename in filenames:
+            if filename.startswith("."):
+                continue
+            file_path = current / filename
+            try:
+                if not file_path.is_file():
+                    continue
+                rel = file_path.relative_to(category_path)
+                parts = rel.parts
+                status_key = parts[0] if len(parts) > 1 else "_root"
+                stat = file_path.stat()
+            except OSError:
+                continue
+            total += 1
+            by_status[status_key] = by_status.get(status_key, 0) + 1
+            if "HIGH" in filename.upper() or "PRIORITY" in filename.upper():
+                high_priority += 1
+            newest.append({
+                "path": str(file_path),
+                "relative_path": str(rel),
+                "mtime": int(stat.st_mtime),
+            })
+
+    newest.sort(key=lambda item: item["mtime"], reverse=True)
+    return total, by_status, newest[:newest_limit], high_priority
+
+
+def _missing_boardforge_category(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "exists": False,
+        "status": "not_found",
+        "count": 0,
+        "by_status": {},
+        "newest_changed": [],
+        "high_priority_count": 0,
+    }
+
+
+def _scan_boardforge_inventory(configured_root: Optional[str] = None) -> dict[str, Any]:
+    root_path, boardforge_path = _resolve_boardforge_paths(configured_root)
+    now = int(time.time())
+    cache_key = str(boardforge_path)
+    cached = _boardforge_inventory_cache.get(cache_key)
+    if cached and now - cached[0] <= BOARDFORGE_CACHE_TTL_SECONDS:
+        payload = dict(cached[1])
+        payload["timestamp"] = now
+        return payload
+
+    category_dirs: dict[str, Path] = {}
+    for key, names in BOARDFORGE_CORE_CATEGORIES.items():
+        category_dirs[key] = next(
+            (boardforge_path / name for name in names if (boardforge_path / name).exists()),
+            boardforge_path / names[0],
+        )
+
+    if boardforge_path.exists() and boardforge_path.is_dir():
+        try:
+            for child in sorted(boardforge_path.iterdir(), key=lambda p: p.name):
+                if child.is_dir() and _is_relevant_boardforge_category(child):
+                    category_dirs.setdefault(_boardforge_category_key(child.name), child)
+        except OSError:
+            pass
+
+    categories: dict[str, dict[str, Any]] = {}
+    for key, path in category_dirs.items():
+        if not path.exists() or not path.is_dir():
+            categories[key] = _missing_boardforge_category(path)
+            continue
+        count, by_status, newest, high_priority = _count_boardforge_files(path)
+        categories[key] = {
+            "path": str(path.resolve()),
+            "exists": True,
+            "status": "ok",
+            "count": count,
+            "by_status": by_status,
+            "newest_changed": newest,
+            "high_priority_count": high_priority,
+        }
+
+    core_counts = {
+        key: categories.get(key, {"count": 0}).get("count", 0)
+        for key in BOARDFORGE_CORE_CATEGORIES.keys()
+    }
+    available = boardforge_path.exists() and boardforge_path.is_dir()
+    payload = {
+        "kind": "boardforge_inventory",
+        "timestamp": now,
+        "root_path": str(root_path),
+        "boardforge_path": str(boardforge_path),
+        "available": available,
+        "status": "ok" if available else "not_found",
+        "core_counts": core_counts,
+        "categories": categories,
+        "cache_ttl_seconds": BOARDFORGE_CACHE_TTL_SECONDS,
+    }
+    _boardforge_inventory_cache[cache_key] = (now, payload)
+    return payload
+
+
+@router.get("/boardforge/counts")
+def get_boardforge_counts(root: Optional[str] = Query(None, description="GM-MBOP-TEAM or _TOOLS/BOARDFORGE root override")):
+    """Return live BoardForge filesystem inventory counts for dashboard polling."""
+    return _scan_boardforge_inventory(root)
+
+
+# ---------------------------------------------------------------------------
 # GET /board
 # ---------------------------------------------------------------------------
 
@@ -505,6 +686,7 @@ def get_board(
             "assignees": assignees,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
+            "boardforge_inventory": _scan_boardforge_inventory(),
         }
     finally:
         conn.close()
@@ -2019,6 +2201,7 @@ def list_boards(include_archived: bool = Query(False)):
         b["is_current"] = (b["slug"] == current)
         b["counts"] = _board_counts(b["slug"])
         b["total"] = sum(b["counts"].values())
+        b["open_total"] = b["total"] - b["counts"].get("done", 0) - b["counts"].get("archived", 0)
     return {"boards": boards, "current": current}
 
 

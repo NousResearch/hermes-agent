@@ -6131,6 +6131,27 @@ class TestDashboardPluginStaticAssetAllowlist:
         body = resp.json()
         assert body.get("name") == "example"
 
+    def test_plugin_assets_bypass_dashboard_auth_gate(self):
+        """Non-loopback/basic-auth deployments must still serve plugin assets.
+
+        The SPA loads these bundles with bare ``<script src>`` / ``<link>``
+        tags, so browser requests cannot include the dashboard session header.
+        If the auth gate intercepts ``/dashboard-plugins/...`` it returns the
+        login HTML instead of the JS/CSS/JSON asset and plugins silently fail.
+        """
+        from hermes_cli.web_server import app
+
+        previous = getattr(app.state, "auth_required", False)
+        app.state.auth_required = True
+        try:
+            resp = self.client.get("/dashboard-plugins/example/manifest.json")
+        finally:
+            app.state.auth_required = previous
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
+        assert resp.json().get("name") == "example"
+
     def test_unknown_plugin_is_404(self):
         """Existing behaviour preserved: nonexistent plugin name → 404."""
         resp = self.client.get(

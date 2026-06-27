@@ -1047,6 +1047,16 @@
           boardData,
           onOpen: setSelectedTaskId,
         }),
+        h(BoardOverview, {
+          boardData: filteredBoard,
+          sourceBoardData: boardData,
+          boardSlug: board,
+          search,
+          tenantFilter,
+          assigneeFilter,
+          includeArchived,
+          onOpen: setSelectedTaskId,
+        }),
         h(BoardToolbar, {
           board: boardData,
           tenantFilter, setTenantFilter,
@@ -1087,6 +1097,7 @@
           onOpen: setSelectedTaskId,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          boardSlug: board,
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
@@ -1809,7 +1820,11 @@
     const list = props.boardList || [];
     const current = list.find(function (b) { return b.slug === props.board; });
     const currentName = current && current.name ? current.name : props.board;
-    const currentTotal = current ? current.total : 0;
+    const currentOpenTotal = current
+      ? (typeof current.open_total === "number"
+          ? current.open_total
+          : ((current.total || 0) - ((current.counts && current.counts.done) || 0) - ((current.counts && current.counts.archived) || 0)))
+      : 0;
     const hasMultipleBoards = list.length > 1;
 
     // Hide entirely when only the default board exists AND it's empty —
@@ -1846,14 +1861,15 @@
               title: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
             }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
               list.map(function (b) {
-                const label = b.total > 0
-                  ? `${b.name || b.slug} · ${b.total}`
-                  : (b.name || b.slug);
+                const openTotal = typeof b.open_total === "number"
+                  ? b.open_total
+                  : ((b.total || 0) - ((b.counts && b.counts.done) || 0) - ((b.counts && b.counts.archived) || 0));
+                const label = `${b.name || b.slug} · ${openTotal} open`;
                 return h(SelectOption, { key: b.slug, value: b.slug }, label);
               }),
             ),
             h("span", { className: "text-xs text-muted-foreground" },
-              `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
+              `${currentOpenTotal || 0} open item${currentOpenTotal === 1 ? "" : "s"}`),
           ),
         ),
         h("div", { className: "flex-1" }),
@@ -1999,6 +2015,113 @@
             disabled: submitting || !slug.trim(),
           }, submitting ? tx(t, "creating", "Creating…") : tx(t, "createBoard", "Create board")),
         ),
+      ),
+    );
+  }
+
+
+  // -------------------------------------------------------------------------
+  // Board overview — Agent Runner-style visual status surface
+  // -------------------------------------------------------------------------
+
+  const WORKFLOW_COLUMN_ORDER = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"];
+
+  function flattenBoardTasks(boardData) {
+    if (!boardData || !boardData.columns) return [];
+    return boardData.columns.reduce(function (acc, col) {
+      return acc.concat((col.tasks || []).map(function (task) {
+        return Object.assign({ _column: col.name }, task);
+      }));
+    }, []);
+  }
+
+  function pickBoardFocusTask(tasks) {
+    const priority = { running: 0, blocked: 1, ready: 2, review: 3, scheduled: 4, todo: 5, triage: 6, done: 7, archived: 8 };
+    const active = (tasks || []).filter(function (t) { return t.status !== "done" && t.status !== "archived"; });
+    active.sort(function (a, b) {
+      const ap = priority[a.status] == null ? 9 : priority[a.status];
+      const bp = priority[b.status] == null ? 9 : priority[b.status];
+      if (ap !== bp) return ap - bp;
+      const apr = Number(a.priority || 0);
+      const bpr = Number(b.priority || 0);
+      if (apr !== bpr) return bpr - apr;
+      return String(a.created_at || "").localeCompare(String(b.created_at || ""));
+    });
+    return active[0] || null;
+  }
+
+  function BoardOverview(props) {
+    const { t } = useI18n();
+    const allTasks = flattenBoardTasks(props.sourceBoardData || props.boardData);
+    const visibleTasks = flattenBoardTasks(props.boardData);
+    const counts = {};
+    for (const col of ((props.boardData && props.boardData.columns) || [])) counts[col.name] = (col.tasks || []).length;
+    const total = allTasks.length;
+    const done = allTasks.filter(function (tk) { return tk.status === "done" || tk.status === "archived"; }).length;
+    const blocked = visibleTasks.filter(function (tk) { return tk.status === "blocked"; }).length;
+    const running = visibleTasks.filter(function (tk) { return tk.status === "running"; }).length;
+    const ready = visibleTasks.filter(function (tk) { return tk.status === "ready"; }).length;
+    const review = visibleTasks.filter(function (tk) { return tk.status === "review"; }).length;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    const focus = pickBoardFocusTask(visibleTasks);
+    const filtered = Boolean(props.search || props.tenantFilter || props.assigneeFilter || props.includeArchived);
+    const visibleNote = filtered ? `${visibleTasks.length} visible of ${total}` : `${total} total`;
+    const nextLabel = focus
+      ? `${String(focus.status || "todo").toUpperCase()} · ${focus.id}`
+      : tx(t, "noActiveTasks", "No active tasks");
+
+    return h("section", { className: "hermes-kanban-overview", "aria-label": "Kanban board overview" },
+      h("div", { className: "hermes-kanban-overview-main" },
+        h("div", { className: "hermes-kanban-overview-head" },
+          h("div", null,
+            h("div", { className: "hermes-kanban-eyebrow" }, "Board status"),
+            h("div", { className: "hermes-kanban-overview-title" }, props.boardSlug || "default"),
+          ),
+          h("div", { className: "hermes-kanban-overview-percent", title: `${done} of ${total} tasks complete or archived` }, `${pct}%`),
+        ),
+        h("div", { className: "hermes-kanban-progressbar", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct },
+          h("span", { className: "hermes-kanban-progressbar-fill", style: { width: `${pct}%` } }),
+        ),
+        h("div", { className: "hermes-kanban-overview-caption" },
+          h("span", null, visibleNote),
+          h("span", null, `${done} closed`),
+          filtered ? h("span", { className: "hermes-kanban-filter-flag" }, "filtered") : null,
+        ),
+      ),
+      h("div", { className: "hermes-kanban-overview-kpis" },
+        h("div", { className: "hermes-kanban-kpi hermes-kanban-kpi--running" },
+          h("span", { className: "hermes-kanban-kpi-value" }, running),
+          h("span", { className: "hermes-kanban-kpi-label" }, "running")),
+        h("div", { className: "hermes-kanban-kpi hermes-kanban-kpi--ready" },
+          h("span", { className: "hermes-kanban-kpi-value" }, ready),
+          h("span", { className: "hermes-kanban-kpi-label" }, "ready")),
+        h("div", { className: "hermes-kanban-kpi hermes-kanban-kpi--blocked" },
+          h("span", { className: "hermes-kanban-kpi-value" }, blocked),
+          h("span", { className: "hermes-kanban-kpi-label" }, "blocked")),
+        h("div", { className: "hermes-kanban-kpi hermes-kanban-kpi--review" },
+          h("span", { className: "hermes-kanban-kpi-value" }, review),
+          h("span", { className: "hermes-kanban-kpi-label" }, "review")),
+      ),
+      h("button", {
+        type: "button",
+        className: "hermes-kanban-focus-card",
+        disabled: !focus,
+        title: focus ? "Open the highest-signal active task: running, blocked, ready, then review." : "No open work on this filtered board.",
+        onClick: function () { if (focus && props.onOpen) props.onOpen(focus.id); },
+      },
+        h("span", { className: "hermes-kanban-eyebrow" }, "Now"),
+        h("span", { className: "hermes-kanban-focus-status" }, nextLabel),
+        h("span", { className: "hermes-kanban-focus-title" }, focus ? (focus.title || "(untitled)") : "Nothing needs operator attention"),
+      ),
+      h("div", { className: "hermes-kanban-flow-strip", title: "Column flow: where work sits right now." },
+        WORKFLOW_COLUMN_ORDER.filter(function (name) { return counts[name] != null; }).map(function (name) {
+          const count = counts[name] || 0;
+          return h("div", { key: name, className: cn("hermes-kanban-flow-chip", count > 0 ? "hermes-kanban-flow-chip--hot" : "") },
+            h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[name]) }),
+            h("span", { className: "hermes-kanban-flow-name" }, getColumnLabel(t, name) || name),
+            h("span", { className: "hermes-kanban-flow-count" }, count),
+          );
+        }),
       ),
     );
   }
@@ -2299,6 +2422,7 @@
           onOpen: props.onOpen,
           onCreate: props.onCreate,
           allTasks: props.allTasks,
+          boardSlug: props.boardSlug,
         });
       }),
       h(TrashDropZone, {
@@ -2432,6 +2556,7 @@
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
+                      boardSlug: props.boardSlug,
                     });
                   }),
                 );
@@ -2446,6 +2571,7 @@
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
+                  boardSlug: props.boardSlug,
                 });
               }),
       ),
@@ -2475,6 +2601,178 @@
     if (age >= tier.red)   return "hermes-kanban-card--stale-red";
     if (age >= tier.amber) return "hermes-kanban-card--stale-amber";
     return "";
+  }
+
+  const CARD_WORKER_LOG_TAIL_BYTES = 8000;
+  const CARD_WORKER_LOG_REFRESH_MS = 2000;
+
+  function parseWorkerLog(content) {
+    const lines = String(content || "").split(/\r?\n/).filter(Boolean);
+    const parsed = {
+      eventCount: 0,
+      toolCount: 0,
+      commandCount: 0,
+      lastAction: "",
+      lastCommand: "",
+      lastExit: null,
+      verdict: "",
+      hasFailure: false,
+    };
+    const stripAnsi = function (s) { return String(s || "").replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, ""); };
+    const compact = function (s, max) {
+      const v = stripAnsi(s).replace(/\s+/g, " ").trim();
+      return v.length > max ? v.slice(0, max - 1) + "…" : v;
+    };
+    lines.forEach(function (raw) {
+      const line = stripAnsi(raw);
+      const isToolLine = /^\s*┊/.test(line);
+      if (isToolLine) {
+        parsed.eventCount += 1;
+        if (/\$\s+/.test(line) || /💻/.test(line)) {
+          parsed.commandCount += 1;
+          parsed.lastCommand = compact(line.replace(/^\s*┊\s*💻\s*\$\s*/, ""), 96);
+          parsed.lastExit = null;
+          const exitMatch = line.match(/\[exit\s+(\d+)\]/i);
+          if (exitMatch) {
+            parsed.lastExit = Number(exitMatch[1]);
+            if (parsed.lastExit !== 0) parsed.hasFailure = true;
+          }
+        } else {
+          parsed.toolCount += 1;
+          parsed.lastAction = compact(line.replace(/^\s*┊\s*/, ""), 72);
+        }
+      }
+      if (/\b(exit\s+[1-9]\d*|FAIL|Traceback|ERROR|blocked for review|kanban_bl)\b/i.test(line)) {
+        parsed.hasFailure = true;
+      }
+      if (/\bCompleted\s+[A-Za-z0-9_-]+\b/i.test(line)) parsed.verdict = "completed";
+      else if (/blocked for review/i.test(line)) parsed.verdict = "review";
+      else if (/\bblocked\b/i.test(line) && /kanban/i.test(line)) parsed.verdict = "blocked";
+    });
+    parsed.summary = parsed.eventCount
+      ? `${parsed.eventCount} parsed events · ${parsed.commandCount} shell · ${parsed.toolCount} tools`
+      : "waiting for structured activity";
+    return parsed;
+  }
+
+  function CardWorkerLog(props) {
+    const { t } = useI18n();
+    const [state, setState] = useState({ loading: false, data: null, err: null });
+    const [paused, setPaused] = useState(false);
+    const [expanded, setExpanded] = useState(false);
+    const bodyRef = useRef(null);
+    const isRunning = props.status === "running";
+
+    const load = useCallback(function () {
+      if (!props.taskId) return Promise.resolve();
+      setState(function (prev) {
+        return Object.assign({}, prev, { loading: !prev.data, err: null });
+      });
+      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/log?tail=${CARD_WORKER_LOG_TAIL_BYTES}`, props.boardSlug))
+        .then(function (d) {
+          setState({ loading: false, data: d, err: null });
+        })
+        .catch(function (e) {
+          setState(function (prev) {
+            return Object.assign({}, prev, { loading: false, err: String(e.message || e) });
+          });
+        });
+    }, [props.taskId, props.boardSlug]);
+
+    useEffect(function () {
+      setState({ loading: false, data: null, err: null });
+      setPaused(false);
+      setExpanded(false);
+    }, [props.taskId]);
+
+    useEffect(function () {
+      if (!isRunning || paused) return undefined;
+      load();
+      const timer = setInterval(load, CARD_WORKER_LOG_REFRESH_MS);
+      return function () { clearInterval(timer); };
+    }, [isRunning, paused, load]);
+
+    const content = state.data && state.data.exists ? (state.data.content || "") : "";
+    const parsed = parseWorkerLog(content);
+    useEffect(function () {
+      const el = bodyRef.current;
+      if (el && isRunning && !paused) el.scrollTop = el.scrollHeight;
+    }, [content, isRunning, paused]);
+
+    if (!isRunning) return null;
+
+    let body;
+    if (state.err) {
+      body = h("div", { className: "hermes-kanban-card-log-message hermes-kanban-card-log-message--error" }, state.err);
+    } else if (state.loading && !state.data) {
+      body = h("div", { className: "hermes-kanban-card-log-message" },
+        tx(t, "loadingLog", "Loading log…"));
+    } else if (!state.data || !state.data.exists) {
+      body = h("div", { className: "hermes-kanban-card-log-message" },
+        tx(t, "noWorkerLogInline", "waiting for worker log…"));
+    } else {
+      body = h("pre", { className: "hermes-kanban-card-log-pre" }, content || "(empty)");
+    }
+
+    const insightNodes = parsed.eventCount ? [
+      h("span", { className: "hermes-kanban-card-log-chip" }, parsed.summary),
+      parsed.verdict ? h("span", {
+        className: cn("hermes-kanban-card-log-chip", `hermes-kanban-card-log-chip--${parsed.verdict}`),
+      }, parsed.verdict) : null,
+      parsed.lastAction ? h("span", { className: "hermes-kanban-card-log-chip" }, "last: " + parsed.lastAction) : null,
+      parsed.lastCommand ? h("span", { className: "hermes-kanban-card-log-chip" }, "$ " + parsed.lastCommand) : null,
+      parsed.lastExit !== null ? h("span", {
+        className: cn("hermes-kanban-card-log-chip", parsed.lastExit === 0 ? "hermes-kanban-card-log-chip--ok" : "hermes-kanban-card-log-chip--warn"),
+      }, "exit " + parsed.lastExit) : null,
+      parsed.hasFailure && parsed.lastExit === null ? h("span", { className: "hermes-kanban-card-log-chip hermes-kanban-card-log-chip--warn" }, "needs attention") : null,
+    ].filter(Boolean) : null;
+
+    const logShell = h("div", {
+      className: cn("hermes-kanban-card-log", expanded ? "hermes-kanban-card-log--expanded" : ""),
+      onClick: function (e) { e.stopPropagation(); },
+      onDoubleClick: function (e) { e.stopPropagation(); setExpanded(function (v) { return !v; }); },
+      onKeyDown: function (e) {
+        e.stopPropagation();
+        if (e.key === "Escape" && expanded) setExpanded(false);
+      },
+      draggable: false,
+      title: tx(t, "inlineWorkerLogHint", "Live stdout/stderr from this running worker. Double-click to expand/collapse."),
+    },
+      h("div", { className: "hermes-kanban-card-log-head" },
+        h("span", { className: "hermes-kanban-card-log-label" },
+          tx(t, "liveWorkerTerminal", "Live worker terminal")),
+        h("span", { className: cn("hermes-kanban-card-log-state", paused ? "hermes-kanban-card-log-state--paused" : "") },
+          paused ? tx(t, "paused", "paused") : tx(t, "live", "live")),
+        h("button", {
+          type: "button",
+          className: "hermes-kanban-card-log-action",
+          onClick: function (e) { e.stopPropagation(); setExpanded(function (v) { return !v; }); },
+          title: expanded ? tx(t, "collapseLog", "Collapse terminal") : tx(t, "expandLog", "Expand terminal"),
+        }, expanded ? "×" : "⤢"),
+        h("button", {
+          type: "button",
+          className: "hermes-kanban-card-log-action",
+          onClick: function (e) { e.stopPropagation(); load(); },
+          title: tx(t, "refreshLog", "Refresh log"),
+        }, "↻"),
+        h("button", {
+          type: "button",
+          className: "hermes-kanban-card-log-action",
+          onClick: function (e) { e.stopPropagation(); setPaused(function (v) { return !v; }); },
+          title: paused ? tx(t, "resumeLogTail", "Resume live log tail") : tx(t, "pauseLogTail", "Pause live log tail"),
+        }, paused ? "▶" : "Ⅱ"),
+      ),
+      insightNodes ? h("div", { className: "hermes-kanban-card-log-insights" }, insightNodes) : null,
+      h("div", { ref: bodyRef, className: "hermes-kanban-card-log-body" }, body),
+      state.data && state.data.truncated
+        ? h("div", { className: "hermes-kanban-card-log-foot" },
+            tx(t, "showingTail", "showing log tail"))
+        : null,
+    );
+
+    return expanded && SDK.createPortal && typeof document !== "undefined"
+      ? SDK.createPortal(logShell, document.body)
+      : logShell;
   }
 
   function TaskCard(props) {
@@ -2632,6 +2930,11 @@
                         title: t.created_at ? `Created ${t.created_at}` : "" },
               timeAgo ? timeAgo(t.created_at) : ""),
           ),
+          h(CardWorkerLog, {
+            taskId: t.id,
+            status: t.status,
+            boardSlug: props.boardSlug,
+          }),
         ),
       ),
     );

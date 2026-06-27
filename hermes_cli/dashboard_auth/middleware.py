@@ -43,6 +43,10 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/login",
     "/api/auth/providers",
     "/assets/",
+    # Dashboard plugin bundles are loaded via <script src> / <link href>,
+    # so they cannot attach auth headers. The asset route itself restricts
+    # suffixes to browser-safe files and blocks Python/backend sources.
+    "/dashboard-plugins/",
     "/favicon.ico",
     "/ds-assets/",
     "/fonts/",

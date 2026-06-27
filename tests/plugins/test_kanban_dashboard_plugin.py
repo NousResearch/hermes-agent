@@ -79,6 +79,75 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_boardforge_counts_endpoint_reads_filesystem_inventory(client, tmp_path, monkeypatch):
+    """BoardForge inventory is live filesystem state, not kanban/session telemetry."""
+
+    project_root = tmp_path / "GM-MBOP-TEAM"
+    boardforge = project_root / "_TOOLS" / "BOARDFORGE"
+    (boardforge / "1-SEEDS" / "1-RAW").mkdir(parents=True)
+    (boardforge / "1-SEEDS" / "2-READY").mkdir(parents=True)
+    (boardforge / "2-PROPOSALS" / "active").mkdir(parents=True)
+    (boardforge / "3-TICKETS" / "packed").mkdir(parents=True)
+    (boardforge / "4-QUESTIONS" / "open").mkdir(parents=True)
+    (boardforge / "1-SEEDS" / "1-RAW" / "seed-a.md").write_text("seed", encoding="utf-8")
+    (boardforge / "1-SEEDS" / "1-RAW" / "seed-b.md").write_text("seed", encoding="utf-8")
+    (boardforge / "1-SEEDS" / "2-READY" / "seed-c.md").write_text("seed", encoding="utf-8")
+    (boardforge / "2-PROPOSALS" / "active" / "proposal.md").write_text("proposal", encoding="utf-8")
+    (boardforge / "3-TICKETS" / "packed" / "ticket.md").write_text("ticket", encoding="utf-8")
+    (boardforge / "4-QUESTIONS" / "open" / "question.md").write_text("question", encoding="utf-8")
+    monkeypatch.setenv("HERMES_BOARDFORGE_ROOT", str(project_root))
+
+    r = client.get("/api/plugins/kanban/boardforge/counts")
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["kind"] == "boardforge_inventory"
+    assert data["available"] is True
+    assert data["root_path"] == str(project_root.resolve())
+    assert data["boardforge_path"] == str(boardforge.resolve())
+    assert data["core_counts"] == {"seeds": 3, "proposals": 1, "tickets": 1}
+    assert data["categories"]["seeds"]["by_status"] == {"1-RAW": 2, "2-READY": 1}
+    assert data["categories"]["proposals"]["by_status"] == {"active": 1}
+    assert data["categories"]["tickets"]["by_status"] == {"packed": 1}
+    assert data["categories"]["questions"]["count"] == 1
+    assert "timestamp" in data
+
+
+def test_boardforge_counts_missing_folders_do_not_crash(client, tmp_path, monkeypatch):
+    project_root = tmp_path / "GM-MBOP-TEAM"
+    boardforge = project_root / "_TOOLS" / "BOARDFORGE"
+    (boardforge / "1-SEEDS" / "raw").mkdir(parents=True)
+    (boardforge / "1-SEEDS" / "raw" / "seed.md").write_text("seed", encoding="utf-8")
+    monkeypatch.setenv("HERMES_BOARDFORGE_ROOT", str(project_root))
+
+    r = client.get("/api/plugins/kanban/boardforge/counts")
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["available"] is True
+    assert data["core_counts"] == {"seeds": 1, "proposals": 0, "tickets": 0}
+    assert data["categories"]["proposals"]["exists"] is False
+    assert data["categories"]["proposals"]["status"] == "not_found"
+    assert data["categories"]["tickets"]["exists"] is False
+    assert data["categories"]["tickets"]["status"] == "not_found"
+
+
+def test_board_payload_distinguishes_boardforge_inventory_from_telemetry(client, tmp_path, monkeypatch):
+    project_root = tmp_path / "GM-MBOP-TEAM"
+    boardforge = project_root / "_TOOLS" / "BOARDFORGE"
+    (boardforge / "1-SEEDS").mkdir(parents=True)
+    (boardforge / "1-SEEDS" / "seed.md").write_text("seed", encoding="utf-8")
+    monkeypatch.setenv("HERMES_BOARDFORGE_ROOT", str(project_root))
+
+    r = client.get("/api/plugins/kanban/board")
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["latest_event_id"] == 0
+    assert data["boardforge_inventory"]["kind"] == "boardforge_inventory"
+    assert data["boardforge_inventory"]["core_counts"]["seeds"] == 1
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------
@@ -2213,6 +2282,42 @@ def test_dashboard_requests_default_board_explicitly():
     assert "}, [loadBoardList, switchBoard, board]);" in dist
 
 
+def test_board_list_exposes_open_totals(client):
+    """Board list should expose open-only counts so the switcher can show useful numbers."""
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "done task"},
+    ).json()["task"]
+    client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "done", "result": "closed"},
+    )
+
+    response = client.get("/api/plugins/kanban/boards")
+    assert response.status_code == 200
+    boards = response.json()["boards"]
+    default_board = next(board for board in boards if board["slug"] == "default")
+    assert default_board["total"] >= 1
+    assert default_board["counts"].get("done", 0) >= 1
+    assert default_board["open_total"] == (
+        default_board["total"]
+        - default_board["counts"].get("done", 0)
+        - default_board["counts"].get("archived", 0)
+    )
+    assert default_board["open_total"] == 0
+
+
+def test_dashboard_board_switcher_uses_open_totals():
+    """Board switcher should display open item counts, not lifetime totals."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "current.open_total" in dist
+    assert "b.open_total" in dist
+    assert "open item" in dist
+    assert " open`" in dist
+
+
 def test_dashboard_search_includes_body_and_result():
     """Client-side search must match body, result, latest_summary, and summary
     so full card contents are findable."""
@@ -2265,3 +2370,26 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_running_cards_embed_live_worker_terminal():
+    """Running cards should show the worker log inline, not only in the drawer."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "function CardWorkerLog" in js
+    assert "props.status === \"running\"" in js
+    assert "CARD_WORKER_LOG_REFRESH_MS = 2000" in js
+    assert "`${API}/tasks/${encodeURIComponent(props.taskId)}/log?tail=${CARD_WORKER_LOG_TAIL_BYTES}`" in js
+    assert "h(CardWorkerLog" in js
+    assert "boardSlug: props.boardSlug" in js
+    assert "function parseWorkerLog" in js
+    assert "parsed events" in js
+    assert "setExpanded(function (v)" in js
+    assert "SDK.createPortal(logShell, document.body)" in js
+    assert "hermes-kanban-card-log--expanded" in js
+    assert "hermes-kanban-card-log" in css
+    assert "hermes-kanban-card-log-pre" in css
+    assert "hermes-kanban-card-log-insights" in css
+    assert "hermes-kanban-card-log-chip" in css

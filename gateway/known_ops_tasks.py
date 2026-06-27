@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import datetime as dt
 import logging
 import re
+import subprocess
+import sys
 from typing import Callable, Sequence
 from zoneinfo import ZoneInfo
 
@@ -107,6 +109,313 @@ def _looks_like_agent_loop_diagnostic_request(text: str) -> bool:
         for marker in ("为什么", "原因", "分析", "查", "诊断", "不正常", "无法结束")
     )
     return bool(has_agent and has_loop and has_diagnosis)
+
+
+_GITHUB_REPO_URL_RE = re.compile(
+    r"https?://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)(?:[/?#][^\s]*)?",
+    re.IGNORECASE,
+)
+_GITHUB_OWNER_REPO_RE = re.compile(
+    r"(?<![\w.-])(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)(?![\w.-])"
+)
+_GITHUB_SKILL_IDENTIFIER_RE = re.compile(
+    r"(?<![\w.-])(?P<identifier>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)(?![\w.-])"
+)
+
+
+def _looks_like_github_skill_install_request(text: str) -> bool:
+    """Detect clear Feishu requests to install a GitHub-hosted skill."""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    has_install = _has_github_skill_install_intent(text)
+    has_skill = (
+        "skill" in normalized
+        or "技能" in normalized
+        or bool(_github_skill_identifiers_from_text(text))
+    )
+    has_github = "github.com" in normalized or bool(_GITHUB_OWNER_REPO_RE.search(text or ""))
+    return bool(has_install and has_skill and has_github)
+
+
+def _has_github_skill_install_intent(text: str) -> bool:
+    normalized = _normalize_text(text)
+    return any(marker in normalized for marker in ("安装", "帮我装", "装一下", "install", "setup"))
+
+
+def _looks_like_github_skill_reference_without_install_request(text: str) -> bool:
+    """Stop path-only GitHub skill mentions before they start a low-budget agent turn."""
+    if not text or _has_github_skill_install_intent(text):
+        return False
+    if _github_skill_identifiers_from_text(text):
+        return True
+    return bool(re.search(r"https?://github\.com/[^/\s]+/[^/\s]+/.*/SKILL\.md(?:[?#]\S*)?", text, re.IGNORECASE))
+
+
+def _github_skill_identifiers_from_text(text: str) -> list[str]:
+    raw = text or ""
+    identifiers: list[str] = []
+    for match in _GITHUB_SKILL_IDENTIFIER_RE.finditer(raw):
+        identifier = match.group("identifier").rstrip(".,，。)")
+        if identifier.lower().startswith("github.com/"):
+            continue
+        if "/blob/" in identifier or "/tree/" in identifier:
+            continue
+        identifiers.append(identifier.removesuffix(".git"))
+    return list(dict.fromkeys(identifiers))
+
+
+def _github_skill_identifier_from_text(text: str) -> tuple[str, str]:
+    """Return (mode, identifier) for a GitHub skill install request.
+
+    mode is "install" for direct SKILL.md URLs and "tap" for GitHub repos.
+    """
+    raw = text or ""
+    identifiers = _github_skill_identifiers_from_text(raw)
+    if identifiers:
+        return "install", identifiers[0]
+
+    match = _GITHUB_REPO_URL_RE.search(raw)
+    if match:
+        owner = match.group("owner")
+        repo = match.group("repo").removesuffix(".git")
+        url = match.group(0).rstrip(".,，。)")
+        if re.search(r"/SKILL\.md(?:[?#].*)?$", url, re.IGNORECASE):
+            blob_match = re.match(
+                r"https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*/?SKILL\.md)(?:[?#].*)?$",
+                url,
+                re.IGNORECASE,
+            )
+            if blob_match:
+                raw_owner, raw_repo, branch, path = blob_match.groups()
+                url = f"https://raw.githubusercontent.com/{raw_owner}/{raw_repo}/{branch}/{path}"
+            return "install", url
+        return "tap", f"{owner}/{repo}"
+
+    match = _GITHUB_OWNER_REPO_RE.search(raw)
+    if not match:
+        raise ValueError("未找到可安装的 GitHub repo 或 SKILL.md URL")
+    owner = match.group("owner")
+    repo = match.group("repo").removesuffix(".git")
+    return "tap", f"{owner}/{repo}"
+
+
+def _github_skill_targets_from_text(text: str) -> list[tuple[str, str]]:
+    raw = text or ""
+    targets: list[tuple[str, str]] = []
+
+    for match in _GITHUB_REPO_URL_RE.finditer(raw):
+        owner = match.group("owner")
+        repo = match.group("repo").removesuffix(".git")
+        url = match.group(0).rstrip(".,，。)")
+        if re.search(r"/SKILL\.md(?:[?#].*)?$", url, re.IGNORECASE):
+            blob_match = re.match(
+                r"https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*/?SKILL\.md)(?:[?#].*)?$",
+                url,
+                re.IGNORECASE,
+            )
+            if blob_match:
+                raw_owner, raw_repo, branch, path = blob_match.groups()
+                url = f"https://raw.githubusercontent.com/{raw_owner}/{raw_repo}/{branch}/{path}"
+            targets.append(("install", url))
+        else:
+            targets.append(("tap", f"{owner}/{repo}"))
+
+    for identifier in _github_skill_identifiers_from_text(raw):
+        targets.append(("install", identifier))
+
+    if not targets:
+        targets.append(_github_skill_identifier_from_text(raw))
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for target in targets:
+        if target in seen:
+            continue
+        seen.add(target)
+        deduped.append(target)
+    return deduped
+
+
+def _run_hermes_skills_command(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "skills", *args],
+        text=True,
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def _discover_github_skill_dirs(repo: str) -> tuple[list[str], str]:
+    try:
+        from tools.skills_hub import GitHubAuth, GitHubSource
+    except Exception as exc:
+        return [], f"无法加载 GitHub skill 探测器: {exc}"
+
+    try:
+        source = GitHubSource(GitHubAuth())
+        tree = source._get_repo_tree(repo)
+    except Exception as exc:
+        return [], f"无法读取 GitHub repo tree: {exc}"
+    if tree is None:
+        rate_limited = bool(getattr(source, "is_rate_limited", False))
+        if rate_limited:
+            return [], "GitHub API rate limit 已耗尽，暂时无法列出仓库内 skills。"
+        return [], "未能读取 GitHub repo tree。"
+
+    _branch, entries = tree
+    dirs: list[str] = []
+    for entry in entries:
+        if entry.get("type") != "blob":
+            continue
+        path = str(entry.get("path") or "")
+        if not path.endswith("/SKILL.md") and path != "SKILL.md":
+            continue
+        skill_dir = path[: -len("/SKILL.md")] if path.endswith("/SKILL.md") else ""
+        if not skill_dir:
+            dirs.append(repo)
+        elif "/deprecated/" not in f"/{skill_dir}/":
+            dirs.append(f"{repo}/{skill_dir}")
+
+    return sorted(dict.fromkeys(dirs)), ""
+
+
+def _format_github_skill_candidates(candidates: Sequence[str], limit: int = 12) -> str:
+    if not candidates:
+        return ""
+    lines = [f"发现 {len(candidates)} 个可安装 skill。这个 repo 不是单个 skill，所以我没有盲装全部。"]
+    for item in candidates[:limit]:
+        lines.append(f"- {item}")
+    if len(candidates) > limit:
+        lines.append(f"- ... 另有 {len(candidates) - limit} 个未展开")
+    lines.append("")
+    lines.append("请回复要安装的具体条目，例如：")
+    lines.append(f"安装 {candidates[0]}")
+    return "\n".join(lines)
+
+
+def _clip_command_output(text: str, limit: int = 1200) -> str:
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n...(output clipped)"
+
+
+def _render_github_skill_install(text: str) -> str:
+    targets = _github_skill_targets_from_text(text)
+    install_targets = [identifier for mode, identifier in targets if mode == "install"]
+    if install_targets:
+        lines = ["已通过确定性快路径安装指定 GitHub skill："]
+        ok = 0
+        failed = 0
+        for identifier in install_targets:
+            result = _run_hermes_skills_command(["install", identifier, "--yes"])
+            combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+            output = _clip_command_output(combined, limit=500) or "(no output)"
+            if result.returncode == 0:
+                ok += 1
+                lines.append(f"- 成功: {identifier}")
+            else:
+                failed += 1
+                lines.append(f"- 失败: {identifier} (exit {result.returncode})")
+                lines.append(f"  {output}")
+        lines.append("")
+        lines.append(f"结果: {ok} 成功, {failed} 失败。")
+        lines.append("这次没有启动通用 Agent 探索，也没有扫描本机目录。")
+        return "\n".join(lines)
+
+    mode, identifier = targets[0]
+    if mode == "install":
+        cmd_args = ["install", identifier, "--yes"]
+        action = "安装 GitHub SKILL.md"
+    else:
+        cmd_args = ["tap", "add", identifier]
+        action = "添加 GitHub skill tap"
+
+    result = _run_hermes_skills_command(cmd_args)
+    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    output = _clip_command_output(combined) or "(no output)"
+    if result.returncode == 0:
+        if mode == "tap":
+            candidates, discovery_error = _discover_github_skill_dirs(identifier)
+            if len(candidates) == 1:
+                install_result = _run_hermes_skills_command(["install", candidates[0], "--yes"])
+                install_output = _clip_command_output(
+                    "\n".join(part for part in (install_result.stdout, install_result.stderr) if part)
+                ) or "(no output)"
+                if install_result.returncode == 0:
+                    return "\n".join(
+                        [
+                            "已通过确定性快路径完成：添加 GitHub skill tap 并安装唯一候选",
+                            f"目标: {candidates[0]}",
+                            "",
+                            install_output,
+                            "",
+                            "这次没有启动通用 Agent 探索，也没有扫描本机目录。",
+                        ]
+                    )
+                return "\n".join(
+                    [
+                        "已添加 GitHub skill tap，但安装唯一候选失败。",
+                        f"目标: {candidates[0]}",
+                        f"退出码: {install_result.returncode}",
+                        "",
+                        install_output,
+                    ]
+                )
+            candidate_text = _format_github_skill_candidates(candidates)
+            if candidate_text:
+                output = f"{output}\n\n{candidate_text}"
+            elif discovery_error:
+                output = f"{output}\n\n{discovery_error}"
+        return "\n".join(
+            [
+                f"已通过确定性快路径完成：{action}",
+                f"目标: {identifier}",
+                "",
+                output,
+                "",
+                "这次没有启动通用 Agent 探索，也没有扫描本机目录。新 skill/tap 会在下个会话或 reload 后进入可用范围。",
+            ]
+        )
+    return "\n".join(
+        [
+            f"GitHub skill 快路径执行失败：{action}",
+            f"目标: {identifier}",
+            f"退出码: {result.returncode}",
+            "",
+            output,
+            "",
+            "我已停止继续探索，避免再次消耗普通飞书轮次。请改用明确的 SKILL.md URL，或发送 `深诊断：继续安装这个 skill` 进入高预算路径。",
+        ]
+    )
+
+
+def _render_github_skill_reference_clarification(text: str) -> str:
+    identifiers = _github_skill_identifiers_from_text(text)
+    if not identifiers:
+        identifiers = [match.group(0).rstrip(".,，。)") for match in re.finditer(
+            r"https?://github\.com/[^/\s]+/[^/\s]+/.*/SKILL\.md(?:[?#]\S*)?",
+            text or "",
+            re.IGNORECASE,
+        )]
+    lines = [
+        "我识别到了 GitHub skill 路径，但没有看到明确的安装指令，所以这次没有执行安装。",
+        "",
+        "要安装请回复：",
+    ]
+    for identifier in identifiers[:5]:
+        lines.append(f"- 安装 {identifier}")
+    if len(identifiers) > 5:
+        lines.append(f"- ... 另有 {len(identifiers) - 5} 个未展开")
+    lines.extend(
+        [
+            "",
+            "这次没有启动通用 Agent 探索，也没有扫描本机目录。",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _cron_jobs_named_in_text(text: str) -> list[dict[str, object]]:
@@ -364,6 +673,37 @@ KNOWN_OPS_TASKS: tuple[KnownOpsTask, ...] = (
             "should be handed to the general agent."
         ),
         description="Explain Hermes/OpenClaw diagnostic-loop state without starting another broad diagnostic turn.",
+    ),
+    KnownOpsTask(
+        name="github_skill_install",
+        platforms=frozenset({"feishu"}),
+        detector=_looks_like_github_skill_install_request,
+        handler=_render_github_skill_install,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "runtime: send a Feishu GitHub skill install request and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Clear Feishu requests to install a GitHub-hosted skill should call "
+            "the Hermes skills CLI directly instead of letting the model scan "
+            "home directories or GitHub contents JSON."
+        ),
+        description="Install or add GitHub-hosted skills through the Hermes skills CLI before agent dispatch.",
+    ),
+    KnownOpsTask(
+        name="github_skill_reference_clarification",
+        platforms=frozenset({"feishu"}),
+        detector=_looks_like_github_skill_reference_without_install_request,
+        handler=_render_github_skill_reference_clarification,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "runtime: send a Feishu GitHub skill path without an install verb and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Path-only GitHub skill mentions should ask for explicit install confirmation "
+            "instead of entering the low-budget Feishu general agent."
+        ),
+        description="Clarify path-only GitHub skill mentions without starting an agent turn.",
     ),
     KnownOpsTask(
         name="token_usage_report",

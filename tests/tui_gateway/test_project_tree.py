@@ -245,6 +245,20 @@ def test_discovered_repo_with_no_sessions_becomes_zero_session_project():
     assert fresh["repos"][0]["groups"] == []
 
 
+def test_auto_project_labels_repair_utf8_gbk_mojibake():
+    discovered = [{"root": "/www/001-huijiu", "label": "001鍥炴棫", "sessions": 0, "last_active": 5}]
+
+    tree = pt.build_tree([], [], discovered, resolve=None, hydrate=False)
+
+    fresh = next(p for p in tree["projects"] if p["id"] == "/www/001-huijiu")
+    assert fresh["label"] == "001回旧"
+    assert fresh["repos"][0]["label"] == "001回旧"
+
+
+def test_repair_display_label_leaves_valid_chinese_unchanged():
+    assert pt.repair_display_label("项目") == "项目"
+
+
 def test_explicit_project_with_no_sessions_seeds_its_folders_as_repos():
     # A brand-new (or unloaded) project must still expose its declared folders as
     # repos so the entered view renders and the desktop's optimistic overlay has a

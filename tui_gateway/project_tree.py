@@ -42,6 +42,36 @@ _TRUNK_BRANCHES = {"main", "master", "trunk", "develop"}
 DEFAULT_BRANCH_LABEL = "main"
 
 
+def repair_display_label(text: str) -> str:
+    """Best-effort repair for UTF-8 text mis-decoded as GBK/CP936.
+
+    Windows paths and cached repo labels should already be Unicode, but older
+    subprocess / storage edges can leave display-only labels like ``鍥炴棫``
+    in the Projects sidebar. We only repair when the transform is reversible
+    (candidate UTF-8 -> GBK round-trips back to the original), which keeps the
+    heuristic narrow and avoids touching ids / paths.
+    """
+    value = str(text or "")
+    if not value:
+        return value
+
+    for codec in ("gbk", "cp936"):
+        try:
+            repaired = value.encode(codec).decode("utf-8")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
+        if not repaired or repaired == value:
+            continue
+        try:
+            if repaired.encode("utf-8").decode(codec) != value:
+                continue
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
+        return repaired
+
+    return value
+
+
 def _branch_lane_id(repo_root: str, branch: str = "") -> str:
     """The one definition of a main-checkout lane id (must match the desktop)."""
     return f"{repo_root}::branch::{(branch or '').strip()}"
@@ -100,10 +130,10 @@ def _placement(
 ) -> dict:
     return {
         "repo_key": repo_root,
-        "repo_label": base_name(repo_root) or repo_root,
+        "repo_label": repair_display_label(base_name(repo_root) or repo_root),
         "repo_path": repo_root,
         "lane_key": lane_key,
-        "lane_label": lane_label,
+        "lane_label": repair_display_label(lane_label),
         "lane_path": lane_path,
         "is_main": is_main,
         "is_kanban": is_kanban,
@@ -322,7 +352,15 @@ def _seed_folder_repos(
         root = (info or {}).get("repo_root") or re.sub(r"[/\\]+$", "", raw)
         if not root or root in seen:
             continue
-        seeded.append({"id": root, "label": base_name(root) or root, "path": root, "groups": [], "sessionCount": 0})
+        seeded.append(
+            {
+                "id": root,
+                "label": repair_display_label(base_name(root) or root),
+                "path": root,
+                "groups": [],
+                "sessionCount": 0,
+            }
+        )
         seen.add(root)
 
     if len(seeded) != len(repos):
@@ -515,7 +553,7 @@ def build_tree(
         result.append(
             _project_node(
                 pid=repo_root,
-                label=base_name(repo_root) or repo_root,
+                label=repair_display_label(base_name(repo_root) or repo_root),
                 path=repo_root,
                 repos=repos,
                 session_count=repo_node["sessionCount"],
@@ -536,7 +574,7 @@ def build_tree(
         if root in seen or _junk(root) or _project_for_path(folder_index, root):
             continue
         seen.add(root)
-        label = repo.get("label") or base_name(root) or root
+        label = repair_display_label(repo.get("label") or base_name(root) or root)
         result.append(
             _project_node(
                 pid=root,

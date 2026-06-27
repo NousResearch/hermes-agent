@@ -10261,6 +10261,8 @@ def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dic
     done only on the explicit discover/record refresh.
     """
     _is_junk = _is_repo_junk
+    from tui_gateway.project_tree import repair_display_label
+
     repos: dict[str, dict] = {}
 
     def _agg(root: str) -> dict:
@@ -10316,7 +10318,9 @@ def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dic
 
     out = sorted(repos.values(), key=lambda r: r["last_active"], reverse=True)
     for r in out:
-        r["label"] = r["label"] or os.path.basename(r["root"].rstrip("/\\")) or r["root"]
+        r["label"] = repair_display_label(
+            r["label"] or os.path.basename(r["root"].rstrip("/\\")) or r["root"]
+        )
     return out
 
 

@@ -6,12 +6,14 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
+import httpx
 import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
+    _is_zai_anthropic_endpoint,
     _refresh_oauth_token,
     _to_plain_data,
     _write_claude_code_credentials,
@@ -200,6 +202,47 @@ class TestBuildAnthropicClient:
             # Azure keeps the 1M-context beta (it's not MiniMax).
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
+
+    def test_zai_anthropic_endpoint_uses_header_sanitizing_http_client(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "zai-secret-123",
+                base_url="https://open.bigmodel.cn/api/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["api_key"] == "zai-secret-123"
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            }
+
+            http_client = kwargs["http_client"]
+            try:
+                hook = http_client.event_hooks["request"][0]
+                request = httpx.Request(
+                    "POST",
+                    "https://open.bigmodel.cn/api/anthropic/v1/messages",
+                    headers={
+                        "User-Agent": "anthropic-python/0.86.0",
+                        "X-Stainless-Lang": "python",
+                        "X-Stainless-Package-Version": "0.86.0",
+                        "x-api-key": "zai-secret-123",
+                    },
+                )
+                hook(request)
+                assert request.headers["User-Agent"] == "python-httpx"
+                assert request.headers["x-api-key"] == "zai-secret-123"
+                assert not any(
+                    header.lower() == "x-stainless" or header.lower().startswith("x-stainless-")
+                    for header in request.headers
+                )
+            finally:
+                http_client.close()
+
+    def test_zai_anthropic_endpoint_detection_is_host_and_path_scoped(self):
+        assert _is_zai_anthropic_endpoint("https://open.bigmodel.cn/api/anthropic") is True
+        assert _is_zai_anthropic_endpoint("https://api.z.ai/api/coding/anthropic") is True
+        assert _is_zai_anthropic_endpoint("https://api.z.ai/api/paas/v4") is False
+        assert _is_zai_anthropic_endpoint("https://example.com/anthropic") is False
 
 
 class TestReadClaudeCodeCredentials:

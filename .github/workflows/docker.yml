@@ -1,24 +1,9 @@
-name: Docker Build and Publish
+name: Docker Build, Test, and Publish
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '**/*.py'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'Dockerfile'
-      - 'docker/**'
-      - '.github/workflows/docker-publish.yml'
-      - '.github/actions/hermes-smoke-test/**'
-
-  # No paths filter — the job must always run so the required check
-  # reports a status (path-gated workflows leave checks "pending" forever
-  # when no matching files change, which blocks merge).
-  pull_request:
-
   release:
     types: [published]
+  workflow_call:
 
 permissions:
   contents: read
@@ -39,11 +24,7 @@ env:
   IMAGE_NAME: nousresearch/hermes-agent
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Build amd64 natively.  This job also runs the smoke tests (basic --help
-  # and the dashboard subcommand regression guard from #9153), because amd64
-  # is the only arch we can `load` into the local daemon on an amd64 runner.
-  # ---------------------------------------------------------------------------
+  # Build, test, and optionally push the amd64 image.
   build-amd64:
     # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
@@ -53,24 +34,19 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # The image build + smoke test + integration tests run ONLY on
-      # push-to-main and release — never on PRs. They are the heaviest jobs
-      # in CI (~15-45 min) and a broken build surfaces on the main push (and
-      # is gated pre-merge by docker-lint + uv-lockfile-check). Every step
-      # below is skipped on PRs, so the job still reports green and the
-      # required check never hangs.
+      # The image build + integration tests run on every event
+      # (PRs, push-to-main, release). Publish steps below are gated to
+      # push-to-main / release only.
       - name: Set up Docker Buildx
-        if: github.event_name != 'pull_request'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      # Build once, load into the local daemon for smoke testing.  Cached
+      # Build once, load into the local daemon for testing.  Cached
       # to gha with a per-arch scope; the push step below reuses every
       # layer from this build.
-      - name: Build image (amd64, smoke test)
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+      - name: Build image (amd64)
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
           file: Dockerfile
@@ -82,25 +58,12 @@ jobs:
           cache-from: type=gha,scope=docker-amd64
           cache-to: type=gha,mode=max,scope=docker-amd64
 
-      - name: Smoke test image
-        if: github.event_name != 'pull_request'
-        uses: ./.github/actions/hermes-smoke-test
-        with:
-          image: ${{ env.IMAGE_NAME }}:test
-
-      # ---------------------------------------------------------------------
       # Run the docker-integration test suite against the freshly-built
-      # image already loaded into the local daemon (`:test`).  These tests
-      # are excluded from the sharded `tests.yml :: test` matrix on purpose
-      # (see `_SKIP_PARTS` in scripts/run_tests_parallel.py) because each
-      # shard would otherwise reach the session-scoped ``built_image``
-      # fixture in ``tests/docker/conftest.py`` and start a 3-7min
-      # ``docker build`` — guaranteed to
-      # die in fixture setup.
+      # image already loaded into the local daemon (`:test`).
       #
-      # Piggybacking here avoids a second image build: the smoke test
-      # already proved the image loads + runs, so the daemon has it under
-      # `${IMAGE_NAME}:test` and we just point ``HERMES_TEST_IMAGE`` at
+      # Piggybacking here avoids a second image build: the build step
+      # already loaded the image into the daemon under
+      # `${IMAGE_NAME}:test`, so we just point ``HERMES_TEST_IMAGE`` at
       # that.  The fixture's ``HERMES_TEST_IMAGE`` branch (see
       # tests/docker/conftest.py:62-63) short-circuits the rebuild.
       #
@@ -110,26 +73,20 @@ jobs:
       # cheapest path to coverage on every PR that touches docker code.
       # ---------------------------------------------------------------------
       - name: Install uv (for docker tests)
-        if: github.event_name != 'pull_request'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
 
       - name: Set up Python 3.11 (for docker tests)
-        if: github.event_name != 'pull_request'
         run: uv python install 3.11
 
       - name: Install Python dependencies (for docker tests)
-        if: github.event_name != 'pull_request'
         run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
           # ``dev`` extra pulls in pytest, pytest-asyncio —
           # everything tests/docker/ needs.  We deliberately avoid ``all``
           # here because the docker tests only drive the container via
           # subprocess and don't import hermes_agent's optional deps.
-          uv pip install -e ".[dev]"
+          uv sync --locked --python 3.11 --extra dev
 
       - name: Run docker integration tests
-        if: github.event_name != 'pull_request'
         env:
           # Skip rebuild; use the image already loaded by the build step.
           HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
@@ -139,12 +96,11 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
         run: |
-          source .venv/bin/activate
-          python -m pytest tests/docker/ -v --tb=short
+          scripts/run_tests.sh tests/docker/ --file-timeout 600
 
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -155,7 +111,7 @@ jobs:
       - name: Push amd64 by digest
         id: push
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
           file: Dockerfile
@@ -179,7 +135,7 @@ jobs:
 
       - name: Upload digest artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: digest-amd64
           path: /tmp/digests/*
@@ -187,10 +143,7 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------------------
-  # Build arm64 natively on GitHub's free arm64 runner.  This replaces the
-  # previous QEMU-emulated arm64 build, which was ~5-10x slower and shared
-  # a cache scope with amd64.  Matches the amd64 job's shape: build+load,
-  # smoke test, then on push/release push by digest.
+  # Build, test, and optionally push the arm64 image.
   # ---------------------------------------------------------------------------
   build-arm64:
     if: github.repository == 'NousResearch/hermes-agent'
@@ -200,29 +153,26 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # arm64 build runs only on push-to-main and release (see build-amd64).
       - name: Set up Docker Buildx
-        if: github.event_name != 'pull_request'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       # Log in to ghcr.io so the registry-backed build cache below can be
       # read (cache-from) on every event and written (cache-to) on
       # push/release.  Uses the workflow's GITHUB_TOKEN, which is valid for
       # the whole job — unlike the gha cache backend's short-lived Azure SAS
       # token, which expired mid-build on slow cold-cache arm64 runs and
-      # crashed the build before the smoke test (the reason the gha cache
+      # crashed the build before the tests ran (the reason the gha cache
       # was removed from arm64 PRs in the first place).
       - name: Log in to ghcr.io (build cache)
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build once, load into the local daemon for smoke testing, then push
+      # Build once, load into the local daemon for testing, then push
       # by digest below. Reads AND writes the registry-backed cache so the
       # push reuses layers from this build and the next build starts warm.
       #
@@ -230,9 +180,8 @@ jobs:
       # cache that previously broke here: its credential is the job-lifetime
       # GITHUB_TOKEN, not a short-lived SAS token, so the cold-build-outlives-
       # token failure mode cannot recur.
-      - name: Build image (arm64, smoke test, cached publish)
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+      - name: Build image (arm64, cached publish)
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
           file: Dockerfile
@@ -244,15 +193,29 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
           cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
 
-      - name: Smoke test image
-        if: github.event_name != 'pull_request'
-        uses: ./.github/actions/hermes-smoke-test
-        with:
-          image: ${{ env.IMAGE_NAME }}:test
+      - name: Install uv for docker tests
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+
+      - name: Set up Python 3.11 for docker tests
+        run: uv python install 3.11
+
+      - name: Install Python dependencies for docker tests
+        run: |
+          uv sync --locked --python 3.11 --extra dev
+
+      - name: Run docker tests
+        env:
+          # Skip rebuild; use the image already loaded by the build step.
+          HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+        run: |
+          scripts/run_tests.sh tests/docker/ --file-timeout 600
 
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -260,7 +223,7 @@ jobs:
       - name: Push arm64 by digest
         id: push
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
           file: Dockerfile
@@ -282,7 +245,7 @@ jobs:
 
       - name: Upload digest artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: digest-arm64
           path: /tmp/digests/*
@@ -304,17 +267,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Download digests
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: /tmp/digests
           pattern: digest-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}

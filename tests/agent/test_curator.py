@@ -7,6 +7,7 @@ tests run fully offline and the curator module doesn't need real credentials.
 from __future__ import annotations
 
 import importlib
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -37,7 +38,21 @@ def curator_env(tmp_path, monkeypatch):
     # directly). Tests opt in with _enable_prune_builtins(...).
     monkeypatch.setattr(usage, "_prune_builtins_enabled", lambda: False)
 
-    return {"home": home, "curator": curator, "usage": usage}
+    yield {"home": home, "curator": curator, "usage": usage}
+
+    # Teardown: a curator review launched with synchronous=False spawns a
+    # daemon "curator-review" thread that calls save_state() when it finishes.
+    # save_state() resolves the state path from HERMES_HOME at write time, so a
+    # straggler thread that outlives this test would write into whatever home
+    # the *next* test has configured (or the default ~/.hermes once monkeypatch
+    # restores the env) — corrupting an unrelated test's state file. This race
+    # is invisible on a fast machine but flakes under CI load. Join any such
+    # thread here, while HERMES_HOME is still pinned to this test's tmp home
+    # (curator_env depends on monkeypatch, so this teardown runs before the
+    # monkeypatch env is restored). See the salvage of #14261 CI flake.
+    for t in threading.enumerate():
+        if t.name == "curator-review" and t.is_alive():
+            t.join(timeout=10.0)
 
 
 def _write_skill(skills_dir: Path, name: str):

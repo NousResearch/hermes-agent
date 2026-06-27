@@ -355,7 +355,14 @@ _hermes_home: Path | None = None
 
 
 def _get_hermes_home() -> Path:
-    """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
+    """Resolve Hermes home dynamically while preserving test monkeypatch hooks.
+
+    Cron is per-profile by design (#4707): the in-process ticker runs inside a
+    profile-scoped gateway, so resolving the active HERMES_HOME at call time
+    means a profile's jobs are stored AND executed under that profile's home
+    (its .env, config.yaml, scripts, skills). Do not freeze this at import or
+    anchor it at the shared default root — either re-breaks profile isolation.
+    """
     return _hermes_home or get_hermes_home()
 
 
@@ -2328,7 +2335,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
 
         # Provider routing
-        pr = _cfg.get("provider_routing", {})
+        pr = _cfg.get("provider_routing") or {}
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
@@ -3039,4 +3046,11 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
 
 if __name__ == "__main__":
+    # Standalone background scheduler: drop any console a uv pythonw→python
+    # re-exec auto-allocated. No-op on POSIX / when run in-gateway.
+    try:
+        import hermes_bootstrap
+        hermes_bootstrap.detach_orphan_console()
+    except Exception:
+        pass
     tick(verbose=True)

@@ -78,6 +78,12 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
 
+// Radix <Select> renders a blank trigger when `value` matches no <SelectItem>.
+// A custom model (e.g. one added via config that isn't in the provider's
+// curated list) would vanish — surface the active value so it stays selectable.
+export const withActive = (models: readonly string[], active: string): readonly string[] =>
+  active && !models.includes(active) ? [active, ...models] : models
+
 interface StaleAuxWarningProps {
   applying: boolean
   onReset: () => void
@@ -555,7 +561,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   <SelectValue placeholder={m.model} />
                 </SelectTrigger>
                 <SelectContent>
-                  {(selectedProviderModels.length ? selectedProviderModels : []).map(model => (
+                  {withActive(selectedProviderModels, selectedModel).map(model => (
                     <SelectItem key={model} value={model}>
                       {model}
                     </SelectItem>
@@ -708,7 +714,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                           <SelectValue placeholder={m.model} />
                         </SelectTrigger>
                         <SelectContent>
-                          {(auxDraftProviderModels.length ? auxDraftProviderModels : []).map(model => (
+                          {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
                             <SelectItem key={model} value={model}>
                               {model}
                             </SelectItem>
@@ -880,7 +886,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         <SelectValue placeholder={m.model} />
                       </SelectTrigger>
                       <SelectContent>
-                        {modelsForProvider(slot.provider).map(model => (
+                        {withActive(modelsForProvider(slot.provider), slot.model).map(model => (
                           <SelectItem key={model} value={model}>
                             {model}
                           </SelectItem>
@@ -957,7 +963,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       <SelectValue placeholder={m.model} />
                     </SelectTrigger>
                     <SelectContent>
-                      {modelsForProvider(currentMoaPreset.aggregator.provider).map(model => (
+                      {withActive(
+                        modelsForProvider(currentMoaPreset.aggregator.provider),
+                        currentMoaPreset.aggregator.model
+                      ).map(model => (
                         <SelectItem key={model} value={model}>
                           {model}
                         </SelectItem>

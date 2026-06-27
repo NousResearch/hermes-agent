@@ -2802,12 +2802,14 @@ class SessionDB:
             if num_tool_calls > 0:
                 conn.execute(
                     """UPDATE sessions SET message_count = message_count + 1,
-                       tool_call_count = tool_call_count + ? WHERE id = ?""",
+                       tool_call_count = tool_call_count + ?,
+                       ended_at = NULL, end_reason = NULL WHERE id = ?""",
                     (num_tool_calls, session_id),
                 )
             else:
                 conn.execute(
-                    "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
+                    "UPDATE sessions SET message_count = message_count + 1, "
+                    "ended_at = NULL, end_reason = NULL WHERE id = ?",
                     (session_id,),
                 )
             return msg_id

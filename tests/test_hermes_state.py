@@ -3114,11 +3114,13 @@ class TestListSessionsRich:
         db.create_session("root1", "cli")
         with db._lock:
             db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
+        # Message comes BEFORE the session is ended (realistic order)
+        db.append_message("root1", "user", "old ask")
+        with db._lock:
             db._conn.execute(
                 "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
                 (t0 + 100, "compression", "root1"),
             )
-        db.append_message("root1", "user", "old ask")
 
         # Continuation tip created after root ended; last activity much later.
         db.create_session("tip1", "cli", parent_session_id="root1")

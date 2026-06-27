@@ -312,9 +312,11 @@ def _render_table_block(table_block: list[str]) -> str:
     """Render a detected GFM table as bold-heading + bullet groups.
 
     Uses the same alignment logic as Telegram's renderer: for non-row-label
-    tables, ``data_cells = cells`` (the full row) and the bullet whose value
-    duplicates the heading is skipped.  This keeps header→value alignment
-    correct.
+    tables, ``data_cells = cells`` (the full row) and the bullet for the cell
+    promoted to the heading is skipped by its column *position*.  Keying on
+    position rather than value avoids dropping a distinct column that happens
+    to hold the same string as the heading, while keeping header→value
+    alignment correct.
     """
     if len(table_block) < 3:
         return "\n".join(table_block)
@@ -336,8 +338,12 @@ def _render_table_block(table_block: list[str]) -> str:
         if has_row_label_col:
             heading = cells[0] if cells and cells[0] else f"Row {index}"
             data_cells = cells[1:]
+            heading_idx = None
         else:
-            heading = next((cell for cell in cells if cell), f"Row {index}")
+            heading_idx = next(
+                (k for k, cell in enumerate(cells) if cell), None
+            )
+            heading = cells[heading_idx] if heading_idx is not None else f"Row {index}"
             data_cells = cells
 
         if len(data_cells) < len(headers):
@@ -346,8 +352,8 @@ def _render_table_block(table_block: list[str]) -> str:
             data_cells = data_cells[: len(headers)]
 
         bullets: list[str] = []
-        for header, value in zip(headers, data_cells):
-            if not has_row_label_col and value == heading:
+        for col, (header, value) in enumerate(zip(headers, data_cells)):
+            if not has_row_label_col and col == heading_idx:
                 continue
             bullets.append(f"• {header}: {value}")
 

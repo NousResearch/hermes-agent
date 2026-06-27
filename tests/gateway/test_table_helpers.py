@@ -135,3 +135,18 @@ class TestConvertTableToBullets:
         out = convert_table_to_bullets(text)
         assert "• B: 1\n\n**y**" in out
         assert "\n\n• " not in out
+
+    def test_value_equal_to_heading_not_dropped(self):
+        # A non-heading column whose value coincides with the auto-selected
+        # heading value must still render — suppression is keyed on the
+        # heading cell's column position, not on string equality.
+        text = (
+            "| Service | Status | Region |\n"
+            "|---------|--------|--------|\n"
+            "| api     | api    | us-east |"
+        )
+        out = convert_table_to_bullets(text)
+        assert "**api**" in out
+        assert "• Service: api" not in out  # heading cell still suppressed
+        assert "• Status: api" in out  # FAILS before fix (column dropped)
+        assert "• Region: us-east" in out

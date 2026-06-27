@@ -54,6 +54,25 @@ def test_semantic_memory_archive_payloads_include_exact_content_and_receipt_meta
     assert "durable exact content NEEDLE" in payload["content"]
 
 
+def test_semantic_memory_archive_payloads_honor_namespace_override(monkeypatch):
+    mod = load_plugin_module()
+    monkeypatch.setenv("HERMES_CONTEXT_GOVERNOR_SEMANTIC_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("HERMES_CONTEXT_GOVERNOR_SEMANTIC_MEMORY_NAMESPACE", "context_governor_bench")
+    engine = mod.ContextGovernorEngine()
+    response = {
+        "receipt": {"receipt_id": "ctxr_ns", "semantic_memory_fact_ids": []},
+        "allocation_plan": {
+            "archived_item_ids": ["item-ns"],
+            "items": [{"item_id": "item-ns", "item_type": "Decision", "authority_class": "DurableMemoryCandidate", "content_kind": "Text"}],
+        },
+        "exact_store": [{"item_id": "item-ns", "content": "Decision: isolated namespace", "content_blake3": "b3ns"}],
+    }
+
+    payloads = engine._semantic_memory_archive_payloads(response)
+
+    assert payloads[0]["namespace"] == "context_governor_bench"
+
+
 def test_semantic_memory_archive_posts_facts_and_updates_receipt(monkeypatch):
     mod = load_plugin_module()
     monkeypatch.setenv("HERMES_CONTEXT_GOVERNOR_SEMANTIC_MEMORY_ENABLED", "true")

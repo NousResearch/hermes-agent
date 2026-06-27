@@ -444,6 +444,17 @@ async function normalizeContent(content) {
   if (content.type === "attachment" || content.type === "voice") {
     return await normalizeBinaryContent(content);
   }
+  if (content.type === "richlink") {
+    return {
+      type: "richlink",
+      url: typeof content.url === "string" ? content.url : null,
+      // Do not call lazy metadata accessors here. They may fetch remote OpenGraph
+      // data and stall the inbound iMessage stream; the URL is the durable bit.
+      title: typeof content.title === "string" ? content.title : null,
+      summary: typeof content.summary === "string" ? content.summary : null,
+      cover: typeof content.cover === "string" ? content.cover : null,
+    };
+  }
   if (content.type === "group") {
     const items = [];
     for (const item of Array.isArray(content.items) ? content.items : []) {

@@ -41,9 +41,38 @@ def _group_payload(text: str) -> dict:
 def _dm_payload(text: str) -> dict:
     return {
         "messageId": f"dm-{abs(hash(text))}",
-        "space": {"id": "+15551234567", "type": "dm", "phone": "+15551234567"},
-        "sender": {"id": "+15551234567"},
+        "space": {"id": "+155****4567", "type": "dm", "phone": "+155****4567"},
+        "sender": {"id": "+155****4567"},
         "content": {"type": "text", "text": text},
+        "timestamp": "2026-05-14T19:06:32.000Z",
+    }
+
+
+def _richlink_payload(url: str, *, title: str | None = None) -> dict:
+    content = {"type": "richlink", "url": url}
+    if title is not None:
+        content["title"] = title
+    return {
+        "messageId": f"link-{abs(hash((url, title)))}",
+        "space": {"id": "+155****4567", "type": "dm", "phone": "+155****4567"},
+        "sender": {"id": "+155****4567"},
+        "content": content,
+        "timestamp": "2026-05-14T19:06:32.000Z",
+    }
+
+
+def _group_with_richlink_payload(text: str, url: str) -> dict:
+    return {
+        "messageId": f"grp-link-{abs(hash((text, url)))}",
+        "space": {"id": "group-guid-xyz", "type": "group", "phone": None},
+        "sender": {"id": "+155****4567"},
+        "content": {
+            "type": "group",
+            "items": [
+                {"content": {"type": "text", "text": text}},
+                {"content": {"type": "richlink", "url": url}},
+            ],
+        },
         "timestamp": "2026-05-14T19:06:32.000Z",
     }
 
@@ -93,6 +122,30 @@ async def test_dm_never_gated(monkeypatch: pytest.MonkeyPatch) -> None:
     await adapter._dispatch_inbound(_dm_payload("no wake word here"))
     assert len(captured) == 1
     assert captured[0].text == "no wake word here"
+
+
+@pytest.mark.asyncio
+async def test_dm_richlink_extracts_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(
+        _richlink_payload("https://example.com/article", title="Example Article")
+    )
+    assert len(captured) == 1
+    assert captured[0].text == "Example Article\nhttps://example.com/article"
+
+
+@pytest.mark.asyncio
+async def test_group_richlink_preserves_text_and_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(
+        _group_with_richlink_payload("Evaluate this", "https://example.com/article")
+    )
+    assert len(captured) == 1
+    assert captured[0].text == "Evaluate this\nhttps://example.com/article"
 
 
 @pytest.mark.asyncio

@@ -5236,17 +5236,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # agent.close() / shutdown_memory_provider() (#53175).
             session_key = getattr(agent, "session_id", None)
             # _finalize_shutdown_agents is called from sync stop() - schedule
-            # the async cleanup as a background task
+            # the async cleanup safely on the gateway's event loop
             if session_key:
-                asyncio.create_task(
-                    self._cleanup_agent_async(
-                        agent, self._CleanupContext.SHUTDOWN, session_key
-                    )
+                coro = self._cleanup_agent_async(
+                    agent, self._CleanupContext.SHUTDOWN, session_key
                 )
             else:
-                asyncio.create_task(
-                    self._cleanup_agent_async(agent, self._CleanupContext.SHUTDOWN)
-                )
+                coro = self._cleanup_agent_async(agent, self._CleanupContext.SHUTDOWN)
+            # Use safe_schedule_threadsafe to avoid "coroutine never awaited" warnings
+            # if the loop is closing during shutdown. In tests with no loop, fall back
+            # to synchronous cleanup so unit tests can verify behavior.
+            loop = getattr(self, "_gateway_loop", None)
+            if loop is not None:
+                safe_schedule_threadsafe(coro, loop)
+            else:
+                # No event loop (e.g., unit tests) - run cleanup synchronously
+                # by executing the coroutine directly. This preserves test behavior.
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+                if loop is None:
+                    # Synchronous fallback for tests
+                    try:
+                        coro.close()
+                    except Exception:
+                        pass
+                    self._cleanup_agent_resources(agent)
+                else:
+                    safe_schedule_threadsafe(coro, loop)
 
     def _should_emit_long_running_notification(
         self,
@@ -5274,30 +5292,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         Runs in executor thread via `_cleanup_agent_async` so blocking
         operations (subprocess teardown, network IO) never stall the event loop.
+        
+        NOTE: Transcript flush is handled by the CALLER (e.g., _finalize_shutdown_agents)
+        before calling this method. This method only handles:
+        - shutdown_memory_provider
+        - agent.close()
+        - cleanup_stale_async_clients
         """
         if agent is None:
             return
         session_id = getattr(agent, "session_id", "unknown")
 
-        # 1. Flush transcript
-        try:
-            _flush = getattr(agent, "_flush_messages_to_session_db", None)
-            _session_messages = getattr(agent, "_session_messages", None)
-            if callable(_flush) and isinstance(_session_messages, list) and _session_messages:
-                _strip = getattr(agent, "_drop_trailing_empty_response_scaffolding", None)
-                if callable(_strip):
-                    try:
-                        _strip(_session_messages)
-                    except Exception:
-                        pass
-                _flush(_session_messages)
-        except Exception as exc:
-            logger.warning(
-                "Agent cleanup [%s]: transcript flush failed: %s",
-                session_id, exc
-            )
-
-        # 2. Shutdown memory provider
+        # 1. Shutdown memory provider
         try:
             if hasattr(agent, "shutdown_memory_provider"):
                 session_messages = getattr(agent, "_session_messages", None)
@@ -5311,7 +5317,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_id, exc
             )
 
-        # 3. Close tool resources
+        # 2. Close tool resources
         try:
             if hasattr(agent, "close"):
                 agent.close()
@@ -5321,7 +5327,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_id, exc
             )
 
-        # 4. Cleanup stale auxiliary clients
+        # 3. Cleanup stale auxiliary clients
         try:
             from agent.auxiliary_client import cleanup_stale_async_clients
             cleanup_stale_async_clients()

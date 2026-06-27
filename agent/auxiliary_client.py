@@ -5434,11 +5434,17 @@ def _build_call_kwargs(
         # The one exception is the Anthropic Messages wire (MiniMax and any
         # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
         # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
-        # there.
+        # there, and for OpenRouter where omitting it on free/limited-credit tiers
+        # triggers HTTP 402 because the model's full output window exceeds the
+        # credit budget (#41035).
         _effective_base = base_url or (
             _current_custom_base_url() if provider == "custom" else ""
         )
-        if _is_anthropic_compat_endpoint(provider, _effective_base):
+        if (
+            _is_anthropic_compat_endpoint(provider, _effective_base)
+            or provider == "openrouter"
+            or base_url_host_matches(_effective_base, "openrouter.ai")
+        ):
             kwargs["max_tokens"] = max_tokens
 
     if tools:

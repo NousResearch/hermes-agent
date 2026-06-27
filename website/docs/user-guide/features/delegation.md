@@ -129,9 +129,9 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 
 Single-task delegation runs directly without thread pool overhead.
 
-## Model Override
+## Model Override and Phase Routing
 
-You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
+You can configure a different default model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
 
 ```yaml
 # In ~/.hermes/config.yaml
@@ -141,6 +141,38 @@ delegation:
 ```
 
 If omitted, subagents use the same model as the parent.
+
+For workflows that know the semantic phase of the delegated work, configure `phase_assignments` and pass `phase` in the `delegate_task` call. Phase assignments override the global delegation model/provider only for matching tasks; unknown phases fall back to normal delegation behavior.
+
+```yaml
+# In ~/.hermes/config.yaml
+delegation:
+  model: "google/gemini-flash-2.0"      # Global subagent fallback
+  provider: "openrouter"
+  reasoning_effort: "low"
+  phase_assignments:
+    sdd-spec:
+      model: "anthropic/claude-sonnet-4"
+      reasoning_effort: "high"
+    sdd-apply:
+      model: "anthropic/claude-sonnet-4"
+      reasoning_effort: "xhigh"
+```
+
+```python
+delegate_task(
+    goal="Write the SDD spec for the auth change",
+    phase="sdd-spec",
+    toolsets=["terminal", "file"]
+)
+
+delegate_task(tasks=[
+    {"goal": "Review the design", "phase": "sdd-design", "toolsets": ["file"]},
+    {"goal": "Implement the next slice", "phase": "sdd-apply", "toolsets": ["terminal", "file"]},
+])
+```
+
+Supported `reasoning_effort` values are `low`, `medium`, `high`, and `xhigh`. Keep API keys in `.env` or reference them with `${ENV_VAR}`; do not hard-code secrets in `config.yaml`.
 
 ## Toolset Selection Tips
 

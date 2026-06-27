@@ -81,6 +81,34 @@ delegation:
 
 Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is). Only the `${VAR}` syntax is supported — bare `$VAR` is not expanded.
 
+### Delegation Phase Assignments
+
+Subagent delegation can route different semantic phases to different configured models/providers while preserving the normal fallback behavior when no phase matches.
+
+```yaml
+delegation:
+  model: "google/gemini-flash-2.0"      # Global fallback for delegated tasks
+  provider: "openrouter"
+  reasoning_effort: "low"               # low | medium | high | xhigh
+  phase_assignments:
+    sdd-spec:
+      model: "anthropic/claude-sonnet-4"
+      reasoning_effort: "high"
+    sdd-apply:
+      model: "anthropic/claude-sonnet-4"
+      reasoning_effort: "xhigh"
+```
+
+Parents opt into a configured phase by passing `phase` to `delegate_task`; phases that are missing or unknown fall back to the global `delegation` settings. Keep secrets in `.env` and reference them with `${ENV_VAR}` if a phase needs a provider-specific key:
+
+```yaml
+delegation:
+  phase_assignments:
+    sdd-apply:
+      base_url: "${APPLY_MODEL_BASE_URL}"
+      api_key: "${APPLY_MODEL_API_KEY}"
+```
+
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
 
 ### Provider Timeouts

@@ -1015,6 +1015,34 @@ class TestVoiceChannelCommands:
         assert "42" in msg  # user_id in mention
 
     @pytest.mark.asyncio
+    async def test_input_can_disable_transcript_echo(self, runner, monkeypatch):
+        """discord.voice_transcript_echo: false keeps dispatching without echo."""
+        from gateway.config import Platform
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"discord": {"voice_transcript_echo": "false"}},
+        )
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Hidden transcript")
+
+        mock_channel.send.assert_not_called()
+        mock_adapter.handle_message.assert_called_once()
+        event = mock_adapter.handle_message.call_args[0][0]
+        assert event.text == "Hidden transcript"
+
+    @pytest.mark.asyncio
     async def test_input_suppresses_duplicate_transcript(self, runner):
         """Near-immediate duplicate STT output should not dispatch twice."""
         from gateway.config import Platform

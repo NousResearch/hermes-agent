@@ -1618,6 +1618,13 @@ if _config_path.exists():
                 os.environ["HERMES_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
             if "busy_ack_enabled" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
+        _gateway_cfg = _cfg.get("gateway", {})
+        if (
+            _gateway_cfg
+            and isinstance(_gateway_cfg, dict)
+            and "busy_ack_enabled" in _gateway_cfg
+        ):
+            os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = str(_gateway_cfg["busy_ack_enabled"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str):
@@ -1718,6 +1725,7 @@ from gateway.config import (
     GatewayConfig,
     HomeChannel,
     PlatformConfig,
+    _coerce_bool,
     load_gateway_config,
 )
 from gateway.session import (
@@ -4774,8 +4782,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
-        # never actually delivered.
-        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
+        # never actually delivered. Prefer config.yaml when the key is present;
+        # fall back to the legacy env var for deployments that have not migrated.
+        busy_ack_enabled = True
+        try:
+            gateway_config = _load_gateway_config()
+            gateway_cfg = gateway_config.get("gateway") or {}
+            display_cfg = gateway_config.get("display") or {}
+            if "busy_ack_enabled" in gateway_cfg:
+                busy_ack_enabled = _coerce_bool(
+                    gateway_cfg.get("busy_ack_enabled"),
+                    True,
+                )
+            elif "busy_ack_enabled" in display_cfg:
+                busy_ack_enabled = _coerce_bool(
+                    display_cfg.get("busy_ack_enabled"),
+                    True,
+                )
+            else:
+                busy_ack_raw = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "").strip()
+                busy_ack_enabled = _coerce_bool(busy_ack_raw, True) if busy_ack_raw else True
+        except Exception:
+            busy_ack_raw = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "").strip()
+            busy_ack_enabled = _coerce_bool(busy_ack_raw, True) if busy_ack_raw else True
         if not busy_ack_enabled:
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
@@ -11532,14 +11561,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return
 
-        # Show transcript in text channel (after auth, with mention sanitization)
+        # Optionally show the raw transcript in the linked text channel (after
+        # auth, with mention sanitization).  Public Discord channels become
+        # unreadable if every STT fragment is echoed, so deployments can keep
+        # voice input functional while hiding raw transcripts via
+        # discord.voice_transcript_echo: false.
         try:
-            channel = adapter._client.get_channel(text_ch_id)
-            if channel:
-                safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+            discord_cfg = (_load_gateway_config().get("discord") or {})
+            echo_voice = _coerce_bool(discord_cfg.get("voice_transcript_echo"), True)
         except Exception:
-            pass
+            echo_voice = True
+        if echo_voice:
+            try:
+                client = getattr(adapter, "_client", None)
+                channel = client.get_channel(text_ch_id) if client else None
+                if channel:
+                    safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+                    await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+            except Exception:
+                pass
 
         # Build a synthetic MessageEvent and feed through the normal pipeline
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract

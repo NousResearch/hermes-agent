@@ -868,12 +868,27 @@ class TestWhisperHallucinationFilter:
         assert is_whisper_hallucination("  Thank you.  ") is True  # with whitespace
         assert is_whisper_hallucination("you") is True
 
+    def test_korean_subtitle_credit_hallucinations(self):
+        from tools.voice_mode import is_whisper_hallucination
+
+        assert is_whisper_hallucination("시청해 주셔서 감사합니다") is True
+        assert is_whisper_hallucination("시청해주셔서 감사합니다.") is True
+        assert is_whisper_hallucination("자막 제공 및 자막을 사용하였습니다. 감사합니다") is True
+        assert is_whisper_hallucination("한글자막 by 한효주") is True
+        assert is_whisper_hallucination("구독과 좋아요 부탁드립니다") is True
+        assert is_whisper_hallucination("자막 제작: example") is True
+        assert is_whisper_hallucination("자막 사용") is True
+
     def test_real_speech_not_filtered(self):
         from tools.voice_mode import is_whisper_hallucination
 
         assert is_whisper_hallucination("Hello, how are you?") is False
         assert is_whisper_hallucination("Thank you for your help with the project.") is False
         assert is_whisper_hallucination("Can you explain this code?") is False
+        assert is_whisper_hallucination("감사합니다") is False
+        assert is_whisper_hallucination("감사합니다.") is False
+        assert is_whisper_hallucination("감사합니다 감사합니다") is False
+        assert is_whisper_hallucination("감사합니다. 감사합니다.") is False
 
 
 # ============================================================================

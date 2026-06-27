@@ -474,6 +474,61 @@ class TestBusySessionAck:
         assert adapter._send_with_retry.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_busy_ack_can_be_disabled_from_gateway_config(self, monkeypatch):
+        """gateway.busy_ack_enabled: false suppresses only the ack send."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"gateway": {"busy_ack_enabled": "false"}},
+        )
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true")
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="hello?")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 120
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_called_once_with("hello?")
+        adapter._send_with_retry.assert_not_called()
+        assert sk not in runner._busy_ack_ts
+
+    @pytest.mark.asyncio
+    async def test_legacy_busy_ack_env_used_when_config_absent(self, monkeypatch):
+        """Legacy HERMES_GATEWAY_BUSY_ACK_ENABLED still works without config."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="hello?")
+        sk = build_session_key(event.source)
+
+        runner._running_agents[sk] = MagicMock()
+        runner._running_agents_ts[sk] = time.time() - 120
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_includes_status_detail_when_opted_in(self, monkeypatch):
         """Ack message should include iteration and tool info when available."""
         import gateway.run as _gr

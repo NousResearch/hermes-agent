@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -333,34 +334,47 @@ def _sidecar_dir() -> Path:
     return Path(override) if override else Path.home() / "hermes-eats-world"
 
 
+def _commands_for(py: str, selector: list[str]) -> str:
+    """Render perceive/control command examples for a given safe selector.
+
+    `selector` is an argv fragment (e.g. ["--hwnd", "12345"]). It is joined into
+    the example verbatim; callers MUST pass only trusted, shell-safe tokens —
+    integers (hwnd) or shlex.quote()'d strings — NEVER a raw window title.
+    """
+    sel = " ".join(selector)
+    perceive = f"{py} -m sidecar.service {sel} --json"
+    control = f"{py} -m sidecar.service {sel} --run-goal {shlex.quote('<your goal>')}"
+    return (
+        f"To inspect it, run (in `{_sidecar_dir()}`):\n```bash\n{perceive}\n```\n"
+        f"To control it, run:\n```bash\n{control}\n```\n"
+        "Use your exec/shell tool. Perceive first to see elements, then issue goals."
+    )
+
+
 def _expand_window_reference(ref: ContextReference) -> tuple[str | None, str | None]:
     """Expand @window:Title into a live, actionable block for the agent.
 
     A window is a *live target*, not static text: the model drives it with its
-    own exec/shell tool via the hermes-eats-world sidecar. We confirm the window
-    exists (reusing the sidecar's `--list --json` contract) and hand the model
-    the exact perceive/control commands. Best-effort — if the sidecar can't run
-    we still emit the commands so the model can try.
+    own exec/shell tool via the hermes-eats-world sidecar.
+
+    Security: a window title is attacker-influenceable (e.g. a browser tab/doc
+    title), so we MUST NOT splice it raw into a shell command the model is told
+    to run. We resolve the title to an exact native handle (hwnd) via the
+    sidecar's `--list --json` and emit commands that target `--hwnd <int>` — an
+    integer, injection-proof. If we can't resolve a handle, the title only ever
+    appears shlex.quote()'d. Ambiguous matches are surfaced, not auto-driven.
     """
     title = (ref.target or "").strip()
     if not title:
         return f"{ref.raw}: no window title", None
 
-    sidecar = _sidecar_dir()
     py = sys.executable or "python"
-    perceive_cmd = f'{py} -m sidecar.service --target "{title}" --json'
-    control_cmd = f'{py} -m sidecar.service --target "{title}" --run-goal "<your goal>"'
-    how = (
-        f"To inspect it, run (in `{sidecar}`):\n```bash\n{perceive_cmd}\n```\n"
-        f"To control it, run:\n```bash\n{control_cmd}\n```\n"
-        "Use your exec/shell tool. Perceive first to see elements, then issue goals."
-    )
 
-    matched = None
+    matches: list[dict] = []
     try:
         result = subprocess.run(
             [py, "-m", "sidecar.service", "--list", "--json"],
-            cwd=str(sidecar),
+            cwd=str(_sidecar_dir()),
             capture_output=True,
             text=True,
             timeout=20,
@@ -369,26 +383,35 @@ def _expand_window_reference(ref: ContextReference) -> tuple[str | None, str | N
         if result.returncode == 0:
             windows = (json.loads(result.stdout) or {}).get("windows", [])
             lowered = title.lower()
-            matched = next(
-                (w for w in windows if lowered in str(w.get("name", "")).lower()),
-                None,
-            )
+            matches = [w for w in windows if lowered in str(w.get("name", "")).lower() and w.get("hwnd")]
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
-        matched = None
+        matches = []
 
-    if matched:
-        detail = (
-            f"name={matched.get('name')!r}, class={matched.get('class_name')!r}, "
-            f"pid={matched.get('pid')}"
-        )
+    if len(matches) == 1:
+        w = matches[0]
+        detail = f"name={w.get('name')!r}, class={w.get('class_name')!r}, pid={w.get('pid')}, hwnd={w.get('hwnd')}"
+        how = _commands_for(py, ["--hwnd", str(int(w["hwnd"]))])
         body = f"🪟 {ref.raw} — attached desktop window ({detail}).\n{how}"
+    elif len(matches) > 1:
+        listing = "\n".join(
+            f"  - hwnd={int(w['hwnd'])}  pid={w.get('pid')}  {w.get('name')!r}" for w in matches
+        )
+        how = _commands_for(py, ["--hwnd", "<one of the hwnds above>"])
+        body = (
+            f"🪟 {ref.raw} — AMBIGUOUS: {len(matches)} open windows match that title. "
+            f"Pick the intended one by its handle (do not guess):\n{listing}\n{how}"
+        )
     else:
+        # Couldn't resolve a handle (sidecar down, or title changed). Fall back to
+        # a title selector — but shlex.quote()'d so an adversarial title can't
+        # inject shell commands.
+        how = _commands_for(py, ["--target", shlex.quote(title)])
         body = (
             f"🪟 {ref.raw} — attached desktop window (could not confirm it is open; "
             f"the sidecar may not be running, or the title may have changed).\n{how}"
         )
 
-    return None, f"{body}"
+    return None, body
 
 
 async def _fetch_url_content(

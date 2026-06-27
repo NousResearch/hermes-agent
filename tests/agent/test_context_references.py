@@ -103,6 +103,30 @@ def test_window_reference_expands_to_actionable_block(tmp_path: Path):
     assert "Notepad" in result.message
 
 
+def test_window_reference_quotes_malicious_title(tmp_path: Path):
+    """A window title is attacker-influenceable; it must never reach the emitted
+    shell command unescaped (command-injection blocker from the release review)."""
+    import os
+    import shlex
+
+    from agent.context_references import preprocess_context_references
+
+    # An unquoted ref token with shell metacharacters (no spaces, so it survives
+    # the @-ref regex) is the realistic injection vector.
+    evil = "a;echo;rm"
+    missing = tmp_path / "no-sidecar-here"  # force the title-fallback path
+    with patch.dict(os.environ, {"HERMES_SIDECAR_DIR": str(missing)}):
+        result = preprocess_context_references(
+            f"@window:{evil}", cwd=str(tmp_path), context_length=128000
+        )
+
+    assert result.expanded
+    # The title appears ONLY in its shlex-quoted form...
+    assert shlex.quote(evil) in result.message
+    # ...and never spliced raw into a command.
+    assert "--target a;echo;rm" not in result.message
+
+
 def test_parse_references_strips_trailing_punctuation():
     from agent.context_references import parse_context_references
 

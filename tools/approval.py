@@ -192,6 +192,18 @@ _CREDENTIAL_FILES = (
     r'(?:~|\$home|\$\{home\})/\.'
     r'(?:netrc|pgpass|npmrc|pypirc)\b'
 )
+# Windows drive-letter paths (git-bash, WSL, MSYS2). Paths like X:/dir or
+# X:\dir bypass Unix-rooted patterns (/etc/, /home/) entirely. Add drive-
+# letter equivalents for root deletes, system directories, and user profile
+# paths so the approval gates work consistently on Windows.
+_WINDOWS_DRIVE = r'[A-Za-z]:[/\\]'
+
+# Windows system dirs (equivalent of /etc/ on Unix).
+_WINDOWS_SYSTEM_PATH = rf'{_WINDOWS_DRIVE}(?:Windows|Program Files|ProgramData)[/\\]'
+
+# Windows user profile root (C:\Users\<name>\). Used to construct Windows
+# equivalents of ~/.ssh, ~/.hermes, etc.
+_WINDOWS_USER_HOME = rf'{_WINDOWS_DRIVE}Users[/\\][^/\\]+[/\\]'
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/{etc,var,tmp,home}.
 # A command written to target /private/etc/sudoers works identically to
 # /etc/sudoers on macOS but bypasses a plain "/etc/" pattern check. Match
@@ -201,7 +213,7 @@ _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
 # collapsing /etc, its macOS /private/etc mirror, and /etc/sudoers.d/ into
 # one shared fragment so new DANGEROUS_PATTERNS stay consistent.
 _SYSTEM_CONFIG_PATH = (
-    rf'(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH})'
+    rf'(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH}|{_WINDOWS_SYSTEM_PATH})'
 )
 _SENSITIVE_WRITE_TARGET = (
     rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|'
@@ -209,7 +221,14 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_HERMES_ENV_PATH}|'
     rf'{_HERMES_CONFIG_PATH}|'
     rf'{_SHELL_RC_FILES}|'
-    rf'{_CREDENTIAL_FILES})'
+    rf'{_CREDENTIAL_FILES}|'
+    # Windows drive-letter equivalents -- git-bash/WSL paths like
+    # C:\Users\name\.ssh\id_rsa bypass the ~/$HOME-anchored patterns.
+    rf'{_WINDOWS_USER_HOME}\.ssh(?:[/\\]|$)|'
+    rf'{_WINDOWS_USER_HOME}\.hermes[/\\]\.env\b|'
+    rf'{_WINDOWS_USER_HOME}\.hermes[/\\]config\.yaml\b|'
+    rf'{_WINDOWS_USER_HOME}\.(?:bashrc|zshrc|profile|bash_profile|zprofile)\b|'
+    rf'{_WINDOWS_USER_HOME}\.(?:netrc|pgpass|npmrc|pypirc)\b)'
 )
 _USER_SENSITIVE_WRITE_TARGET = (
     rf'(?:{_SSH_SENSITIVE_PATH}|'
@@ -265,6 +284,10 @@ HARDLINE_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
     (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
     (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    # Windows drive-letter equivalents: rm -rf X:\, rm -rf C:\Windows\, etc.
+    (r'\brm\s+(-[^\s]*\s+)*[A-Za-z]:[/\\](\s|$)', "recursive delete of Windows drive root"),
+    (r'\brm\s+(-[^\s]*\s+)*[A-Za-z]:[/\\](?:Windows|Program Files|ProgramData)[/\\]', "recursive delete of Windows system directory"),
+    (r'\brm\s+(-[^\s]*\s+)*[A-Za-z]:[/\\]Users[/\\][^/\\]+[/\\]', "recursive delete of Windows user profile"),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
@@ -380,6 +403,7 @@ def _sudo_stdin_block_result(description: str) -> dict:
 
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    (r'\brm\s+(-[^\s]*\s+)*[A-Za-z]:[/\\]', "delete in root path (Windows drive letter)"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),

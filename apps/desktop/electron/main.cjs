@@ -5251,9 +5251,11 @@ async function spawnPoolBackend(profile, entry) {
       )
     }
   })
+  const portAnnouncement = waitForDashboardPortAnnouncement(child, { readyFile })
+  const portReady = Promise.race([portAnnouncement, startFailed])
 
   // Discover the ephemeral port the child bound to
-  const port = await Promise.race([waitForDashboardPortAnnouncement(child, { readyFile }), startFailed])
+  const port = await portReady
   if (readyFile) {
     fs.unlink(readyFile, () => {})
   }
@@ -5506,13 +5508,15 @@ async function startHermes() {
         )
       }
     })
+    const portAnnouncement = waitForDashboardPortAnnouncement(hermesProcess, { readyFile })
+    const portReady = Promise.race([portAnnouncement, backendStartFailed])
+    // BOOT_FAKE_MODE can await below; consume early failures now and rethrow at
+    // the real await site.
+    void portReady.catch(() => undefined)
 
     await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
     // Discover the ephemeral port the child bound to
-    const port = await Promise.race([
-      waitForDashboardPortAnnouncement(hermesProcess, { readyFile }),
-      backendStartFailed
-    ])
+    const port = await portReady
     if (readyFile) {
       fs.unlink(readyFile, () => {})
     }

@@ -126,6 +126,21 @@ test('a late announcement after timeout does not throw (listeners torn down)', a
   })
 })
 
+test('desktop starts the primary port watcher before async boot progress', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8').replace(/\r\n/g, '\n')
+  const spawnIndex = source.indexOf('hermesProcess = spawn(')
+  const progressIndex = source.indexOf("await advanceBootProgress('backend.port'", spawnIndex)
+  const watcherIndex = source.indexOf('waitForDashboardPortAnnouncement(hermesProcess', spawnIndex)
+
+  assert.notEqual(spawnIndex, -1, 'expected primary Hermes spawn site')
+  assert.notEqual(progressIndex, -1, 'expected backend.port boot-progress update')
+  assert.notEqual(watcherIndex, -1, 'expected primary backend port watcher')
+  assert.ok(
+    watcherIndex < progressIndex,
+    'the stdout watcher must attach before any awaited boot progress can miss the READY line'
+  )
+})
+
 // ---------------------------------------------------------------------------
 // ready-file port announcement
 // ---------------------------------------------------------------------------

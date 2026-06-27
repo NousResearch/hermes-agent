@@ -1179,6 +1179,16 @@ DEFAULT_CONFIG = {
             "rewrite_loopback_urls": False,
             "loopback_host_alias": "host.docker.internal",
         },
+        # Safe browser network-exit failover for proxy/tunnel/DNS/TLS health
+        # failures. Never used for CAPTCHA, bot walls, or access-control blocks.
+        "exit_recovery": {
+            "auto_recover": False,
+            "preferred_exit": "residential",
+            "fallback_exits": ["residential", "surfshark"],
+            "allow_direct_fallback": False,
+            "controller": "",
+            "timeout_s": 45,
+        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
@@ -3461,6 +3471,15 @@ OPTIONAL_ENV_VARS = {
         "tools": ["web_search"],
         "password": True,
         "category": "tool",
+    },
+    "HERMES_BROWSER_AUTO_EXIT_RECOVERY": {
+        "description": "Auto-switch browser network exits on recoverable proxy/tunnel/DNS failures",
+        "prompt": "Enable automatic browser exit recovery? (true/false)",
+        "url": None,
+        "password": False,
+        "tools": ["browser_exit_recover"],
+        "category": "tool",
+        "advanced": True,
     },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for cloud browser (optional — local browser works without this)",

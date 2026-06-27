@@ -1,10 +1,10 @@
-"""Wake-word ("Hey Hermes") detection — hands-free session trigger for the CLI.
+"""Wake-word ("Hey Hermes") detection — hands-free session trigger.
 
 A lightweight, always-on hotword listener that fires a callback when a wake
-phrase is spoken — the "Hey Siri" / "Alexa" pattern. The CLI uses it to start a
-fresh voice session without touching the keyboard: say the wake word, Hermes
-opens the mic, captures one utterance via the existing voice pipeline, and
-answers.
+phrase is spoken — the "Hey Siri" / "Alexa" pattern. Shared by the CLI, TUI, and
+desktop GUI (one of them owns it, gated by ``wake_surface_enabled``): say the
+wake word, Hermes opens a fresh session and captures voice via the existing
+pipeline, then answers.
 
 Two engines, both fully on-device (no audio leaves the machine for detection):
 
@@ -55,9 +55,6 @@ _DEFAULTS: Dict[str, Any] = {
     "sensitivity": 0.5,
     "start_new_session": True,
 }
-
-# Surfaces that can host the listener. "auto" means whichever one is running.
-SURFACES = ("cli", "tui", "gui")
 
 
 def load_wake_word_config() -> Dict[str, Any]:
@@ -347,7 +344,7 @@ class WakeWordDetector:
 
     def _run(self) -> None:
         try:
-            sd, np = _import_audio()
+            sd, _ = _import_audio()
         except (ImportError, OSError) as e:
             logger.error("wake word: audio libraries unavailable: %s", e)
             return

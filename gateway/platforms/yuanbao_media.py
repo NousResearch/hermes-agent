@@ -31,6 +31,31 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_url_for_log(url: str, max_len: int = 80) -> str:
+    """Truncate a URL for safe logging (avoid leaking long query strings)."""
+    if len(url) <= max_len:
+        return url
+    return f"{url[:max_len - 3]}..."
+
+
+async def _ssrf_redirect_guard(response: "httpx.Response") -> None:
+    """Re-validate each redirect target to block redirect-based SSRF.
+
+    Without this, an attacker can host a public URL that 30x-redirects to
+    http://169.254.169.254/ (cloud metadata) or http://127.0.0.1/ and bypass
+    the pre-flight ``is_safe_url`` check on the initial URL.
+    """
+    if response.is_redirect and response.next_request is not None:
+        from tools.url_safety import is_safe_url
+
+        redirect_url = str(response.next_request.url)
+        if not is_safe_url(redirect_url):
+            raise ValueError(
+                "Blocked redirect to private/internal address: "
+                f"{_safe_url_for_log(redirect_url)}"
+            )
+
 # ============ 常量 ============
 
 UPLOAD_INFO_PATH = "/api/resource/genUploadInfo"
@@ -218,7 +243,23 @@ async def download_url(
         httpx.HTTPError: 网络/HTTP 错误
     """
     max_bytes = max_size_mb * 1024 * 1024
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+
+    # SSRF protection: the URL originates from model/agent output (e.g. an
+    # ``![alt](url)`` image link in a reply), so it is attacker-influenceable.
+    # Reject private/internal/metadata targets up front, and re-validate every
+    # redirect hop (see ``_ssrf_redirect_guard``).
+    from tools.url_safety import is_safe_url
+
+    if not is_safe_url(url):
+        raise ValueError(
+            f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}"
+        )
+
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [_ssrf_redirect_guard]},
+    ) as client:
         # 先 HEAD 检查大小
         try:
             head = await client.head(url)

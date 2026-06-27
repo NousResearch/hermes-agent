@@ -258,6 +258,37 @@ class TestSlackApprovalAction:
         assert "Denied by alice" in update_kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_truncates_inflated_original_text(self):
+        """Interaction payload re-escapes HTML entities; text must be capped."""
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._approval_resolved["1.2"] = False
+
+        # Simulate Slack re-escaping: original was ~2990 chars, but & → &amp;
+        # etc. inflates it past 3000.
+        inflated_text = "a" * 2990 + "&amp;" * 10  # 2990 + 50 = 3040 chars
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1.2", "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": inflated_text}},
+            ]},
+            "channel": {"id": "C1"},
+            "user": {"name": "alice", "id": "U_ALICE"},
+        }
+        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1):
+            await adapter._handle_approval_action(ack, body, action)
+
+        update_kwargs = mock_client.chat_update.call_args[1]
+        section_text = update_kwargs["blocks"][0]["text"]["text"]
+        assert len(section_text) <= 3000
+
+    @pytest.mark.asyncio
     async def test_global_allowlist_blocks_unauthorized_click(self, monkeypatch):
         adapter = _make_adapter()
         adapter._approval_resolved["1234.5678"] = False
@@ -345,6 +376,40 @@ class TestSlackSlashConfirmAction:
         )
         mock_client.chat_update.assert_called_once()
         mock_client.chat_postMessage.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_truncates_inflated_original_text(self):
+        """Interaction payload re-escapes HTML entities; text must be capped."""
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._approval_resolved["2222.3333"] = False
+
+        # Simulate Slack re-escaping inflating text past 3000 chars.
+        inflated_text = "b" * 2990 + "&lt;" * 10  # 2990 + 40 = 3030 chars
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "2222.3333", "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": inflated_text}},
+            ]},
+            "channel": {"id": "C1"},
+            "user": {"name": "owner", "id": "U_OWNER"},
+        }
+        action = {
+            "action_id": "hermes_confirm_once",
+            "value": "agent:main:slack:group:C1:1111|confirm-1",
+        }
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        mock_client.chat_postMessage = AsyncMock()
+
+        with patch("tools.slash_confirm.resolve", new=AsyncMock(return_value="ok")):
+            await adapter._handle_slash_confirm_action(ack, body, action)
+
+        update_kwargs = mock_client.chat_update.call_args[1]
+        section_text = update_kwargs["blocks"][0]["text"]["text"]
+        assert len(section_text) <= 3000
 
 
 # ===========================================================================

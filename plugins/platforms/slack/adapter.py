@@ -3262,6 +3262,11 @@ class SlackAdapter(BasePlatformAdapter):
                 original_text = block.get("text", {}).get("text", "")
                 break
 
+        # Slack re-escapes HTML entities in the interaction payload
+        # (< → &lt;, > → &gt;, & → &amp;), which can inflate the text
+        # past the 3000-char section-block limit on chat.update.
+        original_text = original_text[:3000]
+
         updated_blocks = [
             {
                 "type": "section",
@@ -3383,6 +3388,11 @@ class SlackAdapter(BasePlatformAdapter):
             if block.get("type") == "section":
                 original_text = block.get("text", {}).get("text", "")
                 break
+
+        # Slack re-escapes HTML entities in the interaction payload
+        # (< → &lt;, > → &gt;, & → &amp;), which can inflate the text
+        # past the 3000-char section-block limit on chat.update.
+        original_text = original_text[:3000]
 
         updated_blocks = [
             {

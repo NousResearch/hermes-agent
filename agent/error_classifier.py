@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -1369,17 +1370,32 @@ def _extract_error_code(body: dict) -> str:
     return ""
 
 
+_PROVIDER_METADATA_RE = re.compile(
+    r"(?:org[-_]?id|organization|account[-_]?id|x-request-id|request[-_]?id)"
+    r"\s*[:=]\s*\S+",
+    re.IGNORECASE,
+)
+
+
 def _extract_message(error: Exception, body: dict) -> str:
-    """Extract the most informative error message."""
+    """Extract the most informative error message.
+
+    Strips provider-specific metadata (org IDs, request IDs) that could
+    leak account details into user-facing error displays.
+    """
+    raw = ""
     # Try structured body first
     if body:
         error_obj = body.get("error", {})
         if isinstance(error_obj, dict):
             msg = error_obj.get("message", "")
             if isinstance(msg, str) and msg.strip():
-                return msg.strip()[:500]
-        msg = body.get("message", "")
-        if isinstance(msg, str) and msg.strip():
-            return msg.strip()[:500]
+                raw = msg.strip()[:500]
+        if not raw:
+            msg = body.get("message", "")
+            if isinstance(msg, str) and msg.strip():
+                raw = msg.strip()[:500]
     # Fallback to str(error)
-    return str(error)[:500]
+    if not raw:
+        raw = str(error)[:500]
+    return _PROVIDER_METADATA_RE.sub("[redacted]", raw)

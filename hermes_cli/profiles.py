@@ -645,15 +645,22 @@ def _check_gateway_running(profile_dir: Path) -> bool:
 
 
 def _count_skills(profile_dir: Path) -> int:
-    """Count installed skills in a profile."""
+    """Count installed skills in a profile.
+
+    Uses os.walk instead of Path.rglob for performance — rglob on Windows
+    with 160+ skills blocks the event loop for >10s (issue #53461).
+    """
     skills_dir = profile_dir / "skills"
     if not skills_dir.is_dir():
         return 0
     count = 0
-    for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
-            continue
-        count += 1
+    skills_str = str(skills_dir)
+    for root, dirs, files in os.walk(skills_str):
+        if "SKILL.md" in files:
+            md = Path(root) / "SKILL.md"
+            if is_excluded_skill_path(md):
+                continue
+            count += 1
     return count
 
 

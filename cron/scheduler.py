@@ -1686,6 +1686,25 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _extract_cron_response_for_context(output: str) -> str:
+    """Return the curated response section from a saved cron artifact.
+
+    Cron output files for agent jobs include the assembled prompt and any
+    script stdout before the final ``## Response`` block.  Downstream
+    ``context_from`` consumers need the job's curated result, not the full
+    execution artifact.  Plain/script-only outputs have no response section and
+    intentionally fall back to their original full text for compatibility.
+    """
+    response_start = None
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        if re.fullmatch(r"## Response[ \t]*", line):
+            response_start = index + 1
+    if response_start is None:
+        return output.strip()
+    return "\n".join(lines[response_start:]).strip()
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -1764,7 +1783,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 if not output_files:
                     continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                latest_output = _extract_cron_response_for_context(
+                    output_files[0].read_text(encoding="utf-8")
+                )
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
                 if len(latest_output) > _MAX_CONTEXT_CHARS:

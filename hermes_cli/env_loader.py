@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from hermes_constants import get_hermes_home
 from utils import atomic_replace
 
 
@@ -217,14 +219,22 @@ def load_hermes_dotenv(
     """Load Hermes environment files with user config taking precedence.
 
     Behavior:
-    - `~/.hermes/.env` overrides stale shell-exported values when present.
+    - the Hermes home `.env` overrides stale shell-exported values when present.
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
+
+    When ``hermes_home`` is not supplied, the home directory is resolved via
+    :func:`hermes_constants.get_hermes_home` so the platform-native default is
+    honored — ``%LOCALAPPDATA%\\hermes`` on native Windows, ``~/.hermes`` on
+    POSIX. Hardcoding ``Path.home() / ".hermes"`` here made the loader read the
+    wrong location on Windows when ``HERMES_HOME`` was unset (e.g. spawned
+    subprocesses), so installer-written keys never loaded and provider auth
+    silently failed.
     """
     loaded: list[Path] = []
 
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    home_path = Path(hermes_home) if hermes_home else get_hermes_home()
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 

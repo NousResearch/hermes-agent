@@ -86,6 +86,36 @@ def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "sk-123"
 
 
+def test_user_env_loads_from_localappdata_home_on_windows_when_hermes_home_unset(
+    tmp_path, monkeypatch
+):
+    """On native Windows the default .env lives under %LOCALAPPDATA%\\hermes.
+
+    Regression: ``load_hermes_dotenv()`` hardcoded ``Path.home() / ".hermes"``
+    as its fallback, but the platform-native home on Windows is
+    ``%LOCALAPPDATA%\\hermes`` (see ``hermes_constants.get_hermes_home``). With
+    ``HERMES_HOME`` unset — as happens in spawned subprocesses and some shells
+    — the installer-written keys under ``%LOCALAPPDATA%\\hermes\\.env`` were
+    never loaded, so provider auth silently failed even though setup "worked".
+    """
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    local_appdata = tmp_path / "AppData" / "Local"
+    hermes_home = local_appdata / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / ".env").write_text(
+        "OPENAI_API_KEY=sk-from-localappdata\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    loaded = load_hermes_dotenv()
+
+    assert loaded == [hermes_home / ".env"]
+    assert os.getenv("OPENAI_API_KEY") == "sk-from-localappdata"
+
+
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

@@ -2184,6 +2184,54 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         )
         # Use the Anthropic SDK's streaming context manager
         with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
+            # Some OpenAI-compatible gateways (e.g. new-api / one-api) that
+            # translate OpenAI Chat Completions into the Anthropic Messages
+            # wire format emit a malformed ``message_start`` event whose
+            # ``message.content`` is ``null`` instead of ``[]``.  The Anthropic
+            # SDK's ``accumulate_event`` then crashes on the subsequent
+            # ``content_block_start`` with
+            # ``AttributeError: 'NoneType' object has no attribute 'append'``
+            # (current_snapshot.content.append(...)).  Wrap the SDK stream's
+            # *raw* event source so the malformed ``message_start`` is
+            # normalised to ``content=[]`` BEFORE the SDK's internal
+            # ``accumulate_event`` ever sees it.  See #NNNNN.
+            _orig_raw_stream = getattr(stream, "_raw_stream", None)
+
+            if _orig_raw_stream is not None:
+                def _normalised_raw_stream():
+                    for sse_event in _orig_raw_stream:
+                        try:
+                            _et = getattr(sse_event, "type", None)
+                            if _et == "message_start":
+                                # Some OpenAI-compat gateways emit
+                                # ``message.content`` as ``null`` instead of ``[]``.
+                                _msg = getattr(sse_event, "message", None)
+                                if _msg is not None and getattr(_msg, "content", None) is None:
+                                    _msg.content = []
+                            elif _et == "content_block_start":
+                                # Same gateways emit content blocks whose
+                                # string/list fields are ``null`` (e.g.
+                                # ``ThinkingBlock(thinking=None, signature=None)``),
+                                # which then crash the SDK's ``+=`` accumulation
+                                # in ``content_block_delta`` handlers.  Normalise
+                                # the fields the SDK will try to append to.
+                                _blk = getattr(sse_event, "content_block", None)
+                                if _blk is not None:
+                                    _bt = getattr(_blk, "type", None)
+                                    if _bt == "text":
+                                        if getattr(_blk, "text", None) is None:
+                                            _blk.text = ""
+                                        if getattr(_blk, "citations", None) is None:
+                                            _blk.citations = []
+                                    elif _bt == "thinking":
+                                        if getattr(_blk, "thinking", None) is None:
+                                            _blk.thinking = ""
+                        except Exception:
+                            pass
+                        yield sse_event
+
+                stream._raw_stream = _normalised_raw_stream()
+
             # The Anthropic SDK exposes the raw httpx response on
             # ``stream.response``.  Snapshot diagnostic headers
             # immediately so they survive a stream that dies before the

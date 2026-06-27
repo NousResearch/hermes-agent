@@ -220,7 +220,11 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
     mock_run = AsyncMock(return_value=({"final_response": "fresh answer", "session_id": session_id}, {"total_tokens": 3}))
     app = _create_session_app(auth_adapter)
-    with patch.object(auth_adapter, "_run_agent", mock_run):
+    with patch.object(auth_adapter, "_run_agent", mock_run), patch.object(
+        auth_adapter,
+        "_normalize_session_chat_request",
+        wraps=auth_adapter._normalize_session_chat_request,
+    ) as wrapped_normalize:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(
                 f"/api/sessions/{session_id}/chat",
@@ -236,6 +240,7 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
     assert payload["session_id"] == session_id
     assert payload["message"]["role"] == "assistant"
     assert payload["message"]["content"] == "fresh answer"
+    wrapped_normalize.assert_called_once()
     mock_run.assert_awaited_once()
     _, kwargs = mock_run.call_args
     assert kwargs["session_id"] == session_id
@@ -249,6 +254,32 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
         {"role": "user", "content": "earlier"},
         {"role": "assistant", "content": "prior answer"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_normalize_session_chat_request_builds_shared_model(auth_adapter, session_db):
+    session_id = session_db.create_session("normalized-chat-session", "api_server")
+    session_db.append_message(session_id, "user", "earlier")
+
+    normalized, err = auth_adapter._normalize_session_chat_request(
+        {"message": "next", "system_message": "stay focused"},
+        session_id=session_id,
+        gateway_session_key="client-42",
+        mode="sync_turn",
+        request_id="session-normalized",
+    )
+
+    assert err is None
+    assert normalized is not None
+    assert normalized.mode == "sync_turn"
+    assert normalized.request_id == "session-normalized"
+    assert normalized.session_id == session_id
+    assert normalized.session_key == "client-42"
+    assert normalized.user_message == "next"
+    assert normalized.conversation_history == [{"role": "user", "content": "earlier"}]
+    assert normalized.ephemeral_system_prompt == "stay focused"
+    assert normalized.metadata == {"endpoint": "session_chat"}
+    assert normalized.reply_target == {"session_id": session_id}
 
 
 @pytest.mark.asyncio

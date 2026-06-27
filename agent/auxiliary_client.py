@@ -2783,6 +2783,25 @@ def _is_model_incompatible_error(exc: Exception) -> bool:
     ))
 
 
+def _is_invalid_aux_response_error(exc: Exception) -> bool:
+    """Detect provider responses that authenticated but cannot serve aux shape.
+
+    Some OpenAI-compatible routes return HTTP 200 with an empty/malformed
+    ChatCompletion instead of a normal provider error.  That is still a
+    provider/model capability failure for auxiliary tasks: downstream callers
+    need ``choices[0].message`` and should be able to continue through the
+    same fallback path as explicit model-incompatibility errors.
+    """
+    if not isinstance(exc, RuntimeError):
+        return False
+    msg = str(exc).lower()
+    return (
+        "auxiliary " in msg
+        and "llm returned invalid response" in msg
+        and "choices[0].message" in msg
+    )
+
+
 def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
@@ -5474,6 +5493,9 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
         if not choices or not hasattr(choices[0], "message"):
             raise AttributeError("missing choices[0].message")
     except (AttributeError, TypeError, IndexError) as exc:
+        recovered = _recover_aux_response_message(response)
+        if recovered is not None:
+            return recovered
         response_type = type(response).__name__
         response_preview = str(response)[:120]
         raise RuntimeError(
@@ -5483,6 +5505,64 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
             f"adapter or custom endpoint compatibility."
         ) from exc
     return response
+
+
+def _recover_aux_response_message(response: Any) -> Optional[Any]:
+    """Synthesize chat-completions shape from Responses-style text fields.
+
+    Auxiliary callers consume ``choices[0].message``.  Some compatible
+    endpoints return text outside ``choices`` (for example ``output_text`` or
+    ``output`` items).  Preserve that response before declaring it malformed.
+    """
+    text = _extract_aux_response_text(response)
+    if not text:
+        return None
+
+    choice = SimpleNamespace(
+        message=SimpleNamespace(content=text),
+        finish_reason=getattr(response, "finish_reason", None) or "stop",
+    )
+    try:
+        response.choices = [choice]
+        return response
+    except Exception:
+        return SimpleNamespace(
+            id=getattr(response, "id", ""),
+            model=getattr(response, "model", ""),
+            object=getattr(response, "object", "chat.completion"),
+            choices=[choice],
+            usage=getattr(response, "usage", None),
+        )
+
+
+def _extract_aux_response_text(response: Any) -> str:
+    output_text = _obj_get(response, "output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    output = _obj_get(response, "output")
+    if not isinstance(output, list):
+        return ""
+
+    parts: List[str] = []
+    for item in output:
+        item_type = _obj_get(item, "type")
+        if item_type and item_type != "message":
+            continue
+        for part in (_obj_get(item, "content") or []):
+            part_type = _obj_get(part, "type")
+            if part_type in {"output_text", "text", None}:
+                text = _obj_get(part, "text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+    return "\n".join(parts).strip()
+
+
+def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
+    value = getattr(obj, key, default)
+    if value is default and isinstance(obj, dict):
+        value = obj.get(key, default)
+    return value
 
 
 def call_llm(
@@ -5887,6 +5967,7 @@ def call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_invalid_aux_response_error(first_err)
         )
         # Respect explicit provider choice for transient errors (auth, request
         # validation, etc.) but allow fallback when the provider clearly cannot
@@ -5909,6 +5990,7 @@ def call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_invalid_aux_response_error(first_err)
         )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
@@ -5924,6 +6006,8 @@ def call_llm(
                 reason = "rate limit"
             elif _is_model_incompatible_error(first_err):
                 reason = "model incompatible with route"
+            elif _is_invalid_aux_response_error(first_err):
+                reason = "invalid provider response"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -6363,6 +6447,7 @@ async def async_call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_invalid_aux_response_error(first_err)
         )
         # Capacity errors (payment/quota/connection/rate-limit) bypass the
         # explicit-provider gate — the provider cannot serve the request
@@ -6377,6 +6462,7 @@ async def async_call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_invalid_aux_response_error(first_err)
         )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
@@ -6388,6 +6474,8 @@ async def async_call_llm(
                 reason = "rate limit"
             elif _is_model_incompatible_error(first_err):
                 reason = "model incompatible with route"
+            elif _is_invalid_aux_response_error(first_err):
+                reason = "invalid provider response"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

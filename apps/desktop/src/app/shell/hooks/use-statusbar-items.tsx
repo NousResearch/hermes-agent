@@ -186,14 +186,16 @@ export function useStatusbarItems({
     const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
+    const staleHint = !applying && behind <= 0 && updateStatus?.staleBuild ? ` (${copy.buildStale})` : ''
 
     const label = applying
       ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
+      : `${base}${behindHint}${staleHint}`
 
     const tooltip = [
       applying ? updateApply.message || copy.updateInProgress : null,
       !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
+      !applying && behind <= 0 && updateStatus?.staleBuild && copy.buildStale,
       appVersion && copy.desktopVersion(appVersion),
       sha && copy.commit(sha),
       updateStatus?.branch && copy.branch(updateStatus.branch)
@@ -202,7 +204,7 @@ export function useStatusbarItems({
       .join(' · ')
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
+      className: !applying && (behind > 0 || updateStatus?.staleBuild) ? 'text-primary hover:text-primary' : undefined,
       detail: appVersion && sha && !applying && !remote ? sha : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
@@ -221,7 +223,8 @@ export function useStatusbarItems({
     updateApply.stage,
     updateStatus?.behind,
     updateStatus?.branch,
-    updateStatus?.currentSha
+    updateStatus?.currentSha,
+    updateStatus?.staleBuild
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {

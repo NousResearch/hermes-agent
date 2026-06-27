@@ -116,6 +116,8 @@ export const zhHant = defineLocale({
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',
     updateReadyMessage: count => `有 ${count} 項新變更可用。`,
+    staleBuildTitle: '桌面版本已過期',
+    staleBuildMessage: '桌面應用程式建置時的 commit 與目前原始碼不同。請執行 hermes desktop --build-only 重新建置。',
     seeWhatsNew: '查看新增內容',
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
@@ -1870,6 +1872,7 @@ export const zhHant = defineLocale({
       update: '更新',
       updateInProgress: '更新中',
       commitsBehind: (count, branch) => `落後 ${branch} ${count} 個提交`,
+      buildStale: '版本已過期 — 需要重新建置',
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `後端 v${version}`,
       clientLabel: version => `用戶端 v${version}`,

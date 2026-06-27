@@ -116,6 +116,8 @@ export const zh: Translations = {
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',
     updateReadyMessage: count => `有 ${count} 项新更改可用。`,
+    staleBuildTitle: '桌面构建已过期',
+    staleBuildMessage: '桌面应用构建时的 commit 与当前源码不同。请运行 hermes desktop --build-only 重新构建。',
     seeWhatsNew: '查看更新内容',
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
@@ -1982,6 +1984,7 @@ export const zh: Translations = {
       update: '更新',
       updateInProgress: '正在更新',
       commitsBehind: (count, branch) => `落后 ${branch} ${count} 个提交`,
+      buildStale: '构建已过期 — 需要重新构建',
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `后端 v${version}`,
       clientLabel: version => `客户端 v${version}`,

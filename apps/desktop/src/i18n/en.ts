@@ -119,6 +119,8 @@ export const en: Translations = {
     updateHermes: 'Update Hermes',
     updateReadyTitle: 'Update ready',
     updateReadyMessage: count => `${count} new change${count === 1 ? '' : 's'} available.`,
+    staleBuildTitle: 'Desktop build is stale',
+    staleBuildMessage: 'The desktop app was built at a different commit than the current source. Run hermes desktop --build-only to rebuild.',
     seeWhatsNew: "See what's new",
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
@@ -1808,6 +1810,7 @@ export const en: Translations = {
       update: 'update',
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
+      buildStale: 'build stale — rebuild needed',
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `client v${version}`,

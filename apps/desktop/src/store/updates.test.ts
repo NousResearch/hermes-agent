@@ -102,8 +102,22 @@ describe('maybeNotifyUpdateAvailable', () => {
   })
 
   it('does nothing when already up to date', () => {
-    maybeNotifyUpdateAvailable(status({ behind: 0 }))
+    maybeNotifyUpdateAvailable(status({ behind: 0, staleBuild: false }))
     expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('shows stale build warning when behind is 0 but build is stale', () => {
+    maybeNotifyUpdateAvailable(status({ behind: 0, staleBuild: true }))
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0][0].id).toBe('desktop-stale-build')
+    expect(notifySpy.mock.calls[0][0].kind).toBe('warning')
+  })
+
+  it('shows both stale build and update when behind > 0 and build is stale', () => {
+    maybeNotifyUpdateAvailable(status({ behind: 3, staleBuild: true }))
+    expect(notifySpy).toHaveBeenCalledTimes(2)
+    expect(notifySpy.mock.calls[0][0].id).toBe('desktop-stale-build')
+    expect(notifySpy.mock.calls[1][0].id).toBe('desktop-update-available')
   })
 })
 

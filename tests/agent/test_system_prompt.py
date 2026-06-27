@@ -99,3 +99,73 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestOpenAIExecutionGuidanceInjection:
+    """Regression tests for the tool_use enforcement / OPENAI execution
+    discipline injection block in ``build_system_prompt_parts``.
+
+    Background — 2026-06-27 Telegram stall: GLM-5.2 replied with a
+    plain-text ``[TOOL_CALL]...[/TOOL_CALL]`` marker instead of a
+    structured ``tool_calls`` JSON block, so the runtime saw
+    ``tool_calls=None`` and finished with ``finish_reason=stop`` after
+    one assistant turn. Root cause: the system prompt injector only
+    added ``OPENAI_MODEL_EXECUTION_GUIDANCE`` for ``gpt/codex/grok``
+    substrings, so non-Google TOOL_USE_ENFORCEMENT_MODELS families
+    (``glm``, ``qwen``, ``deepseek``) got the lighter ``TOOL_USE_
+    ENFORCEMENT_GUIDANCE`` block but not the execution-discipline
+    block (tool persistence, anti-fabrication, mandatory_tool_use).
+    """
+
+    def _prompt(self, model, *, valid_tool_names=("terminal", "read_file"),
+                tool_use_enforcement=True):
+        agent = _make_agent(
+            valid_tool_names=list(valid_tool_names),
+            model=model,
+            _tool_use_enforcement=tool_use_enforcement,
+        )
+        return _stable_prompt(agent)
+
+    def test_glm_5_2_receives_openai_execution_guidance(self):
+        # The exact model from the 2026-06-27 Telegram stall reproduction.
+        stable = self._prompt("z-ai/glm-5.2")
+        assert "Execution discipline" in stable
+        assert "<tool_persistence>" in stable
+        assert "<mandatory_tool_use>" in stable
+
+    def test_deepseek_receives_openai_execution_guidance(self):
+        stable = self._prompt("deepseek/deepseek-v4-pro")
+        assert "Execution discipline" in stable
+
+    def test_qwen_receives_openai_execution_guidance(self):
+        stable = self._prompt("qwen/qwen-3-max")
+        assert "Execution discipline" in stable
+
+    def test_gpt_still_receives_openai_execution_guidance(self):
+        # No regression on the original coverage.
+        stable = self._prompt("openai/gpt-5.5")
+        assert "Execution discipline" in stable
+
+    def test_grok_still_receives_openai_execution_guidance(self):
+        stable = self._prompt("xai/grok-4")
+        assert "Execution discipline" in stable
+
+    def test_anthropic_opus_does_not_receive_openai_execution_guidance(self):
+        # Claude has its own anthropic-transport guidance; OPENAI_ block
+        # is body-agnostic but conceptually targeted at the families that
+        # share GPT/Grok/GLM failure modes. Don't double-inject.
+        stable = self._prompt("anthropic/claude-opus-4.8")
+        assert "Execution discipline" not in stable
+
+    def test_google_gemini_does_not_receive_openai_execution_guidance(self):
+        # Google gets the more specific GOOGLE_MODEL_OPERATIONAL block
+        # instead. Adding OPENAI_ would duplicate the parallel-call steer.
+        stable = self._prompt("google/gemini-2.5-pro")
+        assert "Execution discipline" not in stable
+        assert "Google model operational directives" in stable
+
+    def test_disabled_when_enforcement_off(self):
+        stable = self._prompt("z-ai/glm-5.2", tool_use_enforcement=False)
+        # When the whole block is off neither guidance should land.
+        assert "Execution discipline" not in stable
+        assert "Tool-use enforcement" not in stable

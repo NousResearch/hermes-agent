@@ -468,6 +468,61 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.server_error
         assert result.retryable is True
 
+    # ── Cloudflare 502 + large session → context overflow (#53771) ──
+
+    def test_502_cloudflare_large_session_context_overflow(self):
+        """Cloudflare 502 origin_bad_gateway with large session → compress."""
+        e = MockAPIError(
+            "Error 502: Bad gateway",
+            status_code=502,
+            body={
+                "error": {
+                    "code": 502,
+                    "message": "Error 502: Bad gateway",
+                    "error_name": "origin_bad_gateway",
+                    "error_category": "origin",
+                    "cloudflare_error": True,
+                }
+            },
+        )
+        result = classify_api_error(
+            e, approx_tokens=240000, context_length=200000, num_messages=296
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.retryable is True
+        assert result.should_compress is True
+
+    def test_502_cloudflare_small_session_still_server_error(self):
+        """Cloudflare 502 with small session → server_error (not overflow)."""
+        e = MockAPIError(
+            "Error 502: Bad gateway",
+            status_code=502,
+            body={
+                "error": {
+                    "code": 502,
+                    "message": "Error 502: Bad gateway",
+                    "error_name": "origin_bad_gateway",
+                    "cloudflare_error": True,
+                }
+            },
+        )
+        result = classify_api_error(e, approx_tokens=5000, context_length=200000)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_502_non_cloudflare_large_session_still_server_error(self):
+        """Non-Cloudflare 502 with large session → server_error (no change)."""
+        e = MockAPIError(
+            "Bad Gateway",
+            status_code=502,
+            body={"error": {"message": "upstream connect error"}},
+        )
+        result = classify_api_error(
+            e, approx_tokens=240000, context_length=200000, num_messages=296
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
     # ── Model not found ──
 
     def test_404_model_not_found(self):

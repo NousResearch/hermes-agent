@@ -936,6 +936,27 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
+        # Cloudflare 502/500 with large session → probable context overflow.
+        # Cloudflare returns structured error bodies with fields like
+        # cloudflare_error, error_name ("origin_bad_gateway"), and
+        # error_category ("origin") when the upstream provider rejects an
+        # oversized request.  Retrying the same payload is futile; trigger
+        # context compression instead.  Issue #53771.
+        _err_obj = body.get("error", {}) if isinstance(body, dict) else {}
+        _is_cloudflare = (
+            (isinstance(_err_obj, dict) and _err_obj.get("cloudflare_error") is True)
+            or "cloudflare_error" in error_msg
+            or "origin_bad_gateway" in error_msg
+        )
+        if _is_cloudflare and (
+            approx_tokens > context_length * 0.4
+            or (context_length <= 256000 and (approx_tokens > 80000 or num_messages > 80))
+        ):
+            return result_fn(
+                FailoverReason.context_overflow,
+                retryable=True,
+                should_compress=True,
+            )
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in {503, 529}:

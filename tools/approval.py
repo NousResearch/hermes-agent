@@ -1857,6 +1857,55 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
+_EXEC_CODE_SECRET_READ_RE = re.compile(
+    r'(\bos\.environ\b|\bos\.getenv\s*\(|\bdotenv\b|\.env\b|'
+    r'\b(open|read_text)\s*\([^)]*(?:secret|token|password|credential|'
+    r'\.env|\.npmrc|\.pypirc|\.netrc|id_rsa|config\.yaml))',
+    re.IGNORECASE | re.DOTALL,
+)
+_EXEC_CODE_DIRECT_EGRESS_RE = re.compile(
+    r'(\brequests\.(?:post|put|patch|get|request)\s*\(|'
+    r'\burllib\.request\.(?:urlopen|Request)\s*\(|'
+    r'\bhttpx\.(?:post|put|patch|get|request)\s*\(|'
+    r'\bsocket\.create_connection\s*\(|'
+    r'\bsubprocess\.[^(]*\([^)]*(?:curl|wget|powershell|Invoke-WebRequest|iwr)\b|'
+    r'\bos\.system\s*\([^)]*(?:curl|wget|powershell|Invoke-WebRequest|iwr)\b)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _execute_code_oob_exfil_risk(code: str) -> bool:
+    """Detect scripts that combine local secret reads with direct egress."""
+    return bool(
+        _EXEC_CODE_SECRET_READ_RE.search(code or "")
+        and _EXEC_CODE_DIRECT_EGRESS_RE.search(code or "")
+    )
+
+
+def _execute_code_oob_exfil_description() -> str:
+    return (
+        "execute_code out-of-band exfiltration risk. The script reads local "
+        "secrets or environment values and also opens a direct network egress "
+        "path before normal tool approval boundaries can inspect the payload."
+    )
+
+
+def _execute_code_oob_exfil_block() -> dict:
+    description = _execute_code_oob_exfil_description()
+    return {
+        "approved": False,
+        "message": (
+            "BLOCKED: execute_code script reads local secrets or environment "
+            "values and also performs direct network egress. Run the review "
+            "and transfer steps separately through approved tools."
+        ),
+        "pattern_key": "execute_code_oob_exfil",
+        "description": description,
+        "outcome": "blocked",
+        "user_consent": False,
+    }
+
+
 def check_execute_code_guard(code: str, env_type: str) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
@@ -1887,13 +1936,22 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
         return {"approved": True, "message": None}
 
-    # --yolo or approvals.mode=off: bypass (session- or process-scoped).
-    approval_mode = _get_approval_mode()
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
-        return {"approved": True, "message": None}
-
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    exfil_risk = _execute_code_oob_exfil_risk(code)
+    if exfil_risk and not is_gateway and not is_ask:
+        return _execute_code_oob_exfil_block()
+
+    if exfil_risk:
+        pattern_key = "execute_code_oob_exfil"
+        description = _execute_code_oob_exfil_description()
+
+    # --yolo or approvals.mode=off: bypass (session- or process-scoped).
+    approval_mode = _get_approval_mode()
+    if not exfil_risk and (
+        _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off"
+    ):
+        return {"approved": True, "message": None}
 
     # Cron: no user is present to approve arbitrary code.
     if env_var_enabled("HERMES_CRON_SESSION"):

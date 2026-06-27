@@ -209,6 +209,12 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: Dict[str, ToolEntry] = {}
+        # Durable map: plugin module namespace (handler.__globals__["__name__"])
+        # -> operator opt-in for built-in override. Populated at plugin load and
+        # never cleared, so a plugin's override authorization is bound to the
+        # code that defined the handler, independent of WHEN the register() call
+        # happens (sync during load, or a delayed/threaded callback afterwards).
+        self._plugin_override_policy: Dict[str, bool] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
@@ -287,6 +293,39 @@ class ToolRegistry:
     # Registration
     # ------------------------------------------------------------------
 
+    def register_plugin_override_policy(self, module_namespace: str, allowed: bool) -> None:
+        """Bind a plugin module namespace to its operator opt-in for built-in
+        override. Called once per plugin at load time. Durable: never cleared,
+        so later (even threaded/delayed) register() calls from that module are
+        still gated by the same policy.
+        """
+        with self._lock:
+            self._plugin_override_policy[module_namespace] = bool(allowed)
+
+    def _plugin_owner_of(self, handler: Callable) -> Optional[str]:
+        """Return the plugin module namespace that defined *handler*, or None
+        if it was not defined in a loaded plugin module.
+
+        Authorization is bound to where the handler was DEFINED
+        (``handler.__globals__["__name__"]``), which is fixed at definition
+        time and cannot drift with the call site, thread, or timing. Lambdas
+        and nested functions inherit the defining module's globals, so a
+        plugin cannot launder an override through a callback. Built-in/MCP
+        handlers live outside the plugin namespace and return None (unchanged
+        behavior).
+        """
+        try:
+            mod = handler.__globals__.get("__name__", "")  # type: ignore[attr-defined]
+        except AttributeError:
+            return None
+        if mod in self._plugin_override_policy:
+            return mod
+        # Also gate plugin modules currently loading but not yet policy-recorded
+        # (defensive: a handler defined in the plugin namespace is plugin code).
+        if isinstance(mod, str) and mod.startswith("hermes_plugins."):
+            return mod
+        return None
+
     def register(
         self,
         name: str,
@@ -325,22 +364,22 @@ class ToolRegistry:
                         name, toolset, existing.toolset,
                     )
                 elif override:
-                    _scope = getattr(self, "_active_plugin_override", None)
-                    if _scope is not None and not _scope[1]:
+                    _owner = self._plugin_owner_of(handler)
+                    if _owner is not None and not self._plugin_override_policy.get(_owner, False):
                         logger.error(
                             "Tool registration REJECTED: plugin %r attempted to "
                             "override built-in tool %r (existing toolset %r) without "
                             "operator opt-in. Set "
-                            "plugins.entries.%s.allow_tool_override: true in "
-                            "config.yaml to allow it.",
-                            _scope[0], name, existing.toolset, _scope[0],
+                            "plugins.entries.<plugin_id>.allow_tool_override: true "
+                            "in config.yaml to allow it.",
+                            _owner, name, existing.toolset,
                         )
                         raise PermissionError(
-                            f"Plugin {_scope[0]!r} cannot override built-in tool "
-                            f"{name!r} without operator opt-in "
-                            f"(plugins.entries.{_scope[0]}.allow_tool_override: true)."
+                            f"Plugin module {_owner!r} cannot override built-in "
+                            f"tool {name!r} without operator opt-in "
+                            f"(allow_tool_override)."
                         )
-                    # Explicit plugin opt-in: replace the existing tool.
+                    # Explicit opt-in (or non-plugin caller): replace the tool.
                     # Logged at INFO so the override is auditable in agent.log.
                     logger.info(
                         "Tool '%s': toolset '%s' overriding existing toolset '%s' "

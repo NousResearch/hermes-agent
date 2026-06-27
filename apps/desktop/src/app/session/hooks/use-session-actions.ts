@@ -677,6 +677,32 @@ export function useSessionActions({
         setCurrentBranch(cachedViewState.branch)
         setSessionStartedAt(Date.now())
 
+        // Check if the stored session was updated externally (e.g. via
+        // Telegram, Discord, or another Desktop instance). If the stored
+        // message_count differs from the cached messages, refetch so the
+        // user sees the latest turns without restarting the app (#42962).
+        try {
+          const stored = $sessions.get().find(s => s.id === storedSessionId)
+          const cachedMsgCount = cachedState.messages?.length ?? 0
+
+          if (stored && stored.message_count !== cachedMsgCount) {
+            const fresh = await getSessionMessages(storedSessionId, sessionProfile)
+
+            if (isCurrentResume()) {
+              const freshMessages = preserveLocalAssistantErrors(
+                toChatMessages(fresh.messages),
+                $messages.get()
+              )
+
+              if (!chatMessageArraysEquivalent($messages.get(), freshMessages)) {
+                setMessages(freshMessages)
+              }
+            }
+          }
+        } catch {
+          // Non-fatal: the cached view is still usable.
+        }
+
         try {
           const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 

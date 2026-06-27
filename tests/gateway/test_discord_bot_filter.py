@@ -2,7 +2,7 @@
 
 import os
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -40,20 +40,24 @@ def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
 class TestDiscordBotFilter(unittest.TestCase):
     """Test the DISCORD_ALLOW_BOTS filtering logic."""
 
-    def _run_filter(self, message, allow_bots="none", client_user=None):
+    def _run_filter(self, message, allow_bots="none", client_user=None, allowed_user_ids=None):
         """Simulate the on_message filter logic and return whether message was accepted."""
         # Replicate the exact filter logic from discord.py on_message
         if message.author == client_user:
             return False  # own messages always ignored
 
+        allowed_user_ids = allowed_user_ids or set()
         if getattr(message.author, "bot", False):
-            allow = allow_bots.lower().strip()
-            if allow == "none":
-                return False
-            elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
+            author_id = str(getattr(message.author, "id", ""))
+            explicitly_allowed_bot = bool(author_id and author_id in allowed_user_ids)
+            if not explicitly_allowed_bot:
+                allow = allow_bots.lower().strip()
+                if allow == "none":
                     return False
-            # "all" falls through
+                elif allow == "mentions":
+                    if not client_user or client_user not in message.mentions:
+                        return False
+            # "all" falls through; explicit allowlist falls through
         
         return True  # message accepted
 
@@ -72,10 +76,24 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "all"))
 
     def test_allow_bots_none_rejects_bots(self):
-        """With allow_bots=none, all other bot messages are rejected."""
+        """With allow_bots=none, non-allowlisted bot messages are rejected."""
         bot = _make_author(bot=True)
         msg = _make_message(author=bot)
         self.assertFalse(self._run_filter(msg, "none"))
+
+    def test_allow_bots_none_accepts_explicitly_allowlisted_bot(self):
+        """DISCORD_ALLOWED_USERS can explicitly trust another bot/agent."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, mentions=[our_user])
+        self.assertTrue(
+            self._run_filter(
+                msg,
+                "none",
+                our_user,
+                allowed_user_ids={str(bot.id)},
+            )
+        )
 
     def test_allow_bots_all_accepts_bots(self):
         """With allow_bots=all, all bot messages are accepted."""
@@ -99,7 +117,8 @@ class TestDiscordBotFilter(unittest.TestCase):
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""
-        default = os.getenv("DISCORD_ALLOW_BOTS", "none")
+        with patch.dict(os.environ, {}, clear=True):
+            default = os.getenv("DISCORD_ALLOW_BOTS", "none")
         self.assertEqual(default, "none")
 
     def test_case_insensitive(self):

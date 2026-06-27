@@ -94,11 +94,18 @@ def _load_governor_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, 
 
 def _blocked_task_classes(raw_cfg: Dict[str, Any]) -> set[str]:
     raw = raw_cfg.get("block_task_classes")
-    if raw is None:
-        return set(DEFAULT_BLOCKED_TASK_CLASSES)
     if not isinstance(raw, list):
-        return set(DEFAULT_BLOCKED_TASK_CLASSES)
-    return {str(item).strip().lower() for item in raw if str(item).strip()}
+        computed = set(DEFAULT_BLOCKED_TASK_CLASSES)
+    else:
+        computed = {str(item).strip().lower() for item in raw if str(item).strip()}
+    # PROTECTED classes must NEVER be blockable, regardless of config. A
+    # misconfigured block list (e.g. protect_interactive_main=False AND
+    # "interactive_main" added to block_task_classes) must not be able to defer
+    # the interactive main loop or the critical compression path — that would
+    # surface as a hard RuntimeError in conversation_loop and crash the user's
+    # turn. This subtraction is the real guarantee; the protect_interactive_main
+    # flag is only an early-allow optimisation.
+    return computed - PROTECTED_TASK_CLASSES
 
 
 def _codex_status() -> Dict[str, Any]:

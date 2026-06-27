@@ -158,3 +158,82 @@ def test_aux_auto_keeps_codex_main_for_compression(monkeypatch):
 
     assert client is codex_client
     assert model == "gpt-5.5"
+
+
+# --- Adversarial-review hardening (2026-06-27): foot-gun + fail-open ---
+
+
+def test_protected_class_never_blocked_even_if_misconfigured(monkeypatch):
+    """A misconfigured block list must NOT be able to defer the interactive
+    main loop or compression — that would crash the user's turn via
+    conversation_loop's RuntimeError. PROTECTED is unconditionally excluded."""
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_codex_auth_status",
+        lambda: {"rate_limited": True, "reset_at": 123.0},
+    )
+    hostile_cfg = {
+        "capacity_governor": {
+            "enabled": True,
+            # Operator turns protection off AND adds critical classes to the
+            # block list — the worst-case misconfiguration.
+            "protect_interactive_main": False,
+            "block_task_classes": ["interactive_main", "compression_critical"],
+        }
+    }
+    for task in ("interactive_main", "compression_critical"):
+        decision = check_capacity(
+            provider="openai-codex",
+            model="gpt-5.5",
+            task_class=task,
+            config=hostile_cfg,
+        )
+        assert decision.allowed is True, f"{task} must never be deferred"
+
+
+def test_failopen_when_codex_status_raises(monkeypatch):
+    """The #1 safety property: if the codex status lookup throws, the gate must
+    allow (fail-open), never block a real call."""
+
+    def _boom():
+        raise RuntimeError("auth lookup exploded")
+
+    monkeypatch.setattr("hermes_cli.auth.get_codex_auth_status", _boom)
+
+    decision = check_capacity(
+        provider="openai-codex",
+        model="gpt-5.5",
+        task_class="background_review",  # would be blocked if status said exhausted
+        config=_enabled_config(),
+    )
+    assert decision.allowed is True
+
+
+def test_failopen_when_config_missing(monkeypatch):
+    """No config (None) → governor disabled by default → allow."""
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_codex_auth_status",
+        lambda: {"rate_limited": True, "reset_at": 123.0},
+    )
+    decision = check_capacity(
+        provider="openai-codex",
+        model="gpt-5.5",
+        task_class="background_review",
+        config=None,
+    )
+    assert decision.allowed is True
+
+
+def test_allows_exhausted_codex_for_task_outside_block_list(monkeypatch):
+    """Even when codex is exhausted, a task that is not in the block list must
+    pass — only explicitly blocked classes are deferred."""
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_codex_auth_status",
+        lambda: {"rate_limited": True, "reset_at": 123.0},
+    )
+    decision = check_capacity(
+        provider="openai-codex",
+        model="gpt-5.5",
+        task_class="some_unlisted_task",
+        config=_enabled_config(),  # block list does not contain this task
+    )
+    assert decision.allowed is True

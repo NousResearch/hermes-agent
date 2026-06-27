@@ -1552,22 +1552,52 @@ function getVenvPython(venvRoot) {
   return path.join(venvRoot, IS_WINDOWS ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'))
 }
 
-function readVenvHome(venvRoot) {
+function readPyvenvCfg(venvRoot) {
   try {
-    const cfg = fs.readFileSync(path.join(venvRoot, 'pyvenv.cfg'), 'utf8')
-    const match = cfg.match(/^home\s*=\s*(.+?)\s*$/im)
-    return match ? match[1].trim() : null
+    return fs.readFileSync(path.join(venvRoot, 'pyvenv.cfg'), 'utf8')
   } catch {
     return null
   }
 }
 
+function readVenvHome(venvRoot) {
+  const cfg = readPyvenvCfg(venvRoot)
+  if (!cfg) return null
+  const match = cfg.match(/^home\s*=\s*(.+?)\s*$/im)
+  return match ? match[1].trim() : null
+}
+
+// uv-created venvs ship a launcher shim at venv\Scripts\pythonw.exe that
+// internally respawns the *console* base python.exe — opening a visible cmd
+// window even when CREATE_NO_WINDOW / windowsHide is set on our spawn. The
+// fix is the same one hermes_cli/gateway_windows.py::_resolve_detached_python
+// uses: detect uv via pyvenv.cfg and prefer the base interpreter's
+// pythonw.exe, then add the venv's site-packages to PYTHONPATH so imports
+// still resolve. See issue #53016 and PR #41028 for prior art on the CLI side.
+function isUvVenv(venvRoot) {
+  const cfg = readPyvenvCfg(venvRoot)
+  if (!cfg) return false
+  return /^uv\s*=/im.test(cfg)
+}
+
 function getNoConsoleVenvPython(venvRoot) {
   if (!IS_WINDOWS) return getVenvPython(venvRoot)
 
-  // Prefer the venv's own pythonw shim — it carries pyvenv.cfg / site-packages
-  // wiring. Falling back to the base uv/python.org pythonw.exe skips the venv
-  // and breaks imports (yaml, hermes_cli, …) even when PYTHONPATH is patched.
+  // For uv-created venvs, the venv\Scripts\pythonw.exe is a launcher shim
+  // that re-execs the base console python.exe — bypass it and use the base
+  // pythonw.exe directly. Callers must add the venv site-packages to
+  // PYTHONPATH (see createPythonBackend / createActiveBackend) so imports
+  // still resolve.
+  if (isUvVenv(venvRoot)) {
+    const baseHome = readVenvHome(venvRoot)
+    if (baseHome) {
+      const basePythonw = path.join(baseHome, 'pythonw.exe')
+      if (fileExists(basePythonw)) return basePythonw
+    }
+  }
+
+  // Non-uv venvs (python -m venv, virtualenv, etc.) ship a real pythonw.exe
+  // that already carries pyvenv.cfg / site-packages wiring, so prefer it.
   const venvPythonw = path.join(venvRoot, 'Scripts', 'pythonw.exe')
   if (fileExists(venvPythonw)) return venvPythonw
 
@@ -2790,6 +2820,11 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
   const venvPython = getVenvPython(venvRoot)
   const command = IS_WINDOWS && fileExists(venvPython) ? getNoConsoleVenvPython(venvRoot) : toNoConsolePython(python)
 
+  // When getNoConsoleVenvPython() bypasses the uv venv launcher (#53016) the
+  // base interpreter has no venv awareness — patch PYTHONPATH with the venv
+  // site-packages so imports resolve. For non-uv venvs this is a redundant
+  // duplicate entry (the venv pythonw.exe already adds site-packages on
+  // startup) and the path is deduped by appendUniquePathEntries.
   return applyWindowsNoConsoleSpawnHints({
     kind: 'python',
     label,
@@ -2797,7 +2832,7 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [root],
+      pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
       venvRoot
     }),
     root,
@@ -2821,7 +2856,7 @@ function createActiveBackend(dashboardArgs) {
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [ACTIVE_HERMES_ROOT],
+      pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
       venvRoot: VENV_ROOT
     }),
     root: ACTIVE_HERMES_ROOT,

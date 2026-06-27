@@ -44,12 +44,24 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   assert.match(source, /function toNoConsolePython\(pythonPath\)/)
   assert.match(source, /function applyWindowsNoConsoleSpawnHints\(backend\)/)
   assert.match(source, /function readVenvHome\(venvRoot\)/)
+  assert.match(source, /function readPyvenvCfg\(venvRoot\)/)
+  assert.match(source, /function isUvVenv\(venvRoot\)/)
+  // uv-created venv launcher shims re-exec the base console python.exe, so
+  // we must bypass venv\Scripts\pythonw.exe and use the base interpreter
+  // directly. See issue #53016 for the full root-cause writeup.
+  assert.match(source, /\/\^uv\\s\*=\/im\.test\(cfg\)/)
+  assert.match(source, /if \(isUvVenv\(venvRoot\)\) \{/)
   assert.match(source, /path\.join\(venvRoot, 'Scripts', 'pythonw\.exe'\)/)
   assert.match(source, /backendStartFailure/)
   assert.match(source, /HERMES_DESKTOP_READY_FILE/)
   assert.match(source, /readyFile: true/)
   assert.match(source, /function getVenvSitePackagesEntries\(venvRoot\)/)
   assert.match(source, /path\.join\(venvRoot, 'Lib', 'site-packages'\)/)
+  // createPythonBackend / createActiveBackend must add the venv site-packages
+  // to PYTHONPATH so the base pythonw.exe (used for uv venvs) can resolve
+  // venv-installed imports without going through the launcher shim.
+  assert.match(source, /pythonPathEntries: \[root, \.\.\.getVenvSitePackagesEntries\(venvRoot\)\]/)
+  assert.match(source, /pythonPathEntries: \[ACTIVE_HERMES_ROOT, \.\.\.getVenvSitePackagesEntries\(VENV_ROOT\)\]/)
   assert.match(source, /args: \['-m', 'hermes_cli\.main', \.\.\.dashboardArgs\]/)
 })
 

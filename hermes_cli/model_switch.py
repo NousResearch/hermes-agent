@@ -1814,8 +1814,21 @@ def list_authenticated_providers(
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models] if max_models is not None else model_ids
+        model_labels: dict[str, str] = {}
+        if overlay.auth_type == "aws_sdk" and hermes_slug == "bedrock":
+            try:
+                from agent.bedrock_adapter import configured_bedrock_model_labels
 
-        results.append({
+                configured_labels = configured_bedrock_model_labels()
+                model_labels = {
+                    mid: configured_labels[mid]
+                    for mid in top
+                    if configured_labels.get(mid)
+                }
+            except Exception:
+                model_labels = {}
+
+        row = {
             "slug": hermes_slug,
             "name": get_label(hermes_slug),
             "is_current": hermes_slug == current_provider or pid == current_provider,
@@ -1823,7 +1836,10 @@ def list_authenticated_providers(
             "models": top,
             "total_models": total,
             "source": "hermes",
-        })
+        }
+        if model_labels:
+            row["model_labels"] = model_labels
+        results.append(row)
         seen_slugs.add(pid.lower())
         seen_slugs.add(hermes_slug.lower())
         _record_builtin_endpoint(hermes_slug)
@@ -1889,8 +1905,21 @@ def list_authenticated_providers(
                 _cp_model_ids = curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models] if max_models is not None else _cp_model_ids
+        _cp_model_labels: dict[str, str] = {}
+        if _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk" and _cp.slug == "bedrock":
+            try:
+                from agent.bedrock_adapter import configured_bedrock_model_labels
 
-        results.append({
+                _configured_labels = configured_bedrock_model_labels()
+                _cp_model_labels = {
+                    mid: _configured_labels[mid]
+                    for mid in _cp_top
+                    if _configured_labels.get(mid)
+                }
+            except Exception:
+                _cp_model_labels = {}
+
+        _cp_row = {
             "slug": _cp.slug,
             "name": _cp.label,
             "is_current": _cp.slug == current_provider,
@@ -1898,7 +1927,10 @@ def list_authenticated_providers(
             "models": _cp_top,
             "total_models": _cp_total,
             "source": "canonical",
-        })
+        }
+        if _cp_model_labels:
+            _cp_row["model_labels"] = _cp_model_labels
+        results.append(_cp_row)
         seen_slugs.add(_cp.slug.lower())
         _record_builtin_endpoint(_cp.slug)
 

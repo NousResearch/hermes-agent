@@ -3,6 +3,27 @@ from types import SimpleNamespace
 from hermes_cli.status import show_status
 
 
+def _base_status_mocks(monkeypatch, tmp_path):
+    """Patch the non-messaging parts of ``show_status`` to keep tests focused."""
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_minimax_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+    return status_mod, gateway_mod
+
+
 def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")
@@ -131,6 +152,57 @@ def test_show_status_reports_nous_inference_key_without_portal_login(monkeypatch
     assert "Nous Portal   ✗ not logged in (Nous inference key configured)" in output
     assert "Inference:  https://inference.example.com/v1" in output
     assert "Nous inference credentials are configured" in output
+
+
+def test_show_status_uses_gateway_plugin_is_connected_over_check_fn(
+    monkeypatch, capsys, tmp_path
+):
+    """Plugin messaging rows must reuse gateway's provider-aware status gate.
+
+    Regression guard for the stale ``entry.check_fn()`` path in status.py:
+    deps-installed-but-unconfigured plugins should remain "not configured"
+    when their ``is_connected`` probe says the user has not provided creds.
+    """
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    _base_status_mocks(monkeypatch, tmp_path)
+
+    entry = PlatformEntry(
+        name="status-check-plugin",
+        label="StatusCheckPlugin",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        is_connected=lambda cfg: False,
+        required_env=["STATUS_CHECK_PLUGIN_TOKEN"],
+        source="plugin",
+    )
+    platform_registry.register(entry)
+    try:
+        show_status(SimpleNamespace(all=False, deep=False))
+    finally:
+        platform_registry.unregister(entry.name)
+
+    output = capsys.readouterr().out
+    assert "StatusCheckPlugin" in output
+    assert "not configured" in output
+
+
+def test_show_status_reports_whatsapp_enabled_not_paired(
+    monkeypatch, capsys, tmp_path
+):
+    """Messaging status should surface the gateway helper's pairing state."""
+    _base_status_mocks(monkeypatch, tmp_path)
+    monkeypatch.setenv("WHATSAPP_ENABLED", "true")
+
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(gateway_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "WhatsApp" in output
+    assert "enabled, not paired" in output
 
 
 # ---------------------------------------------------------------------------

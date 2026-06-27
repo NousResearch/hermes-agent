@@ -89,6 +89,56 @@ def _effective_provider_label() -> str:
 from hermes_constants import is_termux as _is_termux
 
 
+def _messaging_status_ok(status: str) -> bool:
+    """Return whether a messaging-platform status should get a green check.
+
+    Keep this aligned with ``hermes setup gateway`` so both surfaces agree on
+    what counts as meaningful configuration progress.
+    """
+    s = (status or "").strip().lower()
+    return not (
+        s == "not configured"
+        or s.startswith("partially")
+        or s.startswith("plugin disabled")
+    )
+
+
+def _iter_messaging_platform_rows() -> list[tuple[str, str]]:
+    """Return ``[(label, status), ...]`` for messaging platforms.
+
+    Reuse the gateway setup/status helpers so ``hermes status`` stays in sync
+    with plugin ``is_connected`` gates, WhatsApp pairing state, and other
+    platform-specific readiness logic.
+    """
+    from hermes_cli.gateway import _all_platforms, _platform_status
+
+    rows: list[tuple[str, str]] = []
+
+    home_channels = {}
+    try:
+        from gateway.config import load_gateway_config
+
+        gateway_cfg = load_gateway_config()
+        for platform, platform_cfg in getattr(gateway_cfg, "platforms", {}).items():
+            home = getattr(platform_cfg, "home_channel", None)
+            chat_id = getattr(home, "chat_id", None)
+            if chat_id:
+                home_channels[getattr(platform, "value", str(platform))] = str(chat_id)
+    except Exception:
+        home_channels = {}
+
+    for platform in _all_platforms():
+        key = str(platform.get("key") or "")
+        label = str(platform.get("label") or key)
+        status = _platform_status(platform)
+        home_chat_id = home_channels.get(key)
+        if home_chat_id and "home:" not in status:
+            status = f"{status} (home: {home_chat_id})"
+        rows.append((label, status))
+
+    return rows
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -422,50 +472,9 @@ def show_status(args):
     # =========================================================================
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
-
-    platforms = {
-        "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
-        "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
-        "WhatsApp": ("WHATSAPP_ENABLED", None),
-        "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
-        "Slack": ("SLACK_BOT_TOKEN", None),
-        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
-        "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
-        "DingTalk": ("DINGTALK_CLIENT_ID", None),
-        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
-        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
-        "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
-        "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
-        "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
-        "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
-        "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
-    }
-
-    for name, (token_var, home_var) in platforms.items():
-        token = os.getenv(token_var, "")
-        has_token = bool(token)
-        
-        home_channel = ""
-        if home_var:
-            home_channel = os.getenv(home_var, "")
-        # Back-compat: QQBot home channel was renamed from QQ_HOME_CHANNEL to QQBOT_HOME_CHANNEL
-        if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
-            home_channel = os.getenv("QQ_HOME_CHANNEL", "")
-        
-        status = "configured" if has_token else "not configured"
-        if home_channel:
-            status += f" (home: {home_channel})"
-        
-        print(f"  {name:<12}  {check_mark(has_token)} {status}")
-
-    # Plugin-registered platforms
     try:
-        from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
-            configured = entry.check_fn()
-            status_str = "configured" if configured else "not configured"
-            label = entry.label
-            print(f"  {label:<12}  {check_mark(configured)} {status_str} (plugin)")
+        for label, status in _iter_messaging_platform_rows():
+            print(f"  {label:<12}  {check_mark(_messaging_status_ok(status))} {status}")
     except Exception:
         pass
 

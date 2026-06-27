@@ -1819,3 +1819,74 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+class TestMentalModelInjection:
+    """Verbatim mental-model injection (recall_injection_model_id)."""
+
+    def test_unset_means_no_injection(self, provider_with_config):
+        p = provider_with_config()
+        assert p._injection_model_ids == []
+        assert p._get_injection_block() == ""
+
+    def test_config_parses_csv(self, provider_with_config):
+        p = provider_with_config(recall_injection_model_id="mm-1, mm-2 ,, mm-3")
+        assert p._injection_model_ids == ["mm-1", "mm-2", "mm-3"]
+
+    def test_config_parses_list(self, provider_with_config):
+        p = provider_with_config(recall_injection_model_id=["mm-1", " mm-2 ", ""])
+        assert p._injection_model_ids == ["mm-1", "mm-2"]
+
+    def test_env_var_fallback(self, provider_with_config, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_API_INJECTION_MODEL_ID", "mm-env")
+        p = provider_with_config()
+        assert p._injection_model_ids == ["mm-env"]
+
+    def test_block_fetches_and_formats(self, provider_with_config):
+        p = provider_with_config(recall_injection_model_id="mm-1,mm-2")
+        p._client.get_mental_model = MagicMock(side_effect=[
+            SimpleNamespace(content="Profile body", name="User Profile"),
+            SimpleNamespace(content="Style body", name="Communication Style"),
+        ])
+        block = p._get_injection_block()
+        assert "## User Profile" in block and "Profile body" in block
+        assert "## Communication Style" in block and "Style body" in block
+        assert "Hindsight Mental Model" in block
+
+    def test_block_caches_no_double_fetch(self, provider_with_config):
+        p = provider_with_config(recall_injection_model_id="mm-1")
+        p._client.get_mental_model = MagicMock(
+            return_value=SimpleNamespace(content="Body", name="X")
+        )
+        first = p._get_injection_block()
+        second = p._get_injection_block()
+        assert first == second
+        assert p._client.get_mental_model.call_count == 1
+
+    def test_block_trims_to_max_chars(self, provider_with_config):
+        p = provider_with_config(
+            recall_injection_model_id="mm-1", recall_injection_max_chars=50
+        )
+        p._client.get_mental_model = MagicMock(
+            return_value=SimpleNamespace(content="x" * 500, name="Big")
+        )
+        assert "…[truncated]" in p._get_injection_block()
+
+    def test_block_failsoft_on_error(self, provider_with_config):
+        p = provider_with_config(recall_injection_model_id="mm-bad")
+        p._client.get_mental_model = MagicMock(side_effect=RuntimeError("boom"))
+        assert p._get_injection_block() == ""
+
+    def test_block_skips_empty_content(self, provider_with_config):
+        p = provider_with_config(recall_injection_model_id="mm-empty")
+        p._client.get_mental_model = MagicMock(
+            return_value=SimpleNamespace(content="", name="Empty")
+        )
+        assert p._get_injection_block() == ""
+
+    def test_prefetch_includes_injection_without_recall(self, provider_with_config):
+        p = provider_with_config(recall_injection_model_id="mm-1")
+        p._client.get_mental_model = MagicMock(
+            return_value=SimpleNamespace(content="Body", name="User Profile")
+        )
+        out = p.prefetch("anything")
+        assert "## User Profile" in out and "Body" in out

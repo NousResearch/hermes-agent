@@ -457,3 +457,112 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+
+
+class TestContainerTagSentinels:
+    """Sentinel values like 'default' / '__default__' resolve to None (#27226)."""
+
+    def test_resolve_sentinel_default(self):
+        from plugins.memory.supermemory import _resolve_container_tag
+        assert _resolve_container_tag("default") is None
+
+    def test_resolve_sentinel_dunder_default(self):
+        from plugins.memory.supermemory import _resolve_container_tag
+        assert _resolve_container_tag("__default__") is None
+
+    def test_resolve_sentinel_my_space(self):
+        from plugins.memory.supermemory import _resolve_container_tag
+        assert _resolve_container_tag("my_space") is None
+        assert _resolve_container_tag("my space") is None
+
+    def test_resolve_sentinel_none_null(self):
+        from plugins.memory.supermemory import _resolve_container_tag
+        assert _resolve_container_tag("none") is None
+        assert _resolve_container_tag("null") is None
+        assert _resolve_container_tag("") is None
+
+    def test_resolve_normal_tag_preserved(self):
+        from plugins.memory.supermemory import _resolve_container_tag
+        assert _resolve_container_tag("hermes") == "hermes"
+        assert _resolve_container_tag("my_project") == "my_project"
+
+    def test_resolve_identity_template_with_sentinel(self):
+        from plugins.memory.supermemory import _resolve_container_tag
+        assert _resolve_container_tag("__default__", "alice") is None
+
+    def test_resolve_identity_template_normal(self):
+        from plugins.memory.supermemory import _resolve_container_tag
+        assert _resolve_container_tag("hermes_{identity}", "alice") == "hermes_alice"
+
+    def _make_client(self, container_tag=None):
+        """Helper to create _SupermemoryClient with mocked SDK import."""
+        from unittest.mock import MagicMock, patch
+        fake_sm_module = MagicMock()
+        with patch.dict("sys.modules", {"supermemory": fake_sm_module}):
+            from plugins.memory.supermemory import _SupermemoryClient
+            client = _SupermemoryClient(api_key="k", timeout=5, container_tag=container_tag)
+        client._client = MagicMock()
+        return client
+
+    def test_client_add_memory_omits_container_when_none(self):
+        from unittest.mock import MagicMock
+        client = self._make_client(container_tag=None)
+        client._client.documents.add.return_value = MagicMock(id="doc123")
+        client.add_memory("hello world")
+        _, kwargs = client._client.documents.add.call_args
+        assert "container_tags" not in kwargs
+
+    def test_client_add_memory_includes_container_when_set(self):
+        from unittest.mock import MagicMock
+        client = self._make_client(container_tag="hermes")
+        client._client.documents.add.return_value = MagicMock(id="doc123")
+        client.add_memory("hello world")
+        _, kwargs = client._client.documents.add.call_args
+        assert "container_tags" in kwargs
+        assert kwargs["container_tags"] == ["hermes"]
+
+    def test_client_search_omits_container_when_none(self):
+        from unittest.mock import MagicMock
+        client = self._make_client(container_tag=None)
+        client._client.search.memories.return_value = MagicMock(results=[])
+        client.search_memories("test query")
+        _, kwargs = client._client.search.memories.call_args
+        assert "container_tag" not in kwargs
+
+    def test_client_search_includes_container_when_set(self):
+        from unittest.mock import MagicMock
+        client = self._make_client(container_tag="hermes")
+        client._client.search.memories.return_value = MagicMock(results=[])
+        client.search_memories("test query")
+        _, kwargs = client._client.search.memories.call_args
+        assert kwargs["container_tag"] == "hermes"
+
+    def test_client_profile_omits_container_when_none(self):
+        from unittest.mock import MagicMock
+        client = self._make_client(container_tag=None)
+        client._client.profile.return_value = MagicMock(profile=None, search_results=None)
+        client.get_profile()
+        _, kwargs = client._client.profile.call_args
+        assert "container_tag" not in kwargs
+
+    def test_client_forget_omits_container_when_none(self):
+        client = self._make_client(container_tag=None)
+        client.forget_memory("mem123")
+        _, kwargs = client._client.memories.forget.call_args
+        assert "container_tag" not in kwargs
+        assert kwargs["id"] == "mem123"
+
+    def test_allowed_containers_excludes_none(self):
+        from unittest.mock import MagicMock, patch as mock_patch
+        import tempfile, os, json
+        p = SupermemoryMemoryProvider()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {"container_tag": "__default__"}
+            with open(os.path.join(tmp, "supermemory.json"), "w") as f:
+                json.dump(cfg, f)
+            fake_sm = MagicMock()
+            with mock_patch.dict("sys.modules", {"supermemory": fake_sm}):
+                p.initialize("test", hermes_home=tmp)
+        assert None not in p._allowed_containers

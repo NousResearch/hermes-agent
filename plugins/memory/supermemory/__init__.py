@@ -23,6 +23,13 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONTAINER_TAG = "hermes"
+# Values that mean "use Supermemory's default/My Space" instead of a
+# literal container tag.  Resolved to ``None`` so the SDK omits the
+# container parameter entirely, which targets the real default graph.
+# Sending a literal string like "default" creates a SEPARATE graph.
+_CONTAINER_TAG_SENTINELS = frozenset({
+    "", "__default__", "default", "my_space", "my space", "none", "null",
+})
 _DEFAULT_MAX_RECALL_RESULTS = 10
 _DEFAULT_PROFILE_FREQUENCY = 50
 _DEFAULT_CAPTURE_MODE = "all"
@@ -74,6 +81,19 @@ def _sanitize_tag(raw: str) -> str:
     tag = re.sub(r"[^a-zA-Z0-9_]", "_", raw or "")
     tag = re.sub(r"_+", "_", tag)
     return tag.strip("_") or _DEFAULT_CONTAINER_TAG
+
+
+def _resolve_container_tag(raw: str, identity: str = "default") -> Optional[str]:
+    """Resolve a raw container_tag config value to an actual tag or None.
+
+    Returns ``None`` when the value is a sentinel meaning "use
+    Supermemory's default/My Space".  The caller must omit container
+    parameters from SDK calls when the result is ``None``.
+    """
+    expanded = (raw or "").replace("{identity}", identity).strip().lower()
+    if expanded in _CONTAINER_TAG_SENTINELS:
+        return None
+    return _sanitize_tag(raw.replace("{identity}", identity))
 
 
 def _clamp_entity_context(text: str) -> str:
@@ -262,7 +282,7 @@ def _is_trivial_message(text: str) -> bool:
 
 
 class _SupermemoryClient:
-    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+    def __init__(self, api_key: str, timeout: float, container_tag: Optional[str], search_mode: str = "hybrid"):
         from supermemory import Supermemory
 
         self._api_key = api_key
@@ -289,11 +309,12 @@ class _SupermemoryClient:
     def add_memory(self, content: str, metadata: Optional[dict] = None, *,
                    entity_context: str = "", container_tag: Optional[str] = None,
                    custom_id: Optional[str] = None) -> dict:
-        tag = container_tag or self._container_tag
+        tag = container_tag if container_tag is not None else self._container_tag
         kwargs: dict[str, Any] = {
             "content": content.strip(),
-            "container_tags": [tag],
         }
+        if tag is not None:
+            kwargs["container_tags"] = [tag]
         if metadata:
             kwargs["metadata"] = self._merge_metadata(metadata)
         if entity_context:
@@ -306,9 +327,11 @@ class _SupermemoryClient:
     def search_memories(self, query: str, *, limit: int = 5,
                         container_tag: Optional[str] = None,
                         search_mode: Optional[str] = None) -> list[dict]:
-        tag = container_tag or self._container_tag
+        tag = container_tag if container_tag is not None else self._container_tag
         mode = search_mode or self._search_mode
-        kwargs: dict[str, Any] = {"q": query, "container_tag": tag, "limit": limit}
+        kwargs: dict[str, Any] = {"q": query, "limit": limit}
+        if tag is not None:
+            kwargs["container_tag"] = tag
         if mode in _VALID_SEARCH_MODES:
             kwargs["search_mode"] = mode
         response = self._client.search.memories(**kwargs)
@@ -325,8 +348,10 @@ class _SupermemoryClient:
 
     def get_profile(self, query: Optional[str] = None, *,
                     container_tag: Optional[str] = None) -> dict:
-        tag = container_tag or self._container_tag
-        kwargs: dict[str, Any] = {"container_tag": tag}
+        tag = container_tag if container_tag is not None else self._container_tag
+        kwargs: dict[str, Any] = {}
+        if tag is not None:
+            kwargs["container_tag"] = tag
         if query:
             kwargs["q"] = query
         response = self._client.profile(**kwargs)
@@ -349,8 +374,11 @@ class _SupermemoryClient:
         return {"static": static, "dynamic": dynamic, "search_results": search_results}
 
     def forget_memory(self, memory_id: str, *, container_tag: Optional[str] = None) -> None:
-        tag = container_tag or self._container_tag
-        self._client.memories.forget(container_tag=tag, id=memory_id)
+        tag = container_tag if container_tag is not None else self._container_tag
+        kwargs: dict[str, Any] = {"id": memory_id}
+        if tag is not None:
+            kwargs["container_tag"] = tag
+        self._client.memories.forget(**kwargs)
 
     def forget_by_query(self, query: str, *, container_tag: Optional[str] = None) -> dict:
         results = self.search_memories(query, limit=5, container_tag=container_tag)
@@ -368,8 +396,9 @@ class _SupermemoryClient:
         payload: dict = {
             "conversationId": session_id,
             "messages": messages,
-            "containerTags": [self._container_tag],
         }
+        if self._container_tag is not None:
+            payload["containerTags"] = [self._container_tag]
         if metadata:
             payload["metadata"] = self._merge_metadata(metadata)
 
@@ -509,9 +538,9 @@ class SupermemoryMemoryProvider(MemoryProvider):
         # Resolve container tag: env var > config > default.
         # Supports {identity} template for profile-scoped containers.
         env_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip()
-        raw_tag = env_tag or self._config["container_tag"]
+        raw_tag = env_tag or self._config.get("container_tag", _DEFAULT_CONTAINER_TAG)
         identity = kwargs.get("agent_identity", "default")
-        self._container_tag = _sanitize_tag(raw_tag.replace("{identity}", identity))
+        self._container_tag = _resolve_container_tag(raw_tag, identity)
 
         self._auto_recall = self._config["auto_recall"]
         self._auto_capture = self._config["auto_capture"]
@@ -524,7 +553,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._enable_custom_containers = self._config["enable_custom_container_tags"]
         self._custom_containers = self._config["custom_containers"]
         self._custom_container_instructions = self._config["custom_container_instructions"]
-        self._allowed_containers = [self._container_tag] + list(self._custom_containers)
+        self._allowed_containers = [t for t in [self._container_tag] + list(self._custom_containers) if t is not None]
 
         self._session_turns = []
 
@@ -553,7 +582,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             return ""
         lines = [
             "# Supermemory",
-            f"Active. Container: {self._container_tag}.",
+            f"Active. Container: {self._container_tag or 'My Space (Supermemory default)'}.",
             "Use supermemory-search, supermemory-save, supermemory-forget, and supermemory-profile (aliases: supermemory_search, supermemory_store, supermemory_forget, supermemory_profile).",
         ]
         if self._enable_custom_containers and self._custom_containers:

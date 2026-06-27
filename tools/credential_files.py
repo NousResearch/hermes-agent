@@ -245,12 +245,17 @@ def get_skills_directory_mount(
     return mounts
 
 
-_safe_skills_tempdir: Path | None = None
-
-
 def _safe_skills_path(skills_dir: Path) -> str:
-    """Return *skills_dir* if symlink-free, else a sanitized temp copy."""
-    global _safe_skills_tempdir
+    """Return *skills_dir* if symlink-free, else a sanitized copy.
+
+    The sanitized copy lives at a stable, host-relative path under
+    ``$HERMES_HOME/sandboxes/skills-safe/<hash>`` derived from the canonical
+    skills dir.  Contents are refreshed in place on every call — the directory
+    itself is never deleted, so a Docker container bind-mounted to it stays
+    valid across multiple invocations.  See #53630.
+    """
+    import hashlib
+    import shutil
 
     symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
     if not symlinks:
@@ -260,17 +265,65 @@ def _safe_skills_path(skills_dir: Path) -> str:
         logger.warning("credential_files: skipping symlink in skills dir: %s -> %s",
                        link, os.readlink(link))
 
-    import atexit
+    # Stable, hermes-relative path.  The hash mixes in a literal "skills-safe"
+    # marker so this never collides with other sandbox state under the same
+    # hermes home.  Resolve the skills_dir so symlinked skills homes still
+    # produce a deterministic key.
+    try:
+        canonical = str(skills_dir.resolve())
+    except OSError:
+        canonical = str(skills_dir)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+    hermes_home = _resolve_hermes_home()
+    safe_dir = hermes_home / "sandboxes" / "skills-safe" / digest
+    safe_dir.mkdir(parents=True, exist_ok=True)
+
+    # Refresh contents in place: remove any stale entries, then copy the
+    # non-symlink subset.  We deliberately never rmtree(safe_dir) — the dir
+    # is a bind-mount source for live Docker containers and removing it
+    # would invalidate those mounts (issue #53630).
+    _refresh_skills_copy(skills_dir, safe_dir)
+
+    logger.info("credential_files: stable symlink-safe skills copy at %s", safe_dir)
+    return str(safe_dir)
+
+
+def _refresh_skills_copy(skills_dir: Path, safe_dir: Path) -> None:
+    """Refresh *safe_dir* with a symlink-free copy of *skills_dir* in place.
+
+    Removes stale files and empty directories that no longer exist in the
+    source, then copies over the current non-symlink contents.  Never touches
+    the safe_dir itself — see the comment in :func:`_safe_skills_path` for why.
+    """
     import shutil
-    import tempfile
 
-    # Reuse the same temp dir across calls to avoid accumulation.
-    if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
-        shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
+    # Build the set of relative paths that should exist (non-symlink entries).
+    expected: set = set()
+    for item in skills_dir.rglob("*"):
+        if item.is_symlink():
+            continue
+        expected.add(item.relative_to(skills_dir))
 
-    safe_dir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
-    _safe_skills_tempdir = safe_dir
+    # Remove stale entries that no longer correspond to anything in the source.
+    if safe_dir.exists():
+        for existing in safe_dir.rglob("*"):
+            try:
+                rel = existing.relative_to(safe_dir)
+            except ValueError:
+                continue
+            if rel in expected:
+                continue
+            try:
+                if existing.is_dir() and not existing.is_symlink():
+                    # Leave empty dirs alone — they get cleaned if they become
+                    # empty via the rmdir pass below.
+                    continue
+                existing.unlink()
+            except FileNotFoundError:
+                pass
 
+    # Now copy the current contents.
     for item in skills_dir.rglob("*"):
         if item.is_symlink():
             continue
@@ -282,13 +335,13 @@ def _safe_skills_path(skills_dir: Path) -> str:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(item), str(target))
 
-    def _cleanup():
-        if safe_dir.is_dir():
-            shutil.rmtree(safe_dir, ignore_errors=True)
-
-    atexit.register(_cleanup)
-    logger.info("credential_files: created symlink-safe skills copy at %s", safe_dir)
-    return str(safe_dir)
+    # Best-effort: prune now-empty directories (top-down, safe because rmdir
+    # only succeeds on empty dirs).
+    for dirpath in [p for p in safe_dir.rglob("*") if p.is_dir()]:
+        try:
+            dirpath.rmdir()
+        except OSError:
+            pass
 
 
 def iter_skills_files(

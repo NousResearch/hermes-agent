@@ -10468,6 +10468,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     pass
             self._invalidate()
             return
+
+        if event_type == "subagent.tool" and function_name and self.tool_progress_mode in ("all", "new"):
+            try:
+                prefix = ""
+                task_count = kwargs.get("task_count", 1)
+                if task_count > 1:
+                    idx = kwargs.get("task_index", 0)
+                    prefix = f"[{idx + 1}] "
+                from agent.display import get_tool_emoji
+                emoji = get_tool_emoji(function_name)
+                short = preview or ""
+                from agent.display import get_tool_preview_max_len
+                _pl = get_tool_preview_max_len()
+                if _pl > 0 and short and len(short) > _pl:
+                    short = short[:_pl - 3] + "..."
+                line = f" {prefix}├─ {emoji} {function_name}"
+                if short:
+                    line += f'  "{short}"'
+                _cprint(f"  {line}")
+            except Exception:
+                pass
+            self._invalidate()
+            return
+
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):

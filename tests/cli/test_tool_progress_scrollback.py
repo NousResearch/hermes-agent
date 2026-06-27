@@ -226,3 +226,51 @@ class TestToolProgressScrollback:
         # First entry consumed, second remains
         assert len(cli._pending_tool_info.get("terminal", [])) == 1
         assert cli._pending_tool_info["terminal"][0] == {"command": "pwd"}
+
+
+class TestSubagentEventScrollback:
+    """Scrollback lines for delegate_task subagent events."""
+
+    def test_subagent_tool_prints_scrollback_line(self):
+        """subagent.tool prints an indented tree line with tool name."""
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.tool", "read_file", "src/main.py", None,
+                task_index=0, task_count=1, goal="read the file",
+            )
+        mock_print.assert_called_once()
+        line = mock_print.call_args[0][0]
+        assert "read_file" in line
+
+    def test_subagent_tool_hidden_in_off_mode(self):
+        """In 'off' mode, subagent.tool is not printed."""
+        cli = _make_cli(tool_progress="off")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.tool", "terminal", "ls", None,
+                task_index=0, task_count=1, goal="list",
+            )
+        mock_print.assert_not_called()
+
+    def test_subagent_tool_hidden_in_verbose_mode(self):
+        """In 'verbose' mode, subagent.tool should not add duplicate scrollback."""
+        cli = _make_cli(tool_progress="verbose")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.tool", "read_file", "src/main.py", None,
+                task_index=0, task_count=1, goal="read the file",
+            )
+        mock_print.assert_not_called()
+
+    def test_other_subagent_events_ignored(self):
+        """subagent.start/.complete/progress produce no output and don't affect spinner."""
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            for evt in ("subagent.start", "subagent.complete", "subagent.progress", "subagent_progress"):
+                cli._on_tool_progress(
+                    evt, None, "some text", None,
+                    task_index=0, task_count=1, goal="task", status="done",
+                )
+        mock_print.assert_not_called()
+        assert "some text" not in getattr(cli, "_spinner_text", "")

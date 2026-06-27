@@ -1091,7 +1091,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         current_provider = (getattr(agent, "provider", "") or "").strip().lower()
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-            agent._rate_limited_until = time.monotonic() + 60
+            # Cooldown before the next primary restore attempt.
+            # Default 60s; users may tune via fallback.rate_limit_cooldown_seconds
+            # in config.yaml to favour faster recovery or longer backoff.
+            _cooldown = 60
+            try:
+                _cooldown = int(getattr(agent, "_rate_limit_cooldown_seconds", 60))
+            except Exception:
+                pass
+            agent._rate_limited_until = time.monotonic() + _cooldown
     if agent._fallback_index >= len(agent._fallback_chain):
         return False
 

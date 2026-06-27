@@ -2863,6 +2863,41 @@ def run_conversation(
                         base_url=getattr(agent, "base_url", None),
                     )
                     if not pool_may_recover:
+                        # ── Transient rate-limit recovery ──────────────
+                        # If the error classifier determined this is a
+                        # transient throttle ("high demand", cluster-level
+                        # rate limit) rather than genuine quota exhaustion,
+                        # retry the primary with exponential backoff instead
+                        # of falling back.  The agent._transient_rate_limit
+                        # flag is set by recover_with_credential_pool()
+                        # when pool is None and the 429 body lacks
+                        # quota-exhaustion keywords.  See #PR.
+                        _is_transient = (
+                            getattr(agent, "_transient_rate_limit", False)
+                            and classified.reason == FailoverReason.rate_limit
+                        )
+                        if _is_transient:
+                            agent._transient_rate_limit = False  # consume flag
+                            _delay = min(2 ** retry_count, 30)
+                            agent._buffer_status(
+                                f"⏳ Rate limited (transient) — "
+                                f"retrying primary in {_delay}s..."
+                            )
+                            agent._flush_status_buffer()
+                            time.sleep(_delay)
+                            retry_count += 1
+                            # ── Transient retry budget guard ─────────────────────
+                            # Each transient retry consumes the main retry budget
+                            # (retry_count). When the budget is exhausted, do not
+                            # continue — fall through to the fallback path below
+                            # instead of exiting the while loop without ever
+                            # attempting fallback.  Fixes the bug where all 5
+                            # api_max_retries were burned on transient backoffs
+                            # and the user got "no reply" despite a configured
+                            # fallback provider.
+                            if retry_count < max_retries:
+                                continue
+
                         if classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."

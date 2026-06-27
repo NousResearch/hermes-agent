@@ -2511,9 +2511,13 @@ def run_job(
     # stdout to telegram" watchdog pattern. The agent path is skipped
     # entirely: no AIAgent, no prompt, no tool loop, no token spend.
     #
-    # We check this BEFORE importing run_agent / constructing SessionDB so
-    # a pure-script tick never pays for the agent machinery it isn't going
-    # to use. Keep this block self-contained.
+    # We check this BEFORE importing run_agent so a pure-script tick never
+    # pays for the agent machinery it isn't going to use. The run is still
+    # recorded as a ``cron_{job_id}_{ts}`` session (a cheap sqlite write,
+    # same shape as agent runs) so it appears in the run-history endpoint
+    # (``/api/cron/jobs/{id}/runs``) and the desktop GUI — without it,
+    # no_agent runs are invisible after a manual trigger (#44080). Keep
+    # this block self-contained.
     #
     # Semantics:
     #   - script stdout (trimmed) → delivered verbatim as the final message
@@ -2528,6 +2532,63 @@ def run_job(
             err = "no_agent=True but no script is set for this job"
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
+
+        # Record this run as a session BEFORE executing the script: the run
+        # session's open/ended state is what the desktop run-history endpoint
+        # uses for its "running" indicator (``is_active``), and the session
+        # row is the run record itself. Best-effort — a missing/broken state
+        # store degrades to the old no-record behaviour, never blocks the run.
+        _session_db = None
+        _run_session_id = None
+        try:
+            from hermes_state import SessionDB
+            _session_db = SessionDB()
+            _run_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+            _session_db.create_session(_run_session_id, source="cron")
+            # First user message becomes the run's preview in run history.
+            _session_db.append_message(
+                _run_session_id, "user", f"no_agent script: {script_path}"
+            )
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug(
+                "Job '%s': SQLite session store not available for no_agent run: %s",
+                job_id, e,
+            )
+            _session_db = None
+
+        def _record_run(run_doc: str, success: bool = True) -> None:
+            """Persist the outcome and close out this run's session record."""
+            if not _session_db:
+                return
+            try:
+                _session_db.append_message(_run_session_id, "assistant", run_doc)
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug(
+                    "Job '%s': failed to record no_agent run output: %s", job_id, e
+                )
+            # Same titling scheme as the agent path so sidebars/history show a
+            # meaningful label; the run-time suffix keeps it unique against
+            # the sessions.title index across runs.
+            try:
+                _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
+                _session_db.set_session_title(
+                    _run_session_id,
+                    f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}",
+                )
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
+            try:
+                _session_db.end_session(
+                    _run_session_id, "cron_complete" if success else "cron_failed"
+                )
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to end session: %s", job_id, e)
+            try:
+                _session_db.close()
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug(
+                    "Job '%s': failed to close SQLite session store: %s", job_id, e
+                )
 
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is just the subprocess cwd (not an
@@ -2569,6 +2630,7 @@ def run_job(
                 f"**Status:** script failed\n\n"
                 f"{output}\n"
             )
+            _record_run(doc, success=False)
             return False, doc, alert, output
 
         # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
@@ -2584,6 +2646,7 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (wakeAgent=false)\n"
             )
+            _record_run(silent_doc)
             return True, silent_doc, SILENT_MARKER, None
 
         if not output.strip():
@@ -2595,6 +2658,7 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (empty output)\n"
             )
+            _record_run(silent_doc)
             return True, silent_doc, SILENT_MARKER, None
 
         doc = (
@@ -2605,6 +2669,7 @@ def run_job(
             f"---\n\n"
             f"{output}\n"
         )
+        _record_run(doc)
         return True, doc, output, None
 
     # ---------------------------------------------------------------

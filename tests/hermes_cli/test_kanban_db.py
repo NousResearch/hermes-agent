@@ -4766,3 +4766,152 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Completion evidence / anti-cheat gates
+# ---------------------------------------------------------------------------
+
+def _git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(repo),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+def _make_git_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Hermes Test")
+    (repo / "base.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "base.txt")
+    _git(repo, "commit", "-m", "base")
+    try:
+        _git(repo, "branch", "-M", "main")
+    except AssertionError:
+        pass
+    return repo
+
+
+def test_complete_task_adds_substrate_git_evidence_manifest(kanban_home, tmp_path):
+    repo = _make_git_repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "feature.py").write_text("print('verified')\n", encoding="utf-8")
+    _git(repo, "add", "feature.py")
+    _git(repo, "commit", "-m", "feat: verified output")
+    commit = _git(repo, "rev-parse", "HEAD")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="implement feature on branch",
+            assignee="coder",
+            workspace_kind="dir",
+            workspace_path=str(repo),
+        )
+        ok = kb.complete_task(
+            conn,
+            tid,
+            summary="done",
+            metadata={"changed_files": ["hallucinated.py"], "base_ref": base},
+        )
+        run = kb.latest_run(conn, tid)
+
+    assert ok is True
+    assert run is not None
+    assert run.metadata is not None
+    assert run.metadata["claimed_changed_files"] == ["hallucinated.py"]
+    assert run.metadata["changed_files"] == ["feature.py"]
+    assert run.metadata["commit"] == commit
+    manifest = run.metadata["evidence_manifest"]
+    assert manifest["contract"] == "substrate_git_evidence_v1"
+    assert manifest["commit"] == commit
+    assert manifest["dirty"] is False
+    assert manifest["changed_files"][0]["path"] == "feature.py"
+    assert manifest["changed_files"][0]["sha256"]
+    assert manifest["diff_sha256"]
+    assert manifest["patch_id"]
+
+
+def test_complete_task_blocks_dirty_implementation_workspace(kanban_home, tmp_path):
+    repo = _make_git_repo(tmp_path)
+    (repo / "dirty.py").write_text("uncommitted\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="dirty implementation",
+            assignee="coder",
+            workspace_kind="dir",
+            workspace_path=str(repo),
+        )
+        with pytest.raises(kb.CompletionEvidenceError, match="uncommitted changes"):
+            kb.complete_task(conn, tid, summary="done")
+        task = kb.get_task(conn, tid)
+        events = list(kb.list_events(conn, tid))
+
+    assert task is not None
+    assert task.status == "ready"
+    assert any(e.kind == "completion_blocked_evidence" for e in events)
+
+
+def test_complete_task_blocks_when_task_requires_main_integration(kanban_home, tmp_path):
+    repo = _make_git_repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-b", "task-branch")
+    (repo / "main_required.py").write_text("branch only\n", encoding="utf-8")
+    _git(repo, "add", "main_required.py")
+    _git(repo, "commit", "-m", "feat: branch only")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="merge implementation to main",
+            body="Required: land this file on main before completing.",
+            assignee="coder",
+            workspace_kind="dir",
+            workspace_path=str(repo),
+        )
+        with pytest.raises(kb.CompletionEvidenceError, match="requires integration"):
+            kb.complete_task(conn, tid, summary="done", metadata={"base_ref": base, "target_ref": "main"})
+
+
+def test_scratch_task_can_complete_without_git_evidence(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="research", assignee="pm", workspace_kind="scratch")
+        assert kb.complete_task(conn, tid, summary="research done") is True
+        run = kb.latest_run(conn, tid)
+
+    assert run is not None
+    assert not (run.metadata or {}).get("evidence_manifest")
+
+
+def test_create_task_rejects_blocked_reviewer_remediation_child_deadlock(kanban_home):
+    with kb.connect() as conn:
+        reviewer = kb.create_task(conn, title="Review: feature", assignee="reviewer")
+        kb.block_task(conn, reviewer, reason="NO-GO: waiting for remediation")
+        with pytest.raises(ValueError, match="blocked-parent remediation deadlock"):
+            kb.create_task(
+                conn,
+                title="Remediate: fix feature",
+                body=f"Fix the blocker found in review task {reviewer}.",
+                assignee="senior-coder",
+                parents=[reviewer],
+            )
+
+
+def test_link_tasks_rejects_blocked_parent_waiting_on_child(kanban_home):
+    with kb.connect() as conn:
+        reviewer = kb.create_task(conn, title="Review: feature", assignee="reviewer")
+        child = kb.create_task(conn, title="Remediate: fix review", body="Fix the review blocker", assignee="senior-coder")
+        kb.block_task(conn, reviewer, reason=f"NO-GO: waiting for {child}")
+        with pytest.raises(ValueError, match="blocked-parent remediation deadlock"):
+            kb.link_tasks(conn, reviewer, child)

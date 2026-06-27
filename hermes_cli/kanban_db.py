@@ -2583,6 +2583,13 @@ def create_task(
                     ),
                 )
                 for pid in parents:
+                    _check_blocked_parent_remediation_deadlock(
+                        conn,
+                        pid,
+                        task_id,
+                        child_title=title,
+                        child_body=body,
+                    )
                     conn.execute(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
@@ -2742,6 +2749,16 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
+        child_row = conn.execute(
+            "SELECT title, body FROM tasks WHERE id = ?", (child_id,)
+        ).fetchone()
+        _check_blocked_parent_remediation_deadlock(
+            conn,
+            parent_id,
+            child_id,
+            child_title=child_row["title"] if child_row else None,
+            child_body=child_row["body"] if child_row else None,
+        )
         conn.execute(
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
@@ -3896,6 +3913,241 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class CompletionEvidenceError(ValueError):
+    """Raised when a code-work completion cannot be substrate-verified."""
+
+
+IMPLEMENTATION_ASSIGNEES = {"coder", "senior-coder", "devops"}
+
+
+def _git_run(workspace: Path, args: list[str], *, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    """Run git in *workspace* and return bytes output without invoking a shell."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(workspace),
+        input=input_bytes,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def _git_stdout(workspace: Path, args: list[str]) -> str | None:
+    proc = _git_run(workspace, args)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode("utf-8", errors="replace").strip()
+
+
+def _git_sha256_blob(workspace: Path, commit: str, path: str) -> str | None:
+    proc = _git_run(workspace, ["show", f"{commit}:{path}"])
+    if proc.returncode != 0:
+        return None
+    return hashlib.sha256(proc.stdout).hexdigest()
+
+
+def _diff_bytes(workspace: Path, base_ref: str, commit: str) -> tuple[bytes, str]:
+    for notation in (f"{base_ref}...{commit}", f"{base_ref}..{commit}"):
+        proc = _git_run(workspace, ["diff", "--binary", notation])
+        if proc.returncode == 0:
+            return proc.stdout, notation
+    proc = _git_run(workspace, ["show", "--binary", "--format=", commit])
+    if proc.returncode == 0:
+        return proc.stdout, commit
+    return b"", "unavailable"
+
+
+def _diff_name_status(workspace: Path, base_ref: str, commit: str) -> list[dict[str, str]]:
+    output: str | None = None
+    for notation in (f"{base_ref}...{commit}", f"{base_ref}..{commit}"):
+        output = _git_stdout(workspace, ["diff", "--name-status", notation])
+        if output is not None:
+            break
+    if output is None:
+        output = _git_stdout(workspace, ["show", "--name-status", "--format=", commit]) or ""
+    changed: list[dict[str, str]] = []
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status = parts[0]
+        path = parts[-1]
+        old_path = parts[1] if status.startswith(("R", "C")) and len(parts) >= 3 else None
+        item = {"path": path, "status": status}
+        if old_path:
+            item["old_path"] = old_path
+        changed.append(item)
+    return changed
+
+
+def _body_requires_target_integration(title: str | None, body: str | None, metadata: dict[str, Any]) -> bool:
+    explicit = metadata.get("requires_target_integration")
+    if explicit is not None:
+        return bool(explicit)
+    text = f"{title or ''}\n{body or ''}".lower()
+    patterns = (
+        r"\b(on|onto|to|into)\s+(origin/)?main\b",
+        r"\bmerge(d)?\s+(to|into)\s+(origin/)?main\b",
+        r"\bland(s|ed)?\s+on\s+(origin/)?main\b",
+        r"\bmissing\s+from\s+(origin/)?main\b",
+    )
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _build_evidence_manifest(conn: sqlite3.Connection, task_id: str, metadata: Optional[dict]) -> tuple[Optional[dict], Optional[dict]]:
+    """Return (possibly updated metadata, substrate git manifest).
+
+    The manifest is computed by Hermes from git, never trusted from the worker.
+    Non-git/scratch tasks return the input metadata unchanged with no manifest.
+    """
+    row = conn.execute(
+        "SELECT id, title, body, assignee, workspace_kind, workspace_path FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return metadata, None
+    md: dict[str, Any] = dict(metadata or {})
+    workspace_kind = row["workspace_kind"]
+    workspace_path = row["workspace_path"]
+    assignee = row["assignee"]
+    if workspace_kind not in {"dir", "worktree"} or not workspace_path:
+        return md if metadata is not None else metadata, None
+    workspace = Path(str(workspace_path)).expanduser()
+    if not workspace.exists():
+        if assignee in IMPLEMENTATION_ASSIGNEES:
+            raise CompletionEvidenceError(
+                f"completion blocked: code workspace does not exist: {workspace}"
+            )
+        return md if metadata is not None else metadata, None
+    inside = _git_stdout(workspace, ["rev-parse", "--is-inside-work-tree"])
+    if inside != "true":
+        if assignee in IMPLEMENTATION_ASSIGNEES:
+            raise CompletionEvidenceError(
+                f"completion blocked: code workspace is not a git repository: {workspace}"
+            )
+        return md if metadata is not None else metadata, None
+
+    commit = _git_stdout(workspace, ["rev-parse", "HEAD"])
+    if not commit:
+        if assignee in IMPLEMENTATION_ASSIGNEES:
+            raise CompletionEvidenceError("completion blocked: unable to resolve git HEAD")
+        return md if metadata is not None else metadata, None
+    branch = _git_stdout(workspace, ["rev-parse", "--abbrev-ref", "HEAD"])
+    status = _git_stdout(workspace, ["status", "--porcelain=v1"]) or ""
+    dirty_entries = [line for line in status.splitlines() if line.strip()]
+    if dirty_entries and assignee in IMPLEMENTATION_ASSIGNEES:
+        raise CompletionEvidenceError(
+            "completion blocked: git workspace has uncommitted changes; commit or revert before kanban_complete"
+        )
+
+    base_ref = str(md.get("base_ref") or md.get("target_base_ref") or "origin/main")
+    diff, diff_ref = _diff_bytes(workspace, base_ref, commit)
+    diff_sha256 = hashlib.sha256(diff).hexdigest() if diff else None
+    patch_id = None
+    if diff:
+        patch_proc = _git_run(workspace, ["patch-id", "--stable"], input_bytes=diff)
+        if patch_proc.returncode == 0 and patch_proc.stdout.strip():
+            patch_id = patch_proc.stdout.decode("utf-8", errors="replace").split()[0]
+    changed_files = _diff_name_status(workspace, base_ref, commit)
+    for item in changed_files:
+        status_code = item.get("status", "")
+        if status_code.startswith("D"):
+            continue
+        sha = _git_sha256_blob(workspace, commit, item["path"])
+        if sha:
+            item["sha256"] = sha
+
+    target_ref = str(md.get("target_ref") or "origin/main")
+    requires_target = _body_requires_target_integration(row["title"], row["body"], md)
+    target_reachable = None
+    target_error = None
+    if requires_target:
+        probe = _git_run(workspace, ["merge-base", "--is-ancestor", commit, target_ref])
+        target_reachable = probe.returncode == 0
+        if not target_reachable:
+            target_error = probe.stderr.decode("utf-8", errors="replace").strip() or f"{commit} is not reachable from {target_ref}"
+            raise CompletionEvidenceError(
+                f"completion blocked: task requires integration into {target_ref}, but commit {commit[:12]} is not reachable from that ref"
+            )
+
+    manifest = {
+        "contract": "substrate_git_evidence_v1",
+        "task_id": task_id,
+        "workspace_kind": workspace_kind,
+        "workspace_path": str(workspace),
+        "branch": branch,
+        "commit": commit,
+        "base_ref": base_ref,
+        "diff_ref": diff_ref,
+        "diff_sha256": diff_sha256,
+        "patch_id": patch_id,
+        "dirty": bool(dirty_entries),
+        "dirty_entries": dirty_entries[:50],
+        "changed_files": changed_files,
+        "requires_target_integration": requires_target,
+        "target_ref": target_ref if requires_target else None,
+        "commit_reachable_from_target": target_reachable,
+        "target_error": target_error,
+        "generated_by": "hermes-kanban-substrate",
+    }
+    if "changed_files" in md and "claimed_changed_files" not in md:
+        md["claimed_changed_files"] = md.get("changed_files")
+    md["evidence_manifest"] = manifest
+    # Keep top-level fields aligned with substrate evidence for downstream consumers.
+    md["changed_files"] = [item["path"] for item in changed_files]
+    md["commit"] = commit
+    md["branch"] = branch
+    return md, manifest
+
+
+def _latest_block_reason(conn: sqlite3.Connection, task_id: str) -> str:
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return ""
+    try:
+        payload = json.loads(row["payload"])
+    except Exception:
+        return ""
+    return str(payload.get("reason") or "")
+
+
+_REMEDIATION_WORD_RE = re.compile(r"\b(remediat\w*|fix\w*|repair\w*|unblock\w*|bug\w*|merge\w*|cherry-pick\w*)\b", re.IGNORECASE)
+_REVIEW_ASSIGNEES = {"reviewer", "release-reviewer", "tester", "qa"}
+
+
+def _check_blocked_parent_remediation_deadlock(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    child_title: str | None,
+    child_body: str | None,
+) -> None:
+    parent = conn.execute(
+        "SELECT id, assignee, status FROM tasks WHERE id = ?",
+        (parent_id,),
+    ).fetchone()
+    if not parent or parent["status"] != "blocked":
+        return
+    child_text = f"{child_title or ''}\n{child_body or ''}"
+    child_text_l = child_text.lower()
+    block_reason_l = _latest_block_reason(conn, parent_id).lower()
+    child_id_l = str(child_id).lower()
+    parent_id_l = str(parent_id).lower()
+    remediation_like = bool(_REMEDIATION_WORD_RE.search(child_text))
+    child_mentions_parent = parent_id_l in child_text_l
+    parent_mentions_child = child_id_l in block_reason_l if child_id_l else False
+    reviewer_waiting = str(parent["assignee"] or "") in _REVIEW_ASSIGNEES
+    if parent_mentions_child or (reviewer_waiting and remediation_like and child_mentions_parent):
+        raise ValueError(
+            "blocked-parent remediation deadlock: this child would wait on the blocked task it is meant to unblock. "
+            "Create the remediation without this parent, or parent it to the original implementation/spec task."
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3962,6 +4214,18 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    try:
+        metadata, evidence_manifest = _build_evidence_manifest(conn, task_id, metadata)
+    except CompletionEvidenceError as evidence_err:
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "completion_blocked_evidence",
+                {"reason": str(evidence_err)},
+            )
+        raise
 
     with write_txn(conn):
         if expected_run_id is None:
@@ -4030,6 +4294,16 @@ def complete_task(
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
+        if evidence_manifest:
+            completed_payload["evidence_manifest"] = {
+                "contract": evidence_manifest.get("contract"),
+                "commit": evidence_manifest.get("commit"),
+                "branch": evidence_manifest.get("branch"),
+                "changed_files_count": len(evidence_manifest.get("changed_files") or []),
+                "dirty": evidence_manifest.get("dirty"),
+                "requires_target_integration": evidence_manifest.get("requires_target_integration"),
+                "commit_reachable_from_target": evidence_manifest.get("commit_reachable_from_target"),
+            }
         # Carry artifact paths in the event payload so the gateway
         # notifier can upload them as native attachments alongside the
         # completion message. Workers pass these via

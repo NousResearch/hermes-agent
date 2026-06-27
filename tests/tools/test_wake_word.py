@@ -136,9 +136,13 @@ class _FakeEngine:
     def __init__(self, fire=True):
         self._fire = fire
         self.closed = False
+        self.resets = 0
 
     def process(self, frame):
         return self._fire
+
+    def reset(self):
+        self.resets += 1
 
     def close(self):
         self.closed = True
@@ -180,6 +184,21 @@ def test_detector_no_fire_when_engine_quiet(monkeypatch):
     time.sleep(0.15)
     det.stop()
     assert calls == []
+
+
+def test_detector_resets_engine_on_each_start(monkeypatch):
+    # Clearing the engine buffer on (re)start is what stops a resume right after
+    # a voice turn from re-firing on stale audio (the runaway wake loop).
+    _fake_audio(monkeypatch)
+    eng = _FakeEngine(fire=False)
+    det = ww.WakeWordDetector(eng, lambda: None)
+    det.start()
+    time.sleep(0.05)
+    det.pause()
+    det.resume()
+    time.sleep(0.05)
+    det.stop()
+    assert eng.resets >= 2  # initial start + resume
 
 
 def test_detector_pause_resume(monkeypatch):

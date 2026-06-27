@@ -70,11 +70,18 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("model", props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+
+        self.assertEqual(
+            DELEGATE_TASK_SCHEMA["parameters"].get("anyOf"),
+            [{"required": ["goal"]}, {"required": ["tasks"]}],
+        )
+        self.assertIn("model", props["tasks"]["items"]["properties"])
 
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
@@ -2373,6 +2380,71 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         task_props = props["tasks"]["items"]["properties"]
         self.assertIn("role", task_props)
         self.assertEqual(task_props["role"]["enum"], ["leaf", "orchestrator"])
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_top_level_model_override_reaches_child(self, mock_cfg, mock_creds):
+        mock_creds.return_value = {
+            "provider": None, "base_url": None, "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="use a specific child model",
+                model="openrouter/qwen3-coder",
+                parent_agent=parent,
+            )
+
+        self.assertEqual(MockAgent.call_args.kwargs["model"], "openrouter/qwen3-coder")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_per_task_model_override_beats_top_level_model(self, mock_cfg, mock_creds):
+        mock_creds.return_value = {
+            "provider": None, "base_url": None, "api_key": None, "api_mode": None, "model": "config-model",
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                model="top-model",
+                tasks=[{"goal": "task", "model": "task-model"}],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(MockAgent.call_args.kwargs["model"], "task-model")
+
+    def test_run_agent_dispatch_forwards_model(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        with patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as mock_delegate:
+            result = AIAgent._dispatch_delegate_task(agent, {"goal": "x", "model": "child-model"})
+
+        self.assertEqual(result, '{"results": []}')
+        self.assertEqual(mock_delegate.call_args.kwargs["model"], "child-model")
+        self.assertIs(mock_delegate.call_args.kwargs["parent_agent"], agent)
 
     def test_acp_command_description_has_do_not_set_guidance(self):
         # acp_command/acp_args descriptions must NOT bias the model toward

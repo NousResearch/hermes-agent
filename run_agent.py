@@ -1373,12 +1373,20 @@ class AIAgent:
         Detection relies on explicit Ollama signatures:
         - Port 11434 (Ollama default)
         - "ollama" in the base URL (e.g. ollama.local, /ollama/ path)
+        - provider explicitly set to "ollama"
+
+        Crucially it does NOT match arbitrary local/private endpoints
+        (LiteLLM/sglang/vLLM/LM Studio proxies, Tailscale boxes), which
+        report finish_reason correctly and were the source of #13971's
+        false-positive truncation continuations.
         """
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
-        return "ollama" in self._base_url_lower or ":11434" in self._base_url_lower
+        if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
+            return True
+        return provider_lower == "ollama"
 
     def _should_treat_stop_as_truncated(
         self,

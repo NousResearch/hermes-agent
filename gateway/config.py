@@ -1643,10 +1643,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Feishu / Lark
     feishu_app_id = os.getenv("FEISHU_APP_ID")
     feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
+    feishu_gateway_enabled = _coerce_bool(os.getenv("FEISHU_GATEWAY_ENABLED"), default=True)
     if feishu_app_id and feishu_app_secret:
         if Platform.FEISHU not in config.platforms:
-            config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
+            config.platforms[Platform.FEISHU] = PlatformConfig(enabled=feishu_gateway_enabled)
+        elif not feishu_gateway_enabled:
+            config.platforms[Platform.FEISHU].enabled = False
         config.platforms[Platform.FEISHU].extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,

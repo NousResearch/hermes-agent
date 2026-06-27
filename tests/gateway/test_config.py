@@ -4,6 +4,8 @@ import logging
 import os
 from unittest.mock import patch
 
+import pytest
+
 from gateway.config import (
     GatewayConfig,
     HomeChannel,
@@ -834,6 +836,86 @@ class TestLoadGatewayConfig:
         load_gateway_config()
 
         assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
+
+    def test_feishu_env_creds_auto_enable_gateway_by_default(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_APP_ID", "app_123")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "secret_123")
+        monkeypatch.delenv("FEISHU_GATEWAY_ENABLED", raising=False)
+
+        config = load_gateway_config()
+
+        feishu_cfg = config.platforms[Platform.FEISHU]
+        assert feishu_cfg.enabled is True
+        assert feishu_cfg.extra["app_id"] == "app_123"
+        assert feishu_cfg.extra["app_secret"] == "secret_123"
+
+    @pytest.mark.parametrize("disabled_value", ["false", "0", "off", "no"])
+    def test_feishu_gateway_enabled_false_prevents_env_auto_enable(
+        self, tmp_path, monkeypatch, disabled_value
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_APP_ID", "app_123")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "secret_123")
+        monkeypatch.setenv("FEISHU_GATEWAY_ENABLED", disabled_value)
+
+        config = load_gateway_config()
+
+        feishu_cfg = config.platforms[Platform.FEISHU]
+        assert feishu_cfg.enabled is False
+        assert feishu_cfg.extra["app_id"] == "app_123"
+        assert feishu_cfg.extra["app_secret"] == "secret_123"
+
+    def test_feishu_explicit_enabled_config_stays_enabled_with_env_creds(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("feishu:\n  enabled: true\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_APP_ID", "app_123")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "secret_123")
+        monkeypatch.delenv("FEISHU_GATEWAY_ENABLED", raising=False)
+
+        config = load_gateway_config()
+
+        feishu_cfg = config.platforms[Platform.FEISHU]
+        assert feishu_cfg.enabled is True
+        assert feishu_cfg.extra["app_id"] == "app_123"
+        assert feishu_cfg.extra["app_secret"] == "secret_123"
+
+    def test_feishu_explicit_disabled_config_is_not_overridden_by_env_creds(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n"
+            "  enabled: false\n"
+            "  extra:\n"
+            "    connection_mode: websocket\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_APP_ID", "app_123")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "secret_123")
+
+        config = load_gateway_config()
+
+        feishu_cfg = config.platforms[Platform.FEISHU]
+        assert feishu_cfg.enabled is False
+        assert feishu_cfg.extra["app_id"] == "app_123"
+        assert feishu_cfg.extra["app_secret"] == "secret_123"
 
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

@@ -39,6 +39,22 @@ from typing import Any, Dict, List, Optional, Union
 # user's session history.
 _HIDDEN_SESSION_SOURCES = ("subagent", "tool")
 
+# Automation sources that are kept searchable but DEMOTED below interactive
+# sessions in discover ranking. Cron jobs run on a schedule and accumulate
+# large volumes of repetitive vocabulary (recurring project names, dates,
+# "session", summaries); under bare BM25 they dominate the top-N FTS rows and
+# starve out the user's own interactive sessions, producing "recall blindness"
+# where only cron sessions surface (#19434). Demoting — not excluding — keeps
+# cron content reachable when it's the only match, while interactive sessions
+# always win when both match.
+_DEMOTED_SESSION_SOURCES = ("cron",)
+
+# How many FTS rows discover scans before dedup-by-lineage. The interactive
+# vs automation split below only helps if enough rows are in hand to find
+# interactive matches buried under a wall of cron hits, so this is well above
+# the handful of distinct sessions a typical query returns.
+_DISCOVER_SCAN_LIMIT = 300
+
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -85,6 +101,23 @@ def _resolve_to_parent(db, session_id: str) -> str:
             logging.debug("Error resolving parent for %s: %s", cur, e, exc_info=True)
             break
     return cur
+
+
+def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Stable-sort FTS rows so interactive sessions rank above automation.
+
+    Within each class (interactive vs demoted) the original BM25 ``rank``
+    order is preserved — Python's sort is stable, and rows arrive already
+    ranked by relevance. This only changes cross-class ordering: a cron hit
+    never displaces an interactive hit during lineage dedup, so the user's
+    own conversations surface first even when cron rows out-rank them under
+    bare BM25 (#19434). Demoted rows still appear when they're the only
+    matches.
+    """
+    return sorted(
+        raw_results,
+        key=lambda r: 1 if (r.get("source") or "") in _DEMOTED_SESSION_SOURCES else 0,
+    )
 
 
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
@@ -481,13 +514,21 @@ def _discover(
             query=query,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            limit=50,  # widen so dedup-by-lineage can find distinct sessions
+            limit=_DISCOVER_SCAN_LIMIT,  # widen so dedup-by-lineage can find
+            # distinct sessions AND so interactive matches buried under a wall
+            # of cron rows are still in hand for the demotion pass below.
             offset=0,
             sort=sort,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
         return tool_error(f"Search failed: {e}", success=False)
+
+    # Demote automation (cron) rows below interactive ones before dedup, so a
+    # high-volume cron corpus can't starve the user's own sessions out of the
+    # top `limit` results (#19434). Stable — preserves BM25/recency order
+    # within each class.
+    raw_results = _order_for_recall(raw_results)
 
     if not raw_results and not title_result:
         return json.dumps({

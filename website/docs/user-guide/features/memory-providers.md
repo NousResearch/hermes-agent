@@ -513,7 +513,7 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 | | |
 |---|---|
 | **Best for** | Semantic recall with user profiling and session-level graph building |
-| **Requires** | `pip install supermemory` + [API key](https://supermemory.ai) |
+| **Requires** | `pip install supermemory` + [API key](http://app.supermemory.ai/integrations?connect=hermes) |
 | **Data storage** | Supermemory Cloud |
 | **Cost** | Supermemory pricing |
 

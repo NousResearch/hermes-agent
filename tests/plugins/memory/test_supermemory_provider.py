@@ -8,8 +8,10 @@ import pytest
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
     _clean_text_for_capture,
+    _format_connection_summary,
     _format_prefetch_context,
     _load_supermemory_config,
+    _probe_supermemory_connection,
     _save_supermemory_config,
 )
 
@@ -447,6 +449,157 @@ def test_get_config_schema_minimal():
     assert len(schema) == 1
     assert schema[0]["key"] == "api_key"
     assert schema[0]["secret"] is True
+
+
+def test_format_connection_summary_ok():
+    summary = _format_connection_summary({
+        "ok": True,
+        "container_tag": "hermes_coder",
+        "profile_facts": 12,
+        "auto_recall": True,
+        "auto_capture": False,
+    })
+    assert "✓ Connected" in summary
+    assert "container: hermes_coder" in summary
+    assert "12 profile facts" in summary
+    assert "auto_recall on" in summary
+    assert "auto_capture off" in summary
+
+
+def test_format_connection_summary_single_fact_and_error():
+    one = _format_connection_summary({
+        "ok": True,
+        "container_tag": "hermes",
+        "profile_facts": 1,
+        "auto_recall": True,
+        "auto_capture": True,
+    })
+    assert "1 profile fact" in one
+    assert "1 profile facts" not in one
+
+    err = _format_connection_summary({
+        "ok": False,
+        "error": "invalid API key",
+        "container_tag": "hermes",
+        "auto_recall": True,
+        "auto_capture": True,
+    })
+    assert "✗ invalid API key" in err
+    assert "container: hermes" in err
+
+
+def test_probe_supermemory_connection_missing_key(tmp_path):
+    status = _probe_supermemory_connection("", str(tmp_path))
+    assert status["ok"] is False
+    assert status["error"] == "SUPERMEMORY_API_KEY not set"
+    assert status["container_tag"] == "hermes"
+
+
+def _stub_supermemory_importable(monkeypatch):
+    """Make ``__import__("supermemory")`` succeed without the real package.
+
+    ``_probe_supermemory_connection`` guards on ``__import__("supermemory")``
+    before using the (mocked) client, so tests that mock ``_SupermemoryClient``
+    must also satisfy that import guard — otherwise they only pass in an
+    environment where the optional ``supermemory`` package happens to be
+    installed (and fail on a clean checkout / CI). Mirrors the inverse stub in
+    ``test_is_available_false_when_import_missing``.
+    """
+    import builtins
+    import types
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "supermemory":
+            return types.ModuleType("supermemory")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+def test_probe_supermemory_connection_success(monkeypatch, tmp_path):
+    _stub_supermemory_importable(monkeypatch)
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+
+    class CountingClient(FakeClient):
+        def get_profile(self, query=None, *, container_tag=None):
+            return {
+                "static": ["Prefers TypeScript"],
+                "dynamic": ["", "Working on Hermes"],
+                "search_results": [],
+            }
+
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", CountingClient)
+    status = _probe_supermemory_connection("test-key", str(tmp_path))
+    assert status["ok"] is True
+    assert status["profile_facts"] == 2
+    assert status["auto_recall"] is True
+
+
+def test_probe_supermemory_connection_client_error(monkeypatch, tmp_path):
+    _stub_supermemory_importable(monkeypatch)
+
+    class BrokenClient(FakeClient):
+        def get_profile(self, query=None, *, container_tag=None):
+            raise RuntimeError("API unavailable")
+
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", BrokenClient)
+    status = _probe_supermemory_connection("test-key", str(tmp_path))
+    assert status["ok"] is False
+    assert "API unavailable" in status["error"]
+
+
+def test_get_status_config_returns_summary(monkeypatch, tmp_path):
+    _stub_supermemory_importable(monkeypatch)
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr(
+        "hermes_constants.get_hermes_home",
+        lambda: tmp_path,
+    )
+    result = SupermemoryMemoryProvider().get_status_config({})
+    assert "summary" in result
+    assert "✓ Connected" in result["summary"]
+    assert "container: hermes" in result["summary"]
+
+
+def test_post_setup_writes_config_and_prints_summary(monkeypatch, tmp_path, capsys):
+    config: dict = {"memory": {}}
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "")
+    monkeypatch.setattr(
+        "hermes_cli.memory_setup._prompt",
+        lambda label, secret=True, default=None: "new-api-key",
+    )
+    monkeypatch.setattr(
+        "plugins.memory.supermemory._probe_supermemory_connection",
+        lambda api_key, hermes_home, **kwargs: {
+            "ok": True,
+            "container_tag": "hermes",
+            "profile_facts": 3,
+            "auto_recall": True,
+            "auto_capture": True,
+        },
+    )
+
+    saved: dict = {}
+
+    def fake_save_config(cfg):
+        saved.update(cfg)
+
+    monkeypatch.setattr("hermes_cli.config.save_config", fake_save_config)
+
+    SupermemoryMemoryProvider().post_setup(str(tmp_path), config)
+
+    assert config["memory"]["provider"] == "supermemory"
+    assert saved["memory"]["provider"] == "supermemory"
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "SUPERMEMORY_API_KEY=new-api-key" in env_text
+
+    out = capsys.readouterr().out
+    assert "✓ Connected" in out
+    assert "3 profile facts" in out
+    assert "Memory provider: supermemory" in out
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")

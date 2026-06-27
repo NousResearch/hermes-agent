@@ -819,37 +819,6 @@ that touches the OS, assume *any* platform can hit your code path.
     _quote_cmd_script_arg` and `_quote_schtasks_arg` for the reference
     pair.
 
-17. **Spawning a console program from a background/GUI parent needs a
-    no-window flag on Windows — and CI enforces it.** A `subprocess.run(["git",
-    ...])` / `Popen(...)` of a cross-platform console exe (git, gh, npm, node,
-    python, uv, ffmpeg, docker, …) allocates and flashes a cmd/conhost window
-    on Windows when the parent has no console of its own (Desktop/Electron,
-    `pythonw.exe`, a detached gateway/cron). **Capturing or redirecting stdio
-    does NOT prevent this** — `capture_output=`/`stdout=` controls where the
-    child's *output* goes, not whether a console is *allocated*. Only
-    `CREATE_NO_WINDOW` suppresses the window. This was the single biggest
-    source of "terminal popups" bug reports. Prefer the chokepoint wrapper —
-    it always injects the flag on Windows and is a no-op on POSIX:
-    ```python
-    from hermes_cli import _subprocess_compat
-    _subprocess_compat.run(cmd, capture_output=True, text=True)   # never flashes
-    _subprocess_compat.popen(cmd)                                  # never flashes
-    # detached background daemon:
-    subprocess.Popen(cmd, **windows_detach_popen_kwargs())
-    # or, at a site you can't route through the wrapper:
-    subprocess.run(cmd, creationflags=windows_hide_flags())
-    ```
-    `scripts/check-windows-footguns.py` (AST-based) flags raw `subprocess.*`
-    calls that can create a new console. It exempts calls that pass
-    `creationflags=`, use `**windows_*_kwargs` spread, or run a provably
-    POSIX-only program (`launchctl`, `systemctl`, `brew`, …). It does **not**
-    treat `capture_output`/`stdout=`/`check_output` as safe for the known
-    Windows-flashing programs above. Calls routed through
-    `_subprocess_compat.run/popen` are inherently safe (the wrapper carries the
-    flag). If a visible window is genuinely intended (interactive editor/terminal
-    launch, foreground re-exec, `cmd /c start`), add `# windows-footgun: ok` on
-    the call line.
-
 ### Testing cross-platform
 
 Tests that use POSIX-only syscalls need a skip marker. Common ones:

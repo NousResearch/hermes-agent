@@ -588,9 +588,9 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
 
 @pytest.mark.asyncio
 async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path, monkeypatch):
-    """Missing artifact paths are silently skipped — they may have been
-    referenced by name only. The notifier must not crash and must still
-    deliver any artifacts that do exist."""
+    """Artifact paths that disappear between completion and notification are
+    silently skipped — the notifier must not crash and must still deliver any
+    artifacts that do exist on disk at notification time."""
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
     from gateway.config import Platform
@@ -602,6 +602,8 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     real_pdf = tmp_path / "real.pdf"
     real_pdf.write_bytes(b"%PDF-fake")
+    ghost_pdf = tmp_path / "ghost.pdf"
+    ghost_pdf.write_bytes(b"%PDF-ghost")
 
     conn = kb.connect()
     try:
@@ -613,12 +615,18 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     import os
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
+        # Both files exist at completion time — validation passes.
         kt._handle_complete({
             "summary": "one real, one ghost",
-            "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+            "artifacts": [str(real_pdf), str(ghost_pdf)],
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
+
+    # Delete the ghost file AFTER completion but BEFORE the notifier picks it
+    # up, simulating a file that was cleaned up between task completion and
+    # notification delivery.
+    ghost_pdf.unlink()
 
     runner = object.__new__(GatewayRunner)
     runner._running = True

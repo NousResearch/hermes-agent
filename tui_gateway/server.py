@@ -210,8 +210,10 @@ class _SlashWorker:
             cwd=os.getcwd(),
             env=os.environ.copy(),
         )
-        threading.Thread(target=self._drain_stdout, daemon=True).start()
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
+        self._stdout_thread = threading.Thread(target=self._drain_stdout, daemon=True)
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stdout_thread.start()
+        self._stderr_thread.start()
 
     def _drain_stdout(self):
         for line in self.proc.stdout or []:
@@ -263,6 +265,19 @@ class _SlashWorker:
                 self.proc.kill()
             except Exception:
                 pass
+        finally:
+            for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+                if stream is None:
+                    continue
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            for thread in (self._stdout_thread, self._stderr_thread):
+                try:
+                    thread.join(timeout=1.0)
+                except Exception:
+                    pass
 
 
 def _load_busy_input_mode() -> str:

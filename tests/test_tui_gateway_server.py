@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -57,6 +58,66 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     monkeypatch.setattr(server, "_real_stdout", _BrokenStdout())
 
     assert server.write_json({"ok": True}) is False
+
+
+def test_slash_worker_close_joins_drain_threads_and_closes_pipes(monkeypatch):
+    started_threads = []
+
+    class _FakeThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+            self.daemon = daemon
+            self.join_calls: list[float | None] = []
+            started_threads.append(self)
+
+        def start(self):
+            return None
+
+        def join(self, timeout=None):
+            self.join_calls.append(timeout)
+
+    class _FakeStream:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdin = _FakeStream()
+            self.stdout = _FakeStream()
+            self.stderr = _FakeStream()
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    fake_proc = _FakeProc()
+
+    monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(server.subprocess, "Popen", lambda *args, **kwargs: fake_proc)
+
+    worker = server._SlashWorker("session-1", "gpt-5")
+    worker.close()
+
+    assert len(started_threads) == 2
+    assert fake_proc.terminated is True
+    assert fake_proc.killed is False
+    assert fake_proc.stdin.closed is True
+    assert fake_proc.stdout.closed is True
+    assert fake_proc.stderr.closed is True
+    assert [t.join_calls for t in started_threads] == [[1.0], [1.0]]
 
 
 def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):

@@ -30,6 +30,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { deriveSelfIdentifiers, isOwnSelfChat } from './selfchat.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -284,6 +285,12 @@ async function startSocket() {
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
 
+      // Identify the user's own self-chat once, for use by both the fromMe
+      // and !fromMe branches. WhatsApp's LID addressing can deliver our own
+      // self-chat messages with fromMe=false, so this decision is derived from
+      // the chat identifier (number or LID) rather than the fromMe flag.
+      const ownSelfChat = isOwnSelfChat(chatId, deriveSelfIdentifiers(sock.user));
+
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
         if (isGroup || chatId.includes('status')) continue;
@@ -293,15 +300,8 @@ async function startSocket() {
           continue;
         }
 
-        // Self-chat mode: only allow messages in the user's own self-chat
-        // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
-        // AND classic format: 34652029134@s.whatsapp.net
-        // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-        const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const chatNumber = chatId.replace(/@.*/, '');
-        const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-        if (!isSelfChat) continue;
+        // Self-chat mode: only allow messages in the user's own self-chat.
+        if (!ownSelfChat) continue;
       }
 
       // Handle !fromMe messages (from other people) based on mode.
@@ -311,15 +311,21 @@ async function startSocket() {
       // to arbitrary incoming messages (#8389).
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
-            }));
-          } catch {}
-          continue;
+          // WhatsApp's LID addressing can deliver the user's OWN self-chat
+          // messages with fromMe=false. Accept those (they carry the user's
+          // own chatId); only reject messages genuinely from someone else
+          // (stranger DMs / group pings) — preserving the #8389 guard.
+          if (!ownSelfChat) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'self_chat_mode_rejects_non_self',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
         }
         if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
@@ -421,7 +427,9 @@ async function startSocket() {
       }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
-      if (msg.key.fromMe && ((REPLY_PREFIX && body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
+      // Not gated on fromMe: LID addressing can echo our own reply back with
+      // fromMe=false, so match on the reply prefix / recently-sent id regardless.
+      if ((REPLY_PREFIX && body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id)) {
         if (WHATSAPP_DEBUG) {
           try { console.log(JSON.stringify({ event: 'ignored', reason: 'agent_echo', chatId, messageId: msg.key.id })); } catch {}
         }

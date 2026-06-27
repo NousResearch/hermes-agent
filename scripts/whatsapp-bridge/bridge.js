@@ -30,6 +30,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { shouldFilterFromMeMessage } from './from-me-filter.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -284,24 +285,16 @@ async function startSocket() {
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
 
-      // Handle fromMe messages based on mode
+      // Handle fromMe messages based on mode (#20143)
+      // WhatsApp uses LID (Linked Identity Device) format: 67427329167522@lid
+      // AND classic format: 34652029134@s.whatsapp.net
+      // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) continue;
-
-        if (WHATSAPP_MODE === 'bot') {
-          // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
-          continue;
-        }
-
-        // Self-chat mode: only allow messages in the user's own self-chat
-        // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
-        // AND classic format: 34652029134@s.whatsapp.net
-        // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
         const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
         const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const chatNumber = chatId.replace(/@.*/, '');
-        const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-        if (!isSelfChat) continue;
+        if (shouldFilterFromMeMessage({ chatId, isGroup, mode: WHATSAPP_MODE, myNumber, myLid })) {
+          continue;
+        }
       }
 
       // Handle !fromMe messages (from other people) based on mode.

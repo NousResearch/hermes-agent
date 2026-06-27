@@ -124,6 +124,28 @@ class TestConfigYamlRouting:
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
 
+    def test_preserves_comments_when_updating_config(self, _isolated_hermes_home):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "# global comment\n"
+            "memory:\n"
+            "  # preserve this note\n"
+            "  memory_char_limit: 2200\n"
+            "\n"
+            "# fallback scaffold\n"
+            "# fallback_model:\n"
+            "#   provider: openrouter\n",
+            encoding="utf-8",
+        )
+
+        set_config_value("memory.memory_char_limit", "2300")
+
+        text = _read_config(_isolated_hermes_home)
+        assert "memory_char_limit: 2300" in text
+        assert "# global comment" in text
+        assert "# preserve this note" in text
+        assert "# fallback scaffold" in text
+        assert "# fallback_model:" in text
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277
@@ -247,6 +269,27 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+    def test_indexed_set_preserves_comments(self, _isolated_hermes_home):
+        """List-index updates must keep unrelated user comments intact."""
+        self._write_config(_isolated_hermes_home, (
+            "# providers\n"
+            "custom_providers:\n"
+            "  # primary\n"
+            "  - name: provider-a\n"
+            "    api_key: old-a\n"
+            "  # backup\n"
+            "  - name: provider-b\n"
+            "    api_key: old-b\n"
+        ))
+
+        set_config_value("custom_providers.0.api_key", "new-a")
+
+        text = _read_config(_isolated_hermes_home)
+        assert "api_key: new-a" in text
+        assert "# providers" in text
+        assert "# primary" in text
+        assert "# backup" in text
 
 
 # ---------------------------------------------------------------------------

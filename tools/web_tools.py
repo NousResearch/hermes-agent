@@ -104,6 +104,8 @@ from tools.tool_backend_helpers import (  # noqa: F401
 )
 from tools.url_safety import async_is_safe_url, normalize_url_for_request
 import sys
+from html import unescape as _html_unescape
+from urllib.parse import urljoin as _urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -891,6 +893,125 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return tool_error(error_msg)
 
 
+_DIRECT_HTTP_MAX_BYTES = 2_000_000
+_DIRECT_HTTP_MAX_REDIRECTS = 5
+_DIRECT_HTTP_USER_AGENT = (
+    "Mozilla/5.0 (compatible; HermesAgentDirectExtract/1.0; +https://github.com/NousResearch/hermes-agent)"
+)
+
+
+def _clean_extracted_text(value: str) -> str:
+    return re.sub(r"\s+", " ", _html_unescape(value or "")).strip()
+
+
+def _html_text_payload(html_text: str) -> Dict[str, str]:
+    """Return a lightweight title + markdown-ish text payload from HTML.
+
+    This is intentionally dependency-free. It is a resilience fallback for
+    provider outages, not a replacement for full readability extraction.
+    """
+    title = ""
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html_text, re.I | re.S)
+    if title_match:
+        title = _clean_extracted_text(re.sub(r"<[^>]+>", " ", title_match.group(1)))
+
+    body = re.sub(r"(?is)<(script|style|noscript|svg|canvas|template).*?</\1>", " ", html_text)
+    body = re.sub(r"(?i)<\s*br\s*/?>", "\n", body)
+    body = re.sub(r"(?i)</\s*(p|div|section|article|h[1-6]|li|tr)\s*>", "\n", body)
+    body = re.sub(r"<[^>]+>", " ", body)
+    lines = [_clean_extracted_text(line) for line in body.splitlines()]
+    lines = [line for line in lines if line]
+    content = "\n\n".join(lines)
+    return {"title": title, "content": content}
+
+
+def _looks_like_provider_failure(result: Dict[str, Any]) -> bool:
+    """Return True when a provider result has no usable content and an error."""
+    if result.get("content") or result.get("raw_content"):
+        return False
+    error = str(result.get("error") or "").lower()
+    return bool(error)
+
+
+async def _direct_http_extract_fallback(
+    urls: List[str], *, format: Optional[str] = None, reason: str = "provider extraction failed"
+) -> List[Dict[str, Any]]:
+    """Best-effort direct HTTP fallback for web_extract provider failures.
+
+    The caller has already run the standard URL secret check and an initial
+    SSRF check. This fallback re-checks every redirect target before following
+    it so a public URL cannot bounce extraction into a private address.
+    """
+    results: List[Dict[str, Any]] = []
+    timeout = httpx.Timeout(20.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        for original_url in urls:
+            current_url = original_url
+            try:
+                response = None
+                for _ in range(_DIRECT_HTTP_MAX_REDIRECTS + 1):
+                    if not await async_is_safe_url(current_url):
+                        raise ValueError("Redirect blocked: URL targets a private or internal network address")
+                    response = await client.get(
+                        current_url,
+                        headers={
+                            "User-Agent": _DIRECT_HTTP_USER_AGENT,
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
+                        },
+                    )
+                    if response.status_code not in {301, 302, 303, 307, 308}:
+                        break
+                    location = response.headers.get("location")
+                    if not location:
+                        break
+                    current_url = _urljoin(str(response.url), location)
+                if response is None:
+                    raise ValueError("No response")
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                raw = response.content[:_DIRECT_HTTP_MAX_BYTES]
+                encoding = response.encoding or "utf-8"
+                text = raw.decode(encoding, errors="replace") if isinstance(raw, bytes) else str(raw)
+                if "html" in content_type.lower() or "xml" in content_type.lower():
+                    payload = _html_text_payload(text)
+                    title = payload["title"]
+                    content = payload["content"]
+                    returned_content = text if format == "html" else content
+                elif "text" in content_type.lower() or not content_type:
+                    title = ""
+                    returned_content = _clean_extracted_text(text)
+                else:
+                    raise ValueError(f"Unsupported content type: {content_type}")
+                if not returned_content:
+                    raise ValueError("Direct HTTP fallback found no readable text")
+                results.append(
+                    {
+                        "url": str(response.url),
+                        "title": title,
+                        "content": returned_content,
+                        "raw_content": returned_content,
+                        "metadata": {
+                            "sourceURL": str(response.url),
+                            "fallback": "direct-http",
+                            "fallback_reason": reason,
+                            "content_type": content_type,
+                        },
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - per-URL fallback errors are data
+                logger.warning("Direct HTTP extract fallback failed for %s: %s", original_url, exc)
+                results.append(
+                    {
+                        "url": original_url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": f"Direct HTTP fallback failed after provider error: {exc}",
+                    }
+                )
+    return results
+
+
 async def web_extract_tool(
     urls: List[str],
     format: str = None,
@@ -972,6 +1093,7 @@ async def web_extract_tool(
             else:
                 safe_urls.append(url)
 
+        results: List[Dict[str, Any]] = []
         # Dispatch only safe URLs to the configured backend
         if not safe_urls:
             results = []
@@ -1014,33 +1136,43 @@ async def web_extract_tool(
                     )
                 provider = get_active_extract_provider()
                 if provider is None:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
+                    logger.info(
+                        "No extract provider configured; using direct HTTP fallback for %d URL(s)",
+                        len(safe_urls),
+                    )
+                    results = await _direct_http_extract_fallback(
+                        safe_urls,
+                        format=format,
+                        reason="no extract provider configured",
+                    )
+                    provider = None
+
+            if provider is not None:
+                logger.info(
+                    "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
+                )
+
+                # Async-or-sync dispatch: parallel + firecrawl have async
+                # extract(); exa + tavily are sync.
+                import inspect
+                if inspect.iscoroutinefunction(provider.extract):
+                    results = await provider.extract(safe_urls, format=format)
+                else:
+                    # Run sync extract() in a thread so we don't block the
+                    # event loop on network I/O.
+                    results = await asyncio.to_thread(
+                        provider.extract, safe_urls, format=format
                     )
 
-            logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
-            )
-
-            # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
-            import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
-            else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
-                )
+                if results and all(_looks_like_provider_failure(result) for result in results):
+                    logger.info(
+                        "Extract provider returned only per-URL failures; using direct HTTP fallback"
+                    )
+                    results = await _direct_http_extract_fallback(
+                        safe_urls,
+                        format=format,
+                        reason=f"{provider.name} returned only per-URL failures",
+                    )
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:

@@ -56,6 +56,11 @@ from agent.model_metadata import (
     save_context_length,
 )
 from agent.process_bootstrap import _install_safe_stdio
+from agent.prompt_cache_diagnostics import (
+    PromptCacheDiagnostics,
+    build_prompt_cache_diagnostics,
+    format_prompt_cache_diagnostics,
+)
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
@@ -924,6 +929,24 @@ def run_conversation(
         approx_request_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
+        try:
+            prompt_cache_diag = build_prompt_cache_diagnostics(
+                api_messages,
+                tools=agent.tools or None,
+                provider=agent.provider,
+                model=agent.model,
+                session_id=agent.session_id,
+                previous=getattr(agent, "_last_prompt_cache_diagnostics", None),
+            )
+            agent._last_prompt_cache_diagnostics = prompt_cache_diag
+        except Exception as _cache_diag_exc:
+            logger.debug("Prompt cache diagnostics failed: %s", _cache_diag_exc)
+            prompt_cache_diag = PromptCacheDiagnostics(
+                provider=agent.provider,
+                model=agent.model,
+                session_id=agent.session_id,
+                possible_bust_causes=("local diagnostics unavailable",),
+            )
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens
@@ -969,6 +992,7 @@ def run_conversation(
             logging.debug(f"API Request - Model: {agent.model}, Messages: {len(messages)}, Tools: {len(agent.tools) if agent.tools else 0}")
             logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
+            logging.debug(format_prompt_cache_diagnostics(prompt_cache_diag))
         
         api_start_time = time.time()
         retry_count = 0
@@ -1980,11 +2004,20 @@ def run_conversation(
                     prompt = usage_dict["prompt_tokens"]
                     if (cached or written) and not agent.quiet_mode:
                         hit_pct = (cached / prompt * 100) if prompt > 0 else 0
+                        causes = ", ".join(prompt_cache_diag.possible_bust_causes) or "none detected"
                         agent._vprint(
                             f"{agent.log_prefix}   💾 Cache: "
                             f"{cached:,}/{prompt:,} tokens "
-                            f"({hit_pct:.0f}% hit, {written:,} written)"
+                            f"({hit_pct:.0f}% hit, {written:,} written, "
+                            f"{canonical_usage.input_tokens:,} uncached)"
                         )
+                        if agent.verbose_logging:
+                            agent._vprint(
+                                f"{agent.log_prefix}   💾 Cache diagnostics: "
+                                f"system={prompt_cache_diag.system_prompt_hash or '-'} "
+                                f"tools={prompt_cache_diag.tools_hash or '-'}; "
+                                f"possible bust causes: {causes}"
+                            )
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call

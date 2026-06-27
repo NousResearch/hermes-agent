@@ -42,6 +42,15 @@ class CanonicalUsage:
         return self.input_tokens + self.cache_read_tokens + self.cache_write_tokens
 
     @property
+    def uncached_input_tokens(self) -> int:
+        return self.input_tokens
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        prompt = self.prompt_tokens
+        return (self.cache_read_tokens / prompt) if prompt else 0.0
+
+    @property
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.output_tokens
 
@@ -736,6 +745,12 @@ def get_pricing_entry(
     return _lookup_official_docs_pricing(route)
 
 
+def _usage_get(obj: Any, key: str, default: Any = 0) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def normalize_usage(
     response_usage: Any,
     *,
@@ -760,45 +775,45 @@ def normalize_usage(
     mode = (api_mode or "").strip().lower()
 
     if mode == "anthropic_messages" or provider_name == "anthropic":
-        input_tokens = _to_int(getattr(response_usage, "input_tokens", 0))
-        output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
-        cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
-        cache_write_tokens = _to_int(getattr(response_usage, "cache_creation_input_tokens", 0))
+        input_tokens = _to_int(_usage_get(response_usage, "input_tokens", 0))
+        output_tokens = _to_int(_usage_get(response_usage, "output_tokens", 0))
+        cache_read_tokens = _to_int(_usage_get(response_usage, "cache_read_input_tokens", 0))
+        cache_write_tokens = _to_int(_usage_get(response_usage, "cache_creation_input_tokens", 0))
     elif mode == "codex_responses":
-        input_total = _to_int(getattr(response_usage, "input_tokens", 0))
-        output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
-        details = getattr(response_usage, "input_tokens_details", None)
-        cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
+        input_total = _to_int(_usage_get(response_usage, "input_tokens", 0))
+        output_tokens = _to_int(_usage_get(response_usage, "output_tokens", 0))
+        details = _usage_get(response_usage, "input_tokens_details", None)
+        cache_read_tokens = _to_int(_usage_get(details, "cached_tokens", 0) if details else 0)
         cache_write_tokens = _to_int(
-            getattr(details, "cache_creation_tokens", 0) if details else 0
+            _usage_get(details, "cache_creation_tokens", 0) if details else 0
         )
         input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
     else:
-        prompt_total = _to_int(getattr(response_usage, "prompt_tokens", 0))
-        output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
-        details = getattr(response_usage, "prompt_tokens_details", None)
+        prompt_total = _to_int(_usage_get(response_usage, "prompt_tokens", 0))
+        output_tokens = _to_int(_usage_get(response_usage, "completion_tokens", 0))
+        details = _usage_get(response_usage, "prompt_tokens_details", None)
         # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
         # top-level fields that some OpenAI-compatible proxies (OpenRouter, Cline)
         # expose when routing Claude models — without this
         # fallback, cache writes are undercounted as 0 and cache reads can be
         # missed when the proxy only surfaces them at the top level.
         # Port of cline/cline#10266.
-        cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
+        cache_read_tokens = _to_int(_usage_get(details, "cached_tokens", 0) if details else 0)
         if not cache_read_tokens:
-            cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
+            cache_read_tokens = _to_int(_usage_get(response_usage, "cache_read_input_tokens", 0))
         cache_write_tokens = _to_int(
-            getattr(details, "cache_write_tokens", 0) if details else 0
+            _usage_get(details, "cache_write_tokens", 0) if details else 0
         )
         if not cache_write_tokens:
             cache_write_tokens = _to_int(
-                getattr(response_usage, "cache_creation_input_tokens", 0)
+                _usage_get(response_usage, "cache_creation_input_tokens", 0)
             )
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
     reasoning_tokens = 0
-    output_details = getattr(response_usage, "output_tokens_details", None)
+    output_details = _usage_get(response_usage, "output_tokens_details", None)
     if output_details:
-        reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+        reasoning_tokens = _to_int(_usage_get(output_details, "reasoning_tokens", 0))
 
     return CanonicalUsage(
         input_tokens=input_tokens,

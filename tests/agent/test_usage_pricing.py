@@ -35,8 +35,30 @@ def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
     normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
 
     assert normalized.input_tokens == 1200
+    assert normalized.uncached_input_tokens == 1200
     assert normalized.cache_read_tokens == 1800
+    assert normalized.cache_hit_ratio == 1800 / 3000
     assert normalized.output_tokens == 700
+
+
+def test_normalize_usage_accepts_dict_usage_shapes():
+    usage = {
+        "prompt_tokens": 3000,
+        "completion_tokens": 700,
+        "prompt_tokens_details": {"cached_tokens": 1800, "cache_write_tokens": 200},
+    }
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+
+    assert normalized.input_tokens == 1000
+    assert normalized.cache_read_tokens == 1800
+    assert normalized.cache_write_tokens == 200
+    assert normalized.output_tokens == 700
+
+
+def test_normalize_usage_unknown_or_malformed_is_safe():
+    assert normalize_usage(None).total_tokens == 0
+    assert normalize_usage({"unexpected": "shape"}).total_tokens == 0
 
 
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():

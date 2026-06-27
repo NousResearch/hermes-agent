@@ -224,6 +224,38 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
+def _extract_acp_text_content(content: Any) -> str:
+    """Return text from ACP content blocks without treating tool metadata as text."""
+
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(_extract_acp_text_content(item) for item in content)
+    if not isinstance(content, dict):
+        return ""
+
+    content_type = str(content.get("type") or "").strip().lower()
+    if content_type in {"", "text", "markdown"}:
+        text = content.get("text")
+        if isinstance(text, str):
+            return text
+        nested_content = content.get("content")
+        if isinstance(nested_content, str):
+            return nested_content
+
+    parts: list[str] = []
+    for key in ("content", "delta"):
+        nested = content.get(key)
+        if nested is content:
+            continue
+        nested_text = _extract_acp_text_content(nested)
+        if nested_text:
+            parts.append(nested_text)
+    return "".join(parts)
+
+
 def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
     if not isinstance(text, str) or not text.strip():
         return [], ""
@@ -606,9 +638,7 @@ class CopilotACPClient:
             update = params.get("update") or {}
             kind = str(update.get("sessionUpdate") or "").strip()
             content = update.get("content") or {}
-            chunk_text = ""
-            if isinstance(content, dict):
-                chunk_text = str(content.get("text") or "")
+            chunk_text = _extract_acp_text_content(content)
             if kind == "agent_message_chunk" and chunk_text and text_parts is not None:
                 text_parts.append(chunk_text)
             elif kind == "agent_thought_chunk" and chunk_text and reasoning_parts is not None:

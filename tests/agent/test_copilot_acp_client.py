@@ -207,3 +207,36 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+def test_agent_message_chunk_preserves_text_from_mixed_content_blocks(tmp_path):
+    client = CopilotACPClient(acp_cwd=str(tmp_path))
+    text_parts = []
+    reasoning_parts = []
+    process = _FakeProcess()
+
+    handled = client._handle_server_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "sess_mixed",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": [
+                        {"type": "text", "text": "Removing both keys now."},
+                        {"type": "tool_use", "id": "call_1", "name": "terminal"},
+                    ],
+                },
+            },
+        },
+        process=process,
+        cwd=str(tmp_path),
+        text_parts=text_parts,
+        reasoning_parts=reasoning_parts,
+    )
+
+    assert handled is True
+    assert text_parts == ["Removing both keys now."]
+    assert reasoning_parts == []
+    assert process.stdin.getvalue() == ""

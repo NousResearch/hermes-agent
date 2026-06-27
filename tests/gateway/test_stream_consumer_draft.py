@@ -182,31 +182,96 @@ class TestDraftStreamingHappyPath:
 
 
 class TestDraftFallbackOnFailure:
-    """When a draft frame fails, the consumer disables drafts for the rest
-    of the response and continues via the edit-based path."""
+    """Draft-frame failure resilience: the consumer tolerates up to
+    _MAX_DRAFT_FAILURES consecutive failures before disabling draft streaming,
+    and resets the counter on success.
 
-    @pytest.mark.asyncio
-    async def test_first_draft_failure_disables_drafts_for_run(self):
-        adapter = _make_draft_capable_adapter(draft_succeeds=False)
+    These tests call _send_draft_frame directly to get deterministic results
+    without relying on run-loop timing.
+    """
+
+    def _make_consumer_for_direct_call(self):
+        """Set up a draft-capable consumer with _draft_id pre-seeded so
+        _send_draft_frame can be exercised without running the full loop."""
+        adapter = _make_draft_capable_adapter()
         cfg = StreamConsumerConfig(
             transport="auto", chat_type="dm",
             edit_interval=0.01, buffer_threshold=5, cursor="",
         )
         consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        consumer._use_draft_streaming = True
+        consumer._draft_id = 1
+        return consumer, adapter
 
-        consumer.on_delta("Hello ")
-        task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.05)
-        consumer.on_delta("world!")
-        await asyncio.sleep(0.05)
-        consumer.finish()
-        await task
+    @pytest.mark.asyncio
+    async def test_single_failure_does_not_disable_drafts(self):
+        """One bad frame must NOT kill draft streaming for the whole session."""
+        from gateway.platforms.base import SendResult
 
-        # The consumer attempted draft, hit failure, disabled drafts.
-        assert consumer._draft_failures >= 1
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=False, error="transient")
+        )
+
+        await consumer._send_draft_frame("frame1")
+
+        assert consumer._draft_failures == 1
+        assert consumer._draft_failures < consumer._MAX_DRAFT_FAILURES
+        assert consumer._use_draft_streaming is True
+
+    @pytest.mark.asyncio
+    async def test_three_consecutive_failures_disable_drafts(self):
+        """Three consecutive failures must disable draft streaming."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=False, error="hard_error")
+        )
+
+        for i in range(3):
+            await consumer._send_draft_frame(f"frame{i}")
+
+        assert consumer._draft_failures >= consumer._MAX_DRAFT_FAILURES
         assert consumer._use_draft_streaming is False
-        # Final message delivered via the regular send path.
-        adapter.send.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_success_resets_failure_streak(self):
+        """A successful frame after failures resets _draft_failures to 0."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+
+        fail_result = SendResult(success=False, error="transient")
+        ok_result = SendResult(success=True, message_id=None)
+
+        adapter.send_draft = AsyncMock(side_effect=[fail_result, fail_result, ok_result])
+
+        await consumer._send_draft_frame("frame1")
+        await consumer._send_draft_frame("frame2")
+        assert consumer._draft_failures == 2
+
+        await consumer._send_draft_frame("frame3")
+
+        assert consumer._draft_failures == 0
+        assert consumer._use_draft_streaming is True
+
+    @pytest.mark.asyncio
+    async def test_retryable_failure_not_counted(self):
+        """A retryable=True result (long flood-control) must not increment
+        _draft_failures so it never counts toward the disable threshold."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=False, error="flood_control:260", retryable=True)
+        )
+
+        for _ in range(10):
+            await consumer._send_draft_frame("frame")
+
+        assert consumer._draft_failures == 0
+        assert consumer._use_draft_streaming is True
 
 
 class TestDraftIdLifecycle:
@@ -507,3 +572,92 @@ class TestRichAwareOverflow:
         assert consumer._message_id == "final1"
         assert consumer._preview_message_ids == set()
         assert consumer.final_response_sent is True
+
+
+class TestTryStripCursor:
+    """_try_strip_cursor removes the ▉ cursor after stream termination.
+
+    When the edit to strip the cursor is flood-controlled (a RetryAfter error
+    coming back via result.error), the consumer falls back to delete_message
+    so the stuck cursor at least disappears before the full response arrives.
+    """
+
+    def _make_consumer(self, *, message_id="msg_abc"):
+        """Return a consumer whose _message_id and _last_sent_text are already
+        set to simulate a partially-streamed message that needs cursor removal."""
+        adapter = _make_draft_capable_adapter()
+        adapter.delete_message = AsyncMock(return_value=True)
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        consumer._message_id = message_id
+        consumer._last_sent_text = "Partial reply so far"
+        return consumer, adapter
+
+    @pytest.mark.asyncio
+    async def test_successful_edit_skips_delete(self):
+        """When the cursor-strip edit succeeds, delete_message must NOT be called."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(return_value=SendResult(success=True))
+
+        await consumer._try_strip_cursor()
+
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._last_sent_text == "Partial reply so far"
+
+    @pytest.mark.asyncio
+    async def test_flood_controlled_edit_triggers_delete(self):
+        """A flood-control result on the cursor-strip edit must cause a
+        delete_message call so the stuck cursor disappears."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(
+            return_value=SendResult(success=False, error="flood_control:280")
+        )
+
+        await consumer._try_strip_cursor()
+
+        adapter.delete_message.assert_awaited_once_with("12345", "msg_abc")
+        assert consumer._message_id is None
+
+    @pytest.mark.asyncio
+    async def test_raised_edit_exception_triggers_delete(self):
+        """If _edit_message raises rather than returning a flood result, the
+        fallback treats the exception as flood-controlled and calls delete_message."""
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(side_effect=RuntimeError("rate limit"))
+
+        await consumer._try_strip_cursor()
+
+        adapter.delete_message.assert_awaited_once_with("12345", "msg_abc")
+        assert consumer._message_id is None
+
+    @pytest.mark.asyncio
+    async def test_missing_delete_message_does_not_raise(self):
+        """When the adapter has no delete_message method, _try_strip_cursor
+        must return silently rather than raising AttributeError."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(
+            return_value=SendResult(success=False, error="flood_control:260")
+        )
+        # Remove delete_message to simulate an adapter without the method.
+        del adapter.delete_message
+
+        # Must not raise.
+        await consumer._try_strip_cursor()
+
+    @pytest.mark.asyncio
+    async def test_no_message_id_is_a_noop(self):
+        """Nothing to strip if there is no live message yet."""
+        consumer, adapter = self._make_consumer(message_id=None)
+
+        await consumer._try_strip_cursor()
+
+        adapter.delete_message.assert_not_awaited()

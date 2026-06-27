@@ -3453,6 +3453,33 @@ class TelegramAdapter(BasePlatformAdapter):
                     return SendResult(success=True, message_id=None)
                 return SendResult(success=False, error="draft_rejected")
             except Exception as e:
+                # Short flood-control wait (≤5s): sleep inline and retry the
+                # same frame so this single hiccup doesn't count as a failure
+                # or trigger the edit-mode fallback.
+                retry_after = getattr(e, "retry_after", None)
+                if retry_after is not None:
+                    wait = float(retry_after)
+                    if wait <= 5.0:
+                        logger.debug(
+                            "[%s] sendMessageDraft flood control %.1fs, retrying "
+                            "(chat=%s draft_id=%s)",
+                            self.name, wait, chat_id, draft_id,
+                        )
+                        await asyncio.sleep(wait)
+                        try:
+                            ok = await self._bot.send_message_draft(**kwargs)
+                            if ok:
+                                return SendResult(success=True, message_id=None)
+                        except Exception:
+                            pass
+                        return SendResult(success=False, error="draft_rejected")
+                    # Long wait — signal retryable so the caller doesn't count
+                    # this against the permanent-disable threshold.
+                    logger.debug(
+                        "[%s] sendMessageDraft flood control %.1fs (chat=%s draft_id=%s)",
+                        self.name, wait, chat_id, draft_id,
+                    )
+                    return SendResult(success=False, error=f"flood_control:{wait:.0f}", retryable=True)
                 # A MarkdownV2 parse failure (BadRequest "can't parse entities")
                 # is recoverable: retry once as plain text.  Any other failure
                 # (chat doesn't allow drafts, transient hiccup) — or a failure

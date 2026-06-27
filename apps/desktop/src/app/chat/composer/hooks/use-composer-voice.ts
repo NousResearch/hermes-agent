@@ -1,15 +1,17 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
+import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 
 import type { ComposerTarget } from '../focus'
-import { onComposerVoiceStartRequest, onComposerVoiceToggleRequest } from '../focus'
+import { onComposerVoiceToggleRequest } from '../focus'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -55,6 +57,7 @@ export function useComposerVoice({
   const { $messages } = useComposerScope()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   const lastSpokenIdRef = useRef<string | null>(null)
+  const voiceStartRequest = useStore($voiceConversationStartRequest)
 
   const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
     focusInput,
@@ -143,15 +146,16 @@ export function useComposerVoice({
     [target, toggleVoiceConversation]
   )
 
-  useEffect(
-    () =>
-      onComposerVoiceStartRequest(() => {
-        if (target === 'main' && !disabled && !voiceConversationActive) {
-          setVoiceConversationActive(true)
-        }
-      }),
-    [disabled, target, voiceConversationActive]
-  )
+  useEffect(() => {
+    if (
+      target === 'main' &&
+      !disabled &&
+      takeVoiceConversationStart(voiceStartRequest) &&
+      !voiceConversationActive
+    ) {
+      setVoiceConversationActive(true)
+    }
+  }, [disabled, target, voiceConversationActive, voiceStartRequest])
 
   const wakePausedRef = useRef(false)
   const resumeWakeIfPaused = useCallback(() => {

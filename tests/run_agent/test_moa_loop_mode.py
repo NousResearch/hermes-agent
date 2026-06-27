@@ -41,7 +41,7 @@ moa:
 
     agent = AIAgent(
         api_key="moa-virtual-provider",
-        base_url="moa://local",
+        base_url="http://127.0.0.1/v1",
         model="review",
         provider="moa",
         quiet_mode=True,
@@ -50,15 +50,33 @@ moa:
         enabled_toolsets=["file"],
         max_iterations=1,
     )
+    monkeypatch.setattr(
+        agent,
+        "_create_request_openai_client",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("MoA calls must use MoAClient, not a request OpenAI client")
+        ),
+    )
 
     result = agent.run_conversation("solve this")
 
     assert result["final_response"] == "aggregator acted"
+    assert agent.base_url == "moa://local"
     assert [(c["task"], c["provider"], c["model"]) for c in calls] == [
         ("moa_reference", "openai-codex", "gpt-5.5"),
         ("moa_aggregator", "openrouter", "anthropic/claude-opus-4.8"),
     ]
     assert calls[1]["tools"] is not None
+
+
+def test_moa_runtime_provider_uses_virtual_endpoint():
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    runtime = resolve_runtime_provider(requested="moa", target_model="review")
+
+    assert runtime["provider"] == "moa"
+    assert runtime["base_url"] == "moa://local"
+    assert runtime["api_key"] == "moa-virtual-provider"
 
 
 def test_moa_does_not_cap_output_tokens(monkeypatch, tmp_path):
@@ -152,6 +170,32 @@ def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
     assert rt["model"] == "MiniMax-M2"
     assert rt["base_url"] == "https://minimax.example/v1"
     assert rt["api_key"] == "key-for-minimax"
+
+
+def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
+    """Codex slots must not become custom chat-completions endpoints.
+
+    _resolve_task_provider_model treats any explicit base_url as provider=custom.
+    For openai-codex that bypasses the Codex auxiliary branch, losing the
+    Cloudflare headers and Responses adapter required for chatgpt.com/backend-api/codex.
+    """
+    from agent import moa_loop
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-oauth-token",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "openai-codex", "model": "gpt-5.5"})
+
+    assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
 
 
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
@@ -459,4 +503,3 @@ def test_moa_facade_reruns_references_on_new_turn(monkeypatch, tmp_path):
 
     # 2 references × 2 distinct turns = 4 reference runs.
     assert len(ref_runs) == 4
-

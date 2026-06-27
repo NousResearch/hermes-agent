@@ -528,6 +528,109 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.overloaded
         assert result.should_compress is False
 
+    def test_large_cloudflare_origin_502_triggers_compression(self):
+        """Very large Cloudflare/origin 502s should use compression recovery."""
+        e = MockAPIError(
+            "Bad Gateway",
+            status_code=502,
+            body={
+                "title": "Error 502: Bad gateway",
+                "error_name": "origin_bad_gateway",
+                "error_category": "origin",
+                "cloudflare_error": True,
+            },
+        )
+        result = classify_api_error(
+            e,
+            approx_tokens=150000,
+            context_length=200000,
+            num_messages=120,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.retryable is True
+        assert result.should_compress is True
+
+    def test_small_cloudflare_origin_502_stays_server_error(self):
+        """Cloudflare/origin 502 alone is not enough to compress."""
+        e = MockAPIError(
+            "Bad Gateway",
+            status_code=502,
+            body={
+                "title": "Error 502: Bad gateway",
+                "error_name": "origin_bad_gateway",
+                "error_category": "origin",
+                "cloudflare_error": True,
+            },
+        )
+        result = classify_api_error(
+            e,
+            approx_tokens=5000,
+            context_length=200000,
+            num_messages=8,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_large_plain_502_still_server_error(self):
+        """Large sessions still need the Cloudflare/origin signal."""
+        e = MockAPIError("Bad Gateway", status_code=502)
+        result = classify_api_error(
+            e,
+            approx_tokens=150000,
+            context_length=200000,
+            num_messages=120,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_large_cloudflare_validation_error_stays_format_error(self):
+        """Deterministic validation failures take priority over the heuristic."""
+        e = MockAPIError(
+            "Unsupported parameter: logprobs",
+            status_code=502,
+            body={
+                "error_category": "origin",
+                "cloudflare_error": True,
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Unsupported parameter: logprobs",
+                },
+            },
+        )
+        result = classify_api_error(
+            e,
+            approx_tokens=150000,
+            context_length=200000,
+            num_messages=120,
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
+
+    def test_large_cloudflare_origin_503_triggers_compression(self):
+        """The same guarded recovery applies to overloaded 5xx envelopes."""
+        e = MockAPIError(
+            "Service Unavailable",
+            status_code=503,
+            body={
+                "title": "Error 503: Origin unavailable",
+                "error_name": "origin_unavailable",
+                "error_category": "origin",
+                "cloudflare_error": True,
+            },
+        )
+        result = classify_api_error(
+            e,
+            approx_tokens=150000,
+            context_length=200000,
+            num_messages=120,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.retryable is True
+        assert result.should_compress is True
+
     # ── Model not found ──
 
     def test_404_model_not_found(self):
@@ -2089,4 +2192,3 @@ class Test408RequestTimeout:
         assert result.retryable is False
         assert result.should_fallback is True
         assert result.should_compress is False
-

@@ -1020,6 +1020,18 @@ def _classify_by_status(
             result_fn=result_fn,
         )
 
+    should_compress_cloudflare_origin = (
+        status_code in {500, 502, 503, 529}
+        and _looks_like_cloudflare_origin_5xx(error_msg, body)
+        and (
+            approx_tokens > context_length * 0.4
+            or (
+                context_length <= 256000
+                and (approx_tokens > 100000 or num_messages > 100)
+            )
+        )
+    )
+
     if status_code in {500, 502}:
         # Some OpenAI-compatible gateways return request-validation errors
         # with a 5xx status (codex.nekos.me returns 502 for unknown/
@@ -1050,6 +1062,12 @@ def _classify_by_status(
                 retryable=True,
                 should_compress=True,
             )
+        if should_compress_cloudflare_origin:
+            return result_fn(
+                FailoverReason.context_overflow,
+                retryable=True,
+                should_compress=True,
+            )
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in {503, 529}:
@@ -1058,6 +1076,12 @@ def _classify_by_status(
         # overflow bodies into compression; otherwise treat as transient
         # overload and retry.
         if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
+            return result_fn(
+                FailoverReason.context_overflow,
+                retryable=True,
+                should_compress=True,
+            )
+        if should_compress_cloudflare_origin:
             return result_fn(
                 FailoverReason.context_overflow,
                 retryable=True,
@@ -1089,6 +1113,33 @@ def _classify_by_status(
         return result_fn(FailoverReason.server_error, retryable=True)
 
     return None
+
+
+def _looks_like_cloudflare_origin_5xx(error_msg: str, body: dict) -> bool:
+    """Return True for Cloudflare/origin 5xx envelopes without overflow text."""
+    body_text = str(body or {}).lower()
+    combined = f"{error_msg} {body_text}"
+    if "cloudflare" not in combined:
+        return False
+
+    payloads = [body] if isinstance(body, dict) else []
+    nested_error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(nested_error, dict):
+        payloads.append(nested_error)
+
+    for payload in payloads:
+        category = str(payload.get("error_category") or "").lower()
+        name = str(payload.get("error_name") or "").lower()
+        if "origin" in category:
+            return True
+        if "origin" in name and ("gateway" in name or "unavailable" in name):
+            return True
+
+    return (
+        "origin_bad_gateway" in combined
+        or ("origin" in combined and "bad gateway" in combined)
+        or ("origin" in combined and "bad_gateway" in combined)
+    )
 
 
 def _classify_402(error_msg: str, result_fn) -> ClassifiedError:

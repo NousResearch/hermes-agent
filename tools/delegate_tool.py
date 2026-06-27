@@ -17,11 +17,13 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import datetime as _datetime
 import json
 import logging
 
 logger = logging.getLogger(__name__)
 import os
+from pathlib import Path
 import threading
 import time
 from concurrent.futures import (
@@ -619,6 +621,180 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+# Durable subagent event ledger for AFK/control-plane consumers.
+# Profile-aware default: get_hermes_home() / "afk" / "subagent_events.jsonl".
+# The path is configurable via config.yaml:
+#   delegation:
+#     subagent_event_log:
+#       enabled: true
+#       path: afk/subagent_events.jsonl
+_SUBAGENT_EVENT_SCHEMA_VERSION = 1
+_DEFAULT_SUBAGENT_EVENT_LOG_PATH = Path("afk") / "subagent_events.jsonl"
+_EVENT_PREVIEW_CHARS = 320
+
+
+def _preview_text(value: Any, *, limit: int = _EVENT_PREVIEW_CHARS) -> str:
+    """Return a bounded one-line preview safe for durable event logs."""
+    if value is None:
+        return ""
+    try:
+        text = str(value)
+    except Exception:
+        text = "<unprintable>"
+    text = " ".join(text.replace("\x00", "").split())
+    if len(text) > limit:
+        return text[: limit - 15].rstrip() + " ...[truncated]"
+    return text
+
+
+def _get_subagent_event_log_config() -> tuple[bool, Path]:
+    """Resolve durable subagent event-log config.
+
+    Defaults to enabled because this is local/profile-scoped JSONL under
+    Hermes home, not outbound telemetry. Relative configured paths are resolved
+    under get_hermes_home() so profiles remain isolated.
+    """
+    cfg = _load_config()
+    raw = cfg.get("subagent_event_log") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    enabled = raw.get("enabled", True)
+    if not is_truthy_value(enabled) and enabled is not True:
+        return False, _DEFAULT_SUBAGENT_EVENT_LOG_PATH
+
+    path_value = raw.get("path") or _DEFAULT_SUBAGENT_EVENT_LOG_PATH
+    path = Path(str(path_value)).expanduser()
+    if not path.is_absolute():
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / path
+    return True, path
+
+
+def _append_jsonl_locked(path: Path, payload: Dict[str, Any]) -> None:
+    """Best-effort locked append of one JSON object as JSONL."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    with path.open("a", encoding="utf-8") as fh:
+        try:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            pass
+        try:
+            fh.write(line)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except Exception:
+                pass
+        finally:
+            try:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+
+
+def _subagent_event_identity(
+    *,
+    child: Any,
+    parent_agent: Any,
+    task_index: int,
+    task_count: int,
+    goal: str,
+) -> Dict[str, Any]:
+    subagent_id = getattr(child, "_subagent_id", None)
+    if not isinstance(subagent_id, str):
+        subagent_id = None
+    raw_depth = getattr(child, "_delegate_depth", 1)
+    depth = max(0, raw_depth - 1) if isinstance(raw_depth, int) else None
+    toolsets = getattr(child, "enabled_toolsets", None)
+    if not isinstance(toolsets, list):
+        toolsets = []
+    parent_subagent_id = getattr(child, "_parent_subagent_id", None)
+    if not isinstance(parent_subagent_id, str):
+        parent_subagent_id = None
+    return {
+        "parent_session_id": getattr(parent_agent, "session_id", None),
+        "child_session_id": getattr(child, "session_id", None),
+        "hermes_subagent_id": subagent_id,
+        "subagent_id": subagent_id,
+        "parent_subagent_id": parent_subagent_id,
+        "task_index": task_index,
+        "task_count": task_count,
+        "role": getattr(child, "_delegate_role", None),
+        "depth": depth,
+        "goal_preview": _preview_text(goal),
+        "model": getattr(child, "model", None)
+        if isinstance(getattr(child, "model", None), str)
+        else None,
+        "toolsets": list(toolsets),
+    }
+
+
+def _emit_subagent_event(
+    event_type: str,
+    *,
+    child: Any,
+    parent_agent: Any,
+    task_index: int,
+    task_count: int = 1,
+    goal: str = "",
+    status: Optional[str] = None,
+    api_calls: Optional[int] = None,
+    duration_seconds: Optional[float] = None,
+    error: Optional[Any] = None,
+    summary: Optional[Any] = None,
+    files_read: Optional[List[str]] = None,
+    files_written: Optional[List[str]] = None,
+) -> None:
+    """Emit one durable structured subagent event; never raises to callers."""
+    try:
+        enabled, path = _get_subagent_event_log_config()
+        if not enabled:
+            return
+        import uuid as _uuid
+
+        payload: Dict[str, Any] = {
+            "event_type": event_type,
+            "schema_version": _SUBAGENT_EVENT_SCHEMA_VERSION,
+            "event_id": _uuid.uuid4().hex,
+            "created_at": _datetime.datetime.now(_datetime.UTC).isoformat(),
+            **_subagent_event_identity(
+                child=child,
+                parent_agent=parent_agent,
+                task_index=task_index,
+                task_count=task_count,
+                goal=goal,
+            ),
+        }
+        if status is not None:
+            payload["status"] = status
+        if api_calls is not None:
+            try:
+                payload["api_calls"] = int(api_calls)
+            except (TypeError, ValueError):
+                payload["api_calls"] = 0
+        if duration_seconds is not None:
+            try:
+                payload["duration_seconds"] = float(duration_seconds)
+            except (TypeError, ValueError):
+                payload["duration_seconds"] = 0.0
+        if error is not None:
+            payload["error_preview"] = _preview_text(error)
+        if summary is not None:
+            payload["summary_preview"] = _preview_text(summary)
+        if files_read is not None:
+            payload["files_read"] = list(files_read)[:40]
+        if files_written is not None:
+            payload["files_written"] = list(files_written)[:40]
+        _append_jsonl_locked(path, payload)
+    except Exception as exc:
+        logger.warning("Subagent event emission failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1521,6 +1697,10 @@ def _run_single_child(
     Returns a structured result dict.
     """
     child_start = time.monotonic()
+    try:
+        task_count = int(_kwargs.get("task_count", 1) or 1)
+    except (TypeError, ValueError):
+        task_count = 1
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
@@ -1658,6 +1838,16 @@ def _run_single_child(
 
     try:
         _heartbeat_thread.start()
+        _emit_subagent_event(
+            "subagent.spawned",
+            child=child,
+            parent_agent=parent_agent,
+            task_index=task_index,
+            task_count=task_count,
+            goal=goal,
+            status="running",
+            api_calls=0,
+        )
         if child_progress_cb:
             try:
                 child_progress_cb("subagent.start", preview=goal)
@@ -1797,6 +1987,19 @@ def _run_single_child(
                     )
             else:
                 _err = str(_timeout_exc)
+
+            _emit_subagent_event(
+                "subagent.timeout" if is_timeout else "subagent.failed",
+                child=child,
+                parent_agent=parent_agent,
+                task_index=task_index,
+                task_count=task_count,
+                goal=goal,
+                status="timeout" if is_timeout else "error",
+                api_calls=child_api_calls,
+                duration_seconds=duration,
+                error=_err,
+            )
 
             return {
                 "task_index": task_index,
@@ -2019,6 +2222,29 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
 
+        terminal_event_type = (
+            "subagent.interrupted"
+            if status == "interrupted"
+            else "subagent.completed"
+            if status == "completed"
+            else "subagent.failed"
+        )
+        _emit_subagent_event(
+            terminal_event_type,
+            child=child,
+            parent_agent=parent_agent,
+            task_index=task_index,
+            task_count=task_count,
+            goal=goal,
+            status=status,
+            api_calls=int(api_calls) if isinstance(api_calls, (int, float)) else 0,
+            duration_seconds=duration,
+            error=entry.get("error"),
+            summary=summary,
+            files_read=_files_read,
+            files_written=_files_written,
+        )
+
         return entry
 
     except Exception as exc:
@@ -2035,6 +2261,18 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
+        _emit_subagent_event(
+            "subagent.failed",
+            child=child,
+            parent_agent=parent_agent,
+            task_index=task_index,
+            task_count=task_count,
+            goal=goal,
+            status="failed",
+            api_calls=0,
+            duration_seconds=duration,
+            error=str(exc),
+        )
         return {
             "task_index": task_index,
             "status": "error",

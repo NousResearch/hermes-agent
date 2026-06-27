@@ -84,7 +84,7 @@ def agent():
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
-            api_key="test-key-1234567890",
+            api_key="test-key-1234567890",  # gitleaks:allow (dummy test fixture)
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
@@ -530,13 +530,18 @@ class TestPreflightCompression:
         )
 
     def test_preflight_defers_when_recent_real_usage_fit(self, agent):
-        """A noisy rough estimate should not re-compact a recently fitting request."""
+        """A noisy (over-counting) rough estimate should NOT re-compact when the
+        provider's measured skew scales it back under threshold (P2 calibration)."""
         agent.compression_enabled = True
         agent.context_compressor.context_length = 200_000
         agent.context_compressor.threshold_tokens = 100_000
-        agent.context_compressor.last_prompt_tokens = 58_000
-        agent.context_compressor.last_real_prompt_tokens = 58_000
-        agent.context_compressor.last_rough_tokens_when_real_prompt_fit = 113_000
+        agent.context_compressor._skew_floor = 0.4
+        # Establish the skew: a prior request whose rough was ~116k returned real 58k
+        # (skew ≈ 0.5). Calibrated(114k) ≈ 57k < 100k → defer.
+        agent.context_compressor.note_rough_sent(116_000)
+        agent.context_compressor.update_from_response(
+            {"prompt_tokens": 58_000, "completion_tokens": 100, "total_tokens": 58_100}
+        )
 
         big_history = []
         for i in range(20):
@@ -571,13 +576,17 @@ class TestPreflightCompression:
         )
 
     def test_preflight_compresses_when_rough_growth_after_fit_is_large(self, agent):
-        """Large rough growth after a fitting request still triggers preflight."""
+        """Even with a recorded skew, a rough estimate whose CALIBRATED value still
+        clears threshold triggers preflight (the calibration didn't scale it under)."""
         agent.compression_enabled = True
         agent.context_compressor.context_length = 200_000
         agent.context_compressor.threshold_tokens = 100_000
-        agent.context_compressor.last_prompt_tokens = 58_000
-        agent.context_compressor.last_real_prompt_tokens = 58_000
-        agent.context_compressor.last_rough_tokens_when_real_prompt_fit = 113_000
+        agent.context_compressor._skew_floor = 0.8
+        # Mild skew (~0.9): calibrated(125k) ≈ 112k ≥ 100k → still compacts.
+        agent.context_compressor.note_rough_sent(100_000)
+        agent.context_compressor.update_from_response(
+            {"prompt_tokens": 90_000, "completion_tokens": 100, "total_tokens": 90_100}
+        )
 
         big_history = []
         for i in range(20):

@@ -135,6 +135,31 @@ def _hermes_compression_threshold(default: float) -> float:
         return default
 
 
+def _hermes_compression_float(key: str, default: float) -> float:
+    """Read ``compression.<key>`` (a float) from ~/.hermes/config.yaml.
+
+    Used for the P2 calibration knobs (``skew_floor``, ``calibration_hard_frac``)
+    so the LCM engine — a process-global singleton — sources them ONCE from config
+    at construction, rather than having each agent_init mutate the shared instance
+    (which would let one agent's config silently change another's calibration —
+    Greptile PR #111). Returns ``default`` on any read/parse failure or absence.
+    """
+    home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    cfg_path = home / "config.yaml"
+    try:
+        if yaml is None:
+            return default
+        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+        compression = cfg.get("compression") or {}
+        val = compression.get(key)
+        if val is None:
+            return default
+        val = float(val)
+        return val if 0.0 < val <= 1.0 else default
+    except Exception:
+        return default
+
+
 def _hermes_auxiliary_compression_timeout_ms(default: int) -> int:
     """Read Hermes auxiliary.compression.timeout when no LCM override is present.
 
@@ -233,6 +258,14 @@ class LCMConfig:
     # Disabled at 0.0. When set, only bypass cache-friendly/deferred polite
     # gates once prompt pressure reaches this fraction of the context window.
     critical_budget_pressure_ratio: float = 0.0
+
+    # -- P2 "compact on the truth" calibration (shared via ContextEngine ABC) ---
+    # Lower clamp on the measured real/rough skew (never scale an estimate below
+    # this fraction). Sourced from compression.skew_floor.
+    skew_floor: float = 0.7
+    # Raw-rough window fraction at which compaction fires regardless of skew
+    # (dense-paste / 413 ceiling). Sourced from compression.calibration_hard_frac.
+    calibration_hard_frac: float = 0.95
 
     # -- Escalation ---
     # L2 bullet budget as fraction of L1
@@ -380,6 +413,15 @@ class LCMConfig:
         c.critical_budget_pressure_ratio = _float(
             "LCM_CRITICAL_BUDGET_PRESSURE_RATIO",
             c.critical_budget_pressure_ratio,
+        )
+        # P2 calibration knobs: env override → compression.<key> config → default.
+        c.skew_floor = _float(
+            "LCM_SKEW_FLOOR",
+            _hermes_compression_float("skew_floor", c.skew_floor),
+        )
+        c.calibration_hard_frac = _float(
+            "LCM_CALIBRATION_HARD_FRAC",
+            _hermes_compression_float("calibration_hard_frac", c.calibration_hard_frac),
         )
         c.l2_budget_ratio = _float("LCM_L2_BUDGET_RATIO", c.l2_budget_ratio)
         c.l3_truncate_tokens = _int("LCM_L3_TRUNCATE_TOKENS", c.l3_truncate_tokens)

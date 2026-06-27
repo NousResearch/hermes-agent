@@ -63,28 +63,152 @@ class TestUpdateFromResponse:
         assert compressor.last_prompt_tokens == 0
 
 
-class TestPreflightDeferral:
-    def test_defers_when_recent_real_usage_fit_and_rough_growth_is_small(self, compressor):
-        compressor.threshold_tokens = 85_000
-        compressor.last_real_prompt_tokens = 50_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+class TestCalibration:
+    """P2 'compact on the truth' — calibrate the rough estimate by the measured skew.
+    Replaces the removed should_defer_preflight_to_real_usage ratchet (which the v0.1
+    review BLOCKed for a multi-turn baseline-creep)."""
 
-        assert compressor.should_defer_preflight_to_real_usage(93_000) is True
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 93_000
+    def test_skew_default_is_identity(self, compressor):
+        # No real reading paired yet → skew 1.0 → calibrated == raw (pre-P2 behavior).
+        assert compressor._current_skew() == 1.0
+        assert compressor.calibrated_tokens(776_594) == 776_594
 
-    def test_does_not_defer_when_rough_growth_is_large(self, compressor):
-        compressor.threshold_tokens = 85_000
-        compressor.last_real_prompt_tokens = 50_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+    def test_calibrated_motivating_644k_776k_defers(self, compressor):
+        # The real 2026-06-26 case: real 644,027 on a ~776,594 rough request.
+        compressor.threshold_tokens = 750_000
+        compressor.context_length = 1_000_000
+        compressor._skew_floor = 0.6
+        compressor.note_rough_sent(776_594)
+        compressor.update_from_response({"prompt_tokens": 644_027, "completion_tokens": 10})
+        # skew ≈ 0.829 → calibrated(776_594) ≈ 644k < 750k → does NOT compact.
+        assert abs(compressor._current_skew() - 0.829) < 0.01
+        assert compressor.calibrated_tokens(776_594) < 750_000
+        assert compressor.should_compress_calibrated(776_594) is False
 
-        assert compressor.should_defer_preflight_to_real_usage(100_000) is False
+    def test_calibrated_real_over_threshold_compacts(self, compressor):
+        compressor.threshold_tokens = 750_000
+        compressor.context_length = 1_000_000
+        # real ABOVE threshold on its request → skew ~1.0, calibrated ≈ raw → compacts.
+        compressor.note_rough_sent(800_000)
+        compressor.update_from_response({"prompt_tokens": 790_000, "completion_tokens": 10})
+        assert compressor.should_compress_calibrated(800_000) is True
 
-    def test_does_not_defer_without_recent_real_usage(self, compressor):
-        compressor.threshold_tokens = 85_000
-        compressor.last_real_prompt_tokens = 0
-        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+    def test_no_ratchet_multi_turn(self, compressor):
+        """The v0.1 defect: repeated sub-threshold turns must NOT creep the trigger.
+        Calibration is a pure function of recorded scalars — structurally no creep."""
+        compressor.threshold_tokens = 750_000
+        compressor.context_length = 1_000_000
+        compressor._skew_floor = 0.6
+        compressor.note_rough_sent(776_594)
+        compressor.update_from_response({"prompt_tokens": 644_027, "completion_tokens": 10})
+        first = compressor.calibrated_tokens(776_594)
+        # Many more sub-threshold turns at the same skew — calibrated stays put.
+        for _ in range(10):
+            compressor.note_rough_sent(778_000)
+            compressor.update_from_response({"prompt_tokens": 645_000, "completion_tokens": 10})
+        again = compressor.calibrated_tokens(776_594)
+        assert abs(again - first) < 5_000  # no monotonic creep across turns
+        assert compressor.should_compress_calibrated(776_594) is False
 
-        assert compressor.should_defer_preflight_to_real_usage(93_000) is False
+    def test_raw_ceiling_fires_regardless_of_skew(self, compressor):
+        """Dense in-turn paste / skew-content mismatch (INV-10): a raw rough near the
+        window compacts even if a stale low skew would scale it under threshold."""
+        compressor.threshold_tokens = 750_000
+        compressor.context_length = 1_000_000
+        compressor._skew_floor = 0.5
+        compressor._hard_frac = 0.95
+        # Seed a low stale skew (0.6) from an earlier benign turn.
+        compressor.note_rough_sent(100_000)
+        compressor.update_from_response({"prompt_tokens": 60_000, "completion_tokens": 10})
+        assert compressor._current_skew() <= 0.65
+        # Now a dense paste pushes raw rough to 960k (≥ 0.95×1M ceiling).
+        # calibrated would be 960k×0.6 = 576k < 750k (would WRONGLY defer) — but the
+        # raw ceiling fires first → compacts. INV-10 / 413 safety.
+        assert compressor.calibrated_tokens(960_000) < 750_000  # calibration alone would defer
+        assert compressor.should_compress_calibrated(960_000) is True  # ceiling saves it
+
+    def test_skew_clamped_never_scales_up(self, compressor):
+        # A real reading ABOVE its rough (rough under-counted) → ratio clamped ≤ 1.0.
+        compressor.note_rough_sent(100_000)
+        compressor.update_from_response({"prompt_tokens": 130_000, "completion_tokens": 10})
+        assert compressor._current_skew() == 1.0
+        assert compressor.calibrated_tokens(500_000) == 500_000
+
+    def test_skew_floor_clamps_down_scale(self, compressor):
+        compressor._skew_floor = 0.7
+        compressor.note_rough_sent(100_000)
+        compressor.update_from_response({"prompt_tokens": 40_000, "completion_tokens": 10})  # ratio 0.4
+        assert compressor._current_skew() == 0.7  # floored, not 0.4
+        assert compressor.calibrated_tokens(100_000) == 70_000
+
+    def test_reset_clears_skew_across_sessions(self, compressor):
+        """Greptile #111: the engine is a process-global singleton, so a skew learned
+        in one conversation must NOT leak into a fresh session's first preflight."""
+        compressor._skew_floor = 0.6
+        compressor.note_rough_sent(100_000)
+        compressor.update_from_response({"prompt_tokens": 60_000, "completion_tokens": 10})
+        assert compressor._current_skew() <= 0.65  # low skew learned
+        compressor.reset_skew_calibration()
+        # Fresh session: skew back to 1.0 identity until THIS session pairs a reading.
+        assert compressor._current_skew() == 1.0
+        assert compressor.calibrated_tokens(776_594) == 776_594
+        assert compressor._last_rough_sent == 0
+        assert compressor.rough_at_last_real == 0
+
+    def test_on_session_reset_resets_skew(self, compressor):
+        """The session-boundary reset path clears skew (wired into on_session_reset)."""
+        compressor._skew_floor = 0.6
+        compressor.note_rough_sent(100_000)
+        compressor.update_from_response({"prompt_tokens": 60_000, "completion_tokens": 10})
+        assert compressor._current_skew() < 1.0
+        compressor.on_session_reset()
+        assert compressor._current_skew() == 1.0
+
+
+class TestCalibrationConfigWiring:
+    """Greptile #111: compression.skew_floor / compression.calibration_hard_frac
+    constructor kwargs must actually take effect when passed (the agent_init wiring
+    feeds these from config)."""
+
+    def test_config_skew_floor_applied(self):
+        c = ContextCompressor(model="claude-opus-4-8", skew_floor=0.85)
+        assert c._skew_floor == 0.85
+
+    def test_config_hard_frac_applied(self):
+        c = ContextCompressor(model="claude-opus-4-8", calibration_hard_frac=0.90)
+        assert c._hard_frac == 0.90
+
+    def test_config_defaults_when_unset(self):
+        c = ContextCompressor(model="claude-opus-4-8")
+        assert c._skew_floor == 0.7
+        assert c._hard_frac == 0.95
+
+    def test_config_invalid_falls_back_to_default(self):
+        # Out-of-range / non-numeric → safe default, never a degenerate scale.
+        c = ContextCompressor(model="claude-opus-4-8", skew_floor=1.5, calibration_hard_frac=0)
+        assert c._skew_floor == 0.7
+        assert c._hard_frac == 0.95
+
+
+class TestCalibratedStoreUsesCalibrated:
+    """Greptile #111: the preflight must store the CALIBRATED estimate into the
+    real-usage slot (last_prompt_tokens), not the raw rough — otherwise a failed
+    provider call leaves the inflated raw masquerading as real usage and a later
+    check over-compacts a request the calibrated path decided should fit.
+
+    This guards the value semantics directly (the turn_context wiring is exercised
+    by the 413/preflight integration tests)."""
+
+    def test_calibrated_below_raw_when_skew_low(self, compressor):
+        compressor._skew_floor = 0.6
+        compressor.note_rough_sent(100_000)
+        compressor.update_from_response({"prompt_tokens": 60_000, "completion_tokens": 10})
+        raw = 776_594
+        calibrated = compressor.calibrated_tokens(raw)
+        # The value the preflight stores must be the calibrated one, strictly < raw.
+        assert calibrated < raw
+        # And it reflects the provider's measured accounting, not the inflated guess.
+        assert abs(calibrated - int(round(raw * compressor._current_skew()))) <= 1
 
 
 

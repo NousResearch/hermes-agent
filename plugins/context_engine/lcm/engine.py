@@ -353,6 +353,11 @@ class LCMEngine(ContextEngine):
         self._update_model_pending_session_start = False
         self.threshold_tokens = 0
         self.threshold_percent = self._config.context_threshold
+        # P2 calibration knobs (read by the ContextEngine ABC calibration methods
+        # via getattr). Sourced ONCE here from this engine's own config so the
+        # process-global singleton is never mutated per-agent (Greptile PR #111).
+        self._skew_floor = self._config.skew_floor
+        self._hard_frac = self._config.calibration_hard_frac
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
@@ -645,6 +650,12 @@ class LCMEngine(ContextEngine):
         self.last_cache_read_tokens = int(usage.get("cache_read_tokens", 0) or 0)
         self.last_cache_write_tokens = int(usage.get("cache_write_tokens", 0) or 0)
         self.last_reasoning_tokens = int(usage.get("reasoning_tokens", 0) or 0)
+        # Pair the skew (P2 "compact on the truth" calibration) — the real
+        # prompt_tokens / the rough estimate stashed for this request. Recorded on
+        # the shared ContextEngine base so should_compress_calibrated can scale the
+        # rough estimate to the provider's real accounting.
+        if self.last_prompt_tokens > 0:
+            self.record_skew_from_real(self.last_prompt_tokens)
 
     @property
     def cache_read_ratio(self) -> float:
@@ -2034,6 +2045,11 @@ class LCMEngine(ContextEngine):
         """
         self._reset_session_counters()
         self._reset_compaction_progress()
+        # P2: skew calibration is per-conversation; clear it at a real session
+        # boundary so a ratio learned in one conversation can't scale down a fresh
+        # session's first preflight (Greptile #111). NOT called on the compression
+        # boundary path (same conversation continuing → skew is still valid there).
+        self.reset_skew_calibration()
 
     def _apply_session_start_metadata(self, session_id: str, kwargs: Dict[str, Any]) -> None:
         self._session_id = session_id

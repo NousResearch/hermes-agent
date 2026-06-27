@@ -257,37 +257,38 @@ def build_turn_context(
             tools=agent.tools or None,
         )
         _compressor = agent.context_compressor
-        _defer_preflight = getattr(
-            _compressor,
-            "should_defer_preflight_to_real_usage",
-            lambda _tokens: False,
-        )
-        _preflight_deferred = _defer_preflight(_preflight_tokens)
+        # ── P2 "compact on the truth" — calibrate the rough estimate by the
+        # provider's measured skew before triggering. note_rough_sent pairs THIS
+        # request's rough with the real prompt_tokens that come back, so the next
+        # turn's skew is measured on the right message set. should_compress_calibrated
+        # compacts when calibrated rough crosses threshold OR raw rough hits the
+        # window ceiling (dense-paste / 413 guard). Replaces the removed
+        # should_defer_preflight_to_real_usage ratchet.
+        _compressor.note_rough_sent(_preflight_tokens)
+        _calibrated = _compressor.calibrated_tokens(_preflight_tokens)
+        _last = _compressor.last_prompt_tokens
+        # Do NOT overwrite the -1 sentinel (#36718). Store the CALIBRATED estimate,
+        # not the raw rough: this value lands in the real-usage slot, so if the
+        # provider call fails before update_from_response replaces it, the stale
+        # value must reflect the provider's measured accounting — otherwise a later
+        # compression check would treat the ~21%-inflated raw as real and compact a
+        # request the calibrated path had just decided should fit (Greptile #111).
+        if _last >= 0 and _calibrated > _last:
+            _compressor.last_prompt_tokens = _calibrated
 
-        if not _preflight_deferred:
-            _last = _compressor.last_prompt_tokens
-            # Do NOT overwrite the -1 sentinel (#36718).
-            if _last >= 0 and _preflight_tokens > _last:
-                _compressor.last_prompt_tokens = _preflight_tokens
-
-        if _preflight_deferred:
+        if _compressor.should_compress_calibrated(_preflight_tokens):
             logger.info(
-                "Skipping preflight compression: rough estimate ~%s >= %s, "
-                "but last real provider prompt was %s after compression",
+                "Preflight compression: calibrated ~%s (raw ~%s × skew %.3f) >= %s "
+                "threshold (model %s, ctx %s)",
+                f"{_calibrated:,}",
                 f"{_preflight_tokens:,}",
-                f"{_compressor.threshold_tokens:,}",
-                f"{_compressor.last_real_prompt_tokens:,}",
-            )
-        elif _compressor.should_compress(_preflight_tokens):
-            logger.info(
-                "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
-                f"{_preflight_tokens:,}",
+                _compressor._current_skew(),
                 f"{_compressor.threshold_tokens:,}",
                 agent.model,
                 f"{_compressor.context_length:,}",
             )
             agent._emit_status(
-                f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
+                f"📦 Preflight compression: ~{_calibrated:,} tokens "
                 f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
@@ -310,7 +311,8 @@ def build_turn_context(
                     system_prompt=active_system_prompt or "",
                     tools=agent.tools or None,
                 )
-                if not _compressor.should_compress(_preflight_tokens):
+                _compressor.note_rough_sent(_preflight_tokens)
+                if not _compressor.should_compress_calibrated(_preflight_tokens):
                     break
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).

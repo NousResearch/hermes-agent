@@ -115,14 +115,80 @@ class ContextEngine(ABC):
         """
         return False
 
-    def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
-        """Return True when preflight should trust recent real usage instead.
+    # -- "Compact on the truth" calibration (P2) ---------------------------
+    # Shared concrete implementation for ALL engines (ContextCompressor, LCMEngine,
+    # third-party). The rough estimate (estimate_request_tokens_rough, char/3.5)
+    # over-counts schema-heavy requests; the provider's real prompt_tokens measures
+    # the skew. We scale the rough by the clamped median skew before comparing to
+    # threshold, so compaction fires on the provider's real accounting, not the
+    # ~21%-inflated guess. State is lazy (engines whose __init__ doesn't set it still
+    # work). Pure functions of recorded scalars → no defer-baseline to ratchet.
 
-        Built-in compression uses this to avoid re-compacting from known-noisy
-        rough estimates after a compressed request has already fit. Third-party
-        engines can ignore it safely.
-        """
-        return False
+    _SKEW_FLOOR_DEFAULT = 0.7
+    _HARD_FRAC_DEFAULT = 0.95
+    _SKEW_HISTORY = 5
+
+    def reset_skew_calibration(self) -> None:
+        """Clear per-conversation skew state at a session boundary. The engine is a
+        process-global singleton, so a skew learned in one conversation must not leak
+        into the next session's first preflight (Greptile #111)."""
+        self._recent_skews = []
+        self._last_rough_sent = 0
+        self.rough_at_last_real = 0
+
+    def note_rough_sent(self, rough_tokens: int) -> None:
+        """Stash the rough estimate of the request about to be sent so the next
+        ``record_skew_from_real``/``update_from_response`` pairs it with the real
+        prompt_tokens (the skew denominator). Same message set ⇒ correct ratio."""
+        if rough_tokens and rough_tokens > 0:
+            self._last_rough_sent = int(rough_tokens)
+
+    def record_skew_from_real(self, real_prompt_tokens: int) -> None:
+        """Pair a real provider ``prompt_tokens`` with the stashed rough (atomically,
+        from the engine's ``update_from_response``). Records ratio ≤ 1.0 (rough
+        over-counts; never scale UP), keeps the last-k for median smoothing."""
+        last_rough = getattr(self, "_last_rough_sent", 0)
+        if real_prompt_tokens and real_prompt_tokens > 0 and last_rough > 0:
+            self.rough_at_last_real = last_rough
+            ratio = min(1.0, real_prompt_tokens / last_rough)
+            hist = getattr(self, "_recent_skews", None)
+            if hist is None:
+                hist = []
+                self._recent_skews = hist
+            hist.append(ratio)
+            if len(hist) > self._SKEW_HISTORY:
+                self._recent_skews = hist[-self._SKEW_HISTORY:]
+
+    def _current_skew(self) -> float:
+        """Median of the last-k real/rough ratios, clamped to [floor, 1.0]. Returns
+        1.0 (no scaling = pre-P2 behavior) when no real reading has paired yet."""
+        hist = getattr(self, "_recent_skews", None)
+        if not hist:
+            return 1.0
+        ordered = sorted(hist)
+        mid = len(ordered) // 2
+        med = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+        floor = getattr(self, "_skew_floor", self._SKEW_FLOOR_DEFAULT)
+        return max(floor, min(1.0, med))
+
+    def calibrated_tokens(self, rough_tokens: int) -> int:
+        """``round(rough × skew)`` — the rough estimate scaled to the provider's
+        measured accounting. Safe default (skew 1.0) ⇒ identical to raw rough."""
+        if rough_tokens <= 0:
+            return rough_tokens
+        return int(round(rough_tokens * self._current_skew()))
+
+    def should_compress_calibrated(self, rough_tokens: int) -> bool:
+        """P2 trigger: compact when CALIBRATED rough ≥ threshold, OR when RAW rough
+        reaches the window ceiling (skew-independent 413 / dense-paste guard — a
+        dense in-turn paste raises raw rough so the ceiling fires even if a stale
+        skew would defer). Delegates the actual threshold + anti-thrash to the
+        engine's ``should_compress``."""
+        ctx_len = getattr(self, "context_length", 0) or 0
+        hard_frac = getattr(self, "_hard_frac", self._HARD_FRAC_DEFAULT)
+        if ctx_len > 0 and rough_tokens >= int(ctx_len * hard_frac):
+            return self.should_compress(rough_tokens)
+        return self.should_compress(self.calibrated_tokens(rough_tokens))
 
     # -- Optional: manual /compress preflight ------------------------------
 

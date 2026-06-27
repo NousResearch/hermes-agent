@@ -656,6 +656,11 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        # Reset P2 skew calibration at the session boundary — skew is per-conversation
+        # (the singleton engine serves every session), so a low ratio learned in one
+        # conversation must NOT scale down a fresh session's first preflight before it
+        # has its own real usage (Greptile #111). Fresh session → skew 1.0 = raw rough.
+        self.reset_skew_calibration()
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear per-session compaction state at a real session boundary.
@@ -741,6 +746,8 @@ class ContextCompressor(ContextEngine):
         per_model_threshold: "dict | None" = None,
         global_threshold_percent: "float | None" = None,
         codex_gpt55_autoraise: bool = True,
+        skew_floor: "float | None" = None,
+        calibration_hard_frac: "float | None" = None,
     ):
         # Compression-threshold config for re-resolving the destination model's
         # threshold on a model switch / fallback (update_model). When threaded
@@ -808,9 +815,38 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
-        self.summary_model = summary_model_override or ""
+        # ── "Compact on the truth" calibration (P2) ──────────────────────────
+        # The rough estimate (estimate_request_tokens_rough, char/3.5) deliberately
+        # over-counts schema-heavy requests. The provider's real prompt_tokens from
+        # the last completed call measures that skew; we scale the current rough by
+        # it before comparing to threshold, so we compact on the provider's real
+        # accounting instead of the ~21%-inflated guess. `rough_at_last_real` is the
+        # rough estimate of the request that produced `last_real_prompt_tokens`
+        # (paired atomically in update_from_response); `_last_rough_sent` is stashed
+        # at send time. `_recent_skews` holds the last-k ratios for median smoothing
+        # (one anomalous call can't swing the next turn's trigger).
+        self.rough_at_last_real = 0
+        self._last_rough_sent = 0
+        self._recent_skews: List[float] = []
+        # Skew floor: never scale the rough estimate below this fraction of itself —
+        # the sole guard against compacting LATE when the recorded skew is stale vs
+        # the current content. Conservative default 0.7 (rough must over-count by
+        # >43% before the floor binds); re-tune from the logged skew distribution.
+        # Absolute raw-rough ceiling: compact unconditionally when raw rough reaches
+        # this fraction of the window, regardless of skew (dense-paste / 413 guard).
+        # Threaded from compression config via constructor kwargs (config.yaml keys
+        # compression.skew_floor / compression.calibration_hard_frac); conservative
+        # defaults when unset.
+        self._skew_floor: float = (
+            float(skew_floor) if isinstance(skew_floor, (int, float))
+            and 0.0 < float(skew_floor) <= 1.0 else 0.7
+        )
+        self._hard_frac: float = (
+            float(calibration_hard_frac) if isinstance(calibration_hard_frac, (int, float))
+            and 0.0 < float(calibration_hard_frac) <= 1.0 else 0.95
+        )
 
-        # Stores the previous compaction summary for iterative updates
+        self.summary_model = summary_model_override or ""
         self._previous_summary: Optional[str] = None
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
@@ -842,42 +878,14 @@ class ContextCompressor(ContextEngine):
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
+            # Pair the skew (P2 calibration) — atomic with last_real_prompt_tokens.
+            self.record_skew_from_real(self.last_prompt_tokens)
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
-
-    def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
-        """Return True when a high rough preflight estimate is known-noisy.
-
-        ``estimate_request_tokens_rough(..., tools=...)`` intentionally
-        overestimates schema-heavy requests so Hermes compresses before a
-        provider rejects the payload. After a successful compressed API call,
-        though, provider ``prompt_tokens`` are a better signal than repeating
-        compaction from the same rough schema overhead. Defer only while the
-        rough estimate has grown modestly since a request the provider proved
-        fit under the threshold.
-        """
-        if rough_tokens < self.threshold_tokens:
-            return False
-        if self.last_real_prompt_tokens <= 0:
-            return False
-        if self.last_real_prompt_tokens >= self.threshold_tokens:
-            return False
-
-        baseline = self.last_rough_tokens_when_real_prompt_fit or self.last_compression_rough_tokens
-        if baseline <= 0:
-            return False
-
-        growth = max(0, rough_tokens - baseline)
-        tolerated_growth = max(4096, int(self.threshold_tokens * 0.05))
-        if growth > tolerated_growth:
-            return False
-
-        self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
-        return True
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.

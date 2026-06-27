@@ -502,6 +502,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
         "next_run_at": job.get("next_run_at"),
+        "last_started_at": job.get("last_started_at"),
+        "current_run_started_at": job.get("current_run_started_at"),
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
         "last_delivery_error": job.get("last_delivery_error"),

@@ -958,6 +958,8 @@ def create_job(
         "paused_reason": None,
         "created_at": now,
         "next_run_at": compute_next_run(parsed_schedule),
+        "last_started_at": None,
+        "current_run_started_at": None,
         "last_run_at": None,
         "last_status": None,
         "last_error": None,
@@ -1170,6 +1172,30 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
+def mark_job_started(job_id: str) -> bool:
+    """Mark a job as actively executing without claiming completion.
+
+    Recurring cron jobs pre-advance ``next_run_at`` before execution to avoid
+    duplicate fires after a crash.  Without a separate started marker,
+    observers see ``next_run_at`` move while ``last_run_at`` remains stale and
+    cannot distinguish a healthy in-progress run from integrity drift.
+    """
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] == job_id:
+                now = _hermes_now().isoformat()
+                job["last_started_at"] = now
+                job["current_run_started_at"] = now
+                if job.get("state") != "paused":
+                    job["state"] = "running"
+                save_jobs(jobs)
+                return True
+
+        logger.warning("mark_job_started: job_id %s not found, skipping save", job_id)
+        return False
+
+
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                  delivery_error: Optional[str] = None):
     """
@@ -1186,6 +1212,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
                 now = _hermes_now().isoformat()
+                job["current_run_started_at"] = None
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None

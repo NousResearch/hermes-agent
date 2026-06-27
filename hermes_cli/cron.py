@@ -121,6 +121,8 @@ def cron_list(show_all: bool = False):
         skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
         if state == "paused":
             status = color("[paused]", Colors.YELLOW)
+        elif state == "running":
+            status = color("[running]", Colors.YELLOW)
         elif state == "completed":
             status = color("[completed]", Colors.BLUE)
         elif job.get("enabled", True):
@@ -146,6 +148,10 @@ def cron_list(show_all: bool = False):
             print(f"    Workdir:   {workdir}")
 
         # Execution history
+        current_started = job.get("current_run_started_at")
+        if current_started:
+            print(f"    Running:   since {current_started}")
+
         last_status = job.get("last_status")
         if last_status:
             last_run = job.get("last_run_at", "?")

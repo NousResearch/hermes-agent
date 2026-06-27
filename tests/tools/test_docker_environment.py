@@ -469,6 +469,34 @@ def test_security_args_include_setuid_setgid_for_privdrop(monkeypatch):
     assert "SETGID" in added, "SETGID cap missing — image privilege-drop will fail"
 
 
+def test_security_args_disable_selinux_label(monkeypatch):
+    """SELinux-enforcing hosts (e.g. OpenSUSE, Fedora, RHEL) block bind mounts
+    unless the container opts out of SELinux labeling.
+
+    Without ``label=disable``, ``docker run -v /host/path:/workspace`` fails
+    with "permission denied" inside the container on SELinux-enforcing systems
+    (issue #45106).  The flag is a no-op on non-SELinux hosts.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env()
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+
+    opts = [
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "--security-opt"
+    ]
+    assert "label=disable" in opts, (
+        "SELinux label=disable missing — bind mounts will fail on "
+        "SELinux-enforcing hosts (OpenSUSE, Fedora, RHEL)"
+    )
+
+
 # ── run_as_host_user tests ────────────────────────────────────────
 
 

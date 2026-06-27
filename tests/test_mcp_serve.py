@@ -11,6 +11,7 @@ Three layers of tests:
 import asyncio
 import inspect
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -1231,6 +1232,43 @@ class TestEventBridgePollE2E:
         r2 = bridge.poll_events(after_cursor=r1["next_cursor"])
         assert len(r2["events"]) == 1
         assert r2["events"][0]["content"] == "New reply!"
+
+    def test_poll_logs_db_read_failures_with_session_key(self, tmp_path, monkeypatch, caplog):
+        """DB read failures should be visible in logs instead of silently skipped."""
+        import mcp_serve
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        session_key = "agent:main:telegram:dm:broken"
+        session_id = "20260329_150000_broken"
+        (tmp_path / "state.db").write_text("", encoding="utf-8")
+
+        sessions_data = {
+            session_key: {
+                "session_key": session_key,
+                "session_id": session_id,
+                "platform": "telegram",
+                "updated_at": "2026-03-29T15:00:05",
+                "origin": {"platform": "telegram", "chat_id": "broken"},
+            }
+        }
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+
+        class BrokenDB:
+            def get_messages(self, sid):
+                raise PermissionError(f"cannot read {sid}")
+
+        bridge = mcp_serve.EventBridge()
+
+        with caplog.at_level(logging.WARNING, logger="mcp_serve"):
+            bridge._poll_once(BrokenDB())
+
+        assert bridge.poll_events(after_cursor=0)["events"] == []
+        assert any(
+            session_key in record.message and "cannot read" in record.message
+            for record in caplog.records
+        ), [record.message for record in caplog.records]
 
     def test_poll_interval_is_200ms(self):
         """Verify the poll interval constant."""

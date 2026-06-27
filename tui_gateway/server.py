@@ -24,6 +24,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli import _subprocess_compat
 from utils import is_truthy_value
 from tui_gateway import git_probe
 from tui_gateway.transport import (
@@ -11619,7 +11620,10 @@ def _list_repo_files(root: str) -> list[str]:
 
     files: list[str] = []
     try:
-        top_result = subprocess.run(
+        # _subprocess_compat.run hides the console window: this git probe runs
+        # from the windowless desktop gateway (pythonw.exe), where capturing
+        # output does NOT prevent a new console from being allocated. See #52310.
+        top_result = _subprocess_compat.run(
             ["git", "-C", root, "rev-parse", "--show-toplevel"],
             capture_output=True,
             timeout=2.0,
@@ -11628,7 +11632,7 @@ def _list_repo_files(root: str) -> list[str]:
         )
         if top_result.returncode == 0:
             top = top_result.stdout.decode("utf-8", "replace").strip()
-            list_result = subprocess.run(
+            list_result = _subprocess_compat.run(
                 [
                     "git",
                     "-C",

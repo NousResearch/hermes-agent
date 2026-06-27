@@ -1,7 +1,7 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 
 class TestTokenValidation:
@@ -199,3 +199,31 @@ class TestEnvVarOrder:
         assert copilot.api_key_env_vars == (
             "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"
         )
+
+
+class TestGhCliTokenHidesConsole:
+    """The `gh auth token` fallback must route through the _subprocess_compat
+    chokepoint so it doesn't flash a console window when spawned from the
+    windowless desktop gateway (pythonw.exe). The footgun linter can't guard
+    this site — the argv (`cmd`) is a variable, not a literal, so its
+    console-spawn rule can't see it's `gh` — so this test is the only
+    regression guard. See #52310.
+    """
+
+    def test_try_gh_cli_token_routes_through_chokepoint(self, monkeypatch):
+        from hermes_cli import copilot_auth
+
+        called = {}
+
+        def fake_run(cmd, **kwargs):
+            called["cmd"] = cmd
+            return MagicMock(returncode=0, stdout="gho_token_from_gh\n")
+
+        # If the code regressed to a raw subprocess.run, `called` stays empty.
+        monkeypatch.setattr(copilot_auth._subprocess_compat, "run", fake_run)
+        monkeypatch.setattr(copilot_auth, "_gh_cli_candidates", lambda: ["gh"])
+
+        token = copilot_auth._try_gh_cli_token()
+
+        assert token == "gho_token_from_gh"
+        assert called.get("cmd", [])[:3] == ["gh", "auth", "token"]

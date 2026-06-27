@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli import _subprocess_compat
+
 logger = logging.getLogger(__name__)
 
 # OAuth device code flow constants (same client ID as opencode/Copilot CLI)
@@ -135,7 +137,12 @@ def _try_gh_cli_token() -> Optional[str]:
         if hostname:
             cmd += ["--hostname", hostname]
         try:
-            result = subprocess.run(
+            # Route through the _subprocess_compat chokepoint so the gh probe
+            # doesn't flash a console window when spawned from the windowless
+            # desktop gateway (pythonw.exe). The footgun checker can't catch
+            # this site itself — the program (cmd) is a variable, not a literal
+            # argv, so its console-spawn rule can't see it's `gh`. See #52310.
+            result = _subprocess_compat.run(
                 cmd,
                 capture_output=True,
                 text=True,

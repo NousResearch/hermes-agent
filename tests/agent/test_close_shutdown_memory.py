@@ -14,9 +14,11 @@ class _FakeMemoryManager:
     def __init__(self):
         self.on_session_end_called = False
         self.shutdown_all_called = False
+        self.received_messages = None
 
     def on_session_end(self, messages):
         self.on_session_end_called = True
+        self.received_messages = messages
 
     def shutdown_all(self):
         self.shutdown_all_called = True
@@ -28,9 +30,11 @@ class _FakeMemoryManager:
 class _FakeCompressor:
     def __init__(self):
         self.on_session_end_called = False
+        self.received_messages = None
 
     def on_session_end(self, sid, messages):
         self.on_session_end_called = True
+        self.received_messages = messages
 
 
 def test_close_calls_shutdown_memory_provider():
@@ -100,3 +104,52 @@ def test_close_is_idempotent_with_memory_provider():
     # shutdown_all is called again (idempotent in real MemoryManager;
     # our fake just tracks it)
     assert mm.shutdown_all_called
+
+
+def test_close_passes_non_empty_messages_to_providers():
+    """close() must pass _session_messages to shutdown_memory_provider (#46082 review).
+
+    shutdown_memory_provider() runs BEFORE _session_messages is cleared,
+    so providers receive the actual conversation transcript for
+    on_session_end() extraction — not an empty list.
+    """
+    from run_agent import AIAgent
+
+    agent = AIAgent.__new__(AIAgent)
+    agent.session_id = "test-msg-ordering"
+    agent._session_messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    agent._active_children = []
+    agent._active_children_lock = threading.Lock()
+    agent.client = None
+    agent._end_session_on_close = False
+    agent.background_review_callback = None
+    agent.memory_notifications = "on"
+
+    mm = _FakeMemoryManager()
+    agent._memory_manager = mm
+    comp = _FakeCompressor()
+    agent.context_compressor = comp
+
+    agent.close()
+
+    # Providers should have received the actual messages, not []
+    assert mm.received_messages == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ], (
+        "Memory manager received empty messages — shutdown_memory_provider() "
+        "was called after _session_messages was cleared"
+    )
+    assert comp.received_messages == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ], (
+        "Context compressor received empty messages — shutdown_memory_provider() "
+        "was called after _session_messages was cleared"
+    )
+
+    # _session_messages should be cleared after close()
+    assert agent._session_messages == []

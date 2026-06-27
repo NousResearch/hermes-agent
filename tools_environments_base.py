@@ -13,6 +13,7 @@ import os
 import re
 import select
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -413,6 +414,9 @@ class BaseEnvironment(ABC):
         ``C:\\Users\\x`` → ``/c/Users/x``.  No-op on non-Windows hosts or
         paths that are already in MSYS format.
 
+        When running inside WSL (where drives are mounted at ``/mnt/``),
+        returns ``/mnt/c/Users/x`` instead so ``cd`` and file writes work.
+
         ``_msys_to_windows_path`` (in ``local.py``) handles the reverse
         translation for ``os.path.isdir`` / ``subprocess.Popen(cwd=...)``.
         This helper closes the gap for the bash-script side.
@@ -424,6 +428,9 @@ class BaseEnvironment(ABC):
             return cwd
         drive = m.group(1).lower()
         rest = m.group(2).replace('\\', '/')
+        # WSL mounts drives at /mnt/c, /mnt/d, etc.
+        if shutil.which("wsl.exe"):
+            return f"/mnt/{drive}/{rest}"
         return f"/{drive}/{rest}"
 
     @staticmethod

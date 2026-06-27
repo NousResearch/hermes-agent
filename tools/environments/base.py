@@ -13,6 +13,7 @@ import os
 import re
 import select
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -424,6 +425,9 @@ class BaseEnvironment(ABC):
             return cwd
         drive = m.group(1).lower()
         rest = m.group(2).replace('\\', '/')
+        # WSL mounts drives at /mnt/c, /mnt/d, etc.
+        if shutil.which("wsl.exe"):
+            return f"/mnt/{drive}/{rest}"
         return f"/{drive}/{rest}"
 
     @staticmethod

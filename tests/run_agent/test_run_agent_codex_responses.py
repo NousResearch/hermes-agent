@@ -1889,6 +1889,30 @@ def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
 
 
+def test_dump_api_request_debug_normalizes_responses_alias(monkeypatch, tmp_path):
+    """Explicit ``api_mode='responses'`` should still hit the Responses API."""
+    import json
+
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="deepseek-v4-pro",
+        provider="custom",
+        api_mode="responses",
+        base_url="http://127.0.0.1:9208/v1",
+        api_key="test-key",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
+
+
 def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path):
     """Debug dumps should show /chat/completions URL for chat_completions mode."""
     import json

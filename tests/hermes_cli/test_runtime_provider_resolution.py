@@ -1178,6 +1178,28 @@ def test_model_config_api_mode(monkeypatch):
     assert resolved["base_url"] == "http://127.0.0.1:9208/v1"
 
 
+def test_model_config_responses_alias_normalized(monkeypatch):
+    """Legacy/user-facing ``responses`` should normalize to ``codex_responses``."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:9208/v1",
+            "api_mode": "responses",
+        },
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9208/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "http://127.0.0.1:9208/v1"
+
+
 def test_model_config_api_mode_ignored_when_provider_differs(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "zai")
     monkeypatch.setattr(

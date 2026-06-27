@@ -4241,6 +4241,42 @@ def resolve_provider_client(
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig is None:
+        # Fallback: check providers plugin registry.  The auto-extend in
+        # auth.py that copies plugin profiles into PROVIDER_REGISTRY runs
+        # once at module import and can fail silently (bare except).  A
+        # direct lookup covers the gap without touching the auth module's
+        # import-time ordering.
+        try:
+            from providers import get_provider_profile as _get_pp
+            _pp = _get_pp(provider)
+            if _pp is not None and _pp.auth_type == "api_key" and _pp.env_vars:
+                from hermes_cli.auth import ProviderConfig as _PC
+                _api_key_vars = tuple(
+                    v for v in _pp.env_vars
+                    if not v.endswith("_BASE_URL") and not v.endswith("_URL")
+                )
+                _base_url_var = next(
+                    (v for v in _pp.env_vars
+                     if v.endswith("_BASE_URL") or v.endswith("_URL")),
+                    None,
+                )
+                pconfig = _PC(
+                    id=_pp.name,
+                    name=_pp.display_name or _pp.name,
+                    auth_type="api_key",
+                    inference_base_url=_pp.base_url,
+                    api_key_env_vars=_api_key_vars or _pp.env_vars,
+                    base_url_env_var=_base_url_var or "",
+                )
+                # Cache it so we don't hit this path again
+                PROVIDER_REGISTRY[provider] = pconfig
+                logger.debug(
+                    "resolve_provider_client: resolved %r from providers plugin registry (fallback)",
+                    provider,
+                )
+        except Exception:
+            pass
+    if pconfig is None:
         logger.warning("resolve_provider_client: unknown provider %r", provider)
         return None, None
 

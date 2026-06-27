@@ -739,6 +739,21 @@ export function DesktopController() {
     updateSessionState
   })
 
+  // "Hey Hermes": handle the wake event on the canonical onEvent pipeline (the
+  // path every gateway socket already feeds), not a side-registered listener —
+  // open a fresh session and begin back-and-forth voice.
+  const handleGatewayEventWithWake = useCallback(
+    (event: Parameters<typeof handleDesktopGatewayEvent>[0]) => {
+      if (event.type === 'wake.detected') {
+        startFreshSessionDraft()
+        requestVoiceStart()
+        return
+      }
+      handleDesktopGatewayEvent(event)
+    },
+    [handleDesktopGatewayEvent, startFreshSessionDraft]
+  )
+
   // Single global listener for every rebindable hotkey (incl. profile switching)
   // plus the on-screen keybind editor's capture mode.
   useKeybinds({
@@ -987,7 +1002,7 @@ export function DesktopController() {
   }, [])
 
   useGatewayBoot({
-    handleGatewayEvent: handleDesktopGatewayEvent,
+    handleGatewayEvent: handleGatewayEventWithWake,
     onConnectionReady: c => {
       connectionRef.current = c
     },
@@ -1007,24 +1022,14 @@ export function DesktopController() {
   }, [gatewayState, refreshCurrentModel, refreshSessions])
 
   // "Hey Hermes" wake word: arm the server-side detector for this surface
-  // (gated on config) and open a fresh session when it fires. Idempotent and
-  // self-cleaning across reconnects.
+  // (gated on config). Detection arrives as a wake.detected event handled in
+  // handleGatewayEventWithWake. Idempotent server-side, so reconnects are safe.
   useEffect(() => {
     if (gatewayState !== 'open') {
       return
     }
     void requestGateway('wake.start', { surface: 'gui' }).catch(() => undefined)
-    const gw = gatewayRef.current
-    if (!gw) {
-      return
-    }
-    return gw.on('wake.detected', () => {
-      startFreshSessionDraft()
-      // Begin hands-free back-and-forth voice in the fresh session. The bus
-      // defers a tick, so the new composer is mounted before voice starts.
-      requestVoiceStart()
-    })
-  }, [gatewayState, requestGateway, gatewayRef, startFreshSessionDraft])
+  }, [gatewayState, requestGateway])
 
   // Keep the cron jobs section live without a user action: the scheduler ticks
   // in the background (advancing next-run/state and creating runs), so poll the

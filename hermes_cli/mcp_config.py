@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
@@ -232,9 +233,6 @@ def _apply_mcp_preset(
 def _resolve_mcp_server_config(config: dict) -> dict:
     """Resolve ``${ENV}`` placeholders in a server config before connecting.
 
-    Mirrors ``_load_mcp_config()`` in ``tools/mcp_tool.py``; without it the discovery probe sent
-    literal placeholders in header templates and auth-requiring servers returned 401.
-
     Mirrors ``_load_mcp_config()`` in ``tools/mcp_tool.py``: load ``~/.hermes/.env`` into ``os.environ`` and
     recursively interpolate any ``${VAR}`` placeholders. The CLI builds header templates like
     ``Authorization: Bearer ${MCP_X_API_KEY}`` but the probe path never resolved them, so the discovery
@@ -243,6 +241,13 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     """
     from tools.mcp_tool_config import _interpolate_env_vars
     from agent.secret_scope import current_secret_scope
+    from hermes_cli.env_loader import _load_dotenv_with_fallback
+
+    env_file = config.get("env_file")
+    if env_file and current_secret_scope() is None:
+        env_path = Path(env_file).expanduser()
+        if env_path.exists():
+            _load_dotenv_with_fallback(env_path, override=True)
 
     if current_secret_scope() is None:
         try:

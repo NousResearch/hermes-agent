@@ -140,6 +140,10 @@ class _Engine:
     def process(self, frame) -> bool:  # frame: 1-D int16 ndarray
         raise NotImplementedError
 
+    def reset(self) -> None:
+        """Clear any internal audio/feature buffer (called on every (re)start)."""
+        pass
+
     def close(self) -> None:
         pass
 
@@ -189,11 +193,16 @@ class _OpenWakeWordEngine(_Engine):
         scores = self._model.predict(frame)
         return any(score >= self._threshold for score in scores.values())
 
-    def close(self) -> None:
+    def reset(self) -> None:
+        # Clears openWakeWord's rolling feature/prediction buffer so stale audio
+        # captured before a pause can't re-fire the moment we resume.
         try:
             self._model.reset()
         except Exception:
             pass
+
+    def close(self) -> None:
+        self.reset()
 
 
 class _PorcupineEngine(_Engine):
@@ -355,6 +364,14 @@ class WakeWordDetector:
         except Exception as e:
             logger.error("wake word: failed to open microphone: %s", e)
             return
+
+        # Drop any buffered audio/feature state so a resume right after a voice
+        # turn can't immediately re-fire on audio captured before the pause (the
+        # wake → voice → resume → wake runaway loop).
+        try:
+            self.engine.reset()
+        except Exception:
+            pass
 
         logger.info("wake word: listening (frame=%d, rate=%d)", frame_length, SAMPLE_RATE)
         try:

@@ -7850,6 +7850,25 @@ def _update_node_dependencies() -> None:
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
 
+    # Step 3: re-restore root-only deps (e.g. agent-browser) that step 2's
+    # ``npm ci`` may have wiped.  Use plain ``npm install`` (additive) — NOT
+    # ``npm ci`` (which deletes node_modules first) — so workspace packages
+    # installed in step 2 survive.  --no-package-lock prevents lockfile drift.
+    restore_env = {**os.environ, **nixos_env, "CI": "1"}
+    restore_result = subprocess.run(
+        [npm, "install", *extra_args, "--workspaces=false", "--no-package-lock"],
+        cwd=PROJECT_ROOT,
+        env=restore_env,
+        capture_output=False,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if restore_result.returncode != 0:
+        print("  ⚠ root-only dep restore failed")
+        print("    Run manually: npm install --workspaces=false")
+
 
 class _UpdateOutputStream:
     """Stream wrapper used during ``hermes update`` to survive terminal loss.

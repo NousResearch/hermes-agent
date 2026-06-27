@@ -4539,3 +4539,46 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+class TestListSessionsRichSourceList:
+    """Test list_sessions_rich with source as a list of allowed sources."""
+
+    def test_source_list_includes_matching(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tui")
+        db.create_session("s3", "telegram")
+        sessions = db.list_sessions_rich(source=["cli", "tui"])
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+        assert "s2" in ids
+        assert "s3" not in ids
+
+    def test_source_list_single_item(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tui")
+        sessions = db.list_sessions_rich(source=["cli"])
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+        assert "s2" not in ids
+
+    def test_source_list_with_exclude(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tui")
+        db.create_session("s3", "tool")
+        sessions = db.list_sessions_rich(
+            source=["cli", "tui"], exclude_sources=["tool"]
+        )
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+        assert "s2" in ids
+        assert "s3" not in ids
+
+    def test_source_string_still_works(self, db):
+        """Backward compat: single string source still works."""
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tui")
+        sessions = db.list_sessions_rich(source="cli")
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+        assert "s2" not in ids

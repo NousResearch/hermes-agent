@@ -2441,9 +2441,62 @@ class TestRunJobSkillBacked:
 
 
 class TestCronDeliverableResponseExtraction:
-    """Cron delivery should strip obvious untagged working notes, conservatively."""
+    """Cron delivery strips only after the explicit deliverable marker."""
 
-    def test_strips_reasoning_preamble_before_markdown_rule(self):
+    def test_strips_text_before_explicit_cron_deliverable_marker(self):
+        response = """All checks complete. Compiling the brief.
+
+Summary of findings:
+- Weather checked.
+- Portfolio checked.
+
+FINAL_CRON_OUTPUT:
+
+Good morning.
+
+WEATHER
+- Today: 13C
+"""
+
+        assert _extract_cron_deliverable_response(response) == """Good morning.
+
+WEATHER
+- Today: 13C"""
+
+    def test_preserves_multiline_tail_after_same_line_marker(self):
+        response = """Now filtering issues by status.
+Grouping by priority and sorting by owner.
+
+FINAL_CRON_OUTPUT: Urgent
+- DOS-527 needs attention.
+- DOS-333 can wait.
+"""
+
+        assert _extract_cron_deliverable_response(response) == """Urgent
+- DOS-527 needs attention.
+- DOS-333 can wait."""
+
+    def test_empty_marker_does_not_suppress_delivery(self):
+        response = """Working notes.
+
+FINAL_CRON_OUTPUT:
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_leaves_generic_final_answer_heading_alone(self):
+        response = """Now filtering issues by status.
+Grouping by priority and sorting by owner.
+
+Final answer:
+
+Urgent
+- DOS-527 needs attention.
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_leaves_unmarked_reasoning_preamble_alone(self):
         response = """All checks complete. Compiling the brief.
 
 Summary of findings:
@@ -2458,35 +2511,7 @@ WEATHER
 - Today: 13C
 """
 
-        assert _extract_cron_deliverable_response(response) == """Good morning.
-
-WEATHER
-- Today: 13C"""
-
-    def test_strips_reasoning_preamble_before_final_answer_marker(self):
-        response = """Now filtering issues by status.
-Grouping by priority and sorting by owner.
-
-Final answer:
-
-Urgent
-- DOS-527 needs attention.
-"""
-
-        assert _extract_cron_deliverable_response(response) == """Urgent
-- DOS-527 needs attention."""
-
-    def test_preserves_multiline_tail_after_same_line_final_marker(self):
-        response = """I need to group the results.
-
-Final answer: Urgent
-- DOS-527 needs attention.
-- DOS-333 can wait.
-"""
-
-        assert _extract_cron_deliverable_response(response) == """Urgent
-- DOS-527 needs attention.
-- DOS-333 can wait."""
+        assert _extract_cron_deliverable_response(response) == response.strip()
 
     def test_leaves_normal_markdown_horizontal_rule_alone(self):
         response = """Daily Brief
@@ -2523,7 +2548,7 @@ Portfolio: unchanged.
 Summary of findings:
 - Weather checked.
 
----
+FINAL_CRON_OUTPUT:
 
 Good morning.
 
@@ -2753,6 +2778,12 @@ class TestBuildJobPromptSilentHint:
         result = _build_job_prompt(job)
         assert "do NOT use send_message" in result
         assert "automatically delivered" in result
+
+    def test_deliverable_marker_guidance_present(self):
+        job = {"prompt": "Generate a report"}
+        result = _build_job_prompt(job)
+        assert "FINAL_CRON_OUTPUT:" in result
+        assert "Only content after that marker will be delivered" in result
 
     def test_delivery_guidance_precedes_user_prompt(self):
         """System guidance appears before the user's prompt text."""

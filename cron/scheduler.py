@@ -289,40 +289,18 @@ def _is_cron_silence_response(text: str) -> bool:
     return False
 
 
-_CRON_FINAL_MARKER_RE = re.compile(
-    r"(?im)^\s*(?:final\s+(?:answer|response|output)|final|deliverable)[^\S\r\n]*:[^\S\r\n]*(.*)$"
+CRON_DELIVERABLE_MARKER = "FINAL_CRON_OUTPUT:"
+_CRON_DELIVERABLE_MARKER_RE = re.compile(
+    rf"(?im)^\s*{re.escape(CRON_DELIVERABLE_MARKER)}[^\S\r\n]*(.*)$"
 )
-_CRON_MARKDOWN_RULE_RE = re.compile(r"(?m)^\s*-{3,}\s*$")
-_CRON_REASONING_PREAMBLE_SIGNALS = (
-    "all checks complete",
-    "compiling",
-    "summary of findings",
-    "now filtering",
-    "filtering",
-    "grouping",
-    "sorting",
-    "checking",
-    "working notes",
-    "reasoning",
-    "i need to",
-    "i will",
-    "let me",
-)
-
-
-def _looks_like_cron_reasoning_preamble(text: str) -> bool:
-    """Heuristic guard for stripping untagged cron working notes."""
-    lower = text.lower()
-    return sum(1 for signal in _CRON_REASONING_PREAMBLE_SIGNALS if signal in lower) >= 2
 
 
 def _extract_cron_deliverable_response(text: str) -> str:
-    """Return the final user-facing cron response when a clear marker exists.
+    """Return the marked final user-facing cron response when present.
 
-    Cron jobs run in quiet, unattended mode, so some reasoning models leak
-    plain-text working notes before the actual report. Avoid broad prose
-    classification: only strip when the model supplied an explicit final marker
-    or a markdown rule after a preamble that looks like working notes.
+    Cron jobs run in quiet, unattended mode. To avoid deleting legitimate
+    reports with broad content heuristics, only strip text before the explicit
+    marker injected into the cron prompt.
     """
     if not isinstance(text, str):
         return ""
@@ -330,7 +308,7 @@ def _extract_cron_deliverable_response(text: str) -> str:
     if not stripped:
         return stripped
 
-    marker_matches = list(_CRON_FINAL_MARKER_RE.finditer(stripped))
+    marker_matches = list(_CRON_DELIVERABLE_MARKER_RE.finditer(stripped))
     if marker_matches:
         marker = marker_matches[-1]
         same_line_tail = (marker.group(1) or "").strip()
@@ -341,13 +319,7 @@ def _extract_cron_deliverable_response(text: str) -> str:
             tail = same_line_tail or remaining_tail
         if tail:
             return tail
-
-    rule_matches = list(_CRON_MARKDOWN_RULE_RE.finditer(stripped))
-    for rule in reversed(rule_matches):
-        prefix = stripped[:rule.start()].strip()
-        tail = stripped[rule.end():].strip()
-        if prefix and tail and _looks_like_cron_reasoning_preamble(prefix):
-            return tail
+        return stripped
 
     return stripped
 
@@ -2234,6 +2206,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "
         "final response and the system handles the rest. "
+        f"Before report content, include a line that says exactly "
+        f"{CRON_DELIVERABLE_MARKER}. Only content after that marker "
+        f"will be delivered; do not put working notes after the marker. "
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "

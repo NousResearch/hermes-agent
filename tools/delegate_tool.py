@@ -1075,6 +1075,8 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Per-task reasoning override resolved before child construction.
+    override_reasoning_config: Optional[dict] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1268,24 +1270,27 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: per-task override > delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
-    try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
+    if override_reasoning_config is not None:
+        child_reasoning = override_reasoning_config
+    else:
+        try:
+            delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+            if delegation_effort:
+                from hermes_constants import parse_reasoning_effort
 
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is not None:
-                child_reasoning = parsed
-            else:
-                logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
-                )
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+                parsed = parse_reasoning_effort(delegation_effort)
+                if parsed is not None:
+                    child_reasoning = parsed
+                else:
+                    logger.warning(
+                        "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                        delegation_effort,
+                    )
+        except Exception as exc:
+            logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -2349,6 +2354,7 @@ def delegate_task(
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    phase: Optional[str] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -2425,15 +2431,8 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    # Per-task routing is resolved after normalizing the task list so phase
+    # metadata can affect single-task calls and future batch tasks independently.
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2455,7 +2454,7 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "phase": phase}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2493,6 +2492,10 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
+            try:
+                creds = _resolve_task_delegation_routing(cfg, t.get("phase"), parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
@@ -2517,6 +2520,7 @@ def delegate_task(
                     if task_acp_args is not None
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
+                override_reasoning_config=creds.get("reasoning_config"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2843,7 +2847,7 @@ def delegate_task(
             context=context,
             toolsets=toolsets,
             role=top_role,
-            model=creds["model"],
+            model=getattr(_child_agents[0], "model", None) if _child_agents else None,
             session_key=_session_key,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
@@ -3085,6 +3089,105 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }
+
+
+def _resolve_phase_reasoning_config(
+    cfg: dict,
+    phase_assignment: Optional[dict],
+    parent_agent,
+) -> Optional[dict]:
+    """Resolve reasoning for one task: valid phase effort, then global, then parent."""
+    from hermes_constants import parse_reasoning_effort
+
+    parent_reasoning = getattr(parent_agent, "reasoning_config", None)
+    global_effort = str(cfg.get("reasoning_effort") or "").strip()
+    phase_effort = ""
+    if isinstance(phase_assignment, dict):
+        phase_effort = str(phase_assignment.get("reasoning_effort") or "").strip()
+
+    if phase_effort:
+        if phase_effort.lower() in {"low", "medium", "high", "xhigh"}:
+            parsed = parse_reasoning_effort(phase_effort)
+            if parsed is not None:
+                return parsed
+        logger.warning(
+            "Unknown delegation.phase_assignments reasoning_effort %r; falling back",
+            phase_effort,
+        )
+
+    if global_effort:
+        parsed = parse_reasoning_effort(global_effort)
+        if parsed is not None:
+            return parsed
+        logger.warning(
+            "Unknown delegation.reasoning_effort %r; inheriting parent level",
+            global_effort,
+        )
+
+    return parent_reasoning
+
+
+def _phase_assignment_for(cfg: dict, phase: Optional[str]) -> Optional[dict]:
+    phase_key = str(phase or "").strip()
+    if not phase_key:
+        return None
+    assignments = cfg.get("phase_assignments")
+    if not isinstance(assignments, dict):
+        return None
+    assignment = assignments.get(phase_key)
+    return assignment if isinstance(assignment, dict) else None
+
+
+def _merge_phase_assignment(cfg: dict, phase_assignment: Optional[dict]) -> dict:
+    merged = dict(cfg)
+    merged.pop("phase_assignments", None)
+    if not phase_assignment:
+        return merged
+    for key in (
+        "model",
+        "provider",
+        "base_url",
+        "api_key",
+        "api_mode",
+        "acp_command",
+        "acp_args",
+    ):
+        if key in phase_assignment:
+            value = phase_assignment.get(key)
+            if isinstance(value, str):
+                if value.strip():
+                    merged[key] = value
+            elif value:
+                merged[key] = value
+    return merged
+
+
+def _resolve_task_delegation_routing(
+    cfg: dict, phase: Optional[str], parent_agent
+) -> dict:
+    """Resolve routing for one delegated task with phase-over-global precedence."""
+    phase_assignment = _phase_assignment_for(cfg, phase)
+    merged_cfg = _merge_phase_assignment(cfg, phase_assignment)
+    try:
+        routing = _resolve_delegation_credentials(merged_cfg, parent_agent)
+    except ValueError:
+        if not phase_assignment:
+            raise
+        logger.warning(
+            "Ignoring unusable delegation.phase_assignments entry for phase %r; falling back to global delegation routing",
+            phase,
+            exc_info=True,
+        )
+        routing = _resolve_delegation_credentials(_merge_phase_assignment(cfg, None), parent_agent)
+    configured_acp_command = str(merged_cfg.get("acp_command") or "").strip()
+    if configured_acp_command:
+        routing["command"] = configured_acp_command
+    if "acp_args" in merged_cfg and merged_cfg.get("acp_args") is not None:
+        routing["args"] = list(merged_cfg.get("acp_args") or [])
+    routing["reasoning_config"] = _resolve_phase_reasoning_config(
+        cfg, phase_assignment, parent_agent
+    )
+    return routing
 
 
 def _load_config() -> dict:
@@ -3382,6 +3485,14 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "phase": {
+                "type": "string",
+                "description": (
+                    "Optional semantic phase label for configured delegation routing "
+                    "(for example 'sdd-spec' or 'sdd-apply'). Omit unless the "
+                    "caller provided phase metadata."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3396,6 +3507,10 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "phase": {
+                            "type": "string",
+                            "description": "Optional phase label for this specific task's configured routing.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -3497,6 +3612,7 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        phase=args.get("phase"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),

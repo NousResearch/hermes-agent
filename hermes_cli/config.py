@@ -2079,6 +2079,10 @@ DEFAULT_CONFIG = {
                            # "codex_responses", or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
+        # Optional per-phase routing overrides. Shape:
+        # {"sdd-spec": {"provider": "openrouter", "model": "...", "reasoning_effort": "high"}}
+        # Fields are merged over the global delegation routing fields above.
+        "phase_assignments": {},
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these

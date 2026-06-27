@@ -32,6 +32,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _resolve_task_delegation_routing,
     _inherit_parent_base_url,
 )
 
@@ -56,6 +57,7 @@ def _make_mock_parent(depth=0):
     parent._print_fn = None
     parent.tool_progress_callback = None
     parent.thinking_callback = None
+    parent.reasoning_config = None
     return parent
 
 
@@ -70,11 +72,30 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("phase", props)
+        self.assertEqual(props["phase"]["type"], "string")
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("phase", task_props)
+        self.assertEqual(task_props["phase"]["type"], "string")
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+
+    def test_schema_keeps_no_phase_inputs_valid(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertNotIn("phase", DELEGATE_TASK_SCHEMA["parameters"]["required"])
+        self.assertNotIn("phase", props["tasks"]["items"].get("required", []))
+        self.assertEqual(props["goal"]["type"], "string")
+        self.assertEqual(props["tasks"]["items"]["required"], ["goal"])
+
+    def test_default_config_includes_empty_phase_assignments(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        delegation = DEFAULT_CONFIG["delegation"]
+        self.assertIn("phase_assignments", delegation)
+        self.assertEqual(delegation["phase_assignments"], {})
 
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
@@ -1342,8 +1363,172 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
 
 
+class TestTaskDelegationRouting(unittest.TestCase):
+    def test_phase_assignment_overrides_global_fields(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "global-model",
+            "provider": "",
+            "base_url": "https://global.example.com/v1",
+            "api_key": "global-key",
+            "reasoning_effort": "low",
+            "phase_assignments": {
+                "sdd-spec": {
+                    "model": "phase-model",
+                    "base_url": "https://phase.example.com/v1",
+                    "api_key": "phase-key",
+                    "reasoning_effort": "high",
+                }
+            },
+        }
+
+        routing = _resolve_task_delegation_routing(cfg, "sdd-spec", parent)
+
+        self.assertEqual(routing["model"], "phase-model")
+        self.assertEqual(routing["base_url"], "https://phase.example.com/v1")
+        self.assertEqual(routing["api_key"], "phase-key")
+        self.assertEqual(routing["reasoning_config"], {"enabled": True, "effort": "high"})
+
+    def test_partial_phase_assignment_falls_back_to_global_fields(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "global-model",
+            "provider": "",
+            "base_url": "https://global.example.com/v1",
+            "api_key": "global-key",
+            "reasoning_effort": "medium",
+            "phase_assignments": {"sdd-design": {"model": "phase-model"}},
+        }
+
+        routing = _resolve_task_delegation_routing(cfg, "sdd-design", parent)
+
+        self.assertEqual(routing["model"], "phase-model")
+        self.assertEqual(routing["base_url"], "https://global.example.com/v1")
+        self.assertEqual(routing["api_key"], "global-key")
+        self.assertEqual(routing["reasoning_config"], {"enabled": True, "effort": "medium"})
+
+    def test_unknown_phase_uses_global_delegation_routing(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "global-model",
+            "provider": "",
+            "base_url": "https://global.example.com/v1",
+            "api_key": "global-key",
+            "phase_assignments": {"sdd-spec": {"model": "phase-model"}},
+        }
+
+        routing = _resolve_task_delegation_routing(cfg, "sdd-apply", parent)
+
+        self.assertEqual(routing["model"], "global-model")
+        self.assertEqual(routing["base_url"], "https://global.example.com/v1")
+        self.assertEqual(routing["api_key"], "global-key")
+        self.assertIsNone(routing["reasoning_config"])
+
+    def test_invalid_phase_reasoning_falls_back_to_global_reasoning(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "reasoning_effort": "low",
+            "phase_assignments": {"sdd-apply": {"reasoning_effort": "ultra"}},
+        }
+
+        routing = _resolve_task_delegation_routing(cfg, "sdd-apply", parent)
+
+        self.assertEqual(routing["reasoning_config"], {"enabled": True, "effort": "low"})
+
+
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
+
+    @patch("tools.delegate_tool._load_config")
+    def test_single_phase_delegation_reaches_child_agent(self, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "global-model",
+            "provider": "",
+            "base_url": "https://global.example.com/v1",
+            "api_key": "global-key",
+            "reasoning_effort": "low",
+            "phase_assignments": {
+                "sdd-spec": {
+                    "model": "phase-model",
+                    "base_url": "https://phase.example.com/v1",
+                    "api_key": "phase-key",
+                    "reasoning_effort": "high",
+                }
+            },
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Write spec", phase="sdd-spec", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "phase-model")
+            self.assertEqual(kwargs["base_url"], "https://phase.example.com/v1")
+            self.assertEqual(kwargs["api_key"], "phase-key")
+            self.assertEqual(kwargs["reasoning_config"], {"enabled": True, "effort": "high"})
+
+    @patch("tools.delegate_tool._load_config")
+    def test_mixed_batch_phase_delegation_routes_each_child(self, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "global-model",
+            "provider": "",
+            "base_url": "https://global.example.com/v1",
+            "api_key": "global-key",
+            "reasoning_effort": "low",
+            "phase_assignments": {
+                "sdd-spec": {
+                    "model": "spec-model",
+                    "base_url": "https://spec.example.com/v1",
+                    "api_key": "spec-key",
+                    "reasoning_effort": "high",
+                },
+                "sdd-design": {
+                    "model": "design-model",
+                    "base_url": "https://design.example.com/v1",
+                    "api_key": "design-key",
+                    "reasoning_effort": "medium",
+                },
+            },
+        }
+        parent = _make_mock_parent(depth=0)
+        spec_child = MagicMock()
+        spec_child.run_conversation.return_value = {
+            "final_response": "spec done", "completed": True, "api_calls": 1
+        }
+        design_child = MagicMock()
+        design_child.run_conversation.return_value = {
+            "final_response": "design done", "completed": True, "api_calls": 1
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.side_effect = [spec_child, design_child]
+
+            delegate_task(
+                tasks=[
+                    {"goal": "Write spec", "phase": "sdd-spec"},
+                    {"goal": "Write design", "phase": "sdd-design"},
+                ],
+                parent_agent=parent,
+            )
+
+            calls = MockAgent.call_args_list
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0].kwargs["model"], "spec-model")
+            self.assertEqual(calls[0].kwargs["base_url"], "https://spec.example.com/v1")
+            self.assertEqual(calls[0].kwargs["api_key"], "spec-key")
+            self.assertEqual(calls[0].kwargs["reasoning_config"], {"enabled": True, "effort": "high"})
+            self.assertEqual(calls[1].kwargs["model"], "design-model")
+            self.assertEqual(calls[1].kwargs["base_url"], "https://design.example.com/v1")
+            self.assertEqual(calls[1].kwargs["api_key"], "design-key")
+            self.assertEqual(calls[1].kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

@@ -259,37 +259,38 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
       }
       origin = null
     }
-    const onTouchStart = (event: TouchEvent) => {
-      const touch = event.touches[0]
-      if (!touch) return
-      // Note: do NOT preventDefault here — it would cancel the click that
-      // navigates into the session. Loupe suppression relies on the CSS
-      // (-webkit-user-select: none) propagating to descendant text spans
-      // via the `data-session-row` selector in styles.css.
-      origin = { x: touch.clientX, y: touch.clientY }
+    const startTimer = (x: number, y: number) => {
+      origin = { x, y }
       timer = window.setTimeout(() => {
         setOpen(true)
         timer = null
       }, 500)
     }
-    const onTouchMove = (event: TouchEvent) => {
+    const moveCheck = (x: number, y: number) => {
       if (!origin) return
-      const touch = event.touches[0]
-      if (!touch) return
-      const dx = touch.clientX - origin.x
-      const dy = touch.clientY - origin.y
+      const dx = x - origin.x
+      const dy = y - origin.y
       if (dx * dx + dy * dy > 100) clear()
     }
-    node.addEventListener('touchstart', onTouchStart, { passive: false })
-    node.addEventListener('touchmove', onTouchMove, { passive: true })
-    node.addEventListener('touchend', clear)
-    node.addEventListener('touchcancel', clear)
+    // Pointer Events cover mouse (simulator + dev) AND touch (real device).
+    // No preventDefault — CSS handles the loupe via data-session-row.
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 && event.button !== undefined) return
+      startTimer(event.clientX, event.clientY)
+    }
+    const onPointerMove = (event: PointerEvent) => moveCheck(event.clientX, event.clientY)
+    node.addEventListener('pointerdown', onPointerDown)
+    node.addEventListener('pointermove', onPointerMove)
+    node.addEventListener('pointerup', clear)
+    node.addEventListener('pointercancel', clear)
+    node.addEventListener('pointerleave', clear)
     return () => {
       clear()
-      node.removeEventListener('touchstart', onTouchStart)
-      node.removeEventListener('touchmove', onTouchMove)
-      node.removeEventListener('touchend', clear)
-      node.removeEventListener('touchcancel', clear)
+      node.removeEventListener('pointerdown', onPointerDown)
+      node.removeEventListener('pointermove', onPointerMove)
+      node.removeEventListener('pointerup', clear)
+      node.removeEventListener('pointercancel', clear)
+      node.removeEventListener('pointerleave', clear)
     }
   }, [])
 

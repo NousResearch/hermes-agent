@@ -147,6 +147,172 @@ class TestHelperFunctions(unittest.TestCase):
         result = _strip_html(html)
         self.assertIn("a & b", result)
 
+    def test_strip_html_preserves_link_url(self):
+        # Codex feedback: text-only readers must keep the actual URL.
+        from gateway.platforms.email import _strip_html
+        result = _strip_html('See <a href="https://x.com/report">the report</a>')
+        self.assertIn("the report", result)
+        self.assertIn("https://x.com/report", result)
+
+    def test_strip_html_keeps_list_boundaries(self):
+        # Codex feedback: lists must not collapse into one run.
+        from gateway.platforms.email import _strip_html
+        result = _strip_html("<ul><li>One</li><li>Two</li></ul>")
+        self.assertIn("One", result)
+        self.assertIn("Two", result)
+        self.assertNotIn("OneTwo", result.replace("\n", "X"))  # separated, not fused
+
+    def test_strip_html_keeps_table_row_boundaries(self):
+        from gateway.platforms.email import _strip_html
+        result = _strip_html("<table><tr>R1</tr><tr>R2</tr></table>")
+        self.assertNotIn("R1R2", result.replace("\n", "X"))
+
+    def test_strip_html_separates_table_cells(self):
+        # Codex feedback: <td>/<th> must not fuse columns.
+        from gateway.platforms.email import _strip_html
+        result = _strip_html("<tr><td>A</td><td>B</td></tr>")
+        self.assertNotIn("AB", result.replace("\t", "X").replace("\n", "X"))
+        self.assertIn("A", result)
+        self.assertIn("B", result)
+
+    def test_strip_html_drops_style_and_script(self):
+        # Codex feedback: embedded CSS/JS must not leak into the text fallback.
+        from gateway.platforms.email import _strip_html
+        result = _strip_html("<style>.x{color:red}</style><h1>Digest</h1>"
+                             "<script>alert(1)</script>")
+        self.assertEqual(result.strip(), "Digest")
+        self.assertNotIn("color:red", result)
+        self.assertNotIn("alert", result)
+
+    def test_strip_html_preserves_image_reference(self):
+        # Codex feedback: image-only body must not become blank.
+        from gateway.platforms.email import _strip_html
+        result = _strip_html('<img src="https://e.com/c.png" alt="chart">')
+        self.assertIn("chart", result)
+        self.assertIn("https://e.com/c.png", result)
+
+
+class TestHtmlBodyDetection(unittest.TestCase):
+    """Every email is multipart/alternative; detection only shapes the HTML part."""
+
+    @staticmethod
+    def _parts(msg):
+        """Return {content_type: payload_str} for the alternative subparts."""
+        alt = msg.get_payload()[0]
+        return {sub.get_content_type(): sub.get_payload(decode=True).decode("utf-8")
+                for sub in alt.get_payload()}
+
+    def test_detects_html_body(self):
+        from gateway.platforms.email import _is_html_body
+        self.assertTrue(_is_html_body("<h2>Digest</h2><p>Item</p>"))
+        self.assertTrue(_is_html_body('Read <a href="http://x">more</a>'))
+
+    def test_detects_single_letter_tags(self):
+        from gateway.platforms.email import _is_html_body
+        # Real single-letter tags must still be detected as HTML.
+        self.assertTrue(_is_html_body("Hello <b>world</b>"))
+        self.assertTrue(_is_html_body("Hello <i>world</i>"))
+        self.assertTrue(_is_html_body("Line one<br/>Line two"))
+
+    def test_detects_standalone_tags(self):
+        from gateway.platforms.email import _is_html_body
+        # Codex feedback: image-only / preformatted bodies are valid HTML too.
+        self.assertTrue(_is_html_body('<img src="http://x/y.png">'))
+        self.assertTrue(_is_html_body("<pre>code block</pre>"))
+
+    def test_plain_text_not_detected_as_html(self):
+        from gateway.platforms.email import _is_html_body
+        self.assertFalse(_is_html_body("Plain text, no markup."))
+        self.assertFalse(_is_html_body("if x < y and y > z: pass"))
+        self.assertFalse(_is_html_body("I <3 this"))
+        # Comparisons against single-letter operands must not look like <b>/<i>/<p>.
+        self.assertFalse(_is_html_body("a<b and b>c"))
+        self.assertFalse(_is_html_body("5<i means five is less than i"))
+        self.assertFalse(_is_html_body("if x<p and p>0: pass"))
+        # Comparisons against multi-letter tag-named variables must not match
+        # either: a real tag closes (<div>) or has an attribute (<div class=),
+        # but "<div and" / "<code and" is a comparison.
+        self.assertFalse(_is_html_body("if x<div and div>0: pass"))
+        self.assertFalse(_is_html_body("if x<code and code>0: pass"))
+        self.assertFalse(_is_html_body("if x<span and span>0: pass"))
+
+    def test_detects_tags_with_attributes(self):
+        from gateway.platforms.email import _is_html_body
+        self.assertTrue(_is_html_body('<div class="card">x</div>'))
+        self.assertTrue(_is_html_body('<img src="http://x/y.png">'))
+
+    def test_attach_always_multipart_alternative(self):
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        for body in ("<p>Hello <strong>world</strong></p>", "Just plain text"):
+            msg = MIMEMultipart()
+            _attach_body(msg, body)
+            self.assertEqual(sorted(self._parts(msg)), ["text/html", "text/plain"])
+
+    def test_html_body_verbatim_in_html_part_stripped_in_plain(self):
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        msg = MIMEMultipart()
+        _attach_body(msg, "<h2>Digest</h2><p>Hi <strong>world</strong></p>")
+        parts = self._parts(msg)
+        # HTML part keeps the markup verbatim …
+        self.assertIn("<strong>world</strong>", parts["text/html"])
+        # … but the plain part is tag-stripped, so text-only clients and indexed
+        # snippets never see raw <h2>/<p> markup (Codex feedback).
+        self.assertNotIn("<p>", parts["text/plain"])
+        self.assertNotIn("<h2>", parts["text/plain"])
+        self.assertIn("Digest", parts["text/plain"])
+        self.assertIn("world", parts["text/plain"])
+
+    def test_plain_prose_kept_verbatim_in_plain_part(self):
+        # A reply with no *complete* tag is plain text: plain part is verbatim,
+        # HTML part escapes it so the brackets show as text rather than render.
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        msg = MIMEMultipart()
+        body = "Compare a<b to verify the sort order"
+        _attach_body(msg, body)
+        parts = self._parts(msg)
+        self.assertEqual(parts["text/plain"], body)
+        self.assertIn("a&lt;b", parts["text/html"])         # escaped, shown as text
+
+    def test_plain_text_whitespace_preserved_and_wraps(self):
+        # Codex feedback: indentation/alignment must survive (logs, code, tables)
+        # AND long lines must still wrap — so it's <pre> with white-space:pre-wrap,
+        # not a bare <pre> that disables wrapping.
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        msg = MIMEMultipart()
+        _attach_body(msg, "col1    col2\n  indented line")
+        html = self._parts(msg)["text/html"]
+        self.assertIn("<pre", html)
+        self.assertIn("pre-wrap", html)                      # long lines still wrap
+        self.assertIn("col1    col2", html)                  # repeated spaces kept
+
+    def test_anchor_comparison_not_treated_as_html(self):
+        # Codex feedback: "if x<a and a>0" must NOT be parsed as an <a> anchor.
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body, _is_html_body
+        body = "if x<a and a>0: pass"
+        self.assertFalse(_is_html_body(body))
+        msg = MIMEMultipart()
+        _attach_body(msg, body)
+        parts = self._parts(msg)
+        self.assertEqual(parts["text/plain"], body)          # sent as plain, verbatim
+        self.assertNotIn("<a", parts["text/html"])           # escaped, not a tag
+
+    def test_real_anchor_still_detected(self):
+        from gateway.platforms.email import _is_html_body
+        self.assertTrue(_is_html_body('Click <a href="http://x">here</a>'))
+        self.assertTrue(_is_html_body("Link: <a>text</a>"))
+
+    def test_attach_empty_body_is_noop(self):
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        msg = MIMEMultipart()
+        _attach_body(msg, "")
+        self.assertEqual(msg.get_payload(), [])
+
 
 class TestExtractTextBody(unittest.TestCase):
     """Test email body extraction from different message formats."""

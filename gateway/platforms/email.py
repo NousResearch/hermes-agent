@@ -17,6 +17,7 @@ Environment variables:
 
 import asyncio
 import email as email_lib
+import html as html_lib
 import imaplib
 import logging
 import os
@@ -161,10 +162,59 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
 
 
 def _strip_html(html: str) -> str:
-    """Naive HTML tag stripper for fallback text extraction."""
-    text = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
+    """Convert an HTML fragment to readable plain text.
+
+    Used for the inbound text extraction *and* the outbound ``text/plain``
+    alternative of an HTML body, so it keeps the parts that matter without
+    markup: link targets become ``label (url)`` so URLs survive, and block/list
+    boundaries become newlines so lists and tables don't collapse into one run.
+    """
+    # Drop <style>/<script> blocks entirely (tag *and* contents) so embedded
+    # CSS/JS from full HTML documents doesn't leak into the text fallback.
+    text = re.sub(
+        r"<(style|script)\b[^>]*>.*?</\1\s*>",
+        "",
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    # Preserve link targets: <a href="url">label</a> -> "label (url)".
+    def _anchor(m: re.Match) -> str:
+        url = (m.group("url") or "").strip()
+        label = _strip_html(m.group("label")).strip()
+        if not url or url == label:
+            return label
+        return f"{label} ({url})" if label else url
+
+    text = re.sub(
+        r"""<a\b[^>]*\bhref\s*=\s*["']?(?P<url>[^"'>\s]+)["']?[^>]*>(?P<label>.*?)</a>""",
+        _anchor,
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    # Preserve images: <img src="url" alt="text"> -> "[image: alt (url)]" so a
+    # text-only / image-only body isn't blank.
+    def _img(m: re.Match) -> str:
+        tag = m.group(0)
+        src = re.search(r"""\bsrc\s*=\s*["']?([^"'>\s]+)""", tag, re.IGNORECASE)
+        alt = re.search(r"""\balt\s*=\s*["']([^"']*)["']""", tag, re.IGNORECASE)
+        parts = [p for p in (alt.group(1).strip() if alt else "",
+                             src.group(1).strip() if src else "") if p]
+        return f"[image: {' '.join(parts)}]" if parts else "[image]"
+
+    text = re.sub(r"<img\b[^>]*>", _img, text, flags=re.IGNORECASE)
+    # Line breaks for explicit breaks and block/list/row boundaries so digests
+    # stay readable (<ul><li>One</li><li>Two</li></ul> -> "One\nTwo").
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<p[^>]*>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"</(?:p|div|li|ul|ol|tr|table|h[1-6]|blockquote)\s*>",
+        "\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"<li[^>]*>", "\n", text, flags=re.IGNORECASE)
+    # Tab between table cells so columns don't fuse ("A</td><td>B" -> "A\tB").
+    text = re.sub(r"</(?:td|th)\s*>\s*<(?:td|th)[^>]*>", "\t", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"&nbsp;", " ", text)
     text = re.sub(r"&amp;", "&", text)
@@ -172,6 +222,78 @@ def _strip_html(html: str) -> str:
     text = re.sub(r"&gt;", ">", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+# Whether a body *already* contains HTML markup we should send as-is, versus
+# plain text we should HTML-escape before wrapping. This no longer gates whether
+# HTML is sent (we always send a multipart/alternative) — it only decides if the
+# HTML part is the body verbatim or an escaped+linebreaked version, and how the
+# plain part is built. Detection requires a *real* tag terminator so prose
+# comparisons against tag-named variables (``if x<div and div>0``, ``x<p``,
+# ``x<a and a>0``) don't get misread as markup:
+#   * Any listed tag matches when immediately closed (``<div>``), self-closed
+#     (``<br/>``), or followed by an attribute (``<div class=...>``,
+#     ``<img src=...>``) — i.e. ``<name`` then whitespace then ``word=``.
+#   * A bare ``<name `` followed by a non-attribute word (``<div and``) does NOT
+#     match, since that's how comparisons read.
+#   * ``a`` additionally needs ``href=``/``name=`` or an actual ``<a>``/``</a>``.
+#   * Any well-formed *closing* tag (``</p>``) also counts.
+_HTML_TAGS = r"html|body|div|br|h[1-6]|ul|ol|li|table|tr|td|th|span|strong|em|b|i|p|img|pre|code|blockquote"
+_HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|tr|td|th|span|strong|em|b|i|pre|code|blockquote"
+_HTML_BODY_RE = re.compile(
+    rf"<\s*(?:{_HTML_TAGS})\s*/?>"                 # <tag> or <tag/>
+    rf"|<\s*(?:{_HTML_TAGS})\s+[a-zA-Z-]+\s*=" # <tag attr=...> (real attribute)
+    rf"|<\s*a\s+(?:href|name)\b"                   # anchor with a real attribute …
+    rf"|<\s*a\s*>|<\s*/\s*a\s*>"                   # … or an actual <a>/</a> tag
+    rf"|<\s*/\s*(?:{_HTML_CLOSE_TAGS})\s*>",       # any closing tag
+    re.IGNORECASE,
+)
+
+
+def _is_html_body(body: str) -> bool:
+    """Heuristic: is this body already HTML markup (vs. plain text to escape)?"""
+    return bool(_HTML_BODY_RE.search(body))
+
+
+def _text_to_html(text: str) -> str:
+    """Convert a plain-text body to a safe HTML fragment.
+
+    Escapes ``< > &`` so literal markup in prose (e.g. a coding-help reply that
+    mentions ``<div class="card">``) is shown as text rather than rendered, and
+    wraps the result in a ``white-space: pre-wrap`` block so indentation/
+    alignment survives (logs, code, tables) *and* long lines/URLs still wrap
+    instead of being clipped — which a bare ``<pre>`` would prevent.
+    """
+    return (
+        f'<pre style="white-space: pre-wrap; word-wrap: break-word;">'
+        f"{html_lib.escape(text)}</pre>"
+    )
+
+
+def _attach_body(msg: MIMEMultipart, body: str) -> None:
+    """Attach *body* to *msg* as a ``multipart/alternative``.
+
+    Always carries two parts so we never have to guess *whether* to send HTML —
+    only how to build each part:
+
+    - ``text/plain``: the readable text. For a plain body that's the body
+      verbatim; for an HTML body it's the tag-stripped text (so text-only
+      clients and indexed snippets don't see raw ``<h2>``/``<p>`` markup).
+    - ``text/html``: an HTML body verbatim, or a plain body escaped and wrapped
+      in ``<pre>`` via :func:`_text_to_html`.
+
+    Either way the plain part is always readable and misdetection can't regress
+    an email below plain text.
+    """
+    if not body:
+        return
+    is_html = _is_html_body(body)
+    plain_part = _strip_html(body) if is_html else body
+    html_part = body if is_html else _text_to_html(body)
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(plain_part, "plain", "utf-8"))
+    alt.attach(MIMEText(html_part, "html", "utf-8"))
+    msg.attach(alt)
 
 
 def _extract_email_address(raw: str) -> str:
@@ -546,7 +668,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+        _attach_body(msg, body)
 
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
@@ -655,8 +777,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
-        if body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+        _attach_body(msg, body)
 
         for file_path in file_paths:
             p = Path(file_path)
@@ -736,8 +857,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
-        if body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+        _attach_body(msg, body)
 
         # Attach file
         p = Path(file_path)

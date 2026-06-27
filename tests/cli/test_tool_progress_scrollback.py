@@ -251,3 +251,45 @@ class TestToolProgressScrollback:
         # First entry consumed, second remains
         assert len(cli._pending_tool_info.get("terminal", [])) == 1
         assert cli._pending_tool_info["terminal"][0] == {"command": "pwd"}
+
+
+class TestMoAReferenceBlocks:
+    """moa.reference renders a labelled thinking-style block; moa.aggregating
+    updates the spinner. Both are display-only and must commit regardless of
+    tool_progress_mode (MoA is non-streaming)."""
+
+    def test_reference_event_prints_labelled_block(self):
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "moa.reference",
+                "openrouter:openai/gpt-5.5",
+                "Paris is the capital.",
+                None,
+                moa_index=1,
+                moa_count=2,
+            )
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        # Header names the source model + index/count; body carries the text.
+        assert "openrouter:openai/gpt-5.5" in printed
+        assert "Reference 1/2" in printed
+        assert "Paris is the capital." in printed
+
+    def test_reference_event_prints_even_when_progress_off(self):
+        """Reference blocks are the MoA process view, not tool progress — they
+        must show even with tool_progress: off."""
+        cli = _make_cli(tool_progress="off")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "moa.reference", "openrouter:anthropic/claude-opus-4.8", "Four.", None,
+                moa_index=2, moa_count=2,
+            )
+        assert mock_print.called
+
+    def test_aggregating_event_updates_spinner_only(self):
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("moa.aggregating", "openrouter:anthropic/claude-opus-4.8", None, None)
+        assert "aggregating" in cli._spinner_text
+        # aggregating is a spinner-only transition; no committed scrollback line.
+        mock_print.assert_not_called()

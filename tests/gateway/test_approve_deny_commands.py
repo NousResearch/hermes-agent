@@ -50,7 +50,11 @@ def _make_runner():
     adapter.send = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
-    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.hooks = SimpleNamespace(
+        emit=AsyncMock(),
+        emit_collect=AsyncMock(return_value=[]),
+        loaded_hooks=False,
+    )
     runner.session_store = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
@@ -323,6 +327,61 @@ class TestDenyCommand:
         runner = _make_runner()
         result = await runner._handle_deny_command(_make_event("/deny"))
         assert "No pending command" in result
+
+
+# ------------------------------------------------------------------
+# Numeric approval shortcuts
+# ------------------------------------------------------------------
+
+
+class TestNumericApprovalShortcuts:
+
+    def setup_method(self):
+        _clear_approval_state()
+
+    @pytest.mark.parametrize(
+        ("reply", "expected_choice"),
+        [
+            ("1", "once"),
+            ("2", "session"),
+            ("3", "always"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_numeric_shortcuts_approve_pending_command(
+        self, reply, expected_choice
+    ):
+        """Bare 1/2/3 should reuse the existing /approve handler."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_message(_make_event(reply))
+
+        assert result is not None
+        assert entry.event.is_set()
+        assert entry.result == expected_choice
+
+    @pytest.mark.asyncio
+    async def test_numeric_shortcut_denies_pending_command(self):
+        """Bare 4 should reuse the existing /deny handler."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_message(_make_event("4"))
+
+        assert result is not None
+        assert entry.event.is_set()
+        assert entry.result == "deny"
 
 
 # ------------------------------------------------------------------

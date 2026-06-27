@@ -622,6 +622,32 @@ class TestSessionJsonSnapshotOptIn:
             "Opt-in writer must produce session_{sid}.json under logs_dir"
         )
 
+    def test_save_session_log_writes_with_list_content(self, agent, tmp_path):
+        # Regression: assistant messages whose content is a list of OpenAI-style
+        # content parts (e.g. multimodal or tool-use turns) must not cause
+        # _clean_session_content to raise TypeError and silently abort the write.
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {"role": "user", "content": "find something"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will search for that."},
+                    {"type": "tool_use", "id": "call_1", "name": "web_search", "input": {}},
+                ],
+            },
+        ]
+        agent._save_session_log(messages)
+        expected = tmp_path / f"session_{agent.session_id}.json"
+        assert expected.exists(), (
+            "Writer must succeed even when assistant content is a list of content parts"
+        )
+        data = json.loads(expected.read_text())
+        assert data["messages"][1]["content"] == messages[1]["content"], (
+            "List-type content must be preserved unchanged in the snapshot"
+        )
+
     def test_logs_dir_retained_for_request_dumps(self, agent):
         # logs_dir is kept unconditionally because
         # agent_runtime_helpers.dump_api_request_debug still writes

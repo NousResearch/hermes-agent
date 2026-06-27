@@ -1043,3 +1043,36 @@ class TestReconcileStaleAutostartLauncher:
             gateway_windows, "_exec_schtasks", lambda args: (124, "", "timed out")
         )
         assert gateway_windows._scheduled_task_action_is_stale() is False
+
+    def test_residual_stale_task_after_failed_update_reports_unchanged(
+        self, monkeypatch, tmp_path
+    ):
+        """No-elevation schtasks update leaves the task stale -> changed=False.
+
+        When the Scheduled-Task rewrite fails (Access Denied / no elevation) the
+        task keeps pointing at cmd.exe. Even after the Startup .vbs fallback
+        runs, the launcher is still stale, so reconcile must report
+        ``changed=False`` (not a false green) and ``doctor`` must warn the user
+        to rerun from an elevated prompt.
+        """
+        env, _calls = self._arrange(
+            monkeypatch, tmp_path, task_xml=_STALE_TASK_XML, legacy_cmd_present=True
+        )
+        # Scheduled-Task update cannot elevate: it fails and leaves the action
+        # pointing at cmd.exe (state["task_xml"] is NOT re-pointed).
+        monkeypatch.setattr(
+            gateway_windows,
+            "_install_scheduled_task",
+            lambda *args, **kwargs: (False, "Access is denied."),
+        )
+
+        assert gateway_windows.has_stale_autostart_launcher() is True
+
+        changed, detail = gateway_windows.reconcile_autostart_launchers()
+
+        # The registered task still points at cmd.exe -> still stale.
+        assert changed is False
+        assert "still stale" in detail
+        assert gateway_windows.has_stale_autostart_launcher() is True
+        # The startup fallback still ran (legacy console .cmd removed).
+        assert not env["legacy_cmd"].exists()

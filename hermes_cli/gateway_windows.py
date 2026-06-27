@@ -1321,7 +1321,11 @@ def reconcile_autostart_launchers() -> tuple[bool, str]:
         Startup ``.vbs`` fallback still reconciles);
       - rewrites the Startup ``.vbs`` entry and removes the legacy ``.cmd``.
 
-    Returns ``(changed, detail)``.
+    Returns ``(changed, detail)``. ``changed`` reflects whether the launcher is
+    now current: if the Scheduled-Task rewrite needed elevation we don't have
+    (Access Denied), the task stays stale, so we re-probe and return
+    ``(False, ...)`` to let ``hermes doctor`` warn and prompt an elevated rerun
+    rather than falsely reporting success.
     """
     _assert_windows()
     if not is_installed():
@@ -1336,11 +1340,19 @@ def reconcile_autostart_launchers() -> tuple[bool, str]:
         if ok:
             notes.append("re-pointed Scheduled Task at wscript.exe/.vbs")
         else:
-            # Access-denied (no elevation) is non-fatal: the Startup .vbs
-            # fallback below still removes the console-spawning launcher.
+            # Access-denied (no elevation) leaves the Scheduled Task pointing at
+            # cmd.exe. The Startup .vbs fallback below still removes the legacy
+            # console-spawning launcher, but the task itself remains stale; the
+            # re-probe below catches this so doctor doesn't report a false green.
             notes.append(f"Scheduled Task not updated ({detail})")
     _install_startup_entry(script_path)
     notes.append("rewrote Startup launcher (.vbs) and removed legacy .cmd")
+
+    if has_stale_autostart_launcher():
+        notes.append(
+            "launcher still stale after reconcile — rerun from an elevated prompt"
+        )
+        return (False, "; ".join(notes))
     return (True, "; ".join(notes))
 
 

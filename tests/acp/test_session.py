@@ -333,6 +333,26 @@ class TestPersistence:
         mc = json.loads(row["model_config"])
         assert mc["cwd"] == "/project"
 
+    def test_create_session_persists_provider_snapshot_initially(self, tmp_path):
+        """The first ACP session row should be restorable after an immediate restart."""
+        agent = SimpleNamespace(
+            model="test-model",
+            provider="anthropic",
+            base_url="https://anthropic.example/v1",
+            api_mode="anthropic_messages",
+        )
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=lambda: agent, db=db)
+
+        state = manager.create_session(cwd="/work")
+
+        row = db.get_session(state.session_id)
+        mc = json.loads(row["model_config"])
+        assert mc["cwd"] == "/work"
+        assert mc["provider"] == "anthropic"
+        assert mc["base_url"] == "https://anthropic.example/v1"
+        assert mc["api_mode"] == "anthropic_messages"
+
     def test_get_session_restores_from_db(self, manager):
         """Simulate process restart: create session, drop from memory, get again."""
         state = manager.create_session(cwd="/work")

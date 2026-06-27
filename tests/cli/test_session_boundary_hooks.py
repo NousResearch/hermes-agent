@@ -5,9 +5,10 @@ from cli import HermesCLI
 
 
 def test_session_hooks_in_valid_hooks():
-    """Verify on_session_finalize and on_session_reset are registered as valid hooks."""
+    """Verify session lifecycle hooks are registered as valid hooks."""
     assert "on_session_finalize" in VALID_HOOKS
     assert "on_session_reset" in VALID_HOOKS
+    assert "on_session_resume" in VALID_HOOKS
 
 
 @patch("hermes_cli.plugins.invoke_hook")

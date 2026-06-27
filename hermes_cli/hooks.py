@@ -147,6 +147,13 @@ _DEFAULT_PAYLOADS = {
         "platform": "cli",
     },
     "on_session_start": {"session_id": "test-session"},
+    "on_session_resume": {
+        "session_id": "resumed-session",
+        "old_session_id": "previous-session",
+        "title": "Example resumed work",
+        "message_count": 3,
+        "platform": "cli",
+    },
 
     "on_session_end": {"session_id": "test-session"},
     "on_session_finalize": {"session_id": "test-session"},

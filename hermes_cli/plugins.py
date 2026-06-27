@@ -144,6 +144,7 @@ VALID_HOOKS: Set[str] = {
     # task-state or handoff breadcrumbs without mutating the live message list.
     "pre_context_compression",
     "on_session_start",
+    "on_session_resume",
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",

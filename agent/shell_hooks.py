@@ -79,10 +79,30 @@ emitted by each built-in hook site.
     api_request_id  – current API request id
     middleware_trace – list of dicts from tool middleware chain
 
-``on_session_start`` (emitted from ``agent/conversation_loop.py``)::
+``on_session_start`` (emitted from agent init / compression boundary)::
 
     model           – model name (e.g. "claude-sonnet-4-20250514")
     platform        – platform identifier (e.g. "cli", "whatsapp")
+    boundary_reason – optional reason such as "compression"
+    old_session_id  – previous session id for boundary transitions
+
+``on_session_resume`` (emitted after CLI/gateway /resume switches session)::
+
+    old_session_id  – session id that was active before resume
+    title           – resumed session title, when available
+    message_count   – number of user messages in the resumed transcript
+    total_messages  – total resumed transcript row count, when available
+    platform        – platform identifier (e.g. "cli", "telegram")
+
+``pre_context_compression`` (emitted before compaction drops/summarizes turns)::
+
+    task_id          – current task id, when available
+    conversation_history – active messages about to be compressed
+    approx_tokens    – rough prompt token count that triggered compression
+    focus_topic      – optional user-provided compression focus
+    force            – whether compression was manually forced
+    model            – current model name
+    platform         – platform identifier
 
 ``on_session_end`` (emitted from ``agent/turn_finalizer.py``)::
 

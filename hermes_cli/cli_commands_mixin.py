@@ -768,6 +768,19 @@ class CLICommandsMixin:
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_resume",
+                session_id=target_id,
+                old_session_id=old_session_id or "",
+                title=session_meta.get("title") or "",
+                message_count=msg_count,
+                total_messages=len(self.conversation_history),
+                platform="cli",
+            )
+        except Exception:
+            pass
         if self.conversation_history:
             _cprint(
                 f"  ↻ Resumed session {target_id}{title_part}"

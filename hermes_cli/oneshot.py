@@ -364,7 +364,15 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    try:
+        return agent.chat(prompt) or ""
+    finally:
+        try:
+            messages = getattr(agent, "_session_messages", None)
+            if hasattr(agent, "shutdown_memory_provider"):
+                agent.shutdown_memory_provider(messages if isinstance(messages, list) else None)
+        except Exception:
+            pass
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

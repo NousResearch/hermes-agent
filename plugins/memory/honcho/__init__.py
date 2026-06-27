@@ -1415,10 +1415,14 @@ class HonchoMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Flush any remaining messages
+        # Flush remaining messages and shut down manager-owned background threads.
         if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
             try:
-                self._manager.flush_all()
+                shutdown = getattr(self._manager, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+                else:
+                    self._manager.flush_all()
             except Exception:
                 pass
 

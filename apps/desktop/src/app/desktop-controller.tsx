@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
+import { getCronJobs, getSession, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import {
@@ -508,11 +508,32 @@ export function DesktopController() {
         excludeSources: SIDEBAR_EXCLUDED_SOURCES
       })
 
-      if (refreshSessionsRequestRef.current === requestId) {
-        setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
-        setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
-        setSessionProfileTotals(result.profile_totals ?? {})
+      if (refreshSessionsRequestRef.current !== requestId) {
+        return
       }
+
+      // Pinned sessions that fell outside the recent page are not returned by
+      // the list API and mergeSessionPage can only preserve rows already in
+      // memory.  Fetch any missing pins individually so the Pinned sidebar
+      // section never goes empty for aged-off sessions.
+      const incomingIds = new Set(result.sessions.map(s => s.id))
+      const missingPins = $pinnedSessionIds.get().filter(id => !incomingIds.has(id))
+      let allIncoming = result.sessions
+
+      if (missingPins.length > 0) {
+        const fetched = await Promise.all(
+          missingPins.map(id => getSession(id).catch(() => null))
+        )
+        const pinSessions = fetched.filter((s): s is SessionInfo => s !== null)
+
+        if (pinSessions.length > 0) {
+          allIncoming = [...pinSessions, ...result.sessions]
+        }
+      }
+
+      setSessions(prev => mergeSessionPage(prev, allIncoming, sessionsToKeep()))
+      setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
+      setSessionProfileTotals(result.profile_totals ?? {})
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {
         setSessionsLoading(false)

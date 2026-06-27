@@ -164,6 +164,19 @@ describe('mergeSessionPage', () => {
     expect(merged.find(s => s.id === 'tip-5')?._lineage_root_id).toBe('root')
   })
 
+  it('cannot rescue a pinned session that was never in previous', () => {
+    // Documents the gap that refreshSessions() must fill: if a pinned session
+    // fell off the loaded page before being captured in `previous`,
+    // mergeSessionPage has no row to resurrect.  The caller must pre-fetch
+    // missing pins and include them in the incoming array.
+    const previous = [session({ id: 'recent' })]
+    const incoming = [session({ id: 'recent' })]
+
+    const merged = mergeSessionPage(previous, incoming, ['never-loaded-pin'])
+
+    expect(merged.map(s => s.id)).toEqual(['recent'])
+  })
+
   it('preserves an unrelated pinned session even when lineage dedup is active', () => {
     // Regression guard: lineage dedup must not accidentally evict sessions
     // from a different lineage that happen to be in the keep set.

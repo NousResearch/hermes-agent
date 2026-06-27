@@ -730,11 +730,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
 
     ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
-      }
+      const data: string | Uint8Array =
+        typeof ev.data === "string"
+          ? ev.data
+          : new Uint8Array(ev.data as ArrayBuffer);
+      term.write(data, () => {
+        // NS-53413: prevent viewport scroll-height drift after long
+        // conversations. When the buffer fills and old scrollback lines
+        // are trimmed, the xterm.js viewport's scrollable height can
+        // miscalculate — its scrollHeight stays larger than the actual
+        // content, creating blank whitespace at the bottom. Scrolling
+        // to bottom forces a viewport dimension recalculation.
+        // Only scroll when the user was already near the bottom, to
+        // avoid yanking their position while reading history.
+        const buf = term.buffer.active;
+        if (buf.ydisp <= 2) {
+          term.scrollToBottom();
+        }
+      });
     };
 
     ws.onclose = (ev) => {

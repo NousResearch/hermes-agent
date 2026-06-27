@@ -200,6 +200,21 @@ def test_merge_metadata_stamps_sm_source():
     assert "source" not in merged2
 
 
+def test_on_session_end_respects_auto_capture_false(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"auto_capture": False}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+
+    p.on_session_end([
+        {"role": "user", "content": "please keep this out of automatic capture"},
+        {"role": "assistant", "content": "this should not be ingested either"},
+    ])
+
+    assert p._client.ingest_calls == []
+
+
 def test_on_memory_write_tracks_thread(provider):
     provider.on_memory_write("add", "memory", "Jordan likes concise docs")
     assert provider._write_thread is not None

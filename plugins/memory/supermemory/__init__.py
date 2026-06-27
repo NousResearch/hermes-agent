@@ -705,7 +705,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._session_turns.append({"user": clean_user, "assistant": clean_assistant})
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._active or not self._write_enabled or not self._client or not self._session_id:
+        if not self._active or not self._auto_capture or not self._write_enabled or not self._client or not self._session_id:
             return
         cleaned = []
         for message in messages or []:

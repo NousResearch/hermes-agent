@@ -310,6 +310,9 @@ def register_tools(ctx) -> None:
             toolset="a2a",
             schema=schema,
             handler=_HANDLERS[name],
-            description=schema["function"]["description"],
+            # ty warning fix: chain indexing on a dict[str, dict] without
+            # an annotation confuses the type checker. The value is
+            # always a string at runtime; assert it.
+            description=str(schema["function"]["description"]),
             emoji="\U0001f9e9",  # puzzle piece
         )

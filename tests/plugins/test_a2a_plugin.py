@@ -402,7 +402,11 @@ class TestInboundRoundTrip:
         monkeypatch.setenv("A2A_HOST", "127.0.0.1")
 
         adapter = A2AAdapter(PlatformConfig(enabled=True))
-        adapter._message_handler = object()
+        # ty warning fix: object() doesn't match the expected type. Use a
+        # proper async callable stub that satisfies the interface.
+        async def _stub_handler(event):  # type: ignore[no-untyped-def]
+            return None
+        adapter._message_handler = _stub_handler
 
         async def run():
             assert await adapter.connect() is True

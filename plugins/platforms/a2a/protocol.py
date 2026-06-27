@@ -148,6 +148,10 @@ def build_task(task_id: str, context_id: str, state: str, agent_text: str = "") 
         "kind": "task",
     }
     if agent_text:
+        # ty warning fix: nest the message dict at task["status"]["message"]
+        # with an explicit cast — ty sees the parent as `dict[str, str]`
+        # otherwise because of the previous "status": {...} literal.
+        task["status"] = dict(task["status"])  # cast to dict[str, Any]
         task["status"]["message"] = text_message("agent", agent_text)
         task["artifacts"] = [{
             "artifactId": uuid.uuid4().hex,

@@ -12195,7 +12195,7 @@ async def pty_ws(ws: WebSocket) -> None:
             if chunk is None:  # EOF
                 return
             if not chunk:  # no data this tick; yield control and retry
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.05)
                 continue
             try:
                 await ws.send_bytes(chunk)

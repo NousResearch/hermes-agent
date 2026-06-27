@@ -357,10 +357,14 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
     """Resolve the AWS region for Bedrock API calls.
 
     Priority:
-      1. AWS_REGION env var
-      2. AWS_DEFAULT_REGION env var
-      3. boto3/botocore configured region (from ~/.aws/config or SSO profile)
-      4. us-east-1 (hard fallback)
+      1. AWS_REGION env var (explicit override, highest priority)
+      2. bedrock.region from config.yaml (user-configured Bedrock region;
+         beats AWS_DEFAULT_REGION so that cloud deployments where the host
+         region differs from the Bedrock region — e.g. ECS in ap-southeast-1
+         calling Bedrock in us-east-1 — work without touching env vars)
+      3. AWS_DEFAULT_REGION env var
+      4. boto3/botocore configured region (from ~/.aws/config or SSO profile)
+      5. us-east-1 (hard fallback)
 
     The boto3 fallback is critical for EU/AP users who configure their region
     in ~/.aws/config via a named profile rather than env vars — without it,
@@ -368,12 +372,27 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
     the user's actual region.
     """
     env = env if env is not None else os.environ
-    explicit = (
-        env.get("AWS_REGION", "").strip()
-        or env.get("AWS_DEFAULT_REGION", "").strip()
-    )
-    if explicit:
-        return explicit
+    # AWS_REGION is an explicit user override — always wins.
+    aws_region = env.get("AWS_REGION", "").strip()
+    if aws_region:
+        return aws_region
+    # bedrock.region in config.yaml beats the ambient AWS_DEFAULT_REGION so
+    # that deployments where the host region (e.g. ap-southeast-1 on ECS) is
+    # different from the Bedrock region (us-east-1) work without touching env.
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        cfg_region = (
+            (cfg.get("bedrock") or {}).get("region", "").strip()
+            if isinstance(cfg, dict) else ""
+        )
+        if cfg_region:
+            return cfg_region
+    except Exception:
+        pass
+    aws_default = env.get("AWS_DEFAULT_REGION", "").strip()
+    if aws_default:
+        return aws_default
     try:
         import botocore.session
         region = botocore.session.get_session().get_config_variable("region")

@@ -5137,24 +5137,26 @@ def _resolve_task_provider_model(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
-) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine provider + model for a call.
 
     Priority:
       1. Explicit provider/model/base_url/api_key args (always win)
-      2. Config file (auxiliary.{task}.provider/model/base_url)
+      2. Config file (auxiliary.{task}.provider/model/base_url/region)
       3. "auto" (full auto-detection chain)
 
-    Returns (provider, model, base_url, api_key, api_mode) where model may
-    be None (use provider default). When base_url is set, provider is forced
+    Returns (provider, model, base_url, api_key, api_mode, region) where model
+    may be None (use provider default). When base_url is set, provider is forced
     to "custom" and the task uses that direct endpoint. api_mode is one of
     "chat_completions", "codex_responses", or None (auto-detect).
+    region is only populated for providers like bedrock where it must be explicit.
     """
     cfg_provider = None
     cfg_model = None
     cfg_base_url = None
     cfg_api_key = None
     cfg_api_mode = None
+    cfg_region = None
 
     if task:
         task_config = _get_auxiliary_task_config(task)
@@ -5163,6 +5165,7 @@ def _resolve_task_provider_model(
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
+        cfg_region = str(task_config.get("region", "")).strip() or None
 
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
@@ -5187,26 +5190,26 @@ def _resolve_task_provider_model(
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
     if base_url:
-        return "custom", resolved_model, base_url, api_key, resolved_api_mode
+        return "custom", resolved_model, base_url, api_key, resolved_api_mode, None
     if provider:
-        return provider, resolved_model, base_url, api_key, resolved_api_mode
+        return provider, resolved_model, base_url, api_key, resolved_api_mode, None
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
         if cfg_base_url and cfg_api_key:
             # Both base_url and api_key explicitly set → custom endpoint.
-            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode, None
         if cfg_base_url and cfg_provider and cfg_provider != "auto":
             # base_url set without api_key but with a known provider — use
             # the provider so it can resolve credentials from env vars
             # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
-            return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
+            return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode, None
         if cfg_provider and cfg_provider != "auto":
-            return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+            return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode, cfg_region
 
-        return "auto", resolved_model, None, None, resolved_api_mode
+        return "auto", resolved_model, None, None, resolved_api_mode, None
 
-    return "auto", resolved_model, None, None, resolved_api_mode
+    return "auto", resolved_model, None, None, resolved_api_mode, None
 
 
 _DEFAULT_AUX_TIMEOUT = 30.0
@@ -5604,7 +5607,7 @@ def call_llm(
     Raises:
         RuntimeError: If no provider is configured.
     """
-    resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
+    resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode, resolved_region = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
@@ -5633,6 +5636,26 @@ def call_llm(
                 f"Run: hermes setup"
             )
         resolved_provider = effective_provider or resolved_provider
+    elif resolved_provider == "bedrock" and resolved_region:
+        # auxiliary.{task}.region is explicitly set in config — build the
+        # Bedrock client directly with that region, bypassing
+        # resolve_bedrock_region() which reads AWS_REGION/AWS_DEFAULT_REGION
+        # env vars and would pick the wrong region on ECS/cloud deployments
+        # where the container region differs from the Bedrock region.
+        try:
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            real_client = build_anthropic_bedrock_client(resolved_region)
+            final_model = resolved_model or "anthropic.claude-haiku-4-5-20251001-v1:0"
+            client = AnthropicAuxiliaryClient(
+                real_client, final_model, api_key="aws-sdk",
+                base_url=f"https://bedrock-runtime.{resolved_region}.amazonaws.com",
+            )
+            logger.debug("Auxiliary %s: bedrock client built with explicit region %s",
+                         task or "call", resolved_region)
+        except Exception as exc:
+            logger.warning("Auxiliary %s: failed to build bedrock client with region %s: %s",
+                           task or "call", resolved_region, exc)
+            client, final_model = None, resolved_model
     else:
         client, final_model = _get_cached_client(
             resolved_provider,

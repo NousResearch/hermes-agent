@@ -146,6 +146,48 @@ class TestResolveBedrocRegion:
         with _mock_botocore_session(side_effect=Exception("no botocore")):
             assert resolve_bedrock_region({}) == "us-east-1"
 
+    def test_config_region_beats_aws_default_region(self):
+        """bedrock.region in config.yaml should override AWS_DEFAULT_REGION.
+
+        This covers ECS/cloud deployments where the container's ambient region
+        (e.g. ap-southeast-1) differs from the Bedrock region (us-east-1).
+        Without this, auxiliary Bedrock calls routed to the wrong region and
+        returned HTTP 400 / invalid model identifier errors.
+        """
+        from agent.bedrock_adapter import resolve_bedrock_region
+        from unittest.mock import patch, MagicMock
+        mock_session = MagicMock()
+        mock_session.get_config_variable.return_value = None
+        fake_config = {"bedrock": {"region": "us-east-1"}}
+        with _mock_botocore_session(return_value=mock_session):
+            with patch("hermes_cli.config.load_config", return_value=fake_config):
+                # AWS_DEFAULT_REGION simulates the ECS container ambient region
+                result = resolve_bedrock_region({"AWS_DEFAULT_REGION": "ap-southeast-1"})
+        assert result == "us-east-1"
+
+    def test_aws_region_beats_config_region(self):
+        """AWS_REGION env var (explicit) must still take highest priority."""
+        from agent.bedrock_adapter import resolve_bedrock_region
+        from unittest.mock import patch, MagicMock
+        mock_session = MagicMock()
+        mock_session.get_config_variable.return_value = None
+        fake_config = {"bedrock": {"region": "us-east-1"}}
+        with _mock_botocore_session(return_value=mock_session):
+            with patch("hermes_cli.config.load_config", return_value=fake_config):
+                result = resolve_bedrock_region({"AWS_REGION": "eu-west-1"})
+        assert result == "eu-west-1"
+
+    def test_config_load_failure_falls_through_gracefully(self):
+        """If load_config raises, we fall through to AWS_DEFAULT_REGION."""
+        from agent.bedrock_adapter import resolve_bedrock_region
+        from unittest.mock import patch, MagicMock
+        mock_session = MagicMock()
+        mock_session.get_config_variable.return_value = None
+        with _mock_botocore_session(return_value=mock_session):
+            with patch("hermes_cli.config.load_config", side_effect=Exception("no config")):
+                result = resolve_bedrock_region({"AWS_DEFAULT_REGION": "ap-southeast-1"})
+        assert result == "ap-southeast-1"
+
 
 # ---------------------------------------------------------------------------
 # Tool conversion

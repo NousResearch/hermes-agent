@@ -1125,6 +1125,39 @@ def list_authenticated_providers(
         if normed:
             _builtin_endpoints.add(normed)
 
+    def _collect_user_provider_key_values() -> set[str]:
+        """Return configured user-provider credential values.
+
+        Proxy-backed custom providers often reuse well-known env var names
+        such as ``OPENROUTER_API_KEY`` or ``OPENAI_API_KEY`` for their own
+        local relay key. Built-in provider discovery should not treat those
+        duplicated values as proof that the direct upstream provider is
+        configured too.
+        """
+        values: set[str] = set()
+        entries: list[dict] = []
+        if isinstance(user_providers, dict):
+            entries.extend(v for v in user_providers.values() if isinstance(v, dict))
+        if isinstance(custom_providers, list):
+            entries.extend(v for v in custom_providers if isinstance(v, dict))
+
+        for cfg in entries:
+            for field in ("api_key", "key"):
+                value = str(cfg.get(field) or "").strip()
+                if value:
+                    values.add(value)
+            for field in ("key_env", "api_key_env"):
+                env_name = str(cfg.get(field) or "").strip()
+                if not env_name:
+                    continue
+                value = os.environ.get(env_name, "").strip()
+                if value:
+                    values.add(value)
+        return values
+
+    def _should_skip_builtin_from_proxy_keys(values: set[str]) -> bool:
+        return bool(values) and values.issubset(_user_provider_key_values)
+
     def _has_fast_aws_sdk_signal() -> bool:
         """Return True when explicit AWS auth config is present.
 
@@ -1165,6 +1198,7 @@ def list_authenticated_providers(
             return False
 
     data = fetch_models_dev()
+    _user_provider_key_values = _collect_user_provider_key_values()
 
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
@@ -1235,7 +1269,10 @@ def list_authenticated_providers(
                 continue
 
         # Check if any env var is set
-        has_creds = any(os.environ.get(ev) for ev in env_vars)
+        env_values = {os.environ.get(ev, "").strip() for ev in env_vars if os.environ.get(ev, "").strip()}
+        has_creds = bool(env_values)
+        if has_creds and _should_skip_builtin_from_proxy_keys(env_values):
+            has_creds = False
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
@@ -1299,13 +1336,25 @@ def list_authenticated_providers(
         if overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
         elif overlay.extra_env_vars:
-            has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
+            overlay_env_values = {
+                os.environ.get(ev, "").strip()
+                for ev in overlay.extra_env_vars
+                if os.environ.get(ev, "").strip()
+            }
+            has_creds = bool(overlay_env_values)
+            if has_creds and _should_skip_builtin_from_proxy_keys(overlay_env_values):
+                has_creds = False
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
             for _key in (pid, hermes_slug):
                 pcfg = _auth_registry.get(_key)
                 if pcfg and pcfg.api_key_env_vars:
-                    if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
+                    registry_env_values = {
+                        os.environ.get(ev, "").strip()
+                        for ev in pcfg.api_key_env_vars
+                        if os.environ.get(ev, "").strip()
+                    }
+                    if registry_env_values and not _should_skip_builtin_from_proxy_keys(registry_env_values):
                         has_creds = True
                         break
         # Check auth store and credential pool for non-env-var credentials.
@@ -1415,7 +1464,14 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            _cp_env_values = {
+                os.environ.get(ev, "").strip()
+                for ev in _cp_config.api_key_env_vars
+                if os.environ.get(ev, "").strip()
+            }
+            _cp_has_creds = bool(_cp_env_values)
+            if _cp_has_creds and _should_skip_builtin_from_proxy_keys(_cp_env_values):
+                _cp_has_creds = False
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:

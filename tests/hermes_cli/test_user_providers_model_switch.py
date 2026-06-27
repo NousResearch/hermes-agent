@@ -275,6 +275,50 @@ def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch)
     assert row["total_models"] > 0
 
 
+def test_list_authenticated_providers_skips_builtin_when_key_only_belongs_to_proxy(monkeypatch):
+    """A user-defined proxy that reuses a built-in env var value must not
+    make the direct built-in provider appear authenticated too."""
+    class _EmptyPool:
+        def has_credentials(self):
+            return False
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-shared-proxy-key")
+    monkeypatch.setenv("LITELLM_PROXY_KEY", "sk-shared-proxy-key")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "openrouter": {
+                "name": "OpenRouter",
+                "env": ["OPENROUTER_API_KEY"],
+            }
+        },
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda _slug: _EmptyPool())
+
+    user_providers = {
+        "bedrock-proxy": {
+            "name": "AWS Bedrock (via LiteLLM)",
+            "api": "http://localhost:4000/v1",
+            "key_env": "LITELLM_PROXY_KEY",
+            "default_model": "anthropic/claude-sonnet-4",
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        current_base_url="",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    slugs = [p["slug"] for p in providers]
+    assert "openrouter" not in slugs
+    assert "bedrock-proxy" in slugs
+
+
 def test_list_authenticated_providers_user_openai_official_url_fallback(monkeypatch):
     """User providers: api.openai.com with no models list uses native curated fallback."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})

@@ -7118,6 +7118,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
         _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
         os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
+    # max_attachment_bytes: per-attachment byte cap (default 32 MiB).
+    if "max_attachment_bytes" in discord_cfg and not os.getenv("DISCORD_MAX_ATTACHMENT_BYTES"):
+        os.environ["DISCORD_MAX_ATTACHMENT_BYTES"] = str(discord_cfg["max_attachment_bytes"])
+    # allow_any_attachment: bypass the supported document types allowlist.
+    if "allow_any_attachment" in discord_cfg and not os.getenv("DISCORD_ALLOW_ANY_ATTACHMENT"):
+        os.environ["DISCORD_ALLOW_ANY_ATTACHMENT"] = str(discord_cfg["allow_any_attachment"]).lower()
     return None  # all settings flow through env; nothing to merge into extras
 
 

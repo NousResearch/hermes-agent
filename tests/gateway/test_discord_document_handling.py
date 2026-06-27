@@ -511,3 +511,42 @@ class TestAllowAnyAttachment:
         adapter.config.extra["max_attachment_bytes"] = "not-a-number"
         assert adapter._discord_max_attachment_bytes() == 32 * 1024 * 1024
 
+
+class TestApplyYamlConfigTranslation:
+    """Cover the YAML→env translation in _apply_yaml_config for attachment keys."""
+
+    def test_max_attachment_bytes_translated_to_env(self, monkeypatch):
+        """discord.max_attachment_bytes in YAML is forwarded to DISCORD_MAX_ATTACHMENT_BYTES env."""
+        monkeypatch.delenv("DISCORD_MAX_ATTACHMENT_BYTES", raising=False)
+        discord_cfg = {"max_attachment_bytes": 104857600}
+        discord_platform._apply_yaml_config({}, discord_cfg)
+        assert os.environ.get("DISCORD_MAX_ATTACHMENT_BYTES") == "104857600"
+        # Cleanup
+        monkeypatch.delenv("DISCORD_MAX_ATTACHMENT_BYTES", raising=False)
+
+    def test_allow_any_attachment_translated_to_env(self, monkeypatch):
+        """discord.allow_any_attachment in YAML is forwarded to DISCORD_ALLOW_ANY_ATTACHMENT env."""
+        monkeypatch.delenv("DISCORD_ALLOW_ANY_ATTACHMENT", raising=False)
+        discord_cfg = {"allow_any_attachment": True}
+        discord_platform._apply_yaml_config({}, discord_cfg)
+        assert os.environ.get("DISCORD_ALLOW_ANY_ATTACHMENT") == "true"
+        # Cleanup
+        monkeypatch.delenv("DISCORD_ALLOW_ANY_ATTACHMENT", raising=False)
+
+    def test_env_var_takes_precedence_over_yaml(self, monkeypatch):
+        """Explicit DISCORD_* env vars are NOT overwritten by YAML config."""
+        monkeypatch.setenv("DISCORD_MAX_ATTACHMENT_BYTES", "999")
+        discord_cfg = {"max_attachment_bytes": 104857600}
+        discord_platform._apply_yaml_config({}, discord_cfg)
+        assert os.environ["DISCORD_MAX_ATTACHMENT_BYTES"] == "999"
+        # Cleanup
+        monkeypatch.delenv("DISCORD_MAX_ATTACHMENT_BYTES", raising=False)
+
+    def test_missing_keys_not_translated(self, monkeypatch):
+        """When keys are absent from YAML, env vars are not set."""
+        monkeypatch.delenv("DISCORD_MAX_ATTACHMENT_BYTES", raising=False)
+        monkeypatch.delenv("DISCORD_ALLOW_ANY_ATTACHMENT", raising=False)
+        discord_cfg = {}
+        discord_platform._apply_yaml_config({}, discord_cfg)
+        assert os.environ.get("DISCORD_MAX_ATTACHMENT_BYTES") is None
+        assert os.environ.get("DISCORD_ALLOW_ANY_ATTACHMENT") is None

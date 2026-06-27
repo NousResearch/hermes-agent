@@ -11,6 +11,7 @@ Bot API call.  We distinguish two cases:
 
 These tests cover those paths without spinning up a real PTB bot.
 """
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,7 +27,6 @@ def _ensure_telegram_mock():
     mod.error.NetworkError = type("NetworkError", (OSError,), {})
     mod.error.TimedOut = type("TimedOut", (OSError,), {})
     mod.error.BadRequest = type("BadRequest", (Exception,), {})
-    mod.error.RetryAfter = type("RetryAfter", (Exception,), {"retry_after": 0})
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, mod)
     sys.modules.setdefault("telegram.error", mod.error)
@@ -69,15 +69,14 @@ async def test_short_flood_control_sleeps_and_retries_successfully():
 
     adapter._bot.send_message_draft = AsyncMock(side_effect=_draft)
 
-    with patch("plugins.platforms.telegram.adapter.asyncio") as mock_asyncio:
-        mock_asyncio.sleep = AsyncMock()
+    with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await adapter.send_draft("123", 5, "hello")
 
     assert result.success is True
     assert not getattr(result, "retryable", False)
     # One initial attempt + one retry after the sleep.
     assert len(calls) == 2
-    mock_asyncio.sleep.assert_awaited_once_with(2.0)
+    mock_sleep.assert_awaited_once_with(2.0)
 
 
 @pytest.mark.asyncio
@@ -92,13 +91,12 @@ async def test_short_flood_control_retry_failure_returns_non_retryable():
 
     adapter._bot.send_message_draft = AsyncMock(side_effect=_always_fails)
 
-    with patch("plugins.platforms.telegram.adapter.asyncio") as mock_asyncio:
-        mock_asyncio.sleep = AsyncMock()
+    with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await adapter.send_draft("123", 5, "hello")
 
     assert result.success is False
     assert not getattr(result, "retryable", False)
-    mock_asyncio.sleep.assert_awaited_once_with(3.0)
+    mock_sleep.assert_awaited_once_with(3.0)
 
 
 @pytest.mark.asyncio
@@ -113,14 +111,13 @@ async def test_long_flood_control_returns_retryable_without_sleeping():
 
     adapter._bot.send_message_draft = AsyncMock(side_effect=_long_flood)
 
-    with patch("plugins.platforms.telegram.adapter.asyncio") as mock_asyncio:
-        mock_asyncio.sleep = AsyncMock()
+    with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await adapter.send_draft("123", 5, "hello")
 
     assert result.success is False
     assert getattr(result, "retryable", False) is True
     assert "flood_control" in (getattr(result, "error", "") or "")
-    mock_asyncio.sleep.assert_not_awaited()
+    mock_sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -140,10 +137,30 @@ async def test_boundary_five_seconds_treated_as_short():
 
     adapter._bot.send_message_draft = AsyncMock(side_effect=_draft)
 
-    with patch("plugins.platforms.telegram.adapter.asyncio") as mock_asyncio:
-        mock_asyncio.sleep = AsyncMock()
+    with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await adapter.send_draft("123", 5, "boundary")
 
     assert result.success is True
     assert not getattr(result, "retryable", False)
-    mock_asyncio.sleep.assert_awaited_once_with(5.0)
+    mock_sleep.assert_awaited_once_with(5.0)
+
+
+@pytest.mark.asyncio
+async def test_boundary_just_above_five_seconds_treated_as_long():
+    """retry_after just above 5.0 (e.g. 5.01 s) must take the long-wait
+    path — retryable=True, no sleep — confirming the threshold is exclusive."""
+    adapter = _make_adapter()
+    adapter.format_message = lambda c: c
+
+    async def _just_over(**kwargs):
+        raise _make_retry_after_error(5.01)
+
+    adapter._bot.send_message_draft = AsyncMock(side_effect=_just_over)
+
+    with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        result = await adapter.send_draft("123", 5, "just-over")
+
+    assert result.success is False
+    assert getattr(result, "retryable", False) is True
+    assert "flood_control" in (getattr(result, "error", "") or "")
+    mock_sleep.assert_not_awaited()

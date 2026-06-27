@@ -1,5 +1,6 @@
 """Tests for gateway runtime status tracking."""
 
+import builtins
 import json
 import os
 from pathlib import Path
@@ -156,6 +157,62 @@ class TestGatewayPidState:
         status.release_gateway_runtime_lock()
 
         assert status.is_gateway_runtime_lock_active() is False
+
+    def test_runtime_lock_probe_reuses_cached_status_when_file_is_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("{}", encoding="utf-8")
+
+        open_calls = 0
+        original_open = builtins.open
+        times = iter([100.0, 100.2])
+
+        def counting_open(*args, **kwargs):
+            nonlocal open_calls
+            open_calls += 1
+            return original_open(*args, **kwargs)
+
+        monkeypatch.setattr(status, "open", counting_open, raising=False)
+        monkeypatch.setattr(status.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(status, "_try_acquire_file_lock", lambda handle: False)
+
+        assert status.is_gateway_runtime_lock_active(lock_path) is True
+        assert status.is_gateway_runtime_lock_active(lock_path) is True
+        assert open_calls == 1
+
+    def test_runtime_lock_probe_refreshes_when_lock_file_mtime_changes(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("{}", encoding="utf-8")
+
+        open_calls = 0
+        original_open = builtins.open
+        times = iter([200.0, 200.2])
+        lock_results = iter([False, True])
+
+        def counting_open(*args, **kwargs):
+            nonlocal open_calls
+            open_calls += 1
+            return original_open(*args, **kwargs)
+
+        monkeypatch.setattr(status, "open", counting_open, raising=False)
+        monkeypatch.setattr(status.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(status, "_try_acquire_file_lock", lambda handle: next(lock_results))
+
+        assert status.is_gateway_runtime_lock_active(lock_path) is True
+
+        stat_result = lock_path.stat()
+        os.utime(
+            lock_path,
+            ns=(stat_result.st_atime_ns, stat_result.st_mtime_ns + 1_000_000),
+        )
+
+        assert status.is_gateway_runtime_lock_active(lock_path) is False
+        assert open_calls == 2
 
     def test_get_running_pid_treats_pid_file_as_stale_without_runtime_lock(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

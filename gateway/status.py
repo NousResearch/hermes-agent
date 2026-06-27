@@ -17,6 +17,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -35,6 +36,8 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+_GATEWAY_RUNTIME_LOCK_PROBE_CACHE_TTL_S = 1.0
+_gateway_runtime_lock_probe_cache: dict[str, tuple[float, bool, bool, int | None]] = {}
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
@@ -71,6 +74,27 @@ def _get_lock_dir() -> Path:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _gateway_runtime_lock_cache_key(lock_path: Path) -> str:
+    return str(lock_path)
+
+
+def _clear_gateway_runtime_lock_probe_cache(lock_path: Optional[Path] = None) -> None:
+    if lock_path is None:
+        _gateway_runtime_lock_probe_cache.clear()
+        return
+    _gateway_runtime_lock_probe_cache.pop(_gateway_runtime_lock_cache_key(lock_path), None)
+
+
+def _get_gateway_runtime_lock_file_state(lock_path: Path) -> tuple[bool, int | None]:
+    try:
+        stat_result = lock_path.stat()
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        return False, None
+    return True, stat_result.st_mtime_ns
 
 
 def terminate_pid(pid: int, *, force: bool = False) -> None:
@@ -436,6 +460,7 @@ def acquire_gateway_runtime_lock() -> bool:
         return False
     _write_gateway_lock_record(handle)
     _gateway_lock_handle = handle
+    _clear_gateway_runtime_lock_probe_cache(path)
     return True
 
 
@@ -446,6 +471,7 @@ def release_gateway_runtime_lock() -> None:
     if handle is None:
         return
     _gateway_lock_handle = None
+    _clear_gateway_runtime_lock_probe_cache(_get_gateway_lock_path())
     _release_file_lock(handle)
     try:
         handle.close()
@@ -460,15 +486,32 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
         return True
 
-    if not resolved_lock_path.exists():
+    exists, mtime_ns = _get_gateway_runtime_lock_file_state(resolved_lock_path)
+    cache_key = _gateway_runtime_lock_cache_key(resolved_lock_path)
+    now = time.monotonic()
+    cached = _gateway_runtime_lock_probe_cache.get(cache_key)
+    if cached is not None:
+        cached_at, cached_active, cached_exists, cached_mtime_ns = cached
+        if (
+            now - cached_at <= _GATEWAY_RUNTIME_LOCK_PROBE_CACHE_TTL_S
+            and cached_exists == exists
+            and cached_mtime_ns == mtime_ns
+        ):
+            return cached_active
+
+    if not exists:
+        _gateway_runtime_lock_probe_cache[cache_key] = (now, False, False, None)
         return False
 
     handle = open(resolved_lock_path, "a+", encoding="utf-8")
     try:
         if _try_acquire_file_lock(handle):
             _release_file_lock(handle)
-            return False
-        return True
+            active = False
+        else:
+            active = True
+        _gateway_runtime_lock_probe_cache[cache_key] = (now, active, True, mtime_ns)
+        return active
     finally:
         try:
             handle.close()

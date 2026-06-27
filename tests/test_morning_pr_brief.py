@@ -91,6 +91,40 @@ def test_build_brief_groups_prs_and_limits_output():
     assert "1 additional PR omitted" in brief
 
 
+def test_build_brief_includes_next_action_for_failed_checks_and_conflicts():
+    now = dt.datetime(2026, 6, 21, 0, 0, tzinfo=dt.timezone.utc)
+    raw = [
+        {
+            "number": 4,
+            "title": "failing checks",
+            "url": "https://example.test/pull/4",
+            "headRefName": "joe/failing",
+            "author": {"login": "alice"},
+            "updatedAt": "2026-06-20T23:00:00Z",
+            "reviewDecision": "REVIEW_REQUIRED",
+            "isDraft": False,
+            "mergeStateStatus": "CLEAN",
+            "statusCheckRollup": {"nodes": [{"conclusion": "FAILURE"}]},
+        },
+        {
+            "number": 5,
+            "title": "merge conflict",
+            "url": "https://example.test/pull/5",
+            "headRefName": "joe/conflict",
+            "author": {"login": "bob"},
+            "updatedAt": "2026-06-20T22:00:00Z",
+            "reviewDecision": "APPROVED",
+            "isDraft": False,
+            "mergeStateStatus": "DIRTY",
+        },
+    ]
+
+    brief = build_brief(raw, now=now)
+
+    assert "next action: fix failing checks before review" in brief
+    assert "next action: resolve merge conflict or rebase" in brief
+
+
 def test_load_json_falls_back_to_gh_when_automation_stdin_is_empty(monkeypatch):
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     monkeypatch.setattr(

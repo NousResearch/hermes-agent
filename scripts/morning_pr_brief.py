@@ -5,7 +5,7 @@ Spec / plan:
 - Input: JSON array shaped like `gh pr list --json ...`, from `--json-file`, stdin,
   or live `gh pr list` when no JSON is supplied.
 - Output: deterministic Markdown grouped by action priority so Joe can review the
-  few PRs that need attention first.
+  few PRs that need attention first, with a concrete next-action hint per PR.
 - Safety: read-only helper; it never mutates GitHub state, sends messages, or
   shells out except for `gh pr list`.
 """
@@ -43,6 +43,8 @@ class PullRequest:
     is_draft: bool
     merge_state: str
     checks_summary: str
+    has_failed_checks: bool
+    next_action: str
     priority: str
 
 
@@ -83,6 +85,17 @@ def _checks_summary(raw_checks: Any) -> str:
     return ", ".join(f"{count} {state}" for state, count in sorted(counts.items()))
 
 
+def _has_failed_checks(raw_checks: Any) -> bool:
+    nodes = raw_checks.get("nodes", []) if isinstance(raw_checks, dict) else []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        state = str(node.get("conclusion") or node.get("status") or "").upper()
+        if state in {"FAILURE", "FAILED", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"}:
+            return True
+    return False
+
+
 def _priority(is_draft: bool, review_decision: str, merge_state: str, age_days: int) -> str:
     merge_state = merge_state.upper()
     review_decision = review_decision.upper()
@@ -91,6 +104,24 @@ def _priority(is_draft: bool, review_decision: str, merge_state: str, age_days: 
     if review_decision in {"REVIEW_REQUIRED", "CHANGES_REQUESTED", ""}:
         return "Review now"
     return "Approved / low-touch"
+
+
+def _next_action(is_draft: bool, review_decision: str, merge_state: str, has_failed_checks: bool) -> str:
+    merge_state = merge_state.upper()
+    review_decision = review_decision.upper()
+    if is_draft:
+        return "wait for draft to be marked ready"
+    if merge_state == "DIRTY":
+        return "resolve merge conflict or rebase"
+    if has_failed_checks:
+        return "fix failing checks before review"
+    if review_decision == "CHANGES_REQUESTED":
+        return "address requested changes"
+    if review_decision in {"REVIEW_REQUIRED", ""}:
+        return "review and decide"
+    if merge_state in {"BLOCKED", "UNKNOWN"}:
+        return "inspect merge blocker"
+    return "low-touch follow-up"
 
 
 def normalize_pull_requests(raw_prs: Iterable[dict[str, Any]], *, now: dt.datetime | None = None) -> list[PullRequest]:
@@ -103,6 +134,8 @@ def normalize_pull_requests(raw_prs: Iterable[dict[str, Any]], *, now: dt.dateti
         review_decision = str(raw.get("reviewDecision") or "")
         merge_state = str(raw.get("mergeStateStatus") or "UNKNOWN")
         is_draft = bool(raw.get("isDraft", False))
+        raw_checks = raw.get("statusCheckRollup")
+        has_failed_checks = _has_failed_checks(raw_checks)
         author = raw.get("author") or {}
         author_login = author.get("login", "unknown") if isinstance(author, dict) else str(author)
         normalized.append(
@@ -117,7 +150,9 @@ def normalize_pull_requests(raw_prs: Iterable[dict[str, Any]], *, now: dt.dateti
                 review_decision=review_decision or "UNKNOWN",
                 is_draft=is_draft,
                 merge_state=merge_state,
-                checks_summary=_checks_summary(raw.get("statusCheckRollup")),
+                checks_summary=_checks_summary(raw_checks),
+                has_failed_checks=has_failed_checks,
+                next_action=_next_action(is_draft, review_decision, merge_state, has_failed_checks),
                 priority=_priority(is_draft, review_decision, merge_state, age_days),
             )
         )
@@ -148,6 +183,7 @@ def build_brief(raw_prs: Sequence[dict[str, Any]], *, now: dt.datetime | None = 
                 f"  - branch `{pr.branch}` by @{pr.author}; review `{pr.review_decision}`; "
                 f"merge `{pr.merge_state}`; {pr.checks_summary}"
             )
+            lines.append(f"  - next action: {pr.next_action}")
         lines.append("")
 
     if omitted:

@@ -57,6 +57,7 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
+from agent.response_truthfulness import looks_like_unbacked_file_delivery_claim
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -581,6 +582,7 @@ def run_conversation(
     interrupted = False
     failed = False
     codex_ack_continuations = 0
+    unbacked_file_claim_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
@@ -785,6 +787,7 @@ def run_conversation(
                 api_msg.pop("finish_reason")
             # Strip internal thinking-prefill marker
             api_msg.pop("_thinking_prefill", None)
+            api_msg.pop("_file_delivery_recovery_synthetic", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields
@@ -4640,6 +4643,42 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
+
+                if (
+                    unbacked_file_claim_continuations < 2
+                    and looks_like_unbacked_file_delivery_claim(final_response)
+                ):
+                    unbacked_file_claim_continuations += 1
+                    logger.warning(
+                        "Unbacked file delivery claim detected — asking model "
+                        "to provide a real path/link or state the blocker (%d/2)",
+                        unbacked_file_claim_continuations,
+                    )
+                    interim_msg = agent._build_assistant_message(
+                        assistant_message,
+                        "incomplete",
+                    )
+                    interim_msg["_file_delivery_recovery_synthetic"] = True
+                    messages.append(interim_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[System: You claimed a file or attachment was "
+                            "delivered, but your response did not include a "
+                            "MEDIA:/absolute/path directive, a real local path, "
+                            "a URL, a Markdown link, or inline file content. "
+                            "Continue now: if the artifact exists, provide the "
+                            "real deliverable path/link or MEDIA directive; if "
+                            "creation or upload failed, state the blocker. Do "
+                            "not say it is attached/sent unless there is "
+                            "delivery evidence.]"
+                        ),
+                        "_file_delivery_recovery_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    continue
+
+                unbacked_file_claim_continuations = 0
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 
@@ -4655,6 +4694,7 @@ def run_conversation(
                         messages[-1].get("_thinking_prefill")
                         or messages[-1].get("_empty_recovery_synthetic")
                         or messages[-1].get("_empty_terminal_sentinel")
+                        or messages[-1].get("_file_delivery_recovery_synthetic")
                     )
                 ):
                     messages.pop()

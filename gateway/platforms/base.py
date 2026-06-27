@@ -65,8 +65,11 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     thread_id = getattr(source, "thread_id", None)
     if thread_id is None:
         return None
+    platform = _platform_name(getattr(source, "platform", None))
     metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    if platform == "feishu" and reply_to_message_id is not None:
+        metadata["reply_to_message_id"] = str(reply_to_message_id)
+    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:
@@ -1760,6 +1763,22 @@ class SendResult:
     # ``None`` (unset / not classified).  Producers should set this via
     # :func:`classify_send_error`.
     error_kind: Optional[str] = None
+
+
+def format_attachment_delivery_failure_notice(
+    file_path: str,
+    error: Optional[str] = None,
+) -> str:
+    """Build a user-visible notice for native attachment delivery failures."""
+    lines = [
+        "File attachment delivery failed: the platform did not show the attachment.",
+        f"Local path: {file_path}",
+    ]
+    if error:
+        clean_error = " ".join(str(error).split())
+        if clean_error:
+            lines.append(f"Error: {clean_error[:500]}")
+    return "\n".join(lines)
 
 
 # Machine-readable send-failure categories.  Kept platform-neutral so every
@@ -4639,6 +4658,24 @@ class BasePlatformAdapter(ABC):
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
 
+                async def _send_attachment_failure_notice(file_path: str, error: Any = None) -> None:
+                    notice = format_attachment_delivery_failure_notice(file_path, str(error or ""))
+                    try:
+                        result = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=notice,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_final_thread_metadata,
+                        )
+                        _record_delivery(result)
+                    except Exception as notice_err:
+                        logger.warning(
+                            "[%s] Failed to send attachment failure notice for %s: %s",
+                            self.name,
+                            file_path,
+                            notice_err,
+                        )
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
@@ -4723,14 +4760,21 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
-                        await self.send_multiple_images(
+                        image_result = await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
+                        _record_delivery(image_result)
+                        if getattr(image_result, "success", True) is False:
+                            await _send_attachment_failure_notice(
+                                "image batch",
+                                getattr(image_result, "error", None),
+                            )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+                        await _send_attachment_failure_notice("image batch", batch_err)
 
 
                 # Send extracted media files — route by file type
@@ -4765,14 +4809,23 @@ class BasePlatformAdapter(ABC):
                 if _image_paths:
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
+                        image_result = await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=_batch,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
+                        _record_delivery(image_result)
+                        if getattr(image_result, "success", True) is False:
+                            for image_path in _image_paths:
+                                await _send_attachment_failure_notice(
+                                    image_path,
+                                    getattr(image_result, "error", None),
+                                )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+                        for image_path in _image_paths:
+                            await _send_attachment_failure_notice(image_path, batch_err)
 
                 for media_path, is_voice in _non_image_media:
                     if human_delay > 0:
@@ -4800,8 +4853,11 @@ class BasePlatformAdapter(ABC):
 
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                            await _send_attachment_failure_notice(media_path, media_result.error)
+                        _record_delivery(media_result)
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
+                        await _send_attachment_failure_notice(media_path, media_err)
 
                 # Send auto-detected local non-image files as native attachments
                 for file_path in _non_image_local:
@@ -4810,19 +4866,26 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
-                            await self.send_video(
+                            file_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
-                            await self.send_document(
+                            file_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
+                        _record_delivery(file_result)
+                        if getattr(file_result, "success", True) is False:
+                            await _send_attachment_failure_notice(
+                                file_path,
+                                getattr(file_result, "error", None),
+                            )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+                        await _send_attachment_failure_notice(file_path, file_err)
 
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.

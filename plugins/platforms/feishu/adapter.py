@@ -67,7 +67,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 from urllib.request import Request, urlopen
 
 # aiohttp/websockets are independent optional deps — import outside lark_oapi
@@ -158,6 +158,10 @@ _MARKDOWN_HINT_RE = re.compile(
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_FEISHU_DRIVE_FILE_LINK_RE = re.compile(
+    r"https?://[^\s<>()\"']*?(?:feishu\.cn|larksuite\.com|larksuite\.com\.cn)/file/(?P<token>[A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
@@ -192,6 +196,7 @@ _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
+_FEISHU_FIELD_VALIDATION_ERROR_CODE = "99992402"
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
@@ -541,6 +546,30 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+def _looks_like_feishu_thread_id(value: Any) -> bool:
+    """Best-effort guard for Feishu topic IDs vs normal message IDs."""
+    text = str(value or "").strip()
+    return text.startswith("omt")
+
+
+def _inbound_thread_id_from_message(message: Any) -> Optional[str]:
+    explicit = getattr(message, "thread_id", None)
+    if explicit:
+        return str(explicit)
+    root_id = getattr(message, "root_id", None)
+    if _looks_like_feishu_thread_id(root_id):
+        return str(root_id)
+    return None
+
+
+def _reply_to_message_id_from_message(message: Any) -> Optional[str]:
+    for attr in ("parent_id", "upper_message_id", "root_id"):
+        value = getattr(message, attr, None)
+        if value and not _looks_like_feishu_thread_id(value):
+            return str(value)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1131,6 +1160,19 @@ def _first_non_empty_text(*values: Any) -> str:
             if normalized:
                 return normalized
     return ""
+
+
+def _extract_feishu_drive_file_tokens(text: str) -> List[str]:
+    """Return unique Feishu Drive file tokens mentioned in user-visible text."""
+    tokens: List[str] = []
+    seen: set[str] = set()
+    for match in _FEISHU_DRIVE_FILE_LINK_RE.finditer(text or ""):
+        token = match.group("token").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return tokens
 
 
 # ---------------------------------------------------------------------------
@@ -3123,13 +3165,8 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
-        reply_to_message_id = (
-            getattr(message, "parent_id", None)
-            or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None)
-            or None
-        )
+        thread_id = _inbound_thread_id_from_message(message)
+        reply_to_message_id = _reply_to_message_id_from_message(message)
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
         sender_primary = (
@@ -3618,8 +3655,15 @@ class FeishuAdapter(BasePlatformAdapter):
             message_id=message_id,
             normalized=normalized,
         )
-        inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
+        drive_media_urls, drive_media_types = await self._download_feishu_drive_file_links(text)
+        if drive_media_urls:
+            media_urls.extend(drive_media_urls)
+            media_types.extend(drive_media_types)
+
+        inbound_type = self._resolve_normalized_message_type(normalized, media_types)
+        if drive_media_urls and inbound_type == MessageType.TEXT:
+            inbound_type = MessageType.DOCUMENT
 
         if (
             inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
@@ -3813,6 +3857,77 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
         return "", ""
 
+    async def _download_feishu_drive_file_links(self, text: str) -> tuple[List[str], List[str]]:
+        tokens = _extract_feishu_drive_file_tokens(text)
+        if not tokens:
+            return [], []
+
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        for token in tokens:
+            cached_path, media_type = await self._download_feishu_drive_file(token)
+            if not cached_path:
+                continue
+            media_urls.append(cached_path)
+            media_types.append(media_type)
+        return media_urls, media_types
+
+    async def _download_feishu_drive_file(self, file_token: str) -> tuple[str, str]:
+        if not self._client or not file_token:
+            return "", ""
+
+        # Uploaded Feishu Drive files normally download through the media
+        # endpoint. Keep a file endpoint fallback for older tenants/API shapes.
+        endpoints = (
+            "/open-apis/drive/v1/medias/:file_token/download",
+            "/open-apis/drive/v1/files/:file_token/download",
+        )
+        for uri in endpoints:
+            try:
+                request = self._build_drive_file_download_request(uri=uri, file_token=file_token)
+                response = await asyncio.to_thread(self._client.request, request)
+                if not response or not self._response_succeeded(response):
+                    logger.debug(
+                        "[Feishu] Drive file download failed for %s via %s: %s %s",
+                        file_token,
+                        uri,
+                        getattr(response, "code", "unknown"),
+                        getattr(response, "msg", "request failed"),
+                    )
+                    continue
+
+                raw_bytes = self._read_drive_binary_response(response)
+                if not raw_bytes:
+                    continue
+                content_type = self._get_response_header(response, "Content-Type")
+                filename = (
+                    self._filename_from_content_disposition(
+                        self._get_response_header_value(response, "Content-Disposition")
+                    )
+                    or getattr(response, "file_name", None)
+                    or f"feishu-file-{file_token}"
+                )
+                media_type = self._normalize_media_type(
+                    content_type,
+                    default=self._guess_document_media_type(filename),
+                )
+                if not Path(filename).suffix:
+                    ext = _DOCUMENT_MIME_TO_EXT.get(media_type) or mimetypes.guess_extension(media_type)
+                    if ext:
+                        filename = f"{filename}{ext}"
+
+                cached_path = cache_document_from_bytes(raw_bytes, filename)
+                logger.info("[Feishu] Cached Drive file link at %s", cached_path)
+                return cached_path, media_type or self._guess_document_media_type(filename)
+            except Exception:
+                logger.warning(
+                    "[Feishu] Failed to cache Drive file link %s via %s",
+                    file_token,
+                    uri,
+                    exc_info=True,
+                )
+        return "", ""
+
     # =========================================================================
     # Static helpers — extension / media-type guessing
     # =========================================================================
@@ -3827,10 +3942,52 @@ class FeishuAdapter(BasePlatformAdapter):
         return bytes(file_obj.read())
 
     @staticmethod
-    def _get_response_header(response: Any, name: str) -> str:
+    def _read_drive_binary_response(response: Any) -> bytes:
+        file_obj = getattr(response, "file", None)
+        if file_obj is not None:
+            if hasattr(file_obj, "getvalue"):
+                return bytes(file_obj.getvalue())
+            return bytes(file_obj.read())
+        raw = getattr(response, "raw", None)
+        raw_content = getattr(raw, "content", None)
+        if raw_content is not None:
+            if isinstance(raw_content, str):
+                return raw_content.encode("utf-8")
+            return bytes(raw_content)
+        content = getattr(response, "content", None)
+        if isinstance(content, str):
+            return content.encode("utf-8")
+        return bytes(content) if content is not None else b""
+
+    @staticmethod
+    def _get_response_header_value(response: Any, name: str) -> str:
         raw = getattr(response, "raw", None)
         headers = getattr(raw, "headers", {}) or {}
-        return str(headers.get(name, headers.get(name.lower(), "")) or "").split(";", 1)[0].strip().lower()
+        if not headers:
+            return ""
+        direct = headers.get(name)
+        if direct is not None:
+            return str(direct).strip()
+        lower_name = name.lower()
+        for key, value in headers.items():
+            if str(key).lower() == lower_name:
+                return str(value).strip()
+        return ""
+
+    @staticmethod
+    def _get_response_header(response: Any, name: str) -> str:
+        return FeishuAdapter._get_response_header_value(response, name).split(";", 1)[0].strip().lower()
+
+    @staticmethod
+    def _filename_from_content_disposition(content_disposition: str) -> str:
+        header = content_disposition or ""
+        star_match = re.search(r"filename\*\s*=\s*(?:UTF-8''|utf-8'')?([^;]+)", header, re.IGNORECASE)
+        if star_match:
+            return Path(unquote(star_match.group(1).strip().strip('"'))).name
+        match = re.search(r"filename\s*=\s*(\"[^\"]+\"|[^;]+)", header, re.IGNORECASE)
+        if match:
+            return Path(match.group(1).strip().strip('"')).name
+        return ""
 
     @staticmethod
     def _guess_extension(filename: str, content_type: str, default: str, *, allowed: set[str]) -> str:
@@ -4637,6 +4794,27 @@ class FeishuAdapter(BasePlatformAdapter):
                     reply_to=active_reply_to,
                     metadata=metadata,
                 )
+                if (
+                    not self._response_succeeded(response)
+                    and (metadata or {}).get("thread_id")
+                    and str(getattr(response, "code", "")) == _FEISHU_FIELD_VALIDATION_ERROR_CODE
+                ):
+                    logger.warning(
+                        "[Feishu] Threaded send to %s failed with field validation; "
+                        "falling back to plain chat message in %s",
+                        (metadata or {}).get("thread_id"),
+                        chat_id,
+                    )
+                    plain_metadata = dict(metadata or {})
+                    plain_metadata.pop("thread_id", None)
+                    plain_metadata.pop("reply_to_message_id", None)
+                    response = await self._send_raw_message(
+                        chat_id=chat_id,
+                        msg_type=msg_type,
+                        payload=payload,
+                        reply_to=None,
+                        metadata=plain_metadata,
+                    )
                 # If replying to a message failed because it was withdrawn or not found,
                 # fall back to posting a new message directly to the chat.
                 if active_reply_to and not self._response_succeeded(response):
@@ -4722,6 +4900,19 @@ class FeishuAdapter(BasePlatformAdapter):
                 .build()
             )
         return SimpleNamespace(message_id=message_id, file_key=file_key, type=resource_type)
+
+    @staticmethod
+    def _build_drive_file_download_request(*, uri: str, file_token: str) -> Any:
+        if "BaseRequest" in globals() and "HttpMethod" in globals() and "AccessTokenType" in globals():
+            return (
+                BaseRequest.builder()
+                .http_method(HttpMethod.GET)
+                .uri(uri)
+                .paths({"file_token": file_token})
+                .token_types({AccessTokenType.TENANT})
+                .build()
+            )
+        return SimpleNamespace(uri=uri, paths={"file_token": file_token})
 
     @staticmethod
     def _build_get_application_request(*, app_id: str, lang: str) -> Any:

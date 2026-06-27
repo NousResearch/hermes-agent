@@ -11671,7 +11671,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
             force_document_attachments = "[[as_document]]" in response
 
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.platforms.base import (
+                BasePlatformAdapter,
+                format_attachment_delivery_failure_notice,
+                should_send_media_as_audio,
+            )
 
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
@@ -11687,6 +11691,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+
+            async def _send_attachment_failure_notice(file_path: str, error: object = None) -> None:
+                if not hasattr(adapter, "send"):
+                    return
+                try:
+                    await adapter.send(
+                        chat_id=event.source.chat_id,
+                        content=format_attachment_delivery_failure_notice(file_path, str(error or "")),
+                        metadata=_thread_meta,
+                    )
+                except Exception as notice_err:
+                    logger.warning(
+                        "[%s] Post-stream attachment failure notice failed for %s: %s",
+                        adapter.name,
+                        file_path,
+                        notice_err,
+                    )
+
+            def _send_result_failed(result: object) -> bool:
+                return getattr(result, "success", True) is False
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -11717,55 +11741,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    image_result = await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
+                    if _send_result_failed(image_result):
+                        for image_path in image_paths:
+                            await _send_attachment_failure_notice(
+                                image_path,
+                                getattr(image_result, "error", None),
+                            )
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    for image_path in image_paths:
+                        await _send_attachment_failure_notice(image_path, e)
 
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        media_result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        media_result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        media_result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    if _send_result_failed(media_result):
+                        await _send_attachment_failure_notice(
+                            media_path,
+                            getattr(media_result, "error", None),
+                        )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    await _send_attachment_failure_notice(media_path, e)
 
             for file_path in non_image_local:
                 try:
                     ext = Path(file_path).suffix.lower()
                     if ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        file_result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        file_result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
                             metadata=_thread_meta,
                         )
+                    if _send_result_failed(file_result):
+                        await _send_attachment_failure_notice(
+                            file_path,
+                            getattr(file_result, "error", None),
+                        )
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
+                    await _send_attachment_failure_notice(file_path, e)
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
@@ -12731,6 +12775,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
+        if platform == Platform.FEISHU and reply_to_message_id is not None:
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
         if self._is_telegram_dm_topic_target(
             platform,
             chat_id,

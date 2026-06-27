@@ -322,7 +322,14 @@ TASK_COMPLETION_GUIDANCE = (
     "approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) "
     "for results you couldn't actually produce. Reporting a blocker honestly "
-    "is always better than inventing a result."
+    "is always better than inventing a result.\n"
+    "File delivery claims require proof. If the user asks you to create, "
+    "download, attach, or send a file, do not say the file is attached, below, "
+    "sent, uploaded, or available for download unless you have produced a real "
+    "artifact and included `MEDIA:/absolute/path/to/file` or a real path/link "
+    "that the current channel can use. If file creation or upload fails, state "
+    "the blocker instead of using placeholder phrases like 'file below' or "
+    "'please see attached'."
 )
 
 # Universal parallel-tool-call guidance — applied to ALL models.

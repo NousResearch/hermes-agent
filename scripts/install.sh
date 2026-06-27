@@ -1217,7 +1217,21 @@ clone_repo() {
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
             git fetch origin "$BRANCH"
             git checkout "$BRANCH"
-            git pull --ff-only origin "$BRANCH"
+            # Managed installs should follow origin/$BRANCH exactly. If both
+            # the local clone and the fetched remote advanced, fast-forwarding
+            # is impossible; mirror `hermes update` and reset to the fetched
+            # remote so the installer can recover instead of aborting.
+            local rev_counts local_ahead local_behind
+            rev_counts="$(git rev-list --left-right --count HEAD...origin/$BRANCH 2>/dev/null || true)"
+            set -- $rev_counts
+            local_ahead="${1:-0}"
+            local_behind="${2:-0}"
+            if [ "$local_ahead" -gt 0 ] && [ "$local_behind" -gt 0 ]; then
+                log_warn "History diverged from origin/$BRANCH; resetting managed install to the remote branch..."
+                git reset --hard "origin/$BRANCH"
+            else
+                git pull --ff-only origin "$BRANCH"
+            fi
 
             if [ -n "$autostash_ref" ]; then
                 local restore_now="yes"

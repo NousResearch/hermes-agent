@@ -849,6 +849,104 @@ class _CodexCompletionsAdapter:
             if converted:
                 resp_kwargs["tools"] = converted
 
+        # Keep auxiliary Codex/Responses calls on the same prompt-cache routing
+        # strategy as the main transport. MoA aggregators go through this
+        # adapter, so without a stable content-addressed key their
+        # OpenAI-compatible gateway traffic stays cache-cold even while
+        # reference models hit automatic prefix caches.
+        try:
+            from agent.transports.codex import _content_cache_key
+
+            def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
+                text = str(value or "").strip()
+                if not text:
+                    return None
+                if len(text) <= 64:
+                    return text
+                import hashlib
+
+                return hashlib.sha256(
+                    text.encode("utf-8", errors="replace")
+                ).hexdigest()
+
+            extra_body_prompt_cache_key = None
+            if isinstance(extra_body, dict):
+                raw_prompt_cache_key = extra_body.get("prompt_cache_key")
+                if raw_prompt_cache_key:
+                    extra_body_prompt_cache_key = _bounded_prompt_cache_key(
+                        raw_prompt_cache_key
+                    )
+
+            session_id = str(
+                kwargs.get("session_id")
+                or os.getenv("HERMES_SESSION_ID")
+                or ""
+            ).strip()
+            response_tools = resp_kwargs.get("tools")
+            cache_key = (
+                extra_body_prompt_cache_key
+                or _content_cache_key(
+                    instructions,
+                    response_tools if isinstance(response_tools, list) else None,
+                )
+                or _bounded_prompt_cache_key(session_id)
+                or None
+            )
+
+            base_url = str(getattr(self._client, "base_url", "") or "")
+
+            def _client_base_matches(domain: str) -> bool:
+                try:
+                    return base_url_host_matches(base_url, domain)
+                except Exception:
+                    return False
+
+            is_xai_responses = _client_base_matches("api.x.ai")
+            is_github_responses = any(
+                _client_base_matches(domain)
+                for domain in (
+                    "api.githubcopilot.com",
+                    "models.github.ai",
+                    "models.inference.ai.azure.com",
+                )
+            )
+            is_codex_backend = _client_base_matches("chatgpt.com")
+
+            if cache_key and not is_github_responses:
+                if is_xai_responses:
+                    merged_extra_body: Dict[str, Any] = {}
+                    existing_extra_body = resp_kwargs.get("extra_body")
+                    if isinstance(existing_extra_body, dict):
+                        merged_extra_body.update(existing_extra_body)
+                    merged_extra_body.setdefault("prompt_cache_key", cache_key)
+                    resp_kwargs["extra_body"] = merged_extra_body
+                else:
+                    resp_kwargs.setdefault("prompt_cache_key", cache_key)
+
+            if (is_codex_backend or is_xai_responses) and session_id:
+                existing_extra_headers = resp_kwargs.get("extra_headers")
+                merged_extra_headers: Dict[str, str] = {}
+                if isinstance(existing_extra_headers, dict):
+                    merged_extra_headers.update(
+                        {
+                            str(key): str(value)
+                            for key, value in existing_extra_headers.items()
+                            if key and value is not None
+                        }
+                    )
+                if is_codex_backend:
+                    merged_extra_headers["session_id"] = session_id
+                    merged_extra_headers["x-client-request-id"] = session_id
+                if is_xai_responses:
+                    merged_extra_headers["x-grok-conv-id"] = session_id
+                if merged_extra_headers:
+                    resp_kwargs["extra_headers"] = merged_extra_headers
+        except Exception:
+            logger.debug(
+                "Codex auxiliary: prompt cache routing setup failed",
+                exc_info=True,
+            )
+
         # Stream and collect the response
         text_parts: List[str] = []
         tool_calls_raw: List[Any] = []
@@ -3021,6 +3119,7 @@ def _retry_same_provider_sync(
             model=final_model,
             base_url=resolved_base_url,
             api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
             async_mode=False,
         )
     else:
@@ -3078,6 +3177,7 @@ async def _retry_same_provider_async(
             model=final_model,
             base_url=resolved_base_url,
             api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
             async_mode=True,
         )
     else:
@@ -4637,6 +4737,7 @@ def resolve_vision_provider_client(
     *,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    api_mode: Optional[str] = None,
     async_mode: bool = False,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
@@ -4647,7 +4748,7 @@ def resolve_vision_provider_client(
     stays conservative and only tries vision backends known to work today.
     """
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        "vision", provider, model, base_url, api_key
+        "vision", provider, model, base_url, api_key, api_mode
     )
     requested = _normalize_vision_provider(requested)
 
@@ -5191,6 +5292,7 @@ def _resolve_task_provider_model(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    api_mode: str = None,
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine provider + model for a call.
 
@@ -5219,7 +5321,7 @@ def _resolve_task_provider_model(
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
     resolved_model = model or cfg_model
-    resolved_api_mode = cfg_api_mode
+    resolved_api_mode = (api_mode or "").strip() or cfg_api_mode
 
     # Convenience aliases for direct API-key endpoints that aren't first-class
     # providers (e.g. ``provider: openai`` → custom + api.openai.com/v1).
@@ -5626,6 +5728,7 @@ def call_llm(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: float = None,
@@ -5645,6 +5748,8 @@ def call_llm(
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
         model: Explicit model override.
+        api_mode: Optional API mode override ("chat_completions",
+            "codex_responses", "anthropic_messages").
         messages: Chat messages list.
         temperature: Sampling temperature (None = provider default).
         max_tokens: Max output tokens (handles max_tokens vs max_completion_tokens).
@@ -5659,7 +5764,7 @@ def call_llm(
         RuntimeError: If no provider is configured.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+        task, provider, model, base_url, api_key, api_mode)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
@@ -5669,6 +5774,7 @@ def call_llm(
             model=resolved_model or model,
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
+            api_mode=resolved_api_mode or api_mode,
             async_mode=False,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
@@ -5679,6 +5785,7 @@ def call_llm(
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto",
                 model=resolved_model,
+                api_mode=resolved_api_mode or api_mode,
                 async_mode=False,
             )
         if client is None:
@@ -5724,7 +5831,12 @@ def call_llm(
             if client is None and not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", main_runtime=main_runtime, task=task)
+                client, final_model = _get_cached_client(
+                    "auto",
+                    api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
+                    task=task,
+                )
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
@@ -6194,6 +6306,7 @@ async def async_call_llm(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: float = None,
@@ -6207,7 +6320,7 @@ async def async_call_llm(
     Same as call_llm() but async. See call_llm() for full documentation.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+        task, provider, model, base_url, api_key, api_mode)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
@@ -6217,6 +6330,7 @@ async def async_call_llm(
             model=resolved_model or model,
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
+            api_mode=resolved_api_mode or api_mode,
             async_mode=True,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
@@ -6227,6 +6341,7 @@ async def async_call_llm(
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto",
                 model=resolved_model,
+                api_mode=resolved_api_mode or api_mode,
                 async_mode=True,
             )
         if client is None:
@@ -6264,7 +6379,13 @@ async def async_call_llm(
             if client is None and not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", async_mode=True, main_runtime=main_runtime, task=task)
+                client, final_model = _get_cached_client(
+                    "auto",
+                    async_mode=True,
+                    api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
+                    task=task,
+                )
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "

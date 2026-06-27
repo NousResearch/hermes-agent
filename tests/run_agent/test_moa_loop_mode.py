@@ -170,6 +170,153 @@ def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
     assert rt["model"] == "MiniMax-M2"
     assert rt["base_url"] == "https://minimax.example/v1"
     assert rt["api_key"] == "key-for-minimax"
+    assert rt["api_mode"] == "chat_completions"
+
+
+def test_moa_custom_responses_aggregator_gets_prompt_cache_key(monkeypatch, tmp_path):
+    """MoA custom/codex_responses aggregators must use the Responses adapter.
+
+    Regression for OpenAI-compatible MoA gateways: _slot_runtime() resolved
+    api_mode=codex_responses but did not pass it into call_llm(), so the
+    aggregator stayed on a plain chat-completions client and never emitted
+    prompt_cache_key.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models: []
+      aggregator:
+        provider: custom:responses-gateway
+        model: gpt-5.5
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "codex_responses",
+            "base_url": "https://gateway.example/v1",
+            "api_key": "test-key",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    captured = {}
+
+    class _FakeCreateStream:
+        def __iter__(self):
+            message_item = SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="gateway ok")],
+            )
+            return iter([
+                SimpleNamespace(type="response.created"),
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        status="completed",
+                        id="resp_moa_cache",
+                        usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                    ),
+                ),
+            ])
+
+        def close(self):
+            pass
+
+    class _FakeResponses:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeCreateStream()
+
+    class _FakeOpenAI:
+        def __init__(self, *, api_key=None, base_url=None, **_kwargs):
+            self.api_key = api_key
+            self.base_url = base_url
+            self.responses = _FakeResponses()
+
+        def close(self):
+            pass
+
+    from agent import auxiliary_client
+    from agent.moa_loop import MoAChatCompletions
+
+    auxiliary_client._client_cache.clear()
+    monkeypatch.setattr(auxiliary_client, "OpenAI", _FakeOpenAI)
+
+    facade = MoAChatCompletions("review")
+    response = facade.create(
+        messages=[
+            {"role": "system", "content": "static hermes identity"},
+            {"role": "user", "content": "question"},
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+
+    assert response.choices[0].message.content == "gateway ok"
+    assert captured["stream"] is True
+    assert captured["model"] == "gpt-5.5"
+    first_key = captured["prompt_cache_key"]
+    assert first_key.startswith("pck_")
+    assert len(captured.get("tools") or []) == 1
+
+    captured.clear()
+    facade.create(
+        messages=[
+            {"role": "system", "content": "static hermes identity"},
+            {"role": "user", "content": "question with more tools"},
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "description": "Write a file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ],
+    )
+
+    assert captured["prompt_cache_key"] == first_key
+    assert len(captured.get("tools") or []) == 2
+
+    captured.clear()
+    facade.create(
+        messages=[{"role": "user", "content": "manual key"}],
+        extra_body={"prompt_cache_key": "manual-moa-key"},
+    )
+
+    assert captured["prompt_cache_key"] == "manual-moa-key"
 
 
 def test_moa_codex_slot_preserves_provider_identity(monkeypatch):

@@ -70,9 +70,41 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
             out["base_url"] = rt["base_url"]
         if rt.get("api_key"):
             out["api_key"] = rt["api_key"]
+        if rt.get("api_mode"):
+            out["api_mode"] = rt["api_mode"]
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
     return out
+
+
+def _responses_instructions_from_messages(messages: list[dict[str, Any]]) -> str:
+    instructions = "You are a helpful assistant."
+    for msg in messages:
+        if msg.get("role") != "system":
+            continue
+        content = msg.get("content") or ""
+        instructions = content if isinstance(content, str) else str(content)
+    return instructions
+
+
+def _moa_aggregator_prompt_cache_key(
+    messages: list[dict[str, Any]],
+) -> str | None:
+    """Stable cache affinity for MoA Responses aggregators.
+
+    The acting MoA aggregator may receive a different tool set across turns as
+    Hermes enables or disables tools, but the expensive stable prefix is the
+    Hermes system instructions. Keying MoA on instructions only keeps
+    OpenAI-compatible gateway traffic on the same upstream cache shard while
+    still sending the real tool schemas in the request body.
+    """
+    try:
+        from agent.transports.codex import _content_cache_key
+
+        return _content_cache_key(_responses_instructions_from_messages(messages), None)
+    except Exception:
+        logger.debug("MoA aggregator prompt cache key setup failed", exc_info=True)
+        return None
 
 
 def _run_reference(
@@ -424,14 +456,23 @@ class MoAChatCompletions:
         # max_tokens is passed through from the caller (normally None → omitted
         # → the model's real maximum). The preset's old hardcoded 4096 default
         # is gone — it truncated long syntheses.
+        runtime = _slot_runtime(aggregator)
+        extra_body = agg_kwargs.get("extra_body")
+        if runtime.get("api_mode") == "codex_responses":
+            merged_extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
+            cache_key = _moa_aggregator_prompt_cache_key(agg_messages)
+            if cache_key:
+                merged_extra_body.setdefault("prompt_cache_key", cache_key)
+            extra_body = merged_extra_body or extra_body
+
         return call_llm(
             task="moa_aggregator",
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=agg_kwargs.get("max_tokens"),
             tools=agg_kwargs.get("tools"),
-            extra_body=agg_kwargs.get("extra_body"),
-            **_slot_runtime(aggregator),
+            extra_body=extra_body,
+            **runtime,
         )
 
 

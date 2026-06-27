@@ -3231,7 +3231,7 @@ class TestCodexAdapterReasoningTranslation:
     """
 
     @staticmethod
-    def _build_adapter():
+    def _build_adapter(base_url=""):
         """Build a _CodexCompletionsAdapter with a mocked responses.create()."""
         from agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
@@ -3270,6 +3270,7 @@ class TestCodexAdapterReasoningTranslation:
             return _FakeCreateStream()
 
         real_client = MagicMock()
+        real_client.base_url = base_url
         real_client.responses.create = _create
         adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
         return adapter, captured_kwargs
@@ -3391,6 +3392,132 @@ class TestCodexAdapterReasoningTranslation:
         )
         assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
         assert captured.get("include") == ["reasoning.encrypted_content"]
+
+
+class TestCodexAdapterPromptCacheKey:
+    def test_sets_content_addressed_key_for_responses(self):
+        adapter, captured = TestCodexAdapterReasoningTranslation._build_adapter()
+
+        adapter.create(
+            messages=[
+                {"role": "system", "content": "static MoA aggregator prompt"},
+                {"role": "user", "content": "first turn"},
+            ],
+            session_id="session-one",
+        )
+        first_key = captured.get("prompt_cache_key")
+
+        captured.clear()
+        adapter.create(
+            messages=[
+                {"role": "system", "content": "static MoA aggregator prompt"},
+                {"role": "user", "content": "second turn with different content"},
+            ],
+            session_id="session-two",
+        )
+
+        assert isinstance(first_key, str)
+        assert first_key.startswith("pck_")
+        assert first_key != "session-one"
+        assert captured.get("prompt_cache_key") == first_key
+
+    def test_explicit_extra_body_prompt_cache_key_wins(self):
+        adapter, captured = TestCodexAdapterReasoningTranslation._build_adapter()
+
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"prompt_cache_key": "manual-cache-key"},
+        )
+
+        assert captured.get("prompt_cache_key") == "manual-cache-key"
+
+    def test_explicit_extra_body_prompt_cache_key_is_bounded(self):
+        adapter, captured = TestCodexAdapterReasoningTranslation._build_adapter()
+
+        long_key = "manual-" + ("x" * 100)
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"prompt_cache_key": long_key},
+        )
+
+        key = captured.get("prompt_cache_key")
+        assert isinstance(key, str)
+        assert len(key) == 64
+        assert key != long_key
+
+    def test_xai_explicit_extra_body_prompt_cache_key_is_bounded(self):
+        adapter, captured = TestCodexAdapterReasoningTranslation._build_adapter(
+            base_url="https://api.x.ai/v1"
+        )
+
+        long_key = "manual-" + ("x" * 100)
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"prompt_cache_key": long_key},
+        )
+
+        key = captured.get("extra_body", {}).get("prompt_cache_key")
+        assert isinstance(key, str)
+        assert len(key) == 64
+        assert key != long_key
+
+    def test_xai_responses_puts_prompt_cache_key_in_extra_body(self):
+        adapter, captured = TestCodexAdapterReasoningTranslation._build_adapter(
+            base_url="https://api.x.ai/v1"
+        )
+
+        adapter.create(
+            messages=[
+                {"role": "system", "content": "static xai prompt"},
+                {"role": "user", "content": "hi"},
+            ],
+            session_id="xai-conv-1",
+        )
+
+        assert "prompt_cache_key" not in captured
+        cache_key = captured.get("extra_body", {}).get("prompt_cache_key")
+        assert isinstance(cache_key, str)
+        assert cache_key.startswith("pck_")
+        assert cache_key != "xai-conv-1"
+        assert captured.get("extra_headers", {}).get("x-grok-conv-id") == "xai-conv-1"
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.githubcopilot.com",
+            "https://models.github.ai/inference",
+            "https://models.inference.ai.azure.com",
+        ],
+    )
+    def test_github_responses_omit_prompt_cache_key(self, base_url):
+        adapter, captured = TestCodexAdapterReasoningTranslation._build_adapter(
+            base_url=base_url
+        )
+
+        adapter.create(
+            messages=[
+                {"role": "system", "content": "static github prompt"},
+                {"role": "user", "content": "hi"},
+            ],
+            session_id="github-session",
+        )
+
+        assert "prompt_cache_key" not in captured
+        assert "extra_body" not in captured
+        assert "extra_headers" not in captured
+
+    def test_codex_backend_adds_cache_scope_headers_from_session_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_ID", "hermes-session-123")
+        adapter, captured = TestCodexAdapterReasoningTranslation._build_adapter(
+            base_url="https://chatgpt.com/backend-api/codex"
+        )
+
+        adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        assert captured.get("prompt_cache_key", "").startswith("pck_")
+        headers = captured.get("extra_headers", {})
+        assert headers.get("session_id") == "hermes-session-123"
+        assert headers.get("x-client-request-id") == "hermes-session-123"
 
 
 class TestVisionAutoSkipsKimiCoding:

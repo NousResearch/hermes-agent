@@ -270,6 +270,42 @@ def test_branch_name_requires_worktree_workspace(kanban_home):
         )
 
 
+def test_release_running_task_on_external_termination(kanban_home):
+    """When a worker is killed externally, release the task without counting a failure."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        run_id = _kb._current_run_id(conn, t)
+
+        with kb.write_txn(conn):
+            released = kb.release_running_task_on_external_termination(
+                conn, t, run_id=run_id, pid=12345, signal=15,
+                reason="worker received SIGTERM",
+            )
+
+        assert released is True
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.claim_lock is None
+        assert task.worker_pid is None
+        assert task.current_run_id is None
+        assert task.consecutive_failures == 0
+
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "terminated" in kinds
+        assert "crashed" not in kinds
+        assert "gave_up" not in kinds
+
+
 # ---------------------------------------------------------------------------
 # Links + dependency resolution
 # ---------------------------------------------------------------------------
@@ -979,6 +1015,121 @@ def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
         assert task.status == "blocked", (
             f"genuine crashes should still trip the breaker, got {task.status}"
         )
+
+
+def test_profile_protocol_violation_circuit_opens_after_threshold(
+    kanban_home, monkeypatch,
+):
+    """When N distinct tasks for the same profile die by protocol violation,
+    the per-profile circuit opens and blocks further spawns."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv(
+        "HERMES_KANBAN_PROFILE_PROTOCOL_VIOLATION_THRESHOLD", "2"
+    )
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    try:
+        from hermes_cli import profiles
+        monkeypatch.setattr(
+            profiles, "profile_exists", lambda _name: True
+        )
+    except Exception:
+        pass
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        profile = "pv-profile"
+        tids = [
+            kb.create_task(conn, title=f"pv-{i}", assignee=profile)
+            for i in range(3)
+        ]
+        for i, tid in enumerate(tids):
+            pid = 50000 + i
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=? WHERE id=?",
+                (pid, f"{host}:w{i}", tid),
+            )
+            conn.commit()
+            _kb._record_worker_exit(pid, 0 << 8)  # clean rc=0 exit
+            kb.detect_crashed_workers(conn)
+
+        # After 2 PVs the circuit should open; 3rd task is still blocked
+        # by its own per-task breaker.
+        open_circuits = kb._list_open_profile_protocol_violation_circuits(conn)
+        assert len(open_circuits) == 1
+        assert open_circuits[0]["profile"] == profile
+        assert open_circuits[0]["threshold"] == 2
+        assert len(open_circuits[0]["task_ids"]) == 2
+
+        # A new ready task for the same profile must NOT be spawned.
+        extra = kb.create_task(conn, title="extra", assignee=profile)
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (extra,))
+        conn.commit()
+
+        res = kb.dispatch_once(conn, spawn_fn=lambda *_: 12345)
+        assert not res.spawned
+        assert res.profile_circuits_open
+        assert any(
+            tid == extra and reason == "profile_protocol_violation_circuit_open"
+            for tid, reason in res.respawn_guarded
+        )
+
+
+def test_profile_protocol_violation_circuit_resets_on_success(
+    kanban_home, monkeypatch,
+):
+    """A successful completion for a profile resets its PV circuit so later
+    tasks can spawn normally."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv(
+        "HERMES_KANBAN_PROFILE_PROTOCOL_VIOLATION_THRESHOLD", "2"
+    )
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        profile = "pv-reset"
+        # One PV is below the threshold.
+        tid = kb.create_task(conn, title="pv-1", assignee=profile)
+        pid = 51000
+        conn.execute(
+            "UPDATE tasks SET status='running', worker_pid=?, "
+            "claim_lock=? WHERE id=?",
+            (pid, f"{host}:w", tid),
+        )
+        conn.commit()
+        _kb._record_worker_exit(pid, 0 << 8)
+        kb.detect_crashed_workers(conn)
+
+        # Complete a task for the same profile — this resets the implicit
+        # PV counter by simply not adding more PVs. The circuit stays closed
+        # because threshold 2 was never reached.
+        success = kb.create_task(conn, title="success", assignee=profile)
+        kb.claim_task(conn, success)
+        kb.complete_task(conn, success, result="done")
+
+        open_circuits = kb._list_open_profile_protocol_violation_circuits(conn)
+        assert not open_circuits
+
+
+def test_profile_protocol_violation_threshold_env_per_profile(
+    kanban_home, monkeypatch,
+):
+    """Profile-specific env var overrides both default and global env."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv(
+        "HERMES_KANBAN_PROFILE_PROTOCOL_VIOLATION_THRESHOLD", "5"
+    )
+    monkeypatch.setenv(
+        "HERMES_KANBAN_PROFILE_PROTOCOL_VIOLATION_THRESHOLD_PVPROFILE", "1"
+    )
+    assert _kb._resolve_profile_protocol_violation_threshold("pvprofile") == 1
+    assert _kb._resolve_profile_protocol_violation_threshold("other") == 5
 
 
 def test_respawn_guard_defers_rate_limited_within_cooldown(

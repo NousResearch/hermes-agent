@@ -1,0 +1,14 @@
+{
+  "name": "agora",
+  "label": "Ágora",
+  "description": "Praça pública local para agentes Hermes deliberarem com telemetria humana.",
+  "icon": "MessagesSquare",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/agora",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

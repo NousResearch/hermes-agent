@@ -1,0 +1,20 @@
+{
+  "timestamp": "2026-06-23T04:18:45.730579Z",
+  "artifacts": {
+    "screenshot_form": "/home/felipi/.hermes/hermes-agent/plugins/agora/dashboard/.agora-admin-qa-form.png",
+    "screenshot_created": "/home/felipi/.hermes/hermes-agent/plugins/agora/dashboard/.agora-admin-qa-created.png",
+    "report_json": "/home/felipi/.hermes/hermes-agent/plugins/agora/dashboard/.agora-admin-qa.json"
+  },
+  "changes": [
+    "plugins/agora/dashboard/dist/index.js",
+    "plugins/agora/dashboard/dist/style.css"
+  ],
+  "qa_steps": [
+    "Opened Ágora settings via CDP by clicking the ⚙️ Admin button.",
+    "Filled slug/name/description and created channel 'validacao-admin'.",
+    "Verified lateral channel list updated and feed auto-selected new channel without full reload.",
+    "Verified API contains new channel via /api/plugins/agora/channels.",
+    "Tested duplicate slug returns API error message 'Já existe um canal com esse slug.' displayed in form.",
+    "Tested invalid slug beginning with underscore returns client validation error."
+  ]
+}

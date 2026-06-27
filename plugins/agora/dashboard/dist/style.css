@@ -1,0 +1,1374 @@
+/*
+ * Ágora — dashboard plugin styles.
+ *
+ * Tema dark-friendly usando as CSS vars do dashboard host.
+ * Layout de três colunas: canais | feed | agentes.
+ */
+
+.agora {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  max-height: 100dvh;
+  overflow: hidden;
+  color: var(--color-foreground);
+  background: var(--color-background);
+}
+
+/* Ágora segue DESIGN.md: nenhum canto arredondado em primitives herdados. */
+.agora, .agora * {
+  border-radius: 0 !important;
+}
+
+.agora--admin-mode .agora-layout {
+  display: none;
+}
+
+.agora-screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.75rem;
+  overflow: hidden;
+}
+
+.agora-screen--admin {
+  background: var(--color-background);
+}
+
+/* ---- Header ---------------------------------------------------------- */
+
+.agora-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 50%, transparent);
+  flex-shrink: 0;
+}
+
+.agora-header-title h1 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.agora-header-title p {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  margin: 0.15rem 0 0;
+}
+
+.agora-header-meta {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+}
+
+.agora-header__toggles {
+  display: none;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.agora-header__admin {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+@media (max-width: 1024px) {
+  .agora-header__toggles {
+    display: flex;
+  }
+
+  .agora-header__admin {
+    margin-left: 0;
+  }
+}
+
+.agora-header-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-foreground);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 0;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.agora-header-btn:hover {
+  background: color-mix(in srgb, var(--color-secondary) 40%, transparent);
+  border-color: var(--color-primary);
+}
+
+.agora-header-btn[aria-pressed="true"],
+.agora-header-btn--active {
+  color: var(--color-primary-foreground, var(--color-card-foreground));
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* ---- Banner ---------------------------------------------------------- */
+
+.agora-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.agora-banner--error {
+  background: color-mix(in srgb, var(--color-destructive, #f85149) 12%, transparent);
+  color: var(--color-destructive, #f85149);
+}
+
+.agora-banner button {
+  padding: 0 0.35rem;
+  min-width: auto;
+  height: auto;
+}
+
+/* ---- Layout ---------------------------------------------------------- */
+
+.agora-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  overflow: hidden;
+}
+
+.agora-sidebar {
+  flex: 0 0 240px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.agora-sidebar--right {
+  flex: 0 0 300px;
+}
+
+.agora-feed {
+  flex: 1 1 auto;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Panel (Card wrapper) ------------------------------------------- */
+
+.agora-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+}
+
+.agora-panel-header {
+  flex-shrink: 0;
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.agora-panel-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.agora-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.agora-panel--feed {
+  position: relative;
+}
+
+/* ---- Empty / loading ------------------------------------------------ */
+
+.agora-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--color-muted-foreground);
+  padding: 1rem;
+  gap: 0.4rem;
+}
+
+.agora-loading-dots {
+  font-size: 0.85rem;
+  color: var(--color-muted-foreground);
+  animation: agora-pulse 1.2s infinite ease-in-out;
+}
+
+@keyframes agora-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* ---- Channels -------------------------------------------------------- */
+
+.agora-channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.agora-channel {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-foreground);
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.agora-channel:hover {
+  background: color-mix(in srgb, var(--color-foreground) 5%, transparent);
+}
+
+.agora-channel--active {
+  background: color-mix(in srgb, var(--color-ring) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-ring) 35%, transparent);
+}
+
+.agora-channel-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.agora-channel-name {
+  font-weight: 600;
+}
+
+.agora-channel-desc {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.agora-channel-badge {
+  align-self: center;
+  flex-shrink: 0;
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.35rem !important;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---- Feed / messages ------------------------------------------------ */
+
+.agora-feed-header {
+  display: flex;
+  align-items: center;
+}
+
+.agora-channel-hash {
+  color: var(--color-muted-foreground);
+  margin-right: 0.15rem;
+}
+
+.agora-panel--feed {
+  position: relative;
+}
+
+.agora-panel--feed .agora-panel-body {
+  overflow: hidden;
+}
+
+.agora-feed-body {
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+.agora-message-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding-right: 0.15rem;
+}
+
+.agora-loading-dots--top,
+.agora-feed-end {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  padding: 0.4rem 0;
+}
+
+.agora-new-messages-btn {
+  position: sticky;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 1rem;
+  border-radius: 0;
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 92%, transparent);
+  color: var(--color-card-foreground);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.agora-new-messages-btn:hover {
+  background: var(--color-card);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+}
+
+.agora-new-messages-btn:active {
+  background: var(--color-secondary);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+/* ---- Messages ---------------------------------------------------------- */
+
+.agora-message {
+  display: flex;
+  gap: 0.55rem;
+  padding: 0.5rem 0.55rem;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--color-foreground) 3%, transparent);
+  border: 1px solid transparent;
+  transition: border-color 120ms ease;
+}
+
+.agora-message:hover {
+  border-color: color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.agora-message--human {
+  background: color-mix(in srgb, var(--color-ring) 8%, transparent);
+}
+
+.agora-message--system {
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 6%, transparent);
+  font-style: italic;
+}
+
+.agora-message-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.agora-message-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  flex-wrap: wrap;
+}
+
+.agora-message-author {
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+.agora-message-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.agora-message-task {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.65rem;
+  background: color-mix(in srgb, var(--color-ring) 12%, transparent);
+  padding: 0.05rem 0.35rem;
+  border-radius: 0;
+}
+
+.agora-message-text {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agora-mention {
+  display: inline;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--color-ring) 18%, transparent);
+  color: var(--color-foreground);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.agora-mention--broadcast {
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 22%, transparent);
+  color: var(--color-warning-foreground, var(--color-foreground));
+}
+
+.agora-mention--generic {
+  background: color-mix(in srgb, var(--color-primary, #6ea8fe) 20%, transparent);
+}
+
+.agora-composer {
+  position: relative;
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 70%, transparent);
+  flex-shrink: 0;
+}
+
+.agora-composer-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.agora-composer-btn {
+  flex-shrink: 0;
+}
+
+.agora-mention-popup {
+  position: absolute;
+  left: 0;
+  right: 4.75rem;
+  bottom: calc(100% + 0.35rem);
+  z-index: 20;
+  background: var(--color-popover, var(--color-card));
+  color: var(--color-popover-foreground, var(--color-foreground));
+  border: 1px solid var(--color-border);
+  border-radius: 0;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.18);
+  max-height: 16rem;
+  overflow-y: auto;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.agora-mention-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0;
+  cursor: pointer;
+  font-size: 0.8rem;
+  outline: none;
+}
+
+.agora-mention-option:hover,
+.agora-mention-option--active {
+  background: color-mix(in srgb, var(--color-primary, #6ea8fe) 18%, transparent);
+  color: var(--color-foreground);
+}
+
+.agora-mention-option-handle {
+  font-weight: 600;
+}
+
+.agora-mention-option-state {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  text-transform: capitalize;
+}
+
+.agora-mention-empty {
+  padding: 0.6rem;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  text-align: center;
+}
+
+/* ---- Agents ---------------------------------------------------------- */
+
+.agora-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.agora-agent-card {
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.agora-agent-card--transition {
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 40%, transparent) !important;
+  animation: agora-pulse-border 1.2s ease-in-out 1;
+}
+
+.agora-agent-card--stale {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--color-muted-foreground) 55%, var(--color-border));
+  background: color-mix(in srgb, var(--color-muted-foreground) 4%, transparent);
+}
+
+@keyframes agora-pulse-border {
+  0% { border-color: var(--color-primary); }
+  50% { border-color: color-mix(in srgb, var(--color-primary) 50%, transparent); }
+  100% { border-color: var(--color-border); }
+}
+
+.agora-agent-card-content {
+  padding: 0.6rem !important;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.agora-agent-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.agora-agent-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.agora-agent-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agora-agent-state-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  transition: color 180ms ease;
+}
+
+.agora-agent-state-row--transition {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.agora-agent-state-row--stale {
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+
+.agora-agent-stale-badge {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0 0.2rem;
+  border: 1px solid color-mix(in srgb, var(--color-muted-foreground) 40%, transparent);
+  color: var(--color-muted-foreground);
+  background: color-mix(in srgb, var(--color-muted-foreground) 8%, transparent);
+}
+
+.agora-agent-state {
+  text-transform: capitalize;
+}
+
+.agora-agent-status-text {
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--color-foreground);
+  transition: color 180ms ease, opacity 180ms ease;
+}
+
+.agora-agent-status-text--stale {
+  color: var(--color-muted-foreground);
+  opacity: 0.85;
+}
+
+.agora-agent-step {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+}
+
+.agora-agent-step-label {
+  font-weight: 500;
+  color: var(--color-foreground);
+}
+
+.agora-agent-meta {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.agora-agent-meta code {
+  background: transparent !important;
+  color: inherit;
+  font-size: inherit;
+}
+
+.agora-agent-pid-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0.05rem 0.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.agora-agent-pid-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  border-color: var(--color-primary);
+}
+
+.agora-agent-pid-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.agora-agent-pid-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.agora-agent-pid-btn code {
+  background: transparent !important;
+  color: inherit;
+}
+
+.agora-agent-heartbeat {
+  font-size: 0.65rem;
+  color: var(--color-muted-foreground);
+  font-variant-numeric: tabular-nums;
+  transition: color 180ms ease;
+}
+
+.agora-agent-heartbeat--stale {
+  color: var(--color-destructive, #f85149);
+}
+
+/* ---- Avatar + status dot -------------------------------------------- */
+
+.agora-avatar {
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--color-ring) 22%, transparent);
+  color: var(--color-foreground);
+  border: 1px solid color-mix(in srgb, var(--color-ring) 40%, transparent);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.agora-avatar--human {
+  background: color-mix(in srgb, var(--color-primary, #6ea8fe) 22%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary, #6ea8fe) 40%, transparent);
+}
+
+.agora-status-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 0;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 20%, transparent);
+}
+
+/* ---- Agent notification bell + panel -------------------------------- */
+
+.agora-agent-bell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  padding: 0;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.agora-agent-bell:hover {
+  background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
+  color: var(--color-foreground);
+}
+
+.agora-agent-bell--active {
+  background: color-mix(in srgb, var(--color-ring) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-ring) 35%, transparent);
+  color: var(--color-foreground);
+}
+
+.agora-agent-badge {
+  position: absolute;
+  top: -0.2rem;
+  right: -0.2rem;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem !important;
+  font-size: 0.6rem !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0;
+  background: var(--color-destructive, #f85149) !important;
+  color: var(--color-destructive-foreground, #fff) !important;
+  border: 1px solid var(--color-background, #0d1117) !important;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.agora-agent-notifications {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.agora-notifications-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.agora-notifications-title-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.agora-notifications-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.agora-notifications-owner {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--color-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agora-notifications-all-btn {
+  padding: 0 0.35rem !important;
+  height: auto !important;
+  font-size: 0.65rem !important;
+}
+
+.agora-notifications-loading,
+.agora-notifications-empty {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  padding: 0.4rem 0;
+}
+
+.agora-notification-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding-right: 0.1rem;
+  outline: none;
+}
+
+.agora-notification-list:focus-visible,
+.agora-notification-list:focus {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ring) 50%, transparent);
+  border-radius: 0;
+}
+
+.agora-notification {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--color-ring) 8%, transparent);
+  border: 1px solid transparent;
+  transition: border-color 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+
+.agora-notification--read {
+  background: color-mix(in srgb, var(--color-foreground) 3%, transparent);
+  opacity: 0.6;
+}
+
+.agora-notification--recent {
+  animation: agora-notification-pop 1.2s ease-in-out 1;
+}
+
+.agora-notification--unread {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+
+@keyframes agora-notification-pop {
+  0% { background: color-mix(in srgb, var(--color-primary) 18%, transparent); }
+  100% { background: color-mix(in srgb, var(--color-ring) 8%, transparent); }
+}
+
+.agora-notification:hover {
+  border-color: color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.agora-notification--read .agora-notification-text {
+  color: var(--color-muted-foreground);
+}
+
+.agora-notification-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.agora-notification-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.65rem;
+  color: var(--color-muted-foreground);
+}
+
+.agora-notification-author {
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+.agora-notification-check {
+  color: var(--color-success, #3fb97d);
+  font-weight: 700;
+}
+
+.agora-notification-text {
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--color-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agora-notification-btn {
+  flex-shrink: 0;
+  padding: 0 0.4rem !important;
+  height: auto !important;
+  font-size: 0.65rem !important;
+}
+
+.agora-notification-read-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--color-success, #3fb97d) 12%, transparent);
+  color: var(--color-success, #3fb97d);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+/* ---- Responsive ------------------------------------------------------ */
+
+/* show header toggles on narrow/medium screens (<=1024) */
+@media (max-width: 1024px) {
+  .agora-header__toggles {
+    display: flex;
+  }
+}
+
+/* Tablet (768px-1024px): sidebars become overlay drawers so the feed never
+   shrinks below 320px. Only one sidebar is typically visible at a time. */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .agora-layout {
+    position: relative;
+    flex-direction: row;
+    overflow: hidden;
+    gap: 0.5rem;
+    padding: 0.5rem;
+  }
+
+  .agora-sidebar {
+    position: absolute;
+    top: 0.5rem;
+    bottom: 0.5rem;
+    display: none;
+    z-index: 20;
+    width: 260px;
+    min-height: auto;
+    max-height: none;
+    flex: 0 0 auto;
+  }
+
+  .agora-sidebar--left {
+    left: 0.5rem;
+  }
+
+  .agora-sidebar--right {
+    right: 0.5rem;
+    width: 280px;
+  }
+
+  .agora-sidebar--visible {
+    display: flex;
+  }
+
+  .agora-sidebar--hidden {
+    display: none;
+  }
+
+  .agora-feed {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 320px;
+  }
+}
+
+/* Mobile (<=768px): stacked layout, sidebars become expandable panels. */
+@media (max-width: 768px) {
+  .agora-screen {
+    padding: 0.5rem;
+  }
+
+  .agora-admin-screen__body {
+    flex-direction: column;
+  }
+
+  .agora-admin-screen {
+    border: none;
+  }
+
+  .agora-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem;
+  }
+
+  .agora-header-title h1 {
+    font-size: 1rem;
+  }
+
+  .agora-header-title p {
+    display: none;
+  }
+
+  .agora-header-meta {
+    order: 3;
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .agora-header__toggles {
+    order: 2;
+    margin-left: auto;
+  }
+
+  .agora-layout {
+    flex-direction: column;
+    overflow-y: auto;
+    gap: 0.5rem;
+    padding: 0.5rem;
+  }
+
+  .agora-sidebar {
+    display: none;
+    position: relative;
+    top: auto;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    width: 100%;
+    min-height: 220px;
+    max-height: 45vh;
+    flex: 0 0 auto;
+  }
+
+  .agora-sidebar--visible {
+    display: flex;
+  }
+
+  .agora-sidebar--hidden {
+    display: none;
+  }
+
+  .agora-feed {
+    width: 100%;
+    min-width: 320px;
+    min-height: 320px;
+    flex: 1 1 auto;
+  }
+}
+
+/* Very narrow devices: hide secondary header info. */
+@media (max-width: 540px) {
+  .agora-header-meta {
+    display: none;
+  }
+}
+
+/* ---- Focus visibility ----------------------------------------------- */
+
+.agora button:focus-visible,
+.agora [role="button"]:focus-visible,
+.agora input:focus-visible,
+.agora [role="tab"]:focus-visible,
+.agora [role="tablist"]:focus-visible,
+.agora .agora-notification-list:focus-visible,
+.agora .agora-message:focus-visible,
+.agora .agora-message-list:focus-visible {
+  outline: 2px solid var(--color-ring, #6ea8fe);
+  outline-offset: 2px;
+}
+
+.agora .agora-channel:focus-visible,
+.agora .agora-channel:focus,
+.agora .agora-agent-bell:focus-visible,
+.agora .agora-agent-bell:focus,
+.agora .agora-notification:focus-visible,
+.agora .agora-notification:focus {
+  outline: 2px solid var(--color-ring, #6ea8fe);
+  outline-offset: 1px;
+}
+
+.agora .agora-notifications-all-btn:focus-visible,
+.agora .agora-notifications-all-btn:focus,
+.agora .agora-notification-btn:focus-visible,
+.agora .agora-notification-btn:focus {
+  outline: 2px solid var(--color-ring, #6ea8fe);
+  outline-offset: 2px;
+}
+
+.agora .agora-message--system:focus-visible {
+  outline-color: var(--color-warning, #d4b348);
+}
+
+.agora .agora-composer-input:focus-visible {
+  outline: 2px solid var(--color-ring, #6ea8fe);
+  outline-offset: 0;
+}
+
+/* ---- Connection badge ------------------------------------------------ */
+
+.agora-connection-badge {
+  text-transform: uppercase;
+  font-size: 0.6rem !important;
+  letter-spacing: 0.03em;
+  padding: 0.15rem 0.45rem !important;
+  height: auto !important;
+  min-height: 1.2rem;
+}
+
+.agora-connection-badge--online {
+  background: color-mix(in srgb, var(--color-success, #3fb97d) 18%, transparent) !important;
+  color: var(--color-success, #3fb97d) !important;
+  border-color: color-mix(in srgb, var(--color-success, #3fb97d) 40%, transparent) !important;
+}
+
+.agora-connection-badge--offline {
+  background: color-mix(in srgb, var(--color-destructive, #f85149) 18%, transparent) !important;
+  color: var(--color-destructive, #f85149) !important;
+  border-color: color-mix(in srgb, var(--color-destructive, #f85149) 40%, transparent) !important;
+}
+
+.agora-connection-badge--reconnecting {
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 18%, transparent) !important;
+  color: var(--color-warning, #d4b348) !important;
+  border-color: color-mix(in srgb, var(--color-warning, #d4b348) 40%, transparent) !important;
+  animation: agora-pulse 1.2s infinite ease-in-out;
+}
+
+/* ---- Offline composer warning --------------------------------------- */
+
+.agora-composer-offline {
+  flex-shrink: 0;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--color-warning, #d4b348);
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 8%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--color-warning, #d4b348) 25%, transparent);
+  text-align: center;
+}
+
+/* ---- Pending messages ------------------------------------------------ */
+
+.agora-message--pending {
+  opacity: 0.7;
+  border: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.agora-message--pending .agora-message-time {
+  font-style: italic;
+}
+
+.agora-pending-spinner {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid color-mix(in srgb, var(--color-muted-foreground) 30%, transparent);
+  border-top-color: var(--color-muted-foreground, #888);
+  border-radius: 0;
+  animation: agora-spin 0.8s linear infinite;
+}
+
+@keyframes agora-spin {
+  to { transform: rotate(360deg); }
+}
+
+.agora-pending-retry {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 0 0.4rem !important;
+  height: auto !important;
+  font-size: 0.75rem !important;
+}
+
+/* ---- Admin screen (channel management) ------------------------------- */
+
+.agora-admin-screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+.agora-admin-screen__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-card);
+  flex-shrink: 0;
+}
+
+.agora-admin-screen__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.agora-admin-screen__eyebrow {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+  margin: 0;
+}
+
+.agora-admin-screen__title {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--color-foreground);
+  line-height: 1.2;
+}
+
+.agora-admin-screen__subtitle {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.agora-admin-screen__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: row;
+  gap: 1.5rem;
+  background: var(--color-card);
+}
+
+.agora-admin-section {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.agora-admin-section__title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--color-foreground);
+}
+
+.agora-admin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: none;
+}
+
+.agora-admin-form-error {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--color-destructive, #f85149) 12%, transparent);
+  color: var(--color-destructive, #f85149);
+}
+
+.agora-admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.agora-admin-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+}
+
+.agora-admin-hint {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+}
+
+.agora-admin-channel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.agora-admin-channel-item {
+  padding: 0.55rem 0.65rem;
+  border-radius: 0;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.agora-admin-channel-item__main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.agora-admin-channel-item__name {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.agora-admin-channel-item__slug {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.agora-admin-channel-item__desc {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  .agora-admin-screen__body {
+    padding: 0.75rem;
+  }
+}

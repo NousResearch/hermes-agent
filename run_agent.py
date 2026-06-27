@@ -5008,7 +5008,7 @@ class AIAgent:
             else:
                 requested_effort = supported_efforts[0]
 
-        return {"effort": requested_effort}
+        return {"effort": requested_effort, "summary": "auto"}
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_assistant_message``."""

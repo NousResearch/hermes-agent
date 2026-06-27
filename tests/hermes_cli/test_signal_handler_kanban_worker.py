@@ -202,11 +202,13 @@ def test_sigterm_without_kanban_task_env_uses_keyboard_interrupt_path():
 
 def test_real_handler_uses_os_exit_for_kanban_workers():
     """Source-level invariant: cli.py's _signal_handler_q must call
-    os._exit(0) when HERMES_KANBAN_TASK is set.
+    os._exit(0) when HERMES_KANBAN_TASK is set, and must release the
+    running kanban task before exiting so clean shutdown isn't classified
+    as a protocol violation.
 
     Catches the case where someone refactors the handler and accidentally
-    drops the env-gated exit, restoring the bug. Reading cli.py directly is
-    cheap and avoids the heavy CLI import.
+    drops the env-gated exit, restoring the original stuck-worker bug, or
+    drops the release call, restoring the protocol-violation storm.
     """
     import pathlib
 
@@ -217,8 +219,8 @@ def test_real_handler_uses_os_exit_for_kanban_workers():
     # Locate the handler body.
     start = src.find("def _signal_handler_q(signum, frame):")
     assert start != -1, "cli.py is missing _signal_handler_q"
-    # Look ahead for the env-gated os._exit call within ~80 lines.
-    body = src[start : start + 4000]
+    # Look ahead for the env-gated os._exit call within the handler.
+    body = src[start : start + 5000]
     assert "HERMES_KANBAN_TASK" in body, (
         "_signal_handler_q must gate its kanban-worker exit path on "
         "HERMES_KANBAN_TASK — see #28181"
@@ -227,4 +229,9 @@ def test_real_handler_uses_os_exit_for_kanban_workers():
         "_signal_handler_q must call os._exit(0) for kanban workers — "
         "raising KeyboardInterrupt orphans the process when non-daemon "
         "threads are alive (see #28181)"
+    )
+    assert "release_running_task_on_external_termination" in body, (
+        "_signal_handler_q must call release_running_task_on_external_termination "
+        "before os._exit(0) so SIGTERM/SIGHUP on workers is not classified as a "
+        "protocol violation"
     )

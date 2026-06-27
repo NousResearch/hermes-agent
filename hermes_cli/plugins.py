@@ -192,6 +192,10 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Fired when N consecutive protocol violations are detected for a single
+    # profile. Kwargs: profile: str, task_ids: list[str], threshold: int,
+    # opened_at: int. Observers should alert operators (e.g. #incidentes).
+    "kanban_profile_circuit_open",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

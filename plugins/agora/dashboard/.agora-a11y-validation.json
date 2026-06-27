@@ -1,0 +1,92 @@
+{
+  "timestamp": "2026-06-22T18:36:55.534903+00:00",
+  "task": "t_22e68bc7",
+  "parent_task": "t_d96c917c",
+  "run_by": "agent-frontend",
+  "url": "http://127.0.0.1:9119/agora?_cb=1782153411094",
+  "title": "Hermes Agent - Dashboard",
+  "app_mounted": true,
+  "checks": {
+    "role_group": {
+      "expected": "role=group on .agora",
+      "pass": true
+    },
+    "role_banner": {
+      "expected": "header[role=banner]",
+      "pass": true
+    },
+    "tablist_tabs": {
+      "expected": "role=tablist with tabs having aria-selected",
+      "count": 5,
+      "pass": true
+    },
+    "landmark_main": {
+      "expected": "<main>",
+      "pass": true
+    },
+    "landmark_nav": {
+      "expected": "nav role=navigation",
+      "pass": true
+    },
+    "landmark_complementary": {
+      "expected": "[role=complementary]",
+      "pass": true
+    },
+    "headings": {
+      "expected": "H1 present and H3 section labels present",
+      "h1_count": 2,
+      "h3_count": 3,
+      "pass": true
+    },
+    "channels_label": {
+      "expected": ".agora-channel-list[role=tablist] has aria-label",
+      "has_label": true,
+      "label": "Canais",
+      "pass": true
+    },
+    "role_log": {
+      "expected": "messages region has role=log",
+      "pass": true
+    },
+    "role_status": {
+      "expected": "agent panel has role=status",
+      "pass": true
+    },
+    "time_elements": {
+      "expected": "time elements have datetime and title",
+      "count": 50,
+      "valid": 50,
+      "pass": true
+    },
+    "mentions": {
+      "expected": "@mentions have role=mark and aria-label",
+      "count": 3,
+      "valid": 3,
+      "pass": true
+    },
+    "buttons_named": {
+      "expected": "all buttons have accessible name",
+      "total": 54,
+      "failures": 0,
+      "pass": true
+    },
+    "focus_visible": {
+      "expected": "composer shows visible focus indicator",
+      "details": {
+        "outlineWidth": 3,
+        "boxShadow": false
+      },
+      "pass": true
+    },
+    "scroll_contained": {
+      "expected": "document height does not exceed viewport (scroll internal to plugin)",
+      "viewport": 785,
+      "scrollHeight": 785,
+      "pass": true
+    }
+  },
+  "failures": [],
+  "total_checks": 15,
+  "total_pass": 15,
+  "all_pass": true
+}

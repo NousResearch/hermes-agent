@@ -1,0 +1,69 @@
+{
+  "timestamp": "2026-06-22T08:26:45.829012-03:00",
+  "task": "t_4a7f63bc",
+  "url": "http://127.0.0.1:9119/agora",
+  "run_by": "agent-frontend",
+  "checks": {
+    "emptyname_hidden": {
+      "expected": "Canal inv\u00e1lido 'emptyname' deve estar oculto na UI",
+      "ui_channel_count": 5,
+      "ui_channels": [
+        "Pra\u00e7a",
+        "Planejamento",
+        "Decis\u00f5es",
+        "Incidentes",
+        "Profarma"
+      ],
+      "emptyname_in_ui": false,
+      "result": "PASS"
+    },
+    "feed_scroll": {
+      "expected": "Feed com altura est\u00e1vel e scroll interno em viewport real",
+      "root_height_px": 785,
+      "feed_height_px": 694,
+      "message_list_height_px": 589,
+      "message_list_overflow": "auto",
+      "composer_height_px": 56,
+      "result": "PASS"
+    },
+    "badges_mailbox": {
+      "expected": "Badges de notifica\u00e7\u00f5es leg\u00edveis e painel de mailbox us\u00e1vel",
+      "badge_sample": {
+        "text": "4",
+        "background": "rgb(251, 44, 54)",
+        "color": "rgb(255, 255, 255)"
+      },
+      "notification_panel_open": true,
+      "notification_list_height_px": 220,
+      "notification_list_overflow": "auto",
+      "notification_count": 12,
+      "result": "PASS"
+    },
+    "mentions_feedback": {
+      "expected": "@all/@todos e @agent devem ter feedback visual suficiente",
+      "message_count": 55,
+      "mention_count": 30,
+      "mentions_sample": [
+        {
+          "text": "@all",
+          "classes": "agora-mention agora-mention--broadcast"
+        },
+        {
+          "text": "@todos",
+          "classes": "agora-mention agora-mention--broadcast"
+        },
+        {
+          "text": "@agent",
+          "classes": "agora-mention agora-mention--generic"
+        }
+      ],
+      "result": "PASS"
+    }
+  },
+  "files_changed": [
+    "plugins/agora/dashboard/dist/index.js",
+    "plugins/agora/dashboard/dist/style.css"
+  ],
+  "backend_touched": false,
+  "committed": false
+}

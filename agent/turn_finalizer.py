@@ -478,4 +478,78 @@ def finalize_turn(
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
 
+    # Kanban worker safety net: if a dispatcher-spawned worker produced a
+    # clean text response (completed normally) but never called
+    # kanban_complete or kanban_block, auto-block the task before the
+    # process exits. This prevents the dispatcher from classifying the
+    # subsequent rc=0 exit as a protocol violation and burning the task's
+    # failure budget with a gave_up event.
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        try:
+            _auto_block_if_kanban_worker_finished_without_signal(
+                completed=completed,
+                interrupted=interrupted,
+                failed=failed,
+            )
+        except Exception:
+            logger.debug("kanban safety-net auto-block failed", exc_info=True)
+
     return result
+
+
+def _auto_block_if_kanban_worker_finished_without_signal(
+    *,
+    completed: bool,
+    interrupted: bool,
+    failed: bool,
+) -> None:
+    """Block a running kanban task when its worker exits cleanly without a terminal lifecycle call.
+
+    Called at the end of ``finalize_turn`` for normal text-response exits.
+    It is a no-op when:
+      * the process is not a dispatcher-spawned kanban worker,
+      * the turn was interrupted or failed,
+      * the task has already left ``running`` (e.g. the agent called
+        kanban_complete/kanban_block, or a prior path already recorded a
+        terminal outcome).
+    """
+    if not completed or interrupted or failed:
+        return
+
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    if not tid or not run_id_raw:
+        return
+    try:
+        run_id = int(run_id_raw)
+    except (TypeError, ValueError):
+        return
+
+    from hermes_cli import kanban_db as _kb
+
+    conn = _kb.connect()
+    try:
+        task = _kb.get_task(conn, tid)
+        if task is None or task.status != "running" or getattr(task, "current_run_id", None) != run_id:
+            return
+        _kb.block_task(
+            conn,
+            tid,
+            reason=(
+                "automated safety block: worker finished its turn without "
+                "calling kanban_complete or kanban_block — please review and unblock"
+            ),
+            expected_run_id=run_id,
+        )
+        from agent.conversation_loop import logger
+        logger.warning(
+            "Kanban safety net auto-blocked task %s (run %s) because the worker "
+            "returned a clean text response without a terminal lifecycle call.",
+            tid,
+            run_id,
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

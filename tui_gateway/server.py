@@ -8426,7 +8426,39 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             result = agent.run_conversation(run_message, **run_kwargs)
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
-                if _restore is None:
+                # Restore the model the user was on before the /moa one-shot.
+                # The one-shot did a real in-place agent.switch_model() to MoA
+                # (#53444), so undoing it must go back through the switch path —
+                # resetting session["model_override"] alone would leave the live
+                # agent's client pinned to MoA for the next turn.
+                if isinstance(_restore, dict):
+                    _prev_override = _restore.get("override")
+                    _prev_model = _restore.get("model")
+                    _prev_provider = _restore.get("provider")
+                    if _prev_override is None:
+                        session.pop("model_override", None)
+                    else:
+                        session["model_override"] = _prev_override
+                    if _prev_model:
+                        _raw = (
+                            f"{_prev_model} --provider {_prev_provider}"
+                            if _prev_provider
+                            else _prev_model
+                        )
+                        try:
+                            _apply_model_switch(
+                                sid,
+                                session,
+                                _raw,
+                                confirm_expensive_model=False,
+                                pin_session_override=bool(_prev_override),
+                            )
+                        except Exception as _moa_restore_exc:
+                            logger.warning(
+                                "MoA one-shot model restore failed: %s",
+                                _moa_restore_exc,
+                            )
+                elif _restore is None:
                     session.pop("model_override", None)
                 else:
                     session["model_override"] = _restore
@@ -11205,38 +11237,54 @@ def _(rid, params: dict) -> dict:
 
         return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
     if name == "moa":
+        # /moa is one-shot sugar only: run a single prompt through the default
+        # MoA preset, then restore the prior model. To *switch* to a MoA preset
+        # for the rest of the session, pick it from the model picker (MoA
+        # presets surface as a virtual "Mixture of Agents" provider).
         try:
-            from hermes_cli.moa_config import (
-                build_moa_turn_prompt, exact_moa_preset_name, moa_usage, normalize_moa_config
-            )
+            from hermes_cli.moa_config import moa_usage, normalize_moa_config
 
-            moa_cfg = normalize_moa_config(_load_cfg().get("moa") or {})
-            matched = exact_moa_preset_name(moa_cfg, arg) if arg else moa_cfg["default_preset"]
-            if matched:
-                if not session:
-                    return _err(rid, 4001, "no active session")
-                session["model_override"] = {
-                    "model": matched,
-                    "provider": "moa",
-                    "base_url": "moa://local",
-                    "api_key": "moa-virtual-provider",
-                    "api_mode": "chat_completions",
-                }
-                session["moa_active_preset"] = matched
-                return _ok(rid, {"type": "exec", "output": f"Model switched to MoA preset: {matched}."})
             if not arg:
                 return _err(rid, 4004, moa_usage())
             if not session:
                 return _err(rid, 4001, "no active session")
+            sid = params.get("session_id", "")
+            moa_cfg = normalize_moa_config(_load_cfg().get("moa") or {})
             preset = moa_cfg["default_preset"]
-            session["moa_one_shot_restore"] = session.get("model_override")
-            session["model_override"] = {
-                "model": preset,
-                "provider": "moa",
-                "base_url": "moa://local",
-                "api_key": "moa-virtual-provider",
-                "api_mode": "chat_completions",
+            # Record the live model identity so it can be restored after the
+            # one-shot turn, then swap the agent's client in place (#53444:
+            # setting session["model_override"] alone never switched the
+            # already-built agent, so the turn silently ran on the old model).
+            agent = session.get("agent")
+            session["moa_one_shot_restore"] = {
+                "override": session.get("model_override"),
+                "model": getattr(agent, "model", None) if agent else None,
+                "provider": getattr(agent, "provider", None) if agent else None,
             }
+            if agent is not None:
+                # Live agent: swap its client in place so THIS turn runs MoA.
+                try:
+                    _apply_model_switch(
+                        sid,
+                        session,
+                        f"{preset} --provider moa",
+                        confirm_expensive_model=False,
+                        pin_session_override=True,
+                    )
+                except Exception as exc:
+                    session.pop("moa_one_shot_restore", None)
+                    return _err(rid, 5030, f"moa unavailable: {exc}")
+            else:
+                # No agent built yet (lazy/fresh session): the override is
+                # consumed by the first build, so the turn runs MoA without an
+                # in-place switch.
+                session["model_override"] = {
+                    "provider": "moa",
+                    "model": preset,
+                    "base_url": "moa://local",
+                    "api_key": "moa-virtual-provider",
+                    "api_mode": "chat_completions",
+                }
             return _ok(
                 rid,
                 {

@@ -1,6 +1,10 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 
-import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
+import {
+  dedupeGeneratedImageEchoesInParts,
+  generatedImageEchoSources,
+  stripGeneratedImageEchoes
+} from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { parseTodos } from '@/lib/todos'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
@@ -34,6 +38,7 @@ export type GatewayEventPayload = {
   context?: string
   input?: unknown
   preview?: string
+  response_previewed?: boolean
   result?: unknown
   summary?: string
   error?: string | boolean
@@ -121,9 +126,52 @@ export function chatMessageText(message: ChatMessage): string {
     .join('')
 }
 
+export function completeAssistantTextParts(
+  parts: ChatMessagePart[],
+  finalText: string,
+  options: { preserveExistingText?: boolean } = {}
+): ChatMessagePart[] {
+  if (options.preserveExistingText && parts.some(part => part.type === 'text')) {
+    return parts
+  }
+
+  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
+
+  const visibleFinalText = stripGeneratedImageEchoes(
+    renderMediaTags(finalText).trim(),
+    generatedImageEchoSources(parts)
+  ).trim()
+
+  const dedupeReference = normalize(visibleFinalText)
+
+  const kept = parts.filter(part => {
+    if (part.type === 'text') {
+      return false
+    }
+
+    if (part.type !== 'reasoning' || !dedupeReference) {
+      return true
+    }
+
+    const r = normalize(part.text)
+
+    return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
+  })
+
+  return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
+}
+
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+const VERIFY_ON_STOP_NUDGE_RE = /^\[System: You edited code in this turn, but the workspace does not have fresh passing verification evidence yet\./
+
+function isSyntheticVerificationNudge(message: SessionMessage, displayContent: string): boolean {
+  return Boolean(
+    message.role === 'user' &&
+      (message._verification_stop_synthetic || VERIFY_ON_STOP_NUDGE_RE.test(displayContent.trim()))
+  )
+}
 
 function textFromUnknown(value: unknown, depth = 0): string {
   if (typeof value === 'string') {
@@ -759,6 +807,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const content = message.content || message.text || message.context || message.name
     const displayContent = displayContentForMessage(message.role, content)
+
+    if (isSyntheticVerificationNudge(message, displayContent)) {
+      return
+    }
+
     const parts: ChatMessagePart[] = []
 
     const reasoning =

@@ -8496,6 +8496,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 status = "complete"
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            if isinstance(result, dict) and result.get("response_previewed"):
+                payload["response_previewed"] = True
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

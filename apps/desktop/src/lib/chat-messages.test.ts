@@ -5,6 +5,7 @@ import {
   appendAssistantTextPart,
   appendReasoningPart,
   chatMessageText,
+  completeAssistantTextParts,
   preserveLocalAssistantErrors,
   renderMediaTags,
   toChatMessages,
@@ -82,6 +83,33 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('@file:tsconfig.tsbuildinfo\n\nwhat is this file')
   })
 
+  it('hides synthetic verify-on-stop nudges when hydrating stored messages', () => {
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Long useful summary that was already streamed to the user.',
+        timestamp: 1
+      },
+      {
+        role: 'user',
+        content:
+          '[System: You edited code in this turn, but the workspace does not have fresh passing verification evidence yet.]',
+        timestamp: 2
+      },
+      {
+        role: 'assistant',
+        content: 'Fresh verification passed.',
+        timestamp: 3
+      }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['assistant', 'assistant'])
+    expect(messages.map(chatMessageText)).toEqual([
+      'Long useful summary that was already streamed to the user.',
+      'Fresh verification passed.'
+    ])
+  })
+
   it('renders MEDIA tags as assistant attachment links', () => {
     const [message] = toChatMessages([
       {
@@ -154,6 +182,31 @@ describe('toChatMessages', () => {
     ])
 
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
+  })
+})
+
+describe('completeAssistantTextParts', () => {
+  it('preserves streamed text when completion belongs to a previewed verification follow-up', () => {
+    const parts = [
+      { text: 'Long useful summary that is already visible.', type: 'text' as const },
+      { text: 'Reasoning summary', type: 'reasoning' as const }
+    ]
+
+    const completed = completeAssistantTextParts(parts, 'Fresh verification passed.', {
+      preserveExistingText: true
+    })
+
+    expect(completed).toEqual(parts)
+  })
+
+  it('replaces streamed text with canonical final text for normal completions', () => {
+    const completed = completeAssistantTextParts(
+      [{ text: 'streamed draft', type: 'text' }],
+      'canonical final',
+      { preserveExistingText: false }
+    )
+
+    expect(completed).toEqual([{ text: 'canonical final', type: 'text' }])
   })
 })
 

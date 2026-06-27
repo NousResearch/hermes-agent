@@ -4678,10 +4678,12 @@ def run_conversation(
                     _verify_nudge = None
 
                 if _verify_nudge:
+                    from agent.verification_stop import mark_verify_on_stop_response_for_followup
+
                     agent._verification_stop_nudges = (
                         getattr(agent, "_verification_stop_nudges", 0) + 1
                     )
-                    final_msg["finish_reason"] = "verification_required"
+                    mark_verify_on_stop_response_for_followup(agent, final_msg)
                     messages.append(final_msg)
                     # Keep the attempted final answer in model history so the
                     # synthetic user nudge preserves role alternation, but do

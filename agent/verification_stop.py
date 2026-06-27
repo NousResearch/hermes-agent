@@ -237,4 +237,34 @@ def build_verify_on_stop_nudge(
     )
 
 
-__all__ = ["build_verify_on_stop_nudge", "verify_on_stop_enabled"]
+def mark_verify_on_stop_response_for_followup(agent: Any, final_msg: dict[str, Any]) -> None:
+    """Mark an assistant response that will be followed by verification.
+
+    The Desktop/TUI gateway streams assistant deltas before the conversation loop
+    knows whether verify-on-stop will continue the turn. When that text was
+    actually delivered, treat it as a previewed response so the UI preserves it
+    instead of replacing it with the later verification summary. Non-streaming
+    callers still need the finish_reason marker in history, but must not suppress
+    their final verification answer as "already previewed".
+    """
+    final_msg["finish_reason"] = "verification_required"
+    was_streamed = False
+    content = final_msg.get("content")
+    try:
+        checker = getattr(agent, "_interim_content_was_streamed", None)
+        if callable(checker):
+            was_streamed = bool(checker(content or ""))
+    except Exception:
+        was_streamed = False
+    if was_streamed:
+        try:
+            setattr(agent, "_response_was_previewed", True)
+        except Exception:
+            pass
+
+
+__all__ = [
+    "build_verify_on_stop_nudge",
+    "mark_verify_on_stop_response_for_followup",
+    "verify_on_stop_enabled",
+]

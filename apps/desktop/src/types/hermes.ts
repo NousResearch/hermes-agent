@@ -369,9 +369,11 @@ export interface SessionInfo {
 }
 
 export interface SessionMessage {
+  _verification_stop_synthetic?: boolean
   codex_reasoning_items?: unknown
   content: unknown
   context?: unknown
+  finish_reason?: string
   name?: string
   reasoning?: null | string
   reasoning_content?: null | string

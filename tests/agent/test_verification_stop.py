@@ -10,6 +10,7 @@ from agent.verification_evidence import (
 )
 from agent.verification_stop import (
     build_verify_on_stop_nudge,
+    mark_verify_on_stop_response_for_followup,
     verify_on_stop_enabled,
 )
 
@@ -261,3 +262,35 @@ def test_nudge_attempts_are_bounded(tmp_path, monkeypatch):
         attempts=2,
         max_attempts=2,
     ) is None
+
+
+def test_verification_followup_marks_already_streamed_response_previewed():
+    class Agent:
+        _response_was_previewed = False
+
+        def _interim_content_was_streamed(self, content):
+            return content == "Useful streamed summary"
+
+    agent = Agent()
+    final_msg = {"role": "assistant", "content": "Useful streamed summary"}
+
+    mark_verify_on_stop_response_for_followup(agent, final_msg)
+
+    assert agent._response_was_previewed is True
+    assert final_msg["finish_reason"] == "verification_required"
+
+
+def test_verification_followup_does_not_mark_unstreamed_response_previewed():
+    class Agent:
+        _response_was_previewed = False
+
+        def _interim_content_was_streamed(self, content):
+            return False
+
+    agent = Agent()
+    final_msg = {"role": "assistant", "content": "Useful non-streamed summary"}
+
+    mark_verify_on_stop_response_for_followup(agent, final_msg)
+
+    assert agent._response_was_previewed is False
+    assert final_msg["finish_reason"] == "verification_required"

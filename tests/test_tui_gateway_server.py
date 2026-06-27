@@ -2419,6 +2419,66 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_message_complete_marks_previewed_response(monkeypatch):
+    class _Agent:
+        session_id = "test-session"
+        model = "x"
+        provider = "openrouter"
+        base_url = ""
+        api_key = ""
+        _cached_system_prompt = ""
+
+        def run_conversation(self, prompt, **kw):
+            return {
+                "final_response": "Fresh verification passed.",
+                "messages": [{"role": "assistant", "content": "Fresh verification passed."}],
+                "response_previewed": True,
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **kw):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    emits = []
+    session = {
+        "agent": _Agent(),
+        "session_key": "test-session",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        "pending_title": None,
+    }
+
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_emit", lambda *args, **kw: emits.append(args))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    try:
+        server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"}}
+        )
+        complete_calls = [a for a in emits if a[0] == "message.complete"]
+        assert len(complete_calls) == 1
+        assert complete_calls[0][2]["response_previewed"] is True
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_yolo_toggles_session_scope():
     from tools.approval import clear_session, is_session_yolo_enabled
 

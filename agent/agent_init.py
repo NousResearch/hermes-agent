@@ -1630,8 +1630,10 @@ def init_agent(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
             f"by Hermes Agent.  Choose a model with at least "
-            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
-            f"model.context_length in config.yaml to override."
+            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context.  If your server "
+            f"reports a window smaller than the model's true window, set "
+            f"model.context_length in config.yaml to the real value "
+            f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
 
     # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).

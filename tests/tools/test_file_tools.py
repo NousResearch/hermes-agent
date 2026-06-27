@@ -505,6 +505,10 @@ class TestPatchSchemaShape:
         for name in ("path", "old_string", "new_string"):
             assert "REQUIRED when mode='replace'" in props[name]["description"]
         assert "REQUIRED when mode='patch'" in props["patch"]["description"]
+        assert "mode='verified'" in props["patch"]["description"]
+        assert "verified" in props["mode"]["enum"]
+        assert "hashline" not in props["mode"]["enum"]
+        assert "patch_text" not in props
 
     def test_no_anyof_required_stays_mode_only(self):
         # anyOf/oneOf at parameters level break Anthropic, Fireworks, and the

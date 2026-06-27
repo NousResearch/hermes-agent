@@ -71,7 +71,11 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
 
     assert exc.value.code == 0
     mock_install.assert_called_once_with("/usr/bin/npm", root, capture_output=False, env=None)
-    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
+    # macOS local --dir packs append --config.mac.timestamp=none (offline-safe);
+    # see test_gui_macos_local_pack_disables_codesign_timestamp.
+    assert mock_run.call_args_list[0].args[0] == [
+        "/usr/bin/npm", "run", "pack", "--", "--config.mac.timestamp=none"
+    ]
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
@@ -244,6 +248,66 @@ def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch)
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     assert mock_run.call_args_list[1].args[0] == ["/usr/bin/npm", "exec", "--", "electron", "."]
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
+
+
+def test_gui_macos_local_pack_disables_codesign_timestamp(tmp_path, monkeypatch):
+    """Local macOS ``--dir`` packs append ``--config.mac.timestamp=none`` so
+    codesign skips per-file network timestamping (offline-safe, faster).
+    Notarized release builds (``dist:mac*``) never run this ``pack`` path."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="darwin")
+
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic",
+               return_value=subprocess.CompletedProcess(["npm", "ci"], 0)), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    assert mock_run.call_args_list[0].args[0] == [
+        "/usr/bin/npm", "run", "pack", "--", "--config.mac.timestamp=none"
+    ]
+
+
+def test_gui_non_darwin_local_pack_keeps_default_timestamp(tmp_path, monkeypatch):
+    """The codesign-timestamp opt-out is macOS-only; non-darwin packs are
+    invoked with no extra args."""
+    import stat as stat_mod
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    # Simulate an already-configured (root-owned 4755) chrome-sandbox so the
+    # launch path runs only [pack, launch] with no sudo fixup calls between.
+    sandbox = packaged_exe.parent / "chrome-sandbox"
+    sandbox.write_text("", encoding="utf-8")
+    fake_stat = type("s", (), {"st_uid": 0, "st_mode": 0o4755 | stat_mod.S_IFREG})()
+    monkeypatch.setattr(type(sandbox), "lstat", lambda self: fake_stat)
+
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic",
+               return_value=subprocess.CompletedProcess(["npm", "ci"], 0)), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
 
 
 @pytest.mark.parametrize(

@@ -1746,6 +1746,31 @@ class TestWebServerEndpoints:
             assert "QR login" in fields[key]["description"]
             assert "Official Account" not in fields[key]["description"]
 
+    def test_teams_messaging_metadata_links_setup_guide(self):
+        # Teams is a platform plugin, so the catalog entry is built from the
+        # plugin registry. The override must still supply a docs link so the
+        # Channels page renders a working "Open setup guide" button instead of
+        # an empty href (which resolves to the packaged app's own index.html).
+        from hermes_cli.web_server import _build_catalog_entry
+
+        teams = _build_catalog_entry("teams")
+        assert teams["docs_url"] == (
+            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams"
+        )
+
+    def test_google_chat_messaging_metadata_links_setup_guide(self):
+        # Google Chat is a platform plugin, so the catalog entry is built from
+        # the plugin registry. The override must supply a docs link so the
+        # Channels page renders a working "Open setup guide" button instead of
+        # an empty href (which resolves to the packaged app's own index.html).
+        from hermes_cli.web_server import _build_catalog_entry
+
+        google_chat = _build_catalog_entry("google_chat")
+        assert google_chat["name"] == "Google Chat"
+        assert google_chat["docs_url"] == (
+            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat"
+        )
+
     def test_messaging_catalog_covers_gateway_platforms(self):
         """Catalog is derived from the Platform enum, so every built-in shows up."""
         from gateway.config import Platform

@@ -87,6 +87,22 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Surfaces that consume gateway text programmatically (CLI/TUI "local"
+# diagnostics, API JSON, webhook payloads) and therefore must keep RAW
+# status/error text. EVERY other platform is a human-facing chat surface
+# where operational lifecycle/provider-error noise (and any secrets in it)
+# must be suppressed or sanitized. Widens #28533's Telegram-only filter to
+# all chat gateways (#39293). Fail-closed: unknown/empty platform -> chat.
+_GATEWAY_RAW_TEXT_PLATFORMS = frozenset(
+    {"local", "api_server", "webhook", "msgraph_webhook"}
+)
+
+
+def _gateway_surface_passes_raw_text(platform: Any) -> bool:
+    """True only for programmatic/local surfaces that must keep raw text."""
+    return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
+
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -370,15 +386,18 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 
 
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
-    """Sanitize final gateway replies before sending them to high-noise chats.
+    """Sanitize final gateway replies before sending them to chat surfaces.
 
-    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
-    failure categories instead of raw HTTP bodies, request IDs, or policy text.
-    Other platforms keep the existing behaviour for now.
+    Every human-facing chat surface (Telegram, WhatsApp, Discord, Slack,
+    Signal, Matrix, plugin platforms, etc.) should receive concise, safe
+    provider failure categories with secrets redacted instead of raw HTTP
+    bodies, request IDs, leaked credentials, or policy text. Only programmatic
+    surfaces in ``_GATEWAY_RAW_TEXT_PLATFORMS`` (CLI/TUI ``local`` diagnostics,
+    API JSON, webhook payloads) keep the raw text unchanged.
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
+    if _gateway_surface_passes_raw_text(platform):
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
@@ -392,7 +411,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+    if _gateway_surface_passes_raw_text(platform):
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
@@ -15864,10 +15883,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
 
-            # session_key is now set via contextvars in _set_session_env()
-            # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
-            os.environ["HERMES_SESSION_KEY"] = session_key or ""
-            
+            # session_key is propagated via contextvars in _set_session_env()
+            # (_SESSION_KEY) and via set_current_session_key() (_approval_session_key)
+            # below — both concurrency-safe and inherited by tool worker threads.
+            # We deliberately do NOT write os.environ["HERMES_SESSION_KEY"] here:
+            # os.environ is process-global, so concurrent gateway sessions (e.g.
+            # two Discord threads) would clobber each other's value, and a tool
+            # thread whose contextvar is unset would fall back to os.environ and
+            # read the wrong session key — misrouting command-approval prompts to
+            # the wrong thread (#24100). The non-gateway surfaces don't depend on
+            # this write: CLI and cron bind the session via contextvars
+            # (set_current_session_key / session context), and only the TUI
+            # slash-worker *subprocess* exports HERMES_SESSION_KEY (from its own
+            # --session-key argv, a separate process) — so removing this in-process
+            # gateway write does not affect any of them.
+
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value

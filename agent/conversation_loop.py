@@ -4392,7 +4392,11 @@ def run_conversation(
                             "as final response"
                         )
                         final_response = _recovered
-                        agent._response_was_previewed = True
+                        # Streaming delivered a fragment, not a confirmed
+                        # final preview. Leave response_previewed false so
+                        # gateway fallback delivery can send the recovered
+                        # text plus the abnormal-turn explanation.
+                        agent._response_was_previewed = False
                         break
 
                     # If the previous turn already delivered real content alongside

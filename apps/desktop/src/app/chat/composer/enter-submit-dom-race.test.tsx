@@ -75,6 +75,7 @@ function Harness({
     if (busy) {
       if (payloadPresent) {
         onQueue(text)
+        onCancel()
       } else {
         onCancel()
       }
@@ -146,7 +147,7 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     expect(onSubmit).toHaveBeenCalledWith('hello world')
   })
 
-  it('queues a fast-typed message while busy instead of draining the queue or cancelling', async () => {
+  it('queues a fast-typed message while busy and interrupts the running turn', async () => {
     const onQueue = vi.fn()
     const onDrain = vi.fn()
     const onCancel = vi.fn()
@@ -164,7 +165,7 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
 
     expect(onQueue).toHaveBeenCalledWith('urgent follow-up')
     expect(onDrain).not.toHaveBeenCalled()
-    expect(onCancel).not.toHaveBeenCalled()
+    expect(onCancel).toHaveBeenCalledTimes(1)
   })
 
   it('treats an empty Enter while busy as a no-op (never an accidental Stop)', async () => {

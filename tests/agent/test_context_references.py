@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -333,6 +335,8 @@ async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatc
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    if os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
     hermes_env = tmp_path / ".hermes" / ".env"
     hermes_env.parent.mkdir(parents=True)
@@ -353,3 +357,39 @@ async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatc
     assert "API_KEY=super-secret" not in result.message
     assert "PRIVATE-KEY" not in result.message
     assert any("sensitive credential" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_default_url_fetcher_handles_null_data():
+    from agent import context_references
+
+    async def fake_extract(*args, **kwargs):
+        return json.dumps({"data": None})
+
+    with patch("tools.web_tools.web_extract_tool", fake_extract):
+        out = await context_references._default_url_fetcher("https://example.com/doc")
+    assert out == ""
+
+
+@pytest.mark.asyncio
+async def test_default_url_fetcher_handles_null_documents():
+    from agent import context_references
+
+    async def fake_extract(*args, **kwargs):
+        return json.dumps({"data": {"documents": None}})
+
+    with patch("tools.web_tools.web_extract_tool", fake_extract):
+        out = await context_references._default_url_fetcher("https://example.com/doc")
+    assert out == ""
+
+
+@pytest.mark.asyncio
+async def test_default_url_fetcher_handles_null_first_document():
+    from agent import context_references
+
+    async def fake_extract(*args, **kwargs):
+        return json.dumps({"data": {"documents": [None]}})
+
+    with patch("tools.web_tools.web_extract_tool", fake_extract):
+        out = await context_references._default_url_fetcher("https://example.com/doc")
+    assert out == ""

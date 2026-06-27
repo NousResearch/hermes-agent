@@ -5242,22 +5242,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._reasoning_printed_lines = 0
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
-            max_display_lines = _REASONING_CLAMP_LINES
-            clamp_active = not getattr(self, "reasoning_full", False)
+        max_display_lines = _REASONING_CLAMP_LINES
+        clamp_active = not getattr(self, "reasoning_full", False)
 
-            # Emit complete lines; stop printing after max_display_lines when clamped.
-            while "\n" in self._reasoning_buf:
-                line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-                if not clamp_active or self._reasoning_printed_lines < max_display_lines:
-                    _cprint(f"{_DIM}{line}{_RST}")
-                self._reasoning_printed_lines += 1
+        # Emit complete lines; stop printing after max_display_lines when clamped.
+        while "\n" in self._reasoning_buf:
+            line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
+            if not clamp_active or self._reasoning_printed_lines < max_display_lines:
+                _cprint(f"{_DIM}{line}{_RST}")
+            self._reasoning_printed_lines += 1
 
-            # Force-flush long partial lines
-            if len(self._reasoning_buf) > 80:
-                if not clamp_active or self._reasoning_printed_lines < max_display_lines:
-                    _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
-                self._reasoning_printed_lines += 1
-                self._reasoning_buf = ""
+        # Force-flush long partial lines
+        if len(self._reasoning_buf) > 80:
+            if not clamp_active or self._reasoning_printed_lines < max_display_lines:
+                _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            self._reasoning_printed_lines += 1
+            self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open."""

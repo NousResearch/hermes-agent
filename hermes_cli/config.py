@@ -368,9 +368,12 @@ def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
 
 
 def detect_install_method(project_root: Optional[Path] = None) -> str:
-    """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'git', or 'pip'.
+    """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'git', 'uv', or 'pip'.
 
     Resolution order:
+    0. uv tool install detection (directory structure) -- checked before the
+       stamp because ``uv tool install`` uses pip internally, so the stamp
+       says ``pip`` even though the install is a supported self-updating path.
     1. Code-scoped stamp ``<install tree>/.install_method`` (next to the
        running code) — the authoritative marker.
     2. Legacy home-scoped stamp ``$HERMES_HOME/.install_method`` — read for
@@ -411,6 +414,13 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     See issue #34397.
     """
     root = _install_method_project_root(project_root)
+
+    # 0. uv tool installs use pip internally (the stamp says "pip") but are
+    #    a supported, self-updating path.  Detect by directory structure
+    #    BEFORE reading the stamp so the stamp's "pip" value doesn't trigger
+    #    the "unsupported install" banner.
+    if is_uv_tool_install():
+        return "uv"
 
     # 1. Code-scoped stamp — authoritative, immune to shared $HERMES_HOME.
     try:
@@ -511,6 +521,8 @@ def recommended_update_command_for_method(method: str) -> str:
         return "brew upgrade hermes-agent"
     if method == "docker":
         return "docker pull nousresearch/hermes-agent:latest"
+    if method == "uv":
+        return "uv tool upgrade hermes-agent"
     if method == "pip":
         if is_uv_tool_install():
             return "uv tool upgrade hermes-agent"

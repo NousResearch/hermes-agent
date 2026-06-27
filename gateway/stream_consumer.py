@@ -203,6 +203,12 @@ class GatewayStreamConsumer:
         self._draft_failures = 0
         self._before_finalize_notified = False
 
+        # Code-fence carry-over state for the overflow split loop.
+        # When a split falls inside a ``` code block, the language tag
+        # is captured here so the next chunk can reopen the fence.
+        # Reset on segment breaks, final sends, and accumulated clears.
+        self._carry_lang: Optional[str] = None
+
     def _metadata_for_send(
         self,
         *,
@@ -565,6 +571,7 @@ class GatewayStreamConsumer:
                             if new_id is not None and new_id != reply_to:
                                 chunks_delivered = True
                         self._accumulated = ""
+                        self._carry_lang = None
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:
@@ -578,6 +585,7 @@ class GatewayStreamConsumer:
                             return
                         if got_segment_break:
                             self._message_id = None
+                            self._carry_lang = None
                             self._fallback_final_send = False
                             self._fallback_prefix = ""
                         continue
@@ -595,7 +603,43 @@ class GatewayStreamConsumer:
                         split_at = self._accumulated.rfind("\n", 0, _cp_budget)
                         if split_at < _safe_limit // 2:
                             split_at = _safe_limit
-                        chunk = self._accumulated[:split_at]
+                        chunk_body = self._accumulated[:split_at]
+                        remaining = self._accumulated[split_at:].lstrip("\n")
+
+                        # Track code fences in chunk_body (carry_lang from the
+                        # previous iteration tells us whether the last split
+                        # fell inside an open code block).  If the chunk ends
+                        # inside a code block, close the fence and carry the
+                        # language tag for the next chunk's reopen prefix.
+                        # The carry_lang prefix is NOT stored in _accumulated;
+                        # it is added only to the delivered chunk, matching
+                        # how truncate_message handles carry_lang in base.py.
+                        in_code = self._carry_lang is not None
+                        lang = self._carry_lang or ""
+                        for line in chunk_body.split("\n"):
+                            stripped = line.strip()
+                            if stripped.startswith("```"):
+                                if in_code:
+                                    in_code = False
+                                    lang = ""
+                                else:
+                                    in_code = True
+                                    tag = stripped[3:].strip()
+                                    lang = tag.split()[0] if tag else ""
+
+                        # Build reopen prefix from previous carry_lang
+                        reopen = (
+                            f"```{self._carry_lang}\n"
+                            if self._carry_lang is not None
+                            else ""
+                        )
+                        if in_code:
+                            chunk = reopen + chunk_body + "\n```"
+                            self._carry_lang = lang
+                        else:
+                            chunk = reopen + chunk_body
+                            self._carry_lang = None
+
                         # finalize=True so the adapter applies platform-specific
                         # rich-text markup (e.g. Telegram MarkdownV2). This
                         # sealed chunk will never be edited again — _message_id
@@ -616,7 +660,7 @@ class GatewayStreamConsumer:
                             # fallback final-send path can deliver the remaining
                             # continuation without dropping content.
                             break
-                        self._accumulated = self._accumulated[split_at:].lstrip("\n")
+                        self._accumulated = remaining  # NO carry_lang prefix — tracked in self._carry_lang
                         self._message_id = None
                         self._last_sent_text = ""
 

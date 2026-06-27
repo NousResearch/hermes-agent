@@ -41,6 +41,32 @@ def redact_key(key: str) -> str:
     return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
+def _status_redacts_api_keys(config: dict) -> bool:
+    """Return whether status output must mask API-key material.
+
+    ``hermes status --all`` can show extra diagnostic sections, but it must
+    not bypass the global secret-redaction policy.  Redaction is secure by
+    default; only an explicit ``security.redact_secrets: false`` (or matching
+    process env override when no config value exists) permits raw key display
+    for local debugging.
+    """
+    security_cfg = config.get("security") if isinstance(config, dict) else None
+    if isinstance(security_cfg, dict) and "redact_secrets" in security_cfg:
+        return str(security_cfg.get("redact_secrets")).lower() in {"1", "true", "yes", "on"}
+
+    env_value = os.getenv("HERMES_REDACT_SECRETS")
+    if env_value is not None:
+        return env_value.lower() in {"1", "true", "yes", "on"}
+
+    return True
+
+
+def _format_status_key(value: str, *, show_all: bool, config: dict) -> str:
+    if show_all and not _status_redacts_api_keys(config):
+        return value
+    return redact_key(value)
+
+
 def _format_iso_timestamp(value) -> str:
     """Format ISO timestamps for status output, converting to local timezone."""
     if not value or not isinstance(value, str):
@@ -165,12 +191,12 @@ def show_status(args):
             continue
         value = _resolve_env(env_ref)
         has_key = bool(value)
-        display = redact_key(value) if not show_all else value
+        display = _format_status_key(value, show_all=show_all, config=config)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
-    anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
+    anthropic_display = _format_status_key(anthropic_value, show_all=show_all, config=config)
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
     # =========================================================================

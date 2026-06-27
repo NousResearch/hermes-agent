@@ -5,13 +5,94 @@ from hermes_cli.status import show_status
 
 def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1...cdef")
 
     show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
     assert "Tavily" in output
     assert "tvly...cdef" in output
+
+
+def test_show_status_all_respects_secret_redaction(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    nvidia_key = "nvapi-" + "A" * 32
+    anthropic_key = "sk-ant-" + "B" * 32
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {"model": "gpt-5.4", "security": {"redact_secrets": True}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        status_mod,
+        "get_env_value",
+        lambda name: nvidia_key if name == "NVIDIA_API_KEY" else "",
+        raising=False,
+    )
+    monkeypatch.setattr(auth_mod, "get_anthropic_key", lambda: anthropic_key, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_minimax_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+    monkeypatch.setattr(status_mod, "managed_nous_tools_enabled", lambda: False, raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "NVIDIA NIM" in output
+    assert nvidia_key not in output
+    assert anthropic_key not in output
+    assert "nvap..." in output
+    assert "sk-a..." in output
+
+
+def test_show_status_all_can_show_raw_keys_when_redaction_explicitly_disabled(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    nvidia_key = "nvapi-" + "C" * 32
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {"model": "gpt-5.4", "security": {"redact_secrets": False}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        status_mod,
+        "get_env_value",
+        lambda name: nvidia_key if name == "NVIDIA_API_KEY" else "",
+        raising=False,
+    )
+    monkeypatch.setattr(auth_mod, "get_anthropic_key", lambda: "", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_minimax_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+    monkeypatch.setattr(status_mod, "managed_nous_tools_enabled", lambda: False, raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert nvidia_key in output
 
 
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):

@@ -206,12 +206,13 @@ _LONG_HANDLERS = frozenset(
     }
 )
 
+_DEFAULT_RPC_POOL_WORKERS = max(8, min(32, (os.cpu_count() or 4) * 2))
 try:
     _rpc_pool_workers = max(
-        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4")
+        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or str(_DEFAULT_RPC_POOL_WORKERS))
     )
 except (ValueError, TypeError):
-    _rpc_pool_workers = 4
+    _rpc_pool_workers = _DEFAULT_RPC_POOL_WORKERS
 _pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=_rpc_pool_workers,
     thread_name_prefix="tui-rpc",

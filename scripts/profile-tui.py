@@ -568,7 +568,7 @@ def loop_mode(args: argparse.Namespace) -> int:
 
             if iteration > 1:
                 print("• rebuilding…")
-                result = subprocess.run(
+                result = subprocess.run(  # windows-footgun: ok — dev-only TUI build script
                     ["npm", "run", "build"],
                     cwd=tui_dir,
                     capture_output=True,

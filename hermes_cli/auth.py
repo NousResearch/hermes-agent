@@ -571,8 +571,9 @@ def _resolve_api_key_provider_secret(
             logger.warning("Copilot token validation failed: %s", exc)
         except Exception:
             pass
-        return "", ""
-
+        # Fall through to credential pool check below — the gh_cli
+        # credential stored via `hermes auth add` may be usable even
+        # when resolve_copilot_token() fails (e.g. classic PAT ghp_*).
     from hermes_cli.config import get_env_value
     for env_var in pconfig.api_key_env_vars:
         # Check both os.environ and ~/.hermes/.env file

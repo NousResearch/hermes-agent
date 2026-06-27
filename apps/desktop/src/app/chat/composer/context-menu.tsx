@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
 import { composerPanelCard } from '@/components/chat/composer-dock'
@@ -27,6 +28,7 @@ import {
   MessageSquareText
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $connection } from '@/store/session'
 
 import { GHOST_ICON_BTN } from './controls'
 import type { ChatBarState } from './types'
@@ -51,6 +53,10 @@ export function ContextMenu({
 }: ContextMenuProps) {
   const { t } = useI18n()
   const c = t.composer
+  // The sidecar runs on the gateway host. On a remote gateway, the local
+  // windows the user can pick aren't where the agent acts — so the attach/dock
+  // feature only makes sense on a local connection.
+  const isLocalConnection = useStore($connection)?.mode !== 'remote'
   // Prompt snippets used to be a Radix submenu. That submenu didn't open
   // reliably when the parent menu was positioned at the bottom of the
   // window (composer "+" anchor), so we promoted it to a real Dialog —
@@ -102,7 +108,7 @@ export function ContextMenu({
           <ContextMenuItem icon={Link} onSelect={onOpenUrlDialog}>
             {c.url}
           </ContextMenuItem>
-          {IS_WINDOWS && (
+          {IS_WINDOWS && isLocalConnection && (
             <ContextMenuItem
               disabled={!onPickWindow}
               icon={AppWindow}

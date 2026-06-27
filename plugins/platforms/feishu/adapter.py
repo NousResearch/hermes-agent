@@ -1438,6 +1438,9 @@ class FeishuAdapter(BasePlatformAdapter):
         # if it has been shut down. See issue #10849.
         self._sdk_executor_lock = threading.Lock()
         self._sdk_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        # Set on disconnect/shutdown so a real teardown can't be resurrected
+        # by the recreate-on-shutdown path; cleared on connect for reconnects.
+        self._sdk_executor_closing = False
         self._ws_client: Optional[Any] = None
         self._ws_future: Optional[asyncio.Future] = None
         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1652,14 +1655,18 @@ class FeishuAdapter(BasePlatformAdapter):
     def _get_sdk_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the adapter-owned executor for blocking Feishu SDK calls.
 
-        Recreates the pool if it was never built or has been shut down, so a
-        torn-down executor can no longer permanently wedge sends (#10849).
+        Recreates the pool if it was never built or was shut down by an
+        *external* teardown of the loop's default executor, so that can no
+        longer permanently wedge sends (#10849). Refuses to resurrect once
+        the adapter itself is closing — a real disconnect/shutdown stays shut.
         """
         lock = getattr(self, "_sdk_executor_lock", None)
         if lock is None:
             lock = threading.Lock()
             self._sdk_executor_lock = lock
         with lock:
+            if getattr(self, "_sdk_executor_closing", False):
+                raise RuntimeError("Feishu adapter is shutting down; SDK executor unavailable")
             executor = getattr(self, "_sdk_executor", None)
             if executor is None or getattr(executor, "_shutdown", False):
                 executor = concurrent.futures.ThreadPoolExecutor(
@@ -1680,6 +1687,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if lock is None:
             return
         with lock:
+            self._sdk_executor_closing = True
             executor = getattr(self, "_sdk_executor", None)
             self._sdk_executor = None
         if executor is None:
@@ -1691,6 +1699,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Feishu/Lark."""
+        # A fresh connect (or reconnect) re-arms the SDK executor after a prior
+        # disconnect set the closing flag.
+        self._sdk_executor_closing = False
         if not FEISHU_AVAILABLE:
             logger.error("[Feishu] lark-oapi not installed")
             return False

@@ -22,6 +22,7 @@ def _bare_adapter() -> FeishuAdapter:
 
     adapter._sdk_executor_lock = threading.Lock()
     adapter._sdk_executor = None
+    adapter._sdk_executor_closing = False
     return adapter
 
 
@@ -82,7 +83,41 @@ async def test_run_blocking_survives_pool_shutdown():
 
     adapter._shutdown_sdk_executor()
 
-    # The old pool is gone; the next call rebuilds one instead of raising
-    # "cannot schedule new futures after shutdown".
+    # _shutdown set the closing flag, so this would now refuse — re-arm first
+    # the way a reconnect does, then the next call rebuilds the pool.
+    adapter._sdk_executor_closing = False
     assert await adapter._run_blocking(lambda: "second") == "second"
     adapter._shutdown_sdk_executor()
+
+
+def test_closing_flag_refuses_resurrection():
+    """A real disconnect/shutdown must NOT be resurrected by the recreate path."""
+    adapter = _bare_adapter()
+    adapter._get_sdk_executor()  # build a live pool
+    adapter._shutdown_sdk_executor()  # real teardown sets _closing
+
+    assert adapter._sdk_executor_closing is True
+    with pytest.raises(RuntimeError, match="shutting down"):
+        adapter._get_sdk_executor()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_rearms_executor():
+    """connect() clears the closing flag so a reconnect can use the pool again."""
+    import threading
+
+    adapter = object.__new__(FeishuAdapter)
+    adapter._sdk_executor_lock = threading.Lock()
+    adapter._sdk_executor = None
+    adapter._sdk_executor_closing = True  # as if a prior disconnect ran
+
+    # connect() bails early (no creds) but must still re-arm the executor.
+    adapter._app_id = ""
+    adapter._app_secret = ""
+    ok = await adapter.connect()
+    assert ok is False  # bailed on missing creds
+    assert adapter._sdk_executor_closing is False
+    # And now the executor is usable again.
+    assert await adapter._run_blocking(lambda: "rearmed") == "rearmed"
+    adapter._shutdown_sdk_executor()
+

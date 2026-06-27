@@ -4800,9 +4800,34 @@ _client_cache_lock = threading.Lock()
 _CLIENT_CACHE_MAX_SIZE = 64  # safety belt — evict oldest when exceeded
 
 
+def _transport_discriminator(provider: str, model: Optional[str]) -> str:
+    """Tag clients that are NOT interchangeable across models on one endpoint.
+
+    Most OpenAI-compatible endpoints serve every model through one identical
+    client, so the client is cached once per provider+base_url+key and the
+    model string is just swapped at call time (the GMI-style reuse the cache
+    is designed around). But a few providers pick a *different client wrapper
+    per model*: Copilot routes GPT-5.x through the Responses API (wrapped in
+    CodexAuxiliaryClient) and Claude / gpt-5-mini through Chat Completions.
+    Those two wrappers are not interchangeable — reusing one for the other
+    yields ``400 unsupported_api_for_model`` (the MoA gpt-5.5-reference +
+    opus-aggregator collision). Folding only this transport tag into the cache
+    key keeps each transport its own entry without exploding the cache for
+    normal providers (whose tag is always "").
+    """
+    if provider == "copilot" and model:
+        try:
+            from hermes_cli.models import _should_use_copilot_responses_api
+            return "responses" if _should_use_copilot_responses_api(model) else "chat"
+        except Exception:
+            return ""
+    return ""
+
+
 def _client_cache_key(
     provider: str,
     *,
+    model: Optional[str] = None,
     async_mode: bool,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -4818,7 +4843,12 @@ def _client_cache_key(
     # old cache shape because the explicit provider/model tuple is sufficient.
     task_key = (task or "") if provider == "auto" else ""
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
-    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, task_key, pool_hint)
+    # Transport tag: empty for normal providers (preserves one-client-per-
+    # endpoint reuse across models), non-empty only where the wrapper differs
+    # per model (Copilot Responses vs Chat). This is what prevents a cached
+    # gpt-5.5 Responses client from being reused for a claude-opus-4.8 call.
+    transport = _transport_discriminator(provider, model)
+    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", transport, runtime_key, is_vision, task_key, pool_hint)
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
@@ -4868,6 +4898,7 @@ def _refresh_nous_auxiliary_client(
 
     cache_key = _client_cache_key(
         cache_provider,
+        model=model,
         async_mode=async_mode,
         base_url=base_url,
         api_key=api_key,
@@ -5043,6 +5074,7 @@ def _get_cached_client(
     runtime = _normalize_main_runtime(main_runtime)
     cache_key = _client_cache_key(
         provider,
+        model=model,
         async_mode=async_mode,
         base_url=base_url,
         api_key=api_key,

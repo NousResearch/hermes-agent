@@ -195,6 +195,24 @@ def _auto_detect_local_model(base_url: str) -> str:
     return ""
 
 
+def split_provider_model_string(raw: str) -> tuple[str | None, str]:
+    """Split config shorthand ``provider/model`` when the provider is known.
+
+    Unknown slash-containing model IDs are preserved so aggregator model names
+    such as ``vendor/model`` keep working unless ``vendor`` is a Hermes
+    provider or a ``custom:...`` alias.
+    """
+    value = (raw or "").strip()
+    if "/" not in value:
+        return None, value
+    provider, model = value.split("/", 1)
+    provider = provider.strip().lower()
+    model = model.strip()
+    if model and (provider in PROVIDER_REGISTRY or provider.startswith("custom:")):
+        return provider, model
+    return None, value
+
+
 def _get_model_config() -> Dict[str, Any]:
     config = load_config()
     model_cfg = config.get("model")
@@ -213,7 +231,11 @@ def _get_model_config() -> Dict[str, Any]:
                 cfg["default"] = detected
         return cfg
     if isinstance(model_cfg, str) and model_cfg.strip():
-        return {"default": model_cfg.strip()}
+        raw = model_cfg.strip()
+        provider, model = split_provider_model_string(raw)
+        if provider:
+            return {"provider": provider, "default": model}
+        return {"default": raw}
     return {}
 
 

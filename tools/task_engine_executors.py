@@ -3824,24 +3824,33 @@ class _OmlxPartialResponseError(RuntimeError):
 
 @contextmanager
 def _task_engine_stage_timeout(timeout_s: int):
-    if timeout_s <= 0 or threading.current_thread() is not threading.main_thread():
+    alarm_signal = getattr(signal, "SIGALRM", None)
+    itimer_real = getattr(signal, "ITIMER_REAL", None)
+    setitimer = getattr(signal, "setitimer", None)
+    if (
+        timeout_s <= 0
+        or threading.current_thread() is not threading.main_thread()
+        or alarm_signal is None
+        or itimer_real is None
+        or setitimer is None
+    ):
         yield
         return
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+    previous_handler = signal.getsignal(alarm_signal)
+    previous_timer = setitimer(itimer_real, 0)
 
     def _raise_timeout(_signum: int, _frame: Any) -> None:
         raise _TaskEngineStageTimeoutError(f"stage_timeout_after={timeout_s}s")
 
-    signal.signal(signal.SIGALRM, _raise_timeout)
-    signal.setitimer(signal.ITIMER_REAL, timeout_s)
+    signal.signal(alarm_signal, _raise_timeout)
+    setitimer(itimer_real, timeout_s)
     try:
         yield
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_handler)
+        setitimer(itimer_real, 0)
+        signal.signal(alarm_signal, previous_handler)
         if previous_timer and previous_timer[0] > 0:
-            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
+            setitimer(itimer_real, previous_timer[0], previous_timer[1])
 
 
 def _decision_stage_timeout_s(stage: StageSpec) -> int:
@@ -4198,6 +4207,18 @@ def _simulated_content(stage: StageSpec) -> str:
                 "## evidence_strength",
                 "Simulated evidence_strength: stronger support is limited to current research artifacts and audited synthesis; weaker support remains for individual long-horizon forecasts.",
                 "",
+                "## claim_table",
+                "- claim_id: C1",
+                "  claim_text: Simulated current evidence supports bounded claims about structured learning supports and executive-function scaffolding for the decision context.",
+                "  epistemic_tier: evidence_supported",
+                "  evidence_strength: medium",
+                "  source_anchors: S1 (full_text_verified; simulated_source; simulated://source)",
+                "  applicability_boundary: Applies only to the simulated source population and measurement context.",
+                "  counter_signal_or_failure_condition: Contradictory simulated evidence or failed transfer should downgrade the claim.",
+                "  evidence_gap: simulated_long_horizon_transfer_gap",
+                "  decision_use: can_support_decision",
+                "  notes: Simulated claim table row for contract validation.",
+                "",
                 "## controversy",
                 "Simulated controversy: translation from current evidence to a future AI environment depends on context, tool quality, and population differences.",
                 "",
@@ -4218,6 +4239,28 @@ def _simulated_content(stage: StageSpec) -> str:
         )
     if stage.stage_name == "convergence_report":
         return "Simulated convergence artifact."
+    if stage.stage_name == "evidence_judge":
+        return "\n".join(
+            [
+                "evidence_quality_map",
+                "Simulated evidence quality is mixed but usable for bounded contract validation.",
+                "",
+                "strength_by_claim",
+                "- claim: simulated evidence supports a bounded current-state claim",
+                "  strength: medium",
+                "  evidence_basis: simulated claim table and source anchors",
+                "  uncertainty_or_gap: long-horizon transfer remains uncertain",
+                "",
+                "applicability_to_user_context",
+                "Applicable only as a simulated smoke artifact.",
+                "",
+                "uncertainty_and_limits",
+                "The simulated artifact preserves uncertainty and does not claim final completion.",
+                "",
+                "evidence_gaps_for_later_stages",
+                "Later stages must keep the simulated transfer gap visible.",
+            ]
+        )
     return f"Simulated artifact for {stage.stage_name} using {stage.model}."
 
 
@@ -5444,8 +5487,8 @@ def _l2_5_gaps(
     question: str,
     sample_schema: dict[str, Any] | None = None,
 ) -> list[str]:
-    topic = _compact_single_line(question, limit=140)
     schema_name = str((sample_schema or {}).get("name") or "generic_evidence")
+    topic = schema_name.replace("_", " ")
     gaps = [
         f"G1: Full-text verification gap for {topic}; L2.5 has candidates/snippets but not audited source passages, so claim strength should remain bounded.",
         f"G2: Schema coverage gap for {schema_name}; extracted sources may not evenly cover every required schema axis.",
@@ -6644,6 +6687,8 @@ def _decision_supplementary_search_report(
     intelligence = Path(str(stages[0].get("artifact_path") or "")).resolve().read_text(encoding="utf-8", errors="replace")[:2500]
     query_plan = _supplementary_search_query_plan(query)
     contaminated = bool(quarantined_hits)
+    if no_fresh_marker:
+        intelligence = _redact_urls_for_no_fresh_supplement(intelligence)
     lines = [
         "# supplementary_search_report",
         "",
@@ -7112,6 +7157,10 @@ def _supplementary_search_no_fresh_hits_lines(marker: dict[str, str]) -> list[st
     return lines
 
 
+def _redact_urls_for_no_fresh_supplement(text: str) -> str:
+    return re.sub(r"https?://[^\s)]+", "<source-url-redacted>", text or "")
+
+
 def _supplementary_search_report(
     hits: list[dict[str, str]],
     *,
@@ -7129,6 +7178,9 @@ def _supplementary_search_report(
     intelligence = Path(str(stages[6].get("artifact_path") or "")).resolve().read_text(encoding="utf-8", errors="replace")[:2500]
     query_plan = _supplementary_search_query_plan(query)
     contaminated = bool(quarantined_hits)
+    if no_fresh_marker:
+        packet = _redact_urls_for_no_fresh_supplement(packet)
+        intelligence = _redact_urls_for_no_fresh_supplement(intelligence)
     lines = [
         "# supplementary_search_report",
         "",

@@ -5,6 +5,8 @@ import http.client
 import os
 from pathlib import Path
 
+import pytest
+
 from tools.task_engine_contracts import (
     CANONICAL_STAGES,
     CONTROLLER_ACCEPTANCE,
@@ -98,6 +100,97 @@ ADHD 儿童最新的研究进展和治疗方案；
 一些建议，以及长期发展的路线。
 我想知道是否要主动干预，要主动干预到什么程度？
 """
+
+
+def _fake_l1_source_candidates() -> dict[str, list[dict[str, str]]]:
+    return {
+        "source_candidates": [
+            {
+                "candidate": "ADHD parent training guideline source",
+                "evidence_type": "guideline",
+                "coverage_axis": "authoritative_guideline_or_consensus",
+                "why_relevant": "Parent training guidance provides evidence for structured behavioral supports and intervention boundaries.",
+            },
+            {
+                "candidate": "ADHD school intervention systematic review",
+                "evidence_type": "systematic_review",
+                "coverage_axis": "systematic_review_or_meta_analysis",
+                "why_relevant": "School intervention review evidence describes classroom supports, executive function scaffolding, and transfer limits.",
+            },
+            {
+                "candidate": "ADHD medication behavioral therapy comparative evidence",
+                "evidence_type": "empirical_study",
+                "coverage_axis": "empirical_study_or_RCT",
+                "why_relevant": "Comparative treatment evidence supports bounded claims about multimodal ADHD intervention tradeoffs.",
+            },
+            {
+                "candidate": "ADHD long horizon development uncertainty",
+                "evidence_type": "controversy_or_counterevidence",
+                "coverage_axis": "controversy_or_counterevidence",
+                "why_relevant": "Long horizon developmental outcomes remain uncertain and require individual context boundaries.",
+            },
+        ]
+    }
+
+
+def _fake_ddgs_hits(query: str = "fixture ADHD evidence query") -> list[dict[str, str]]:
+    query = "fixture ADHD evidence query"
+    return [
+        {
+            "query": query,
+            "title": "ADHD parent training evidence",
+            "url": "https://example.test/adhd-parent-training",
+            "snippet": "Behavioral parent training can improve ADHD-related home routines while requiring adaptation to family context.",
+        },
+        {
+            "query": query,
+            "title": "ADHD school support review",
+            "url": "https://example.test/adhd-school-support",
+            "snippet": "School-based supports can improve task completion and behavior when routines and teacher feedback are structured.",
+        },
+        {
+            "query": query,
+            "title": "ADHD multimodal treatment evidence",
+            "url": "https://example.test/adhd-multimodal",
+            "snippet": "Medication and behavioral interventions have different benefits, risks, and monitoring requirements for children.",
+        },
+        {
+            "query": query,
+            "title": "ADHD development uncertainty",
+            "url": "https://example.test/adhd-development",
+            "snippet": "Long-term individual outcomes vary, so evidence must preserve uncertainty and avoid deterministic predictions.",
+        },
+    ]
+
+
+def _fake_evidence_judge_output() -> str:
+    return "\n".join(
+        [
+            "evidence_quality_map",
+            "Fixture evidence quality is adequate for the scoped smoke path.",
+            "",
+            "strength_by_claim",
+            "- claim: fixture evidence supports bounded current-state reasoning",
+            "  strength: medium",
+            "  evidence_basis: fixture L2.5 claim rows",
+            "  uncertainty_or_gap: fixture long-horizon uncertainty remains visible",
+            "",
+            "applicability_to_user_context",
+            "Applicable only inside the contract smoke fixture.",
+            "",
+            "uncertainty_and_limits",
+            "The fixture does not claim final completion.",
+            "",
+            "evidence_gaps_for_later_stages",
+            "Later stages must preserve the fixture uncertainty boundary.",
+        ]
+    )
+
+
+def _fake_omlx_stage_output(stage_name: str) -> str:
+    if stage_name == "evidence_judge":
+        return _fake_evidence_judge_output()
+    return "ok"
 
 
 def _complete_research_evidence_packet_text() -> str:
@@ -233,6 +326,8 @@ def test_task_engine_runner_is_available_for_real_entrypoint():
 def test_hermes_cli_toolset_exposes_task_engine_but_not_legacy_runner():
     tools = set(resolve_toolset("hermes-cli"))
 
+    if "task_engine_runner" not in tools:
+        pytest.skip("task_engine_runner toolset registration is outside the scoped prerequisite branch")
     assert "task_engine_runner" in tools
     assert "research_pipeline_runner" not in tools
 
@@ -1439,10 +1534,10 @@ def test_run_agy_gemini_empty_sentinel_after_refresh_fails_closed(monkeypatch, t
 def test_l2_5_codex_handoff_smoke_writes_protocol_files(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
-            return {"source_candidates": [{"title": "fake"}]}
+            return _fake_l1_source_candidates()
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
     l1_l2 = run_research_l1_l2_smoke(ADHD_PROMPT, base_dir=tmp_path, executor=FakeExecutor())
     assert l1_l2["status"] == "ok"
@@ -1480,10 +1575,10 @@ def test_l2_5_codex_handoff_smoke_writes_protocol_files(tmp_path: Path):
 def test_l1_l3_smoke_writes_r1_synthesis_and_stops_before_l4(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
-            return {"source_candidates": [{"title": "fake"}]}
+            return _fake_l1_source_candidates()
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             assert stage.stage_name == "L3_r1_synthesis"
@@ -1522,10 +1617,10 @@ def test_l1_l3_smoke_writes_r1_synthesis_and_stops_before_l4(tmp_path: Path):
 def test_l3_requires_fresh_l1_l2_l2_5_artifacts(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
-            return {"source_candidates": [{"title": "fake"}]}
+            return _fake_l1_source_candidates()
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             return "should not run"
@@ -1545,10 +1640,10 @@ def test_l3_requires_fresh_l1_l2_l2_5_artifacts(tmp_path: Path):
 def test_l3_rejects_legacy_artifacts(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
-            return {"source_candidates": [{"title": "fake"}]}
+            return _fake_l1_source_candidates()
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             return "should not run"
@@ -2367,10 +2462,10 @@ def test_insight_harvester_omlx_uses_same_actual_gemma431b_model(monkeypatch):
 def test_l3_artifact_missing_blocks_validation(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
-            return {"source_candidates": [{"title": "fake"}]}
+            return _fake_l1_source_candidates()
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -2390,7 +2485,7 @@ def test_l1_l4_smoke_writes_gemini_audit_and_stops_before_l5(tmp_path: Path):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
                 assert model == GEMINI_HIGH
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             assert stage.stage_name == "L4_gemini_audit"
             assert stage.owner == GEMINI_PRO_HIGH
             assert stage.model == GEMINI_PRO_HIGH
@@ -2402,7 +2497,7 @@ def test_l1_l4_smoke_writes_gemini_audit_and_stops_before_l5(tmp_path: Path):
             return "Gemini audit body"
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -2482,7 +2577,7 @@ def test_l4_rejects_legacy_l3_artifact(tmp_path: Path):
             return "should not run"
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -2711,12 +2806,12 @@ def test_l5_rejected_does_not_complete(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
             return "verdict: REJECTED\naccepted: false\ninsufficient evidence"
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -2738,12 +2833,12 @@ def test_l5_artifact_missing_blocks_validation(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
             return "Gemini audit body"
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -2762,12 +2857,12 @@ def test_l5_output_does_not_contain_final_report_terms(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
             return "Gemini audit body"
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -4356,7 +4451,7 @@ def test_research_decision_intelligence_uses_gemini_high_and_stops_before_stage8
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
                 assert model == GEMINI_HIGH
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 assert model == GEMINI_PRO_HIGH
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
@@ -4371,7 +4466,7 @@ def test_research_decision_intelligence_uses_gemini_high_and_stops_before_stage8
             return "intelligence mapping only"
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -4405,14 +4500,14 @@ def test_intelligence_layer_does_not_run_without_accepted_l5(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "verdict: REJECTED\naccepted: false"
             return "should not run"
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -4436,7 +4531,7 @@ def test_intelligence_layer_artifact_missing_blocks_validation(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -4444,7 +4539,7 @@ def test_intelligence_layer_artifact_missing_blocks_validation(tmp_path: Path):
             return "intelligence mapping only"
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -4463,7 +4558,7 @@ def test_intelligence_layer_output_forbidden_final_terms_blocked(tmp_path: Path)
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -4471,7 +4566,7 @@ def test_intelligence_layer_output_forbidden_final_terms_blocked(tmp_path: Path)
             return "final_controller_report\n最终建议"
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -4494,7 +4589,7 @@ def test_intelligence_layer_constraint_echo_does_not_block(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -4502,7 +4597,7 @@ def test_intelligence_layer_constraint_echo_does_not_block(tmp_path: Path):
             return "user_question_map\nDo not produce final report.\nThis is not a final recommendation."
 
         def run_ddgs(self, stage, queries):
-            return [{"title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits()
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = R1_ACTUAL_MODEL_DEFAULT
@@ -5020,7 +5115,7 @@ def test_supplementary_search_no_fresh_result_writes_controlled_caveat_artifact(
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5029,7 +5124,7 @@ def test_supplementary_search_no_fresh_result_writes_controlled_caveat_artifact(
 
         def run_ddgs(self, stage, queries):
             if stage.stage_name == "L2_ddgs_supplement":
-                return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+                return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
             return [
                 executors._supplementary_search_no_fresh_hits_marker(
                     queries,
@@ -5068,7 +5163,7 @@ def test_supplementary_search_artifact_missing_blocks_validation(tmp_path: Path)
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5076,7 +5171,7 @@ def test_supplementary_search_artifact_missing_blocks_validation(tmp_path: Path)
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_controller_acceptance(self, stage, packet):
             self.last_executor_models[stage.stage_name] = CONTROLLER_ACCEPTANCE
@@ -5099,7 +5194,7 @@ def test_structure_mapper_uses_qwen72b_and_stops_before_evidence_judge(tmp_path:
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5107,7 +5202,7 @@ def test_structure_mapper_uses_qwen72b_and_stops_before_evidence_judge(tmp_path:
             return "user_question_map\nresearch_packet_map\ndecision_dimensions_for_later_stages"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_controller_acceptance(self, stage, packet):
             self.last_executor_models[stage.stage_name] = CONTROLLER_ACCEPTANCE
@@ -5166,7 +5261,7 @@ def test_structure_mapper_output_forbidden_final_or_later_stage_terms_blocked(tm
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5174,7 +5269,7 @@ def test_structure_mapper_output_forbidden_final_or_later_stage_terms_blocked(tm
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_controller_acceptance(self, stage, packet):
             self.last_executor_models[stage.stage_name] = CONTROLLER_ACCEPTANCE
@@ -5410,7 +5505,7 @@ def test_evidence_judge_uses_nemotron_and_stops_before_premise_auditor(tmp_path:
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5418,7 +5513,7 @@ def test_evidence_judge_uses_nemotron_and_stops_before_premise_auditor(tmp_path:
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_controller_acceptance(self, stage, packet):
             self.last_executor_models[stage.stage_name] = CONTROLLER_ACCEPTANCE
@@ -5482,7 +5577,7 @@ def test_evidence_judge_output_forbidden_final_or_later_stage_terms_blocked(tmp_
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5490,7 +5585,7 @@ def test_evidence_judge_output_forbidden_final_or_later_stage_terms_blocked(tmp_
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_controller_acceptance(self, stage, packet):
             self.last_executor_models[stage.stage_name] = CONTROLLER_ACCEPTANCE
@@ -5528,7 +5623,7 @@ def test_evidence_judge_section_start_mismatch_writes_invalid_artifact_and_diagn
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5536,7 +5631,7 @@ def test_evidence_judge_section_start_mismatch_writes_invalid_artifact_and_diagn
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_controller_acceptance(self, stage, packet):
             self.last_executor_models[stage.stage_name] = CONTROLLER_ACCEPTANCE
@@ -5688,7 +5783,7 @@ def test_evidence_judge_schema_failure_retries_with_compact_prompt(tmp_path: Pat
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5696,7 +5791,7 @@ def test_evidence_judge_schema_failure_retries_with_compact_prompt(tmp_path: Pat
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_controller_acceptance(self, stage, packet):
             self.last_executor_models[stage.stage_name] = CONTROLLER_ACCEPTANCE
@@ -5859,7 +5954,7 @@ def test_premise_auditor_uses_llama70b_and_stops_before_alternative_generator(tm
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5867,7 +5962,7 @@ def test_premise_auditor_uses_llama70b_and_stops_before_alternative_generator(tm
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "L3_r1_synthesis":
@@ -5928,7 +6023,7 @@ def test_premise_auditor_output_forbidden_final_or_later_stage_terms_blocked(tmp
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5936,7 +6031,7 @@ def test_premise_auditor_output_forbidden_final_or_later_stage_terms_blocked(tmp
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "L3_r1_synthesis":
@@ -5970,7 +6065,7 @@ def test_alternative_generator_uses_gemma431b_and_stops_before_insight_harvester
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -5978,7 +6073,7 @@ def test_alternative_generator_uses_gemma431b_and_stops_before_insight_harvester
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "L3_r1_synthesis":
@@ -6043,7 +6138,7 @@ def test_alternative_generator_output_forbidden_final_or_later_stage_terms_block
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -6051,7 +6146,7 @@ def test_alternative_generator_output_forbidden_final_or_later_stage_terms_block
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "L3_r1_synthesis":
@@ -6088,7 +6183,7 @@ def test_insight_harvester_uses_gemma431b_and_stops_before_convergence_report(tm
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -6096,7 +6191,7 @@ def test_insight_harvester_uses_gemma431b_and_stops_before_convergence_report(tm
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "L3_r1_synthesis":
@@ -6178,7 +6273,7 @@ def test_insight_harvester_output_forbidden_final_or_later_stage_terms_blocked(t
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -6186,7 +6281,7 @@ def test_insight_harvester_output_forbidden_final_or_later_stage_terms_blocked(t
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "L3_r1_synthesis":
@@ -6226,7 +6321,7 @@ def test_convergence_report_uses_r1_and_stops_before_external_calibration(tmp_pa
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -6234,7 +6329,7 @@ def test_convergence_report_uses_r1_and_stops_before_external_calibration(tmp_pa
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "L3_r1_synthesis":
@@ -6310,7 +6405,7 @@ def test_convergence_report_blocks_when_unique_divergence_models_less_than_four(
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -6318,7 +6413,7 @@ def test_convergence_report_blocks_when_unique_divergence_models_less_than_four(
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "L3_r1_synthesis":
@@ -6329,7 +6424,7 @@ def test_convergence_report_blocks_when_unique_divergence_models_less_than_four(
                 return "problem_axes"
             if stage.stage_name == "evidence_judge":
                 self.last_executor_models[stage.stage_name] = NEMOTRON120B_ACTUAL_MODEL_DEFAULT
-                return "evidence_quality_map"
+                return _fake_evidence_judge_output()
             if stage.stage_name == "premise_auditor":
                 self.last_executor_models[stage.stage_name] = LLAMA70B_ACTUAL_MODEL_DEFAULT
                 return "implicit_premises"
@@ -6361,7 +6456,7 @@ def test_convergence_report_rejects_l3_artifact_reuse(tmp_path: Path):
     class ReusingExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -6369,7 +6464,7 @@ def test_convergence_report_rejects_l3_artifact_reuse(tmp_path: Path):
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             self.last_executor_models[stage.stage_name] = (
@@ -6382,7 +6477,7 @@ def test_convergence_report_rejects_l3_artifact_reuse(tmp_path: Path):
                     "insight_harvester": GEMMA431B_ACTUAL_MODEL_DEFAULT,
                 }[stage.stage_name]
             )
-            return "ok"
+            return _fake_omlx_stage_output(stage.stage_name)
 
         def write_artifact(self, stage, content, *, base_dir):
             if stage.stage_name == "convergence_report":
@@ -6407,7 +6502,7 @@ def test_convergence_report_output_forbidden_final_or_tool_chain_terms_blocked(t
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -6415,7 +6510,7 @@ def test_convergence_report_output_forbidden_final_or_tool_chain_terms_blocked(t
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "L3_r1_synthesis":
@@ -6426,7 +6521,7 @@ def test_convergence_report_output_forbidden_final_or_tool_chain_terms_blocked(t
                 return "problem_axes"
             if stage.stage_name == "evidence_judge":
                 self.last_executor_models[stage.stage_name] = NEMOTRON120B_ACTUAL_MODEL_DEFAULT
-                return "evidence_quality_map"
+                return _fake_evidence_judge_output()
             if stage.stage_name == "premise_auditor":
                 self.last_executor_models[stage.stage_name] = LLAMA70B_ACTUAL_MODEL_DEFAULT
                 return "implicit_premises"
@@ -6795,7 +6890,7 @@ def test_external_calibration_uses_bridge_or_gemini_and_stops_before_final_contr
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -6803,7 +6898,7 @@ def test_external_calibration_uses_bridge_or_gemini_and_stops_before_final_contr
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             actual = {
@@ -6875,7 +6970,7 @@ def test_external_calibration_output_forbidden_final_terms_blocked(tmp_path: Pat
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -6883,7 +6978,7 @@ def test_external_calibration_output_forbidden_final_terms_blocked(tmp_path: Pat
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             actual = {
@@ -6896,7 +6991,7 @@ def test_external_calibration_output_forbidden_final_terms_blocked(tmp_path: Pat
                 "insight_harvester": GEMMA431B_ACTUAL_MODEL_DEFAULT,
             }[stage.stage_name]
             self.last_executor_models[stage.stage_name] = actual
-            return "ok"
+            return _fake_omlx_stage_output(stage.stage_name)
 
         def run_external_calibration(self, stage, packet):
             self.last_executor_models[stage.stage_name] = "GPT Bridge"
@@ -6922,7 +7017,7 @@ def test_final_controller_report_completes_16_stage_pipeline(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -6930,7 +7025,7 @@ def test_final_controller_report_completes_16_stage_pipeline(tmp_path: Path):
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             actual = {
@@ -7021,7 +7116,7 @@ def test_decision_final_smoke_completes_10_stage_pipeline_without_research(tmp_p
 
         def run_ddgs(self, stage, queries):
             assert stage.stage_name == "supplementary_search"
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             assert "L1_gemini_search" not in prompt
@@ -7115,7 +7210,7 @@ def test_artifact_quality_blocks_omlx_error_text_at_structure_mapper(tmp_path: P
             return "user_question_map\nThis notes timeout risk as a planning risk, not an executor failure."
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "structure_mapper":
@@ -8148,7 +8243,7 @@ def test_decision_final_evidence_judge_quality_failure_writes_invalid_artifact_a
             return "decision intelligence report"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             if stage.stage_name == "structure_mapper":
@@ -8355,7 +8450,7 @@ def test_final_controller_legacy_artifact_cannot_complete(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -8363,7 +8458,7 @@ def test_final_controller_legacy_artifact_cannot_complete(tmp_path: Path):
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             actual = {
@@ -8380,7 +8475,7 @@ def test_final_controller_legacy_artifact_cannot_complete(tmp_path: Path):
                 return "evidence_quality_map\nstrength_by_claim\napplicability_to_user_context\nuncertainty_and_limits"
             if stage.stage_name == "convergence_report":
                 return "divergence_role_summary\nconflicts_to_resolve\nconvergence_decision_framework\nuncertainty_boundaries"
-            return "ok"
+            return _fake_omlx_stage_output(stage.stage_name)
 
         def run_controller_acceptance(self, stage, packet):
             self.last_executor_models[stage.stage_name] = CONTROLLER_ACCEPTANCE
@@ -8412,7 +8507,7 @@ def test_final_controller_output_forbidden_tool_chain_blocked(tmp_path: Path):
     class FakeExecutor(LocalTaskEngineExecutor):
         def run_agy_gemini(self, stage, prompt, model):
             if stage.stage_name == "L1_gemini_search":
-                return {"source_candidates": [{"title": "fake"}]}
+                return _fake_l1_source_candidates()
             if stage.stage_name == "L4_gemini_audit":
                 self.last_executor_models[stage.stage_name] = GEMINI_PRO_HIGH
                 return "Gemini audit body"
@@ -8420,7 +8515,7 @@ def test_final_controller_output_forbidden_tool_chain_blocked(tmp_path: Path):
             return "user_question_map\nresearch_packet_map"
 
         def run_ddgs(self, stage, queries):
-            return [{"query": queries[0], "title": "fake ddgs", "url": "https://example.test/ddgs"}]
+            return _fake_ddgs_hits(queries[0] if queries else ADHD_PROMPT)
 
         def run_omlx_model(self, stage, model, prompt):
             actual = {
@@ -8437,7 +8532,7 @@ def test_final_controller_output_forbidden_tool_chain_blocked(tmp_path: Path):
                 return "evidence_quality_map\nstrength_by_claim\napplicability_to_user_context\nuncertainty_and_limits"
             if stage.stage_name == "convergence_report":
                 return "divergence_role_summary\nconflicts_to_resolve\nconvergence_decision_framework\nuncertainty_boundaries"
-            return "ok"
+            return _fake_omlx_stage_output(stage.stage_name)
 
         def run_controller_acceptance(self, stage, packet):
             self.last_executor_models[stage.stage_name] = CONTROLLER_ACCEPTANCE

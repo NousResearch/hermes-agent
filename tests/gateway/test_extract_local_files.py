@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from gateway.platforms import base as base_module
 from gateway.platforms.base import BasePlatformAdapter
 
 
@@ -124,6 +125,28 @@ class TestBasicDetection:
         assert paths == ["/tmp/q3-sales.pdf"]
         assert "/tmp/q3-sales.pdf" not in cleaned
         assert "comparison chart" in cleaned
+
+    def test_wsl_drive_path_normalizes_on_windows(self, monkeypatch):
+        monkeypatch.setattr(base_module.os, "name", "nt", raising=False)
+        monkeypatch.setattr(
+            base_module,
+            "_windows_drive_root_exists",
+            lambda drive: drive.upper() == "C",
+        )
+        paths, cleaned = _extract("Report at /mnt/c/tmp/report.pdf attached")
+        assert paths == [r"C:\tmp\report.pdf"]
+        assert "/mnt/c/tmp/report.pdf" not in cleaned
+
+    def test_git_bash_drive_path_normalizes_on_windows(self, monkeypatch):
+        monkeypatch.setattr(base_module.os, "name", "nt", raising=False)
+        monkeypatch.setattr(
+            base_module,
+            "_windows_drive_root_exists",
+            lambda drive: drive.upper() == "C",
+        )
+        paths, cleaned = _extract("Report at /c/tmp/report.pdf attached")
+        assert paths == [r"C:\tmp\report.pdf"]
+        assert "/c/tmp/report.pdf" not in cleaned
 
     def test_case_insensitive_extension(self):
         paths, _ = _extract("See /tmp/PHOTO.PNG and /tmp/vid.MP4 now")

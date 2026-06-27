@@ -1169,6 +1169,37 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
+_WINDOWS_POSIX_DRIVE_RE = re.compile(r"^/(?:mnt/)?([A-Za-z])(?:/(.*))?$")
+
+
+def _windows_drive_root_exists(drive: str) -> bool:
+    try:
+        return Path(f"{drive.upper()}:\\").exists()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _normalize_local_media_path(path: str) -> str:
+    """Normalize local file path syntax before media delivery checks."""
+    candidate = str(path or "").strip()
+    if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
+        candidate = candidate[1:-1].strip()
+    candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    if not candidate:
+        return ""
+
+    if os.name == "nt":
+        slash_candidate = candidate.replace("\\", "/")
+        match = _WINDOWS_POSIX_DRIVE_RE.match(slash_candidate)
+        if match:
+            drive = match.group(1).upper()
+            if _windows_drive_root_exists(drive):
+                tail = (match.group(2) or "").replace("/", "\\")
+                return f"{drive}:\\{tail}" if tail else f"{drive}:\\"
+
+    return os.path.expanduser(candidate)
+
+
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
@@ -1192,15 +1223,12 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not path:
         return None
 
-    candidate = str(path).strip()
-    if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
-        candidate = candidate[1:-1].strip()
-    candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    candidate = _normalize_local_media_path(path)
     if not candidate:
         return None
 
     try:
-        expanded = Path(os.path.expanduser(candidate))
+        expanded = Path(candidate)
     except (OSError, RuntimeError, ValueError):
         # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
         return None
@@ -1395,11 +1423,12 @@ _MEDIA_EXT_ALTERNATION = "|".join(
 # deleted. Shared by the non-streaming dispatch path and the streaming
 # consumer so both behave identically.
 # Path anchors: ``~/`` (Unix home-relative), ``/`` (Unix absolute),
-# ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632).
+# ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632), and
+# ``/mnt/x/`` or ``/x/`` paths emitted from WSL/Git Bash on Windows.
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"']?MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
-    r'''(?:~/|/|[A-Za-z]:[/\\])\S+(?:[^\S\n]+\S+)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
+    r'''(?:~/|[A-Za-z]:[/\\]|/mnt/[A-Za-z]/|/[A-Za-z]/|/)\S+(?:[^\S\n]+\S+)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
     r'''(?=[\s`"',;:)\]}]|$)[`"']?''',
     re.IGNORECASE,
 )
@@ -3310,7 +3339,7 @@ class BasePlatformAdapter(ABC):
         # capturing the (escape-aware) string body up to the closing quote.
         for m in re.finditer(r'(?<=[:,{\[])\s*"((?:[^"\\\n]|\\.)*)"', content):
             seg = m.group(1)
-            if re.search(r'MEDIA:\s*(?:~/|/|[A-Za-z]:[/\\])', seg):
+            if re.search(r'MEDIA:\s*(?:~/|[A-Za-z]:[/\\]|/mnt/[A-Za-z]/|/[A-Za-z]/|/)', seg):
                 for i in range(m.start(1), m.end(1)):
                     if chars[i] != '\n':
                         chars[i] = ' '
@@ -3367,13 +3396,10 @@ class BasePlatformAdapter(ABC):
         scan_content = BasePlatformAdapter._mask_protected_spans(content)
         scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
         for match in media_pattern.finditer(scan_content):
-            path = match.group("path").strip()
-            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
-                path = path[1:-1].strip()
-            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            path = _normalize_local_media_path(match.group("path"))
             if path:
                 try:
-                    media.append((os.path.expanduser(path), has_voice_tag))
+                    media.append((path, has_voice_tag))
                 except (OSError, RuntimeError, ValueError):
                     # Skip a crafted ~\x00 path rather than aborting extraction
                     # and dropping every other attachment in the response.
@@ -3432,8 +3458,9 @@ class BasePlatformAdapter(ABC):
         #             and relative paths (./foo.png)
         # (?:~/|/)    anchors to absolute or home-relative Unix paths
         # (?:[A-Za-z]:[/\\]) anchors to Windows drive-letter paths (#34632)
+        # (?:/mnt/[A-Za-z]/|/[A-Za-z]/) anchors to WSL/Git Bash drive paths.
         path_re = re.compile(
-            r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + ext_part + r')\b',
+            r'(?<![/:\w.])(?:~/|[A-Za-z]:[/\\]|/mnt/[A-Za-z]/|/[A-Za-z]/|/)(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + ext_part + r')\b',
             re.IGNORECASE,
         )
 
@@ -3452,7 +3479,7 @@ class BasePlatformAdapter(ABC):
             if _in_code(match.start()):
                 continue
             raw = match.group(0)
-            expanded = os.path.expanduser(raw)
+            expanded = _normalize_local_media_path(raw)
             if os.path.isfile(expanded):
                 found.append((raw, expanded))
             else:

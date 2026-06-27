@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from gateway.platforms import base as base_module
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
@@ -441,6 +442,32 @@ class TestExtractMedia:
         )
         assert len(media) == 1
         assert media[0][0].endswith("report.md")
+
+    def test_media_tag_wsl_drive_path_normalizes_on_windows(self, monkeypatch):
+        """WSL /mnt/<drive>/ paths should map to native Windows paths."""
+        monkeypatch.setattr(base_module.os, "name", "nt", raising=False)
+        monkeypatch.setattr(
+            base_module,
+            "_windows_drive_root_exists",
+            lambda drive: drive.upper() == "C",
+        )
+        media, _ = BasePlatformAdapter.extract_media(
+            "MEDIA:/mnt/c/Users/kotsu/file.pdf"
+        )
+        assert media == [(r"C:\Users\kotsu\file.pdf", False)]
+
+    def test_media_tag_git_bash_drive_path_normalizes_on_windows(self, monkeypatch):
+        """Git Bash /<drive>/ paths should map to native Windows paths."""
+        monkeypatch.setattr(base_module.os, "name", "nt", raising=False)
+        monkeypatch.setattr(
+            base_module,
+            "_windows_drive_root_exists",
+            lambda drive: drive.upper() == "C",
+        )
+        media, _ = BasePlatformAdapter.extract_media(
+            "MEDIA:/c/Users/kotsu/file.pdf"
+        )
+        assert media == [(r"C:\Users\kotsu\file.pdf", False)]
 
     def test_media_tag_unix_paths_still_work(self):
         """Unix absolute and tilde paths must still extract after Windows change."""

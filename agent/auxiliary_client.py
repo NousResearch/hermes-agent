@@ -2987,6 +2987,8 @@ def _retry_same_provider_sync(
     resolved_base_url: Optional[str],
     resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str],
+    explicit_base_url: Optional[str],
+    explicit_api_key: Optional[str],
     main_runtime: Optional[Dict[str, Any]],
     final_model: Optional[str],
     messages: list,
@@ -3000,8 +3002,8 @@ def _retry_same_provider_sync(
         _, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider,
             model=final_model,
-            base_url=resolved_base_url,
-            api_key=resolved_api_key,
+            base_url=explicit_base_url,
+            api_key=explicit_api_key,
             async_mode=False,
         )
     else:
@@ -3045,6 +3047,8 @@ async def _retry_same_provider_async(
     resolved_base_url: Optional[str],
     resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str],
+    explicit_base_url: Optional[str],
+    explicit_api_key: Optional[str],
     final_model: Optional[str],
     messages: list,
     temperature: Optional[float],
@@ -3057,8 +3061,8 @@ async def _retry_same_provider_async(
         _, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider,
             model=final_model,
-            base_url=resolved_base_url,
-            api_key=resolved_api_key,
+            base_url=explicit_base_url,
+            api_key=explicit_api_key,
             async_mode=True,
         )
     else:
@@ -5613,8 +5617,14 @@ def call_llm(
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model,
-            base_url=resolved_base_url or base_url,
-            api_key=resolved_api_key or api_key,
+            # Do not feed config-derived base_url/api_key back into the vision
+            # resolver as explicit arguments. _resolve_task_provider_model()
+            # intentionally treats explicit base_url as a custom endpoint; doing
+            # a second resolution here rewrites configured providers such as
+            # openai-codex to "custom", losing their OAuth/header handling.
+            # Only preserve base_url/api_key that the caller explicitly passed.
+            base_url=base_url,
+            api_key=api_key,
             async_mode=False,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
@@ -5880,6 +5890,8 @@ def call_llm(
                     resolved_model=resolved_model,
                     resolved_base_url=resolved_base_url,
                     resolved_api_key=resolved_api_key,
+                    explicit_base_url=base_url,
+                    explicit_api_key=api_key,
                     resolved_api_mode=resolved_api_mode,
                     main_runtime=main_runtime,
                     final_model=final_model,
@@ -5922,6 +5934,8 @@ def call_llm(
                         resolved_model=resolved_model,
                         resolved_base_url=resolved_base_url,
                         resolved_api_key=resolved_api_key,
+                        explicit_base_url=base_url,
+                        explicit_api_key=api_key,
                         resolved_api_mode=resolved_api_mode,
                         main_runtime=main_runtime,
                         final_model=final_model,
@@ -6150,8 +6164,10 @@ async def async_call_llm(
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model,
-            base_url=resolved_base_url or base_url,
-            api_key=resolved_api_key or api_key,
+            # Do not feed config-derived base_url/api_key back into the vision
+            # resolver as explicit arguments. Only preserve caller-explicit values.
+            base_url=base_url,
+            api_key=api_key,
             async_mode=True,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
@@ -6387,6 +6403,8 @@ async def async_call_llm(
                     resolved_model=resolved_model,
                     resolved_base_url=resolved_base_url,
                     resolved_api_key=resolved_api_key,
+                    explicit_base_url=base_url,
+                    explicit_api_key=api_key,
                     resolved_api_mode=resolved_api_mode,
                     final_model=final_model,
                     messages=messages,
@@ -6424,6 +6442,8 @@ async def async_call_llm(
                         resolved_model=resolved_model,
                         resolved_base_url=resolved_base_url,
                         resolved_api_key=resolved_api_key,
+                        explicit_base_url=base_url,
+                        explicit_api_key=api_key,
                         resolved_api_mode=resolved_api_mode,
                         final_model=final_model,
                         messages=messages,

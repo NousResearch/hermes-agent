@@ -4164,7 +4164,9 @@ class TestRunConversation:
             result = agent.run_conversation("ask me")
         # Should recover partial streamed content, not fall through to (empty)
         assert result["completed"] is True
-        assert result["final_response"] == "The answer to your question is that"
+        assert result["final_response"].startswith("The answer to your question is that")
+        assert "No reply:" in result["final_response"]
+        assert result["response_previewed"] is False
         assert result["api_calls"] == 1  # No wasted retries
         # Should emit the stream-interrupted status, NOT the empty-retry status
         recovery_msgs = [m for m in status_messages if "stream interrupted" in m.lower()]
@@ -4194,7 +4196,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("question")
         # Should use the streamed content, not the old prior-turn fallback
-        assert result["final_response"] == "Fresh partial content from this turn"
+        assert result["final_response"].startswith("Fresh partial content from this turn")
+        assert "No reply:" in result["final_response"]
+        assert result["response_previewed"] is False
         assert result["api_calls"] == 1
 
     def test_interrupt_during_stream_preserves_partial_assistant_text(self, agent):

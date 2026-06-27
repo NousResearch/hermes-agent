@@ -3615,6 +3615,9 @@ class SessionDB:
         - Wrap unquoted hyphenated and dotted terms in quotes so FTS5
           matches them as exact phrases instead of splitting on the
           hyphen/dot (e.g. ``chat-send``, ``P2.2``, ``my-app.config.ts``)
+        - Neutralise leading/trailing/standalone dots and hyphens that the
+          wrap step leaves behind (e.g. ``.env``, ``config.``, ``rm -rf``,
+          ``--force``) so they don't leak into MATCH as a syntax error
         """
         # Step 1: Extract balanced double-quoted phrases and protect them
         # from further processing via numbered placeholders.
@@ -3650,6 +3653,27 @@ class SessionDB:
         # double-quoting bug that would occur if dotted, hyphenated and underscored
         # patterns were applied sequentially (e.g. ``my-app.config``).
         sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
+
+        # Step 5b: Neutralise any '.' or '-' the quoting step did not wrap.
+        # Step 5 only quotes separators flanked by word characters on BOTH
+        # sides (``a.b``, ``a-b``).  Leading, trailing and standalone dots and
+        # hyphens — ``.env``, ``config.``, ``rm -rf``, ``git push -f``,
+        # ``--force`` — survive and leak into MATCH as invalid FTS5 syntax
+        # (``syntax error near "."`` or ``no such column: ...``), which the
+        # execute site swallows into silent zero results even though the term
+        # is present in the conversation.  Replace them with a space, but only
+        # OUTSIDE quoted spans so wrapped terms like ``"chat-send"`` keep their
+        # separators.  Every ``"`` remaining here is part of a balanced pair
+        # added by Step 5 — Step 2 already stripped any stray quotes — so the
+        # quoted-span alternative matches reliably.
+        sanitized = re.sub(
+            r'("[^"]*")|[.\-]',
+            lambda m: m.group(1) if m.group(1) else " ",
+            sanitized,
+        )
+        # Replacing a '.'/'-' next to a wildcard can strand it (``deploy.*`` →
+        # ``deploy *``); re-drop any now-leading '*' so it can't re-break MATCH.
+        sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
 
         # Step 6: Restore preserved quoted phrases
         for i, quoted in enumerate(_quoted_parts):

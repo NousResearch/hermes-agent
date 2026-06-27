@@ -1371,6 +1371,88 @@ class TestFTS5Search:
         assert '"sp_new"' in result
         assert '血管瘤' in result
 
+    def test_sanitize_fts5_neutralizes_edge_dots_and_hyphens(self):
+        """Leading/trailing/standalone '.' and '-' must not survive into MATCH.
+
+        The wrap step (Step 5) only quotes separators flanked by word chars on
+        both sides (``a.b``, ``a-b``). Edge dots/hyphens — ``.env``, ``config.``,
+        ``rm -rf``, ``--force`` — used to leak through and raise
+        sqlite3.OperationalError at the execute site. They must collapse to
+        spaces, while genuinely paired terms stay quoted.
+        """
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+
+        # Leading dot/hyphen dropped
+        assert s('.env') == 'env'
+        assert s('.gitignore') == 'gitignore'
+        assert s('--force') == 'force'
+        # Trailing dot/hyphen dropped (inner pair, if any, stays quoted)
+        assert s('config.') == 'config'
+        assert s('foo-bar-') == '"foo-bar"'
+        # Standalone hyphen between words → both terms survive, no '-' leaks
+        assert s('rm -rf').split() == ['rm', 'rf']
+        assert s('git push -f').split() == ['git', 'push', 'f']
+        assert s('node -v').split() == ['node', 'v']
+        # Lone / repeated punctuation collapses to empty — no crash, no operator
+        assert s('.') == ''
+        assert s('-') == ''
+        assert s('...') == ''
+        # A dot/hyphen next to a wildcard must not strand the '*'
+        assert s('deploy.*') == 'deploy'
+        # Properly paired terms keep their quoting (unchanged behavior)
+        assert s('chat-send') == '"chat-send"'
+        assert s('a.b.c') == '"a.b.c"'
+        # No bare '.'/'-' token leaks: any survivor must sit inside a quote
+        for q in ('.env', 'config.', 'rm -rf', '--force', 'e.g.', 'foo-bar-'):
+            out = s(q)
+            assert all(
+                tok.startswith('"')
+                for tok in out.split()
+                if ('.' in tok or '-' in tok)
+            ), f"stray '.'/'-' leaked in {out!r} for {q!r}"
+
+    def test_search_everyday_dot_dash_terms_find_content(self, db):
+        """Everyday terms with edge dots/hyphens must FIND content, not silently
+        return [].
+
+        '.env', 'rm -rf', 'git push -f', '--force' and friends are among the
+        most common things a user searches their history for. Before the fix a
+        leading/trailing/standalone '.'/'-' leaked into FTS5 MATCH, raised
+        OperationalError, and the execute site swallowed it into zero results —
+        so search looked broken for exactly the inputs people reach for most.
+        Regression for that silent-empty bug.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user",
+                          content="edit the .env file and the .gitignore too")
+        db.append_message("s1", role="assistant",
+                          content="i ran rm -rf build then git push -f")
+        db.append_message("s1", role="user",
+                          content="check node -v and pass --force to override")
+        db.append_message("s1", role="assistant",
+                          content="e.g. the config. value was wrong")
+
+        # query -> a substring that must appear in the matched snippet
+        cases = {
+            ".env": "env",
+            ".gitignore": "gitignore",
+            "rm -rf": "rm",
+            "git push -f": "push",
+            "node -v": "node",
+            "--force": "force",
+            "config.": "config",
+            "e.g.": "e.g",
+        }
+        for query, needle in cases.items():
+            results = db.search_messages(query)
+            assert isinstance(results, list), f"{query!r} did not return a list"
+            assert len(results) >= 1, f"{query!r} silently returned zero results"
+            assert any(
+                needle in (r.get("snippet") or r.get("content", "")).lower()
+                for r in results
+            ), f"{query!r} matched but snippet missing {needle!r}"
+
 
 # =========================================================================
 # CJK (Chinese/Japanese/Korean) LIKE fallback

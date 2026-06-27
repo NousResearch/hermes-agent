@@ -10,12 +10,15 @@ swallowed by core, and we additionally guard each callback so a telemetry bug ca
 disturb a session. No content, no network: local telemetry only.
 
 Hooks consumed:
-  on_session_start    -> begin a run context (trace_id/run_id), buffer a run row
-  post_api_request    -> one model_call event (tokens, latency, raw provider/model)
+  on_session_start    -> begin a run context (trace_id/run_id + root span id)
+  post_api_request    -> one model_call event + its timing span (tokens, latency)
   api_request_error   -> one error event
-  post_tool_call      -> one tool_call event (raw tool name, duration, result class)
-  on_session_finalize -> finalize the run row (end_reason, counts, cost)
+  post_tool_call      -> one tool_call event + its timing span (duration, result class)
+  on_session_finalize -> finalize the run row + emit the run's root span
   subagent_start/stop -> (reserved) lineage markers
+
+Each model/tool call emits a SpanEvent (timing + parent = the run's root span) keyed by
+the same span_id as its detail row, so tel_spans reconstructs a run -> calls trace tree.
 """
 
 from __future__ import annotations
@@ -56,15 +59,18 @@ def _on_session_start(**kw: Any) -> None:
     session_id = kw.get("session_id") or ""
     platform = kw.get("platform") or kw.get("source") or ""
     ctx = spans.start_run()
+    now = time.time_ns()
+    root_span_id = spans.new_span_id()
     key = _run_key(session_id, kw.get("task_id"))
     with _runs_lock:
         _runs[key] = {
             "run_id": ctx.run_id,
             "trace_id": ctx.trace_id,
+            "root_span_id": root_span_id,
             "session_id": session_id or None,
             "entrypoint": _entrypoint_for(platform, kw.get("source")),
             "platform": platform or None,
-            "start_ns": time.time_ns(),
+            "start_ns": now,
             "model_call_count": 0,
             "tool_call_count": 0,
             "error_count": 0,
@@ -84,6 +90,7 @@ def _ensure_run(session_id: Optional[str], task_id: Optional[str], platform: str
             run = {
                 "run_id": rid,
                 "trace_id": tid,
+                "root_span_id": spans.new_span_id(),
                 "session_id": session_id or None,
                 "entrypoint": _entrypoint_for(platform),
                 "platform": platform or None,
@@ -94,6 +101,33 @@ def _ensure_run(session_id: Optional[str], task_id: Optional[str], platform: str
             }
             _runs[key] = run
         return run
+
+
+def _emit_call_span(run: Dict[str, Any], span_id: str, name: str, kind: str,
+                    duration_ms: Optional[int], status: Optional[str]) -> None:
+    """Emit the timing/lineage span for a model or tool call.
+
+    The call hooks fire on completion, so end_ns is ~now and start_ns is reconstructed
+    from the measured duration (end - duration). The span is parented to the run's root
+    so a 2-level run -> calls waterfall can be reconstructed from tel_spans.
+    """
+    from agent.telemetry import emitter
+    from agent.telemetry.events import SpanEvent
+
+    end_ns = time.time_ns()
+    dur_ns = int(duration_ms) * 1_000_000 if isinstance(duration_ms, (int, float)) else 0
+    start_ns = end_ns - dur_ns
+    emitter.emit(SpanEvent(
+        span_id=span_id,
+        trace_id=run["trace_id"],
+        run_id=run["run_id"],
+        parent_span_id=run.get("root_span_id"),
+        name=name,
+        kind=kind,
+        start_ns=start_ns,
+        end_ns=end_ns,
+        status=status,
+    ))
 
 
 def _entrypoint_for(platform: Optional[str], source: Optional[str] = None) -> str:
@@ -135,8 +169,9 @@ def _on_post_api_request(**kw: Any) -> None:
     duration = kw.get("api_duration")
     latency_ms = int(duration * 1000) if isinstance(duration, (int, float)) else None
 
+    span_id = spans.new_span_id()
     evt = ModelCallEvent(
-        span_id=spans.new_span_id(),
+        span_id=span_id,
         run_id=run["run_id"],
         provider=kw.get("provider"),       # raw
         model=kw.get("model"),             # raw
@@ -151,6 +186,8 @@ def _on_post_api_request(**kw: Any) -> None:
     )
     with _runs_lock:
         run["model_call_count"] += 1
+    _emit_call_span(run, span_id, name=kw.get("model") or "model_call",
+                    kind="model", duration_ms=latency_ms, status="ok")
     emitter.emit(evt)
 
 
@@ -209,11 +246,15 @@ def _on_post_tool_call(**kw: Any) -> None:
         if result_class == "error":
             run["error_count"] += 1
 
+    dur_int = int(duration_ms) if isinstance(duration_ms, (int, float)) else None
+    span_id = spans.new_span_id()
+    _emit_call_span(run, span_id, name=function_name or "tool_call",
+                    kind="tool", duration_ms=dur_int, status=result_class)
     emitter.emit(ToolCallEvent(
-        span_id=spans.new_span_id(),
+        span_id=span_id,
         run_id=run["run_id"],
         tool_name=function_name,             # raw tool name
-        duration_ms=int(duration_ms) if isinstance(duration_ms, (int, float)) else None,
+        duration_ms=dur_int,
         result_class=result_class,
     ))
 
@@ -245,7 +286,7 @@ def _tool_result_class(result: Any) -> str:
 @_safe
 def _on_session_finalize(**kw: Any) -> None:
     from agent.telemetry import emitter, spans
-    from agent.telemetry.events import RunEvent
+    from agent.telemetry.events import RunEvent, SpanEvent
 
     session_id = kw.get("session_id") or ""
     key = _run_key(session_id, kw.get("task_id"))
@@ -256,15 +297,29 @@ def _on_session_finalize(**kw: Any) -> None:
         with _runs_lock:
             _runs.pop(key, None)
 
+    end_ns = time.time_ns()
+    start_ns = run.get("start_ns", end_ns)
     end_reason = _coarse_end_reason(kw)
+    # Root span for the run — the trace root the call spans hang off of.
+    emitter.emit(SpanEvent(
+        span_id=run.get("root_span_id") or spans.new_span_id(),
+        trace_id=run["trace_id"],
+        run_id=run["run_id"],
+        parent_span_id=None,
+        name=f"run:{run.get('entrypoint', 'cli')}",
+        kind="run",
+        start_ns=start_ns,
+        end_ns=end_ns,
+        status=end_reason,
+    ))
     emitter.emit(RunEvent(
         run_id=run["run_id"],
         trace_id=run["trace_id"],
         entrypoint=run.get("entrypoint", "cli"),
         session_id=run.get("session_id"),
         platform=run.get("platform"),
-        start_ns=run.get("start_ns", time.time_ns()),
-        end_ns=time.time_ns(),
+        start_ns=start_ns,
+        end_ns=end_ns,
         end_reason=end_reason,
         model_call_count=run.get("model_call_count", 0),
         tool_call_count=run.get("tool_call_count", 0),

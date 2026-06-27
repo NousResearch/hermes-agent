@@ -1,8 +1,8 @@
 """Export telemetry to an OpenTelemetry Collector over OTLP/HTTP.
 
-Maps telemetry events (which carry trace_id/run_id/span_id/parent_span_id) to OTel
-spans and sends them to the endpoint configured under ``telemetry.export.otlp``. Lets
-an operator stream Hermes telemetry into their own observability stack.
+Maps the local tel_* events to OTel spans and sends them to the endpoint configured
+under ``telemetry.export.otlp``. Lets an operator stream Hermes telemetry into their
+own observability stack.
 
 Notes:
   * The destination is operator-configured; this module only sends to that endpoint.
@@ -15,7 +15,13 @@ Notes:
   * The continuous subscriber runs in the emitter's writer thread after durable writes
     and is fail-isolated, so an export error cannot affect a run.
 
-Spans carry structural telemetry by default. Message content is included only when the
+Each event is exported as a span carrying its recorded attributes (provider, model,
+tokens, duration, etc.). The timing/parent linkage captured in tel_spans
+(trace_id/span_id/parent_span_id/start_ns/end_ns) is not yet reconstructed into OTel
+SpanContexts here, so spans currently arrive as independent records rather than a
+connected trace tree; building the connected-trace projection is tracked separately.
+
+Spans carry structural telemetry by default. Message content is included only when
 trajectories is enabled, and always passes through the export redaction pipeline.
 """
 
@@ -136,6 +142,8 @@ def _span_attrs(ev: Dict[str, Any]) -> Dict[str, Any]:
         "run": ("entrypoint", "platform", "end_reason",
                 "model_call_count", "tool_call_count", "error_count",
                 "estimated_cost_usd", "cost_status"),
+        "span": ("trace_id", "run_id", "parent_span_id", "name", "kind",
+                 "start_ns", "end_ns", "status"),
         "model_call": ("provider", "model", "base_url",
                        "input_tokens", "output_tokens", "cache_read_tokens",
                        "cache_write_tokens", "reasoning_tokens", "latency_ms",
@@ -195,7 +203,8 @@ def _read_events(db_path: Optional[Path], since_ns: Optional[int]) -> List[Dict[
     out: List[Dict[str, Any]] = []
     try:
         table_event = {
-            "tel_runs": "run", "tel_model_calls": "model_call",
+            "tel_runs": "run", "tel_spans": "span",
+            "tel_model_calls": "model_call",
             "tel_tool_calls": "tool_call", "tel_error_events": "error",
         }
         for table, evkind in table_event.items():

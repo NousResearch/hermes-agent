@@ -1006,13 +1006,31 @@ def _resolve_openrouter_runtime(
         _is_ollama_url    = base_url_host_matches(base_url, "ollama.com")
         _is_openai_url    = base_url_host_matches(base_url, "openai.com")
         _is_openai_azure  = base_url_host_matches(base_url, "openai.azure.com")
+        # Reuse model.api_key when an explicit base_url targets the SAME
+        # endpoint (host:port) as the configured model.base_url. Auxiliary
+        # tasks (curator, compression, …) commonly override base_url/model
+        # but leave api_key blank; without this they fall through to the
+        # local-server "no-key-required" placeholder, which a real gateway
+        # rejects with 401. Gated on host:port equality so the configured
+        # key never leaks to an unrelated endpoint (cf. issue #28660).
+        _cfg_endpoint_matches = False
+        if explicit_base_url and cfg_base_url.strip() and cfg_api_key:
+            from urllib.parse import urlsplit
+            try:
+                _e = urlsplit(base_url)
+                _c = urlsplit(cfg_base_url.strip().rstrip("/"))
+                _cfg_endpoint_matches = bool(_e.hostname) and (
+                    (_e.hostname, _e.port) == (_c.hostname, _c.port)
+                )
+            except Exception:
+                _cfg_endpoint_matches = False
         # Gate each provider key on its own host — sending OPENAI_API_KEY or
         # OPENROUTER_API_KEY to an unrelated custom endpoint (DeepSeek, Groq,
         # Mistral, …) leaks credentials and causes 401s (issue #28660).
         # Mirrors the OLLAMA_API_KEY host-gate added in GHSA-76xc-57q6-vm5m.
         api_key_candidates = [
             explicit_api_key,
-            (cfg_api_key if use_config_base_url else ""),
+            (cfg_api_key if (use_config_base_url or _cfg_endpoint_matches) else ""),
             (_getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
             (_getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
             (_getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""),

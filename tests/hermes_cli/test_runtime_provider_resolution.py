@@ -2893,3 +2893,52 @@ def test_resolve_runtime_provider_bedrock_nonclaude_target_model_uses_converse(m
     assert resolved["provider"] == "bedrock"
     assert resolved["api_mode"] == "bedrock_converse"
     assert resolved.get("bedrock_anthropic") is not True
+def _clear_provider_env(monkeypatch):
+    for v in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "OLLAMA_API_KEY",
+              "CUSTOM_BASE_URL", "OPENROUTER_BASE_URL",
+              "DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY"):
+        monkeypatch.delenv(v, raising=False)
+
+
+def test_custom_runtime_reuses_cfg_key_for_same_endpoint(monkeypatch):
+    # Auxiliary task overrides base_url/model but leaves api_key blank, pointing
+    # at the SAME endpoint as model.base_url. The configured key must be reused
+    # instead of falling through to the "no-key-required" placeholder.
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {"provider": "custom",
+                 "base_url": "http://10.0.0.5:3000/v1",
+                 "api_key": "sk-cfg-secret"},
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    out = rp._resolve_openrouter_runtime(
+        requested_provider="custom",
+        explicit_api_key="",
+        explicit_base_url="http://10.0.0.5:3000/v1",
+    )
+    assert out["provider"] == "custom"
+    assert out["base_url"] == "http://10.0.0.5:3000/v1"
+    assert out["api_key"] == "sk-cfg-secret"
+
+
+def test_custom_runtime_does_not_leak_cfg_key_to_other_endpoint(monkeypatch):
+    # Different host:port must NOT receive the configured key — it falls back
+    # to the local-server placeholder instead of leaking the credential.
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {"provider": "custom",
+                 "base_url": "http://10.0.0.5:3000/v1",
+                 "api_key": "sk-cfg-secret"},
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    out = rp._resolve_openrouter_runtime(
+        requested_provider="custom",
+        explicit_api_key="",
+        explicit_base_url="http://10.9.9.9:3000/v1",
+    )
+    assert out["api_key"] != "sk-cfg-secret"
+    assert out["api_key"] == "no-key-required"

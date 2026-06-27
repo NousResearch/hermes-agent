@@ -265,6 +265,11 @@ gateway:
     restored:              "✅ Restored to checkpoint {hash}: {reason}\nA pre-rollback snapshot was saved automatically."
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "Checkpoints are not enabled, so there's nothing to diff.\nEnable in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    no_changes:            "No changes - Hermes hasn't edited any files here yet."
+    failed:                "{error}"
+
   set_home:
     save_failed:           "Failed to save home channel: {error}"
     success:               "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."

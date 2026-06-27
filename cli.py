@@ -8372,6 +8372,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"Plugin system error: {e}")
         elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
+        elif canonical == "diff":
+            self._handle_diff_command(cmd_original)
         elif canonical == "snapshot":
             self._handle_snapshot_command(cmd_original)
         elif canonical == "stop":

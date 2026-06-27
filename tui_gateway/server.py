@@ -12743,6 +12743,34 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5022, str(e))
 
 
+@method("diff.session")
+def _(rid, params: dict) -> dict:
+    """Cumulative diff of everything changed since the earliest checkpoint.
+
+    Backs the ``/diff`` command - the session-wide counterpart to
+    ``rollback.diff`` (which previews a single chosen checkpoint).
+    """
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    try:
+        r = _with_checkpoints(session, lambda mgr, cwd: mgr.session_diff(cwd))
+        if not r.get("success"):
+            return _err(rid, 5023, r.get("error", "Could not generate diff"))
+        raw = r.get("diff", "")[:4000]
+        payload = {
+            "stat": r.get("stat", ""),
+            "diff": raw,
+            "empty": bool(r.get("empty")),
+        }
+        rendered = render_diff(raw, session.get("cols", 80))
+        if rendered:
+            payload["rendered"] = rendered
+        return _ok(rid, payload)
+    except Exception as e:
+        return _err(rid, 5023, str(e))
+
+
 # ── Methods: browser / plugins / cron / skills ───────────────────────
 
 

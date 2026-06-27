@@ -8734,6 +8734,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
 
+        if canonical == "diff":
+            return await self._handle_diff_command(event)
+
         if canonical == "background":
             return await self._handle_background_command(event)
 

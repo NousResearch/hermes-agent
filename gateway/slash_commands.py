@@ -2263,6 +2263,64 @@ class GatewaySlashCommandsMixin:
             )
         return t("gateway.rollback.restore_failed", error=result["error"])
 
+    async def _handle_diff_command(self, event: MessageEvent) -> str:
+        """Handle /diff - show everything Hermes has changed in this directory.
+
+        Cumulative diff from the earliest retained checkpoint (the pre-edit
+        baseline) to the current working tree. ``/diff --stat`` shows just the
+        summary. Complements ``/rollback diff <N>`` (single-checkpoint preview).
+        """
+        from gateway.run import _hermes_home
+        from tools.checkpoint_manager import CheckpointManager
+
+        # Read checkpoint config from config.yaml (mirrors _handle_rollback_command).
+        cp_cfg = {}
+        try:
+            import yaml as _y
+            _cfg_path = _hermes_home / "config.yaml"
+            if _cfg_path.exists():
+                with open(_cfg_path, encoding="utf-8") as _f:
+                    _data = _y.safe_load(_f) or {}
+                cp_cfg = _data.get("checkpoints", {})
+                if isinstance(cp_cfg, bool):
+                    cp_cfg = {"enabled": cp_cfg}
+        except Exception:
+            pass
+
+        if not cp_cfg.get("enabled", False):
+            return t("gateway.diff.not_enabled")
+
+        mgr = CheckpointManager(
+            enabled=True,
+            max_snapshots=cp_cfg.get("max_snapshots", 50),
+            max_total_size_mb=cp_cfg.get("max_total_size_mb", 500),
+            max_file_size_mb=cp_cfg.get("max_file_size_mb", 10),
+        )
+
+        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
+        stat_only = event.get_command_args().strip().lower() in {"--stat", "stat"}
+
+        result = mgr.session_diff(cwd)
+        if not result.get("success"):
+            return t("gateway.diff.failed", error=result.get("error", "Could not generate diff"))
+
+        stat = result.get("stat", "")
+        diff = result.get("diff", "")
+        if result.get("empty") or (not stat and not diff):
+            return t("gateway.diff.no_changes")
+
+        out: list[str] = []
+        if stat:
+            out.append(stat)
+        if not stat_only and diff:
+            diff_lines = diff.splitlines()
+            if len(diff_lines) > 60:
+                diff = "\n".join(diff_lines[:60]) + (
+                    f"\n... ({len(diff_lines) - 60} more lines - use /diff --stat for a summary)"
+                )
+            out.append(f"```diff\n{diff}\n```")
+        return "\n\n".join(out)
+
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.
 

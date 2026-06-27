@@ -4433,6 +4433,59 @@ def test_rollback_restore_resolves_number_and_file_path():
     assert calls["args"][2] == "src/app.tsx"
 
 
+def test_diff_session_returns_cumulative_diff():
+    """diff.session surfaces the manager's cumulative session_diff result."""
+
+    class _Mgr:
+        enabled = True
+
+        def session_diff(self, cwd):
+            return {
+                "success": True,
+                "stat": " main.py | 2 +-",
+                "diff": "--- a/main.py\n+++ b/main.py\n@@\n-print('hello')\n+print('v3')\n",
+            }
+
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()), history=[]
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "diff.session", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "result" in resp, resp
+    assert resp["result"]["stat"] == " main.py | 2 +-"
+    assert "+print('v3')" in resp["result"]["diff"]
+    assert resp["result"]["empty"] is False
+
+
+def test_diff_session_reports_empty_when_no_changes():
+    """A clean tree yields empty=True so the UI can show a friendly message."""
+
+    class _Mgr:
+        enabled = True
+
+        def session_diff(self, cwd):
+            return {"success": True, "stat": "", "diff": "", "empty": True}
+
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()), history=[]
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "diff.session", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "result" in resp, resp
+    assert resp["result"]["empty"] is True
+    assert resp["result"]["diff"] == ""
+
+
 # ── session.steer ────────────────────────────────────────────────────
 
 

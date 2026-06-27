@@ -784,6 +784,33 @@ class CheckpointManager:
             "diff": diff_out if ok_diff else "",
         }
 
+    def session_diff(self, working_dir: str) -> Dict:
+        """Show the cumulative diff of everything changed in this directory.
+
+        This powers the ``/diff`` command.  It answers "what has Hermes
+        changed here?" by diffing the *earliest retained checkpoint* - the
+        snapshot taken before the first recorded edit - against the current
+        working tree.  Because checkpoints are captured just before each
+        file-mutating tool call, that baseline is the pre-edit state, so the
+        diff covers the first edit and everything after it.
+
+        Returns the same shape as :meth:`diff` (``{"success", "stat",
+        "diff"}``).  When no checkpoints exist yet - nothing has been edited -
+        the call still *succeeds* with empty output and ``"empty": True`` so
+        callers can show a friendly "no changes" message rather than an error.
+        """
+        checkpoints = self.list_checkpoints(working_dir)
+        if not checkpoints:
+            return {"success": True, "stat": "", "diff": "", "empty": True}
+
+        baseline = checkpoints[-1].get("hash") or ""
+        result = self.diff(working_dir, baseline)
+        if result.get("success"):
+            result.setdefault("baseline", baseline)
+            if not result.get("stat") and not result.get("diff"):
+                result["empty"] = True
+        return result
+
     def restore(self, working_dir: str, commit_hash: str, file_path: str = None) -> Dict:
         """Restore files to a checkpoint state."""
         hash_err = _validate_commit_hash(commit_hash)

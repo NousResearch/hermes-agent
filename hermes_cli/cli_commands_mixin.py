@@ -137,6 +137,58 @@ class CLICommandsMixin:
         else:
             print(f"  ❌ {result['error']}")
 
+    def _handle_diff_command(self, command: str):
+        """Handle /diff - show everything Hermes has changed in this directory.
+
+        Unlike ``/rollback diff <N>`` (which previews changes since one chosen
+        checkpoint), ``/diff`` shows the cumulative diff from the earliest
+        retained checkpoint - the pre-edit baseline - to the current working
+        tree, answering "what has Hermes changed here?" in one view.
+
+        Syntax:
+            /diff            - full cumulative diff
+            /diff --stat     - summary (changed files + insertions/deletions)
+        """
+        if not hasattr(self, 'agent') or not self.agent:
+            print("  No active agent session.")
+            return
+
+        mgr = self.agent._checkpoint_mgr
+        if not mgr.enabled:
+            print("  Checkpoints are not enabled.")
+            print("  Enable with: hermes --checkpoints")
+            print("  Or in config.yaml: checkpoints: { enabled: true }")
+            return
+
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        parts = command.split()
+        stat_only = any(a.lower() in {"--stat", "stat"} for a in parts[1:])
+
+        result = mgr.session_diff(cwd)
+        if not result.get("success"):
+            print(f"  {result.get('error', 'Could not generate diff')}")
+            return
+
+        stat = result.get("stat", "")
+        diff = result.get("diff", "")
+        if result.get("empty") or (not stat and not diff):
+            print("  No changes - Hermes hasn't edited any files here yet.")
+            return
+
+        if stat:
+            print(f"\n{stat}")
+        if stat_only:
+            return
+        if diff:
+            # Limit diff output to avoid flooding the terminal (mirrors
+            # /rollback diff). Full diff is always available via git.
+            diff_lines = diff.splitlines()
+            if len(diff_lines) > 80:
+                print("\n".join(diff_lines[:80]))
+                print(f"\n  ... ({len(diff_lines) - 80} more lines - run /diff --stat for a summary)")
+            else:
+                print(f"\n{diff}")
+
     def _handle_snapshot_command(self, command: str):
         """Handle /snapshot — lightweight state snapshots for Hermes config/state.
 

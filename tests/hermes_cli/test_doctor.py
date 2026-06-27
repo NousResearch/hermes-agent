@@ -1450,3 +1450,33 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     assert "build-time tooling" in out
     assert "known npm bug" in out
     assert "lockfile bump" in out
+
+
+class TestAgentSourceConsistency:
+    def test_check_agent_source_consistency_ok(self):
+        issues: list[str] = []
+        doctor._check_agent_source_consistency(issues)
+        assert issues == []
+
+    def test_check_agent_source_consistency_detects_partial_install(self, monkeypatch, capsys):
+        import importlib
+        import types
+
+        issues: list[str] = []
+        stub = types.ModuleType("agent.message_sanitization")
+        real_import_module = importlib.import_module
+
+        def fake_import_module(name, package=None):
+            if name == "agent.message_sanitization":
+                return stub
+            return real_import_module(name, package)
+
+        monkeypatch.setattr(importlib, "import_module", fake_import_module)
+        doctor._check_agent_source_consistency(issues)
+
+        out = capsys.readouterr().out
+        assert "partial install" in out.lower()
+        assert issues == [
+            "Run `hermes update`, then kill any stale gateway/TUI processes "
+            "(stop/restart may leave old code in memory)",
+        ]

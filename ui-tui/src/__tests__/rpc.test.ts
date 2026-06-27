@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { asRpcResult, isMissingRpcMethod, rpcErrorMessage } from '../lib/rpc.js'
 
 describe('asRpcResult', () => {
   it('keeps plain object payloads', () => {
@@ -23,5 +23,18 @@ describe('rpcErrorMessage', () => {
   it('falls back for unknown errors', () => {
     expect(rpcErrorMessage('broken')).toBe('broken')
     expect(rpcErrorMessage({ code: 500 })).toBe('request failed')
+  })
+})
+
+describe('isMissingRpcMethod', () => {
+  it('detects JSON-RPC unknown-method errors', () => {
+    expect(isMissingRpcMethod(new Error('unknown method: pet.cells'))).toBe(true)
+    expect(isMissingRpcMethod(new Error('Method not found'))).toBe(true)
+    expect(isMissingRpcMethod(new Error('request failed -32601'))).toBe(true)
+  })
+
+  it('returns false for unrelated failures', () => {
+    expect(isMissingRpcMethod(new Error('handler error: boom'))).toBe(false)
+    expect(isMissingRpcMethod(null)).toBe(false)
   })
 })

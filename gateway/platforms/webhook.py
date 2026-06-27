@@ -34,7 +34,6 @@ import hmac
 import json
 import logging
 import re
-import subprocess
 import time
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
@@ -939,31 +938,30 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         try:
-            result = subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "comment",
-                    str(pr_number),
-                    "--repo",
-                    repo,
-                    "--body",
-                    content,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
+            proc = await asyncio.create_subprocess_exec(
+                "gh", "pr", "comment", str(pr_number),
+                "--repo", repo, "--body", content,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            if result.returncode == 0:
+            try:
+                _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                logger.error("[webhook] gh pr comment timed out after 30s")
+                return SendResult(success=False, error="gh CLI timed out")
+            stderr = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
+            if proc.returncode == 0:
                 logger.info(
                     "[webhook] Posted comment on %s#%s", repo, pr_number
                 )
                 return SendResult(success=True)
             else:
                 logger.error(
-                    "[webhook] gh pr comment failed: %s", result.stderr
+                    "[webhook] gh pr comment failed: %s", stderr
                 )
-                return SendResult(success=False, error=result.stderr)
+                return SendResult(success=False, error=stderr)
         except FileNotFoundError:
             logger.error(
                 "[webhook] 'gh' CLI not found — install GitHub CLI for "

@@ -74,6 +74,23 @@ class _AuthRunner:
         return self.authorized
 
 
+class _FakeLoader:
+    def exec_module(self, module):
+        return None
+
+
+def _fake_approval_import(tmp_path, module):
+    approval_path = tmp_path / "rollouts" / "telegram_content_factory" / "approval_intake.py"
+    approval_path.parent.mkdir(parents=True, exist_ok=True)
+    approval_path.write_text("# fake approval_intake for Telegram callback tests\n", encoding="utf-8")
+    fake_spec = SimpleNamespace(loader=_FakeLoader())
+    return patch.multiple(
+        "importlib.util",
+        spec_from_file_location=MagicMock(return_value=fake_spec),
+        module_from_spec=MagicMock(return_value=module),
+    )
+
+
 # ===========================================================================
 # send_exec_approval — inline keyboard buttons
 # ===========================================================================
@@ -448,6 +465,108 @@ class TestTelegramApprovalCallback:
         # Should still ack with "already resolved" message
         query.answer.assert_called_once()
         assert "already been resolved" in query.answer.call_args[1]["text"]
+
+    @pytest.mark.asyncio
+    async def test_content_dashboard_callback_edits_pinned_dashboard(self, tmp_path):
+        adapter = _make_adapter()
+
+        handled = {
+            "kind": "dashboard",
+            "dashboard": {
+                "text": "✅ Схвалені пости · Майстерня Долі",
+                "keyboard": {
+                    "inline_keyboard": [[{"text": "🔄 Оновити", "callback_data": "cd:refresh"}]],
+                },
+            },
+        }
+        fake_mod = SimpleNamespace(handle_callback_event=MagicMock(return_value=handled))
+
+        query = AsyncMock()
+        query.data = "cd:approved"
+        query.message = MagicMock()
+        query.message.chat_id = -1004448254480
+        query.message.message_thread_id = 17
+        query.message.chat.type = "supergroup"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Сергій"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with _fake_approval_import(tmp_path, fake_mod):
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+                    await adapter._handle_callback_query(update, context)
+
+        fake_mod.handle_callback_event.assert_called_once_with("cd:approved", user_display="Сергій")
+        query.edit_message_text.assert_called_once()
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "Схвалені пости" in edit_kwargs["text"]
+        assert edit_kwargs["reply_markup"] is not None
+        query.answer.assert_called_once()
+        assert "оновлено" in query.answer.call_args[1]["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_content_approval_callback_refreshes_dashboard_and_sends_approved_notification(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._bot.edit_message_text = AsyncMock()
+        adapter._send_message_with_thread_fallback = AsyncMock()
+
+        handled = {
+            "kind": "content_approval",
+            "decision": "approve",
+            "resolved_text": "✅ Рішення записано",
+            "dashboard": {
+                "text": "📌 Пульт Контенту · Майстерня Долі\n✅ Схвалено: 1 / 1",
+                "keyboard": {
+                    "inline_keyboard": [[{"text": "✅ Схвалені", "callback_data": "cd:approved"}]],
+                },
+            },
+            "approved_notification_text": "✅ Схвалено · Instagram",
+        }
+        fake_mod = SimpleNamespace(
+            handle_callback_event=MagicMock(return_value=handled),
+            callback_label=MagicMock(return_value="✅ Затверджено"),
+            get_control_topic=MagicMock(return_value={"thread_id": 17, "pinned_message_id": 18}),
+        )
+
+        query = AsyncMock()
+        query.data = "ca:approve:appr_1"
+        query.message = MagicMock()
+        query.message.chat_id = -1004448254480
+        query.message.message_thread_id = 19
+        query.message.chat.type = "supergroup"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Сергій"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with _fake_approval_import(tmp_path, fake_mod):
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+                    await adapter._handle_callback_query(update, context)
+
+        fake_mod.handle_callback_event.assert_called_once_with("ca:approve:appr_1", user_display="Сергій")
+        query.answer.assert_called_once()
+        assert "Затверджено" in query.answer.call_args[1]["text"]
+        query.edit_message_text.assert_called_once_with(text="✅ Рішення записано", reply_markup=None)
+        adapter._bot.edit_message_text.assert_called_once()
+        dashboard_kwargs = adapter._bot.edit_message_text.call_args[1]
+        assert dashboard_kwargs["message_id"] == 18
+        assert "Пульт Контенту" in dashboard_kwargs["text"]
+        adapter._send_message_with_thread_fallback.assert_called_once()
+        notification_kwargs = adapter._send_message_with_thread_fallback.call_args[1]
+        assert notification_kwargs["message_thread_id"] == 17
+        assert "Схвалено · Instagram" in notification_kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_model_picker_callback_not_affected(self):

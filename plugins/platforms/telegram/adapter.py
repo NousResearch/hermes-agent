@@ -72,6 +72,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     classify_send_error,
+    retry_after_seconds_from_error,
     cache_image_from_bytes,
     cache_audio_from_bytes,
     cache_video_from_bytes,
@@ -1292,15 +1293,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
-            # Extract server-requested retry_after for flood control so the
-            # base retry layer honors Telegram's backoff instead of its own
-            # short exponential schedule.
-            _retry_after = getattr(exc, "retry_after", None)
-            if _retry_after is None:
-                import re as _re
-                _m = _re.search(r"retry\s+(?:in\s+)?(\d+)", err_str, _re.IGNORECASE)
-                if _m:
-                    _retry_after = float(_m.group(1))
             logger.warning(
                 "[%s] sendRichMessage transient failure (no legacy resend): %s",
                 self.name, exc,
@@ -1309,7 +1301,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 success=False,
                 error=str(exc),
                 retryable=(is_connect_timeout or not is_timeout),
-                retry_after=_retry_after,
+                error_kind=classify_send_error(exc),
+                retry_after=retry_after_seconds_from_error(exc),
             )
 
         message_id = None
@@ -1404,6 +1397,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 success=False,
                 error=str(exc),
                 retryable=(is_connect_timeout or not is_timeout),
+                error_kind=classify_send_error(exc),
+                retry_after=retry_after_seconds_from_error(exc),
             )
         # Telegram won't echo rich content for messages that predate the bot's
         # first rich send, so mirror the fresh-send index here too: a streamed
@@ -2913,6 +2908,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 error=str(e),
                 retryable=(is_connect_timeout or is_pool_timeout or not is_timeout),
                 error_kind=error_kind,
+                retry_after=retry_after_seconds_from_error(e),
             )
 
     async def send_or_update_status(
@@ -4529,6 +4525,109 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
+            return
+
+        # --- Content dashboard callbacks (cd:action) and approval callbacks (ca:decision:content_id) ---
+        if data.startswith(("cd:", "ca:")):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to manage content.")
+                return
+
+            def _keyboard_from_payload(payload: Dict[str, Any]) -> "InlineKeyboardMarkup":
+                rows = []
+                for row in payload.get("inline_keyboard", []):
+                    rows.append([
+                        InlineKeyboardButton(
+                            str(button.get("text", "—")),
+                            callback_data=str(button.get("callback_data", "")),
+                        )
+                        for button in row
+                    ])
+                return InlineKeyboardMarkup(rows)
+
+            user_display = getattr(query.from_user, "first_name", "User")
+            try:
+                import importlib.util as _importlib_util
+                from hermes_constants import get_hermes_home
+                approval_path = get_hermes_home() / "rollouts" / "telegram_content_factory" / "approval_intake.py"
+                if not approval_path.exists():
+                    await query.answer(text="❌ approval_intake.py missing")
+                    logger.error("[%s] content approval script missing: %s", self.name, approval_path)
+                    return
+                spec = _importlib_util.spec_from_file_location("telegram_content_approval_intake", approval_path)
+                if spec is None or spec.loader is None:
+                    await query.answer(text="❌ approval module load failed")
+                    logger.error("[%s] content approval module spec failed: %s", self.name, approval_path)
+                    return
+                approval_mod = _importlib_util.module_from_spec(spec)
+                spec.loader.exec_module(approval_mod)
+                handled = approval_mod.handle_callback_event(data, user_display=user_display)
+            except Exception as exc:
+                await query.answer(text=f"❌ content callback failed: {str(exc)[:80]}")
+                logger.error("[%s] content dashboard/approval callback failed: %s", self.name, exc, exc_info=True)
+                return
+
+            # Dashboard buttons edit the pinned dashboard message in-place.
+            if handled.get("kind") == "dashboard":
+                try:
+                    await query.edit_message_text(
+                        text=handled["dashboard"]["text"],
+                        reply_markup=_keyboard_from_payload(handled["dashboard"]["keyboard"]),
+                    )
+                    await query.answer(text="Дашборд оновлено")
+                except Exception as exc:
+                    await query.answer(text=f"❌ dashboard update failed: {str(exc)[:80]}")
+                    logger.error("[%s] content dashboard callback edit failed: %s", self.name, exc, exc_info=True)
+                return
+
+            # Approval buttons resolve the original card, refresh the pinned dashboard,
+            # and, on approve, send the approved item to the control topic. Autopost
+            # remains blocked by approval_intake.handle_callback_event().
+            label = approval_mod.callback_label(handled.get("decision") or "")
+            await query.answer(text=label)
+            try:
+                await query.edit_message_text(text=handled["resolved_text"], reply_markup=None)
+            except Exception as exc:
+                logger.warning("[%s] content approval edit failed: %s", self.name, exc)
+                try:
+                    await self._send_message_with_thread_fallback(
+                        chat_id=int(query.message.chat_id),
+                        message_thread_id=query_thread_id,
+                        text=handled["resolved_text"],
+                        **self._link_preview_kwargs(),
+                    )
+                except Exception:
+                    pass
+
+            try:
+                control = approval_mod.get_control_topic()
+                await self._bot.edit_message_text(
+                    chat_id=int(query.message.chat_id),
+                    message_id=int(control["pinned_message_id"]),
+                    text=handled["dashboard"]["text"],
+                    reply_markup=_keyboard_from_payload(handled["dashboard"]["keyboard"]),
+                )
+            except Exception as exc:
+                logger.warning("[%s] content dashboard refresh after approval failed: %s", self.name, exc)
+
+            if handled.get("approved_notification_text"):
+                try:
+                    control = approval_mod.get_control_topic()
+                    await self._send_message_with_thread_fallback(
+                        chat_id=int(query.message.chat_id),
+                        message_thread_id=int(control["thread_id"]),
+                        text=handled["approved_notification_text"],
+                        **self._link_preview_kwargs(),
+                    )
+                except Exception as exc:
+                    logger.warning("[%s] approved content notification send failed: %s", self.name, exc)
             return
 
         # --- Update prompt callbacks ---

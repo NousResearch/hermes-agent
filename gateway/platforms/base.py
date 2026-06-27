@@ -1854,6 +1854,49 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
     return "unknown"
 
 
+_RETRY_AFTER_SECONDS_RE = re.compile(
+    r"\bretry\s+(?:after|in)\s+([0-9]+(?:\.[0-9]+)?)\s*(?:seconds?|secs?|s)?\b",
+    re.IGNORECASE,
+)
+
+
+def retry_after_seconds_from_error(error: Any) -> Optional[float]:
+    """Extract a platform rate-limit delay from an exception/result/error text.
+
+    Telegram's PTB ``RetryAfter`` exposes ``retry_after`` as an attribute, but
+    by the time an error crosses adapter layers it may only be a string such as
+    ``"Flood control exceeded. Retry in 24 seconds"``.  Keep the parser in the
+    shared gateway layer so final sends, rich sends and stream fallbacks all
+    honor the provider's wait time instead of retrying too early and surfacing
+    a false delivery failure.
+    """
+    if error is None:
+        return None
+
+    direct = getattr(error, "retry_after", None)
+    if direct is not None:
+        try:
+            return max(0.0, float(direct))
+        except (TypeError, ValueError):
+            pass
+
+    if isinstance(error, dict):
+        for key in ("retry_after", "retryAfter", "retry-after"):
+            if key in error:
+                try:
+                    return max(0.0, float(error[key]))
+                except (TypeError, ValueError):
+                    pass
+
+    match = _RETRY_AFTER_SECONDS_RE.search(str(error))
+    if not match:
+        return None
+    try:
+        return max(0.0, float(match.group(1)))
+    except (TypeError, ValueError):
+        return None
+
+
 class EphemeralReply(str):
     """System-notice reply that auto-deletes after a TTL.
 
@@ -3811,8 +3854,14 @@ class BasePlatformAdapter(ABC):
             # when present — it is authoritative over our backoff schedule.
             server_retry_after = result.retry_after
             for attempt in range(1, max_retries + 1):
-                if server_retry_after is not None:
-                    delay = server_retry_after + random.uniform(0, 1)
+                retry_after = server_retry_after
+                if retry_after is None:
+                    retry_after = retry_after_seconds_from_error(error_str)
+                if retry_after is not None:
+                    # Provider retry-after is authoritative. Add a small jitter
+                    # so concurrent gateway responses do not wake and collide
+                    # on exactly the same second.
+                    delay = float(retry_after) + random.uniform(0.25, 1.0)
                     server_retry_after = None  # only honor once per send
                 else:
                     delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)

@@ -89,8 +89,11 @@ def _import_edge_tts():
         _lazy_ensure("tts.edge", prompt=False)
     except ImportError:
         pass
-    except Exception as e:
-        raise ImportError(str(e))
+    except Exception:
+        logger.debug(
+            "lazy_deps.ensure(tts.edge) failed; attempting raw import fallback",
+            exc_info=True,
+        )
     import edge_tts
     return edge_tts
 
@@ -100,18 +103,21 @@ def _import_elevenlabs():
     Calls :func:`tools.lazy_deps.ensure` first so the SDK gets installed on
     demand if the user picked ElevenLabs as their TTS provider but never ran
     the post-setup hook (e.g. enabled it by editing config.yaml directly).
-    Raises ``ImportError`` on lazy-install failure so existing callers'
-    error-handling paths keep working.
+    If the lazy installer fails for environmental reasons, still attempt the
+    raw import so PYTHONPATH-based installs remain usable.
     """
     try:
-        from tools.lazy_deps import FeatureUnavailable, ensure
+        from tools.lazy_deps import ensure
         ensure("tts.elevenlabs", prompt=False)
     except ImportError:
         # lazy_deps module itself missing — fall through to the raw import
         # so older code paths still get a clean ImportError.
         pass
-    except Exception as e:  # FeatureUnavailable or any unexpected error
-        raise ImportError(str(e))
+    except Exception:
+        logger.debug(
+            "lazy_deps.ensure(tts.elevenlabs) failed; attempting raw import fallback",
+            exc_info=True,
+        )
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 

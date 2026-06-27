@@ -51,6 +51,42 @@ const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
 const MAX_HEIGHT_CACHE_BUCKETS = 12
 
+type ResizeStdout = Pick<NodeJS.WriteStream, 'off' | 'on'>
+type SignalBus = Pick<NodeJS.Process, 'off' | 'on'>
+
+export function subscribeResizeSignals(
+  stdout: null | ResizeStdout | undefined,
+  onResize: () => void,
+  signalBus: SignalBus = process
+): () => void {
+  if (!stdout) {
+    return () => {}
+  }
+
+  stdout.on('resize', onResize)
+
+  let registeredSigwinch = false
+
+  try {
+    signalBus.on('SIGWINCH', onResize)
+    registeredSigwinch = true
+  } catch {
+    // Some runtimes do not expose SIGWINCH; stdout.resize remains the primary path.
+  }
+
+  return () => {
+    stdout.off('resize', onResize)
+
+    if (registeredSigwinch) {
+      try {
+        signalBus.off('SIGWINCH', onResize)
+      } catch {
+        // Ignore teardown mismatches in runtimes without signal support.
+      }
+    }
+  }
+}
+
 const capHistory = (items: Msg[]): Msg[] => {
   if (items.length <= MAX_HISTORY) {
     return items
@@ -147,14 +183,14 @@ export function useMainApp(gw: GatewayClient) {
 
     const sync = () => setCols(stdout.columns ?? 80)
 
-    stdout.on('resize', sync)
+    const disposeResize = subscribeResizeSignals(stdout, sync)
 
     if (stdout.isTTY) {
       stdout.write(BRACKET_PASTE_ON)
     }
 
     return () => {
-      stdout.off('resize', sync)
+      disposeResize()
 
       if (stdout.isTTY) {
         stdout.write(BRACKET_PASTE_OFF)
@@ -599,11 +635,11 @@ export function useMainApp(gw: GatewayClient) {
       }, 100)
     }
 
-    stdout.on('resize', onResize)
+    const disposeResize = subscribeResizeSignals(stdout, onResize)
 
     return () => {
       clearTimeout(timer)
-      stdout.off('resize', onResize)
+      disposeResize()
     }
   }, [rpc, stdout, ui.sid])
 

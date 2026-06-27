@@ -90,6 +90,21 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   return { name: prettifyBase(base) || model.trim() || 'No model', tag }
 }
 
+// ApexNodes managed-LLM display mapping. The managed default seeds
+// `model.default: deepseek-v4-pro` routed through the relay; the UI shows the
+// ApexNodes-branded label. The relay decouples display from routing (hc-184),
+// so this is purely cosmetic. Kept in sync with electron/apex-managed.cjs
+// (DEFAULT_MANAGED_MODEL / MANAGED_MODEL_DISPLAY).
+const MANAGED_MODEL_ID = 'deepseek-v4-pro'
+const MANAGED_MODEL_DISPLAY = 'deepseek-v4-pro-APEX'
+
+/** Map the managed relay model id to its ApexNodes display label; pass other
+ *  ids through unchanged. Applied at the visible "current model" chokepoints so
+ *  a managed user sees the branded name instead of the raw routed id. */
+export function managedModelDisplayName(model: string): string {
+  return modelBaseId(model) === MANAGED_MODEL_ID ? MANAGED_MODEL_DISPLAY : model
+}
+
 /** Friendly one-line model name for menus and the status bar. */
 export function displayModelName(model: string): string {
   return modelDisplayParts(model).name

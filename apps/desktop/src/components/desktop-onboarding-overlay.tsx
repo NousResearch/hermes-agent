@@ -35,12 +35,14 @@ import {
   DEFAULT_MANUAL_ONBOARDING_REASON,
   DEFAULT_ONBOARDING_REASON,
   dismissFirstRunOnboarding,
+  managedSignIn,
   type OnboardingContext,
   type OnboardingFlow,
   peekPendingProviderOAuth,
   recheckExternalSignin,
   refreshOnboarding,
   saveOnboardingApiKey,
+  skipManagedForByok,
   setOnboardingCode,
   setOnboardingMode,
   setOnboardingModel,
@@ -406,7 +408,12 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
         <div className="grid gap-3 p-5">
           {reason ? <ReasonNotice reason={reason} /> : null}
           {ready ? (
-            showPicker ? (
+            // Managed-LLM builds lead with a one-tap sign-in (zero key). The
+            // panel offers an escape hatch to the BYOK picker; once the user
+            // takes it (managedAvailable flips false) the normal flow resumes.
+            showPicker && onboarding.managedAvailable === true && !onboarding.manual ? (
+              <ManagedSignInPanel ctx={ctx} />
+            ) : showPicker ? (
               <Picker ctx={ctx} />
             ) : (
               <FlowPanel ctx={ctx} flow={flow} leaving={leaving} onBegin={finalizeOnboarding} />
@@ -603,6 +610,76 @@ function ChooseLaterLink() {
     >
       {t.onboarding.chooseLater}
     </Button>
+  )
+}
+
+// First-run managed-LLM panel (zero-key): the user signs in once with their
+// ApexNodes account and the local runtime is wired to the hosted relay — no API
+// key to paste. Escape hatches to BYOK ("use my own provider") and to "choose
+// later" so it never traps a user who has their own key or wants to defer.
+function ManagedSignInPanel({ ctx }: { ctx: OnboardingContext }) {
+  const { t } = useI18n()
+  const m = t.onboarding.managed
+  const { managedError, managedSubmitting } = useStore($desktopOnboarding)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+
+  const canSubmit = email.trim().length > 0 && password.length > 0 && !managedSubmitting
+
+  const submit = () => {
+    if (!canSubmit) {
+      return
+    }
+
+    void managedSignIn(email, password, ctx)
+  }
+
+  return (
+    <div className="grid gap-3">
+      <p className="text-sm text-muted-foreground">{m.subtitle}</p>
+      <Input
+        autoComplete="email"
+        autoFocus
+        onChange={event => setEmail(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            submit()
+          }
+        }}
+        placeholder={m.emailPlaceholder}
+        type="email"
+        value={email}
+      />
+      <Input
+        autoComplete="current-password"
+        onChange={event => setPassword(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            submit()
+          }
+        }}
+        placeholder={m.passwordPlaceholder}
+        type="password"
+        value={password}
+      />
+      {managedError ? <div className="text-xs text-destructive">{managedError}</div> : null}
+      <Button className="w-full" disabled={!canSubmit} onClick={submit} type="button">
+        {managedSubmitting && <Loader2 className="size-3.5 animate-spin" />}
+        {managedSubmitting ? m.signingIn : m.signIn}
+      </Button>
+      <div className="flex items-center justify-between border-t border-(--ui-stroke-tertiary) pt-3">
+        <Button
+          className="font-medium"
+          onClick={() => skipManagedForByok()}
+          size="xs"
+          type="button"
+          variant="text"
+        >
+          {m.useOwnProvider}
+        </Button>
+        <ChooseLaterLink />
+      </div>
+    </div>
   )
 }
 

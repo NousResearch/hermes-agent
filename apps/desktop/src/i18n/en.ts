@@ -1434,6 +1434,14 @@ export const en: Translations = {
   onboarding: {
     headerTitle: "Let's get you set up with ApexNodes",
     headerDesc: 'Connect a model provider to start chatting. Most options take one click.',
+    managed: {
+      subtitle: 'Sign in with your ApexNodes account to start chatting right away — no API key needed.',
+      emailPlaceholder: 'Email',
+      passwordPlaceholder: 'Password',
+      signIn: 'Sign in & start',
+      signingIn: 'Signing in…',
+      useOwnProvider: 'Use my own provider'
+    },
     addKeyToStart: 'Your provider is selected — just add its API key to start chatting.',
     preparingInstall: 'ApexNodes is finishing install. This usually takes under a minute on first run.',
     starting: 'Starting ApexNodes…',

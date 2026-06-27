@@ -41,6 +41,14 @@ declare global {
         // clear the preference.
         set: (name: string | null) => Promise<DesktopActiveProfile>
       }
+      // ApexNodes managed-LLM (zero-key) default path. Routes the local
+      // runtime's inference through the ApexNodes relay using the signed-in
+      // user's cloud account. See electron/apex-managed.cjs.
+      managed: {
+        status: () => Promise<DesktopManagedStatus>
+        signIn: (payload: { email: string; password: string }) => Promise<DesktopManagedSignInResult>
+        signOut: () => Promise<{ ok: boolean }>
+      }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
@@ -300,6 +308,41 @@ export interface DesktopConnectionTestResult {
   baseUrl: string
   ok: boolean
   version: string | null
+}
+
+export interface DesktopManagedStatus {
+  // The relay base_url the managed config points at (e.g.
+  // https://apex-nodes.com/relay/v1).
+  baseUrl: string
+  // True when the managed-LLM default path is enabled for this build.
+  enabled: boolean
+  // Real routed model id (e.g. deepseek-v4-pro).
+  model: string
+  // UI display label for the model (e.g. deepseek-v4-pro-APEX).
+  modelDisplay: string
+  // Runtime provider slug used for the relay (custom).
+  provider: string
+  // True when a relay key is on disk (user already signed in to managed).
+  signedIn: boolean
+}
+
+export interface DesktopManagedSignInResult {
+  // The model assignment to apply via /api/model/set (POST), present only when
+  // hasRelayKey is true. Mirrors the ModelAssignmentRequest shape the BYOK
+  // local-endpoint flow uses, so applying managed reuses that exact path.
+  assignment: {
+    api_key: string
+    base_url: string
+    model: string
+    provider: string
+    scope: 'main'
+  } | null
+  // True when sign-in succeeded AND a relay-valid key was provisioned. False
+  // means login worked but the backend relay-key endpoint isn't deployed yet —
+  // the caller falls back to the BYOK onboarding.
+  hasRelayKey?: boolean
+  message?: string
+  ok: boolean
 }
 
 export interface DesktopAuthProvider {

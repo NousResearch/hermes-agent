@@ -19,6 +19,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
+  // ApexNodes managed-LLM (zero-key) default path. See electron/apex-managed.cjs.
+  managed: {
+    status: () => ipcRenderer.invoke('hermes:managed:status'),
+    signIn: payload => ipcRenderer.invoke('hermes:managed:signIn', payload),
+    signOut: () => ipcRenderer.invoke('hermes:managed:signOut')
+  },
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),

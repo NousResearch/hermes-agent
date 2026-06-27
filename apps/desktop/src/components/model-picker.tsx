@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { currentPickerSelection } from '@/lib/model-status-label'
+import { currentPickerSelection, managedModelDisplayName } from '@/lib/model-status-label'
 import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
@@ -102,7 +102,7 @@ export function ModelPickerDialog({
         <DialogHeader className="border-b border-border px-4 py-3">
           <DialogTitle>{copy.title}</DialogTitle>
           <DialogDescription className="font-mono text-xs leading-relaxed">
-            {copy.current} {optionsModel || currentModel || copy.unknown}
+            {copy.current} {managedModelDisplayName(optionsModel || currentModel) || copy.unknown}
             {optionsProvider || currentProvider ? ` · ${optionsProvider || currentProvider}` : ''}
           </DialogDescription>
         </DialogHeader>

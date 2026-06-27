@@ -1619,6 +1619,14 @@ export const zh: Translations = {
   onboarding: {
     headerTitle: '开始设置 ApexNodes',
     headerDesc: '连接模型提供方即可开始对话。大多数选项只需一次点击。',
+    managed: {
+      subtitle: '登录 ApexNodes 账号即可直接开始对话 —— 无需填写 API Key。',
+      emailPlaceholder: '邮箱',
+      passwordPlaceholder: '密码',
+      signIn: '登录并开始',
+      signingIn: '正在登录…',
+      useOwnProvider: '使用我自己的提供方'
+    },
     addKeyToStart: '已选好提供方 — 填入它的 API Key 即可开始对话。',
     preparingInstall: 'ApexNodes 正在完成安装。首次运行通常不到一分钟。',
     starting: '正在启动 ApexNodes…',

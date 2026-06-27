@@ -1095,6 +1095,15 @@ export interface Translations {
   onboarding: {
     headerTitle: string
     headerDesc: string
+    /** ApexNodes managed-LLM (zero-key) first-run sign-in panel. */
+    managed: {
+      subtitle: string
+      emailPlaceholder: string
+      passwordPlaceholder: string
+      signIn: string
+      signingIn: string
+      useOwnProvider: string
+    }
     /** Clean prompt shown when a provider is seeded (DeepSeek) but its key is
      *  missing — replaces the raw "no usable credentials" runtime error. */
     addKeyToStart: string

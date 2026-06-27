@@ -1514,6 +1514,14 @@ export const zhHant = defineLocale({
   onboarding: {
     headerTitle: '開始設定 ApexNodes',
     headerDesc: '連線模型提供方即可開始聊天。大多數選項只需一次點擊。',
+    managed: {
+      subtitle: '登入 ApexNodes 帳號即可直接開始聊天 —— 無需填寫 API 金鑰。',
+      emailPlaceholder: '電子郵件',
+      passwordPlaceholder: '密碼',
+      signIn: '登入並開始',
+      signingIn: '正在登入…',
+      useOwnProvider: '使用我自己的提供方'
+    },
     addKeyToStart: '已選好提供方 — 填入它的 API 金鑰即可開始聊天。',
     preparingInstall: 'ApexNodes 正在完成安裝。首次執行通常不到一分鐘。',
     starting: '正在啟動 ApexNodes…',

@@ -82,6 +82,17 @@ export interface DesktopOnboardingState {
    *  custom endpoint"). Forces the API-key form with the local option
    *  preselected instead of the OAuth picker. */
   localEndpoint: boolean
+  /** True when the ApexNodes managed-LLM default path is enabled for this build
+   *  AND the user is not yet signed in. The first-run overlay then leads with a
+   *  managed sign-in panel (zero-key chat) instead of the BYOK provider picker.
+   *  null until managed.status() resolves; false on builds where managed is off
+   *  or the user is already signed in (then onboarding behaves exactly as before
+   *  — the BYOK picker / runtime-readiness gate). */
+  managedAvailable: boolean | null
+  /** Inline error from a managed sign-in attempt, surfaced in the managed panel. */
+  managedError: null | string
+  /** True while a managed sign-in request is in flight. */
+  managedSubmitting: boolean
 }
 
 export interface OnboardingContext {
@@ -162,7 +173,10 @@ const INITIAL: DesktopOnboardingState = {
   requested: false,
   firstRunSkipped: readCachedSkipped(),
   manual: false,
-  localEndpoint: false
+  localEndpoint: false,
+  managedAvailable: null,
+  managedError: null,
+  managedSubmitting: false
 }
 
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
@@ -483,7 +497,10 @@ export function completeDesktopOnboarding() {
     requested: false,
     firstRunSkipped: false,
     manual: false,
-    localEndpoint: false
+    localEndpoint: false,
+    managedAvailable: false,
+    managedError: null,
+    managedSubmitting: false
   })
 }
 
@@ -510,6 +527,110 @@ export function setOnboardingMode(mode: OnboardingMode) {
   patch({ mode })
 }
 
+// Probe the ApexNodes managed-LLM status via the desktop bridge. Best-effort:
+// when the bridge is absent (web dashboard / dev preview) or the call fails,
+// managed is treated as unavailable so onboarding falls back to the BYOK flow.
+// Returns the status so callers can act on `signedIn` without a second read.
+async function refreshManagedStatus(): Promise<{ enabled: boolean; signedIn: boolean } | null> {
+  const bridge = typeof window !== 'undefined' ? window.hermesDesktop?.managed : undefined
+
+  if (!bridge) {
+    patch({ managedAvailable: false })
+
+    return null
+  }
+
+  try {
+    const status = await bridge.status()
+    // "Available" for onboarding purposes means: enabled AND the user still
+    // needs to sign in. An already-signed-in user has a relay key on disk, so
+    // the runtime is configured and the normal readiness gate handles them.
+    patch({ managedAvailable: status.enabled && !status.signedIn })
+
+    return { enabled: status.enabled, signedIn: status.signedIn }
+  } catch {
+    patch({ managedAvailable: false })
+
+    return null
+  }
+}
+
+// Sign in to ApexNodes managed LLM (zero-key). On success with a provisioned
+// relay key, apply the returned model assignment via the SAME /api/model/set
+// path the BYOK local-endpoint flow uses, reload env, and complete onboarding.
+// If the backend relay-key endpoint isn't deployed yet (hasRelayKey=false), fall
+// back to the BYOK provider picker rather than stranding the user.
+export async function managedSignIn(email: string, password: string, ctx: OnboardingContext) {
+  const trimmedEmail = email.trim()
+
+  if (!trimmedEmail || !password) {
+    patch({ managedError: 'Enter your email and password.' })
+
+    return
+  }
+
+  const bridge = typeof window !== 'undefined' ? window.hermesDesktop?.managed : undefined
+
+  if (!bridge) {
+    patch({ managedError: 'Managed sign-in is only available in the desktop app.' })
+
+    return
+  }
+
+  patch({ managedSubmitting: true, managedError: null })
+
+  try {
+    const res = await bridge.signIn({ email: trimmedEmail, password })
+
+    if (!res.ok) {
+      patch({ managedSubmitting: false, managedError: res.message || 'Sign-in failed. Check your credentials.' })
+
+      return
+    }
+
+    if (!res.hasRelayKey || !res.assignment) {
+      // Logged in, but managed isn't wired server-side yet — degrade to BYOK.
+      patch({ managedSubmitting: false, managedAvailable: false, mode: 'apikey' })
+      await refreshProviders()
+      patch({ mode: 'apikey' })
+
+      return
+    }
+
+    // Apply the managed relay assignment through the existing model-set path
+    // (provider=custom + base_url + api_key + model), then verify + finish.
+    await setModelAssignment(res.assignment)
+    await ctx.requestGateway('reload.env').catch(() => undefined)
+
+    const runtime = await checkRuntime(ctx)
+
+    if (!runtime.ready) {
+      patch({
+        managedSubmitting: false,
+        managedError:
+          (runtime.reason ?? '').trim() ||
+          'Signed in, but the runtime could not reach the ApexNodes relay. Try again.'
+      })
+
+      return
+    }
+
+    patch({ managedSubmitting: false })
+    notifyReady('ApexNodes')
+    completeDesktopOnboarding()
+    ctx.onCompleted?.()
+  } catch (error) {
+    patch({ managedSubmitting: false, managedError: errMessage(error) })
+  }
+}
+
+// "Use my own provider instead" escape hatch from the managed sign-in panel:
+// drop the managed-first treatment for this session and show the BYOK picker.
+export function skipManagedForByok() {
+  patch({ managedAvailable: false, managedError: null, mode: 'oauth' })
+  void refreshProviders()
+}
+
 export async function refreshOnboarding(ctx: OnboardingContext) {
   // Manual mode (user opened the selector from a working app): never
   // auto-dismiss on runtime-ready — the whole point is to let them add /
@@ -528,6 +649,21 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
     ctx.onCompleted?.()
 
     return true
+  }
+
+  // Runtime isn't ready and the user isn't configured. Before falling to the
+  // BYOK picker, check whether this build leads with managed sign-in (zero-key).
+  // When managed is available, surface the managed panel instead of the picker
+  // — the user signs in once and gets chat with no key. An already-signed-in
+  // managed user would have passed the readiness check above (relay key seeded),
+  // so we only reach here for the not-yet-signed-in case.
+  const managed = await refreshManagedStatus()
+
+  if (managed?.enabled && !managed.signedIn) {
+    writeCachedConfigured(false)
+    patch({ configured: false, reason: null, needsCredential: false, managedAvailable: true })
+
+    return false
   }
 
   const state = $desktopOnboarding.get()

@@ -1,8 +1,24 @@
 import { describe, expect, it } from 'vitest'
 
-import { currentPickerSelection, displayModelName, formatModelStatusLabel, reasoningEffortLabel } from './model-status-label'
+import {
+  currentPickerSelection,
+  displayModelName,
+  formatModelStatusLabel,
+  managedModelDisplayName,
+  reasoningEffortLabel
+} from './model-status-label'
 
 describe('model-status-label', () => {
+  it('maps the managed relay model to its APEX display label', () => {
+    expect(managedModelDisplayName('deepseek-v4-pro')).toBe('deepseek-v4-pro-APEX')
+    // Provider-prefixed managed id still maps (modelBaseId strips the prefix).
+    expect(managedModelDisplayName('custom/deepseek-v4-pro')).toBe('deepseek-v4-pro-APEX')
+    // Non-managed ids pass through unchanged.
+    expect(managedModelDisplayName('openai/gpt-5.5')).toBe('openai/gpt-5.5')
+    expect(managedModelDisplayName('deepseek-v4-flash')).toBe('deepseek-v4-flash')
+    expect(managedModelDisplayName('')).toBe('')
+  })
+
   it('formats display names consistently', () => {
     expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8')
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')

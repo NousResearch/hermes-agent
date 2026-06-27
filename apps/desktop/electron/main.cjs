@@ -72,6 +72,15 @@ const {
   tokenPreview
 } = require('./connection-config.cjs')
 const {
+  accessTokenFromLogin,
+  buildManagedModelConfig,
+  defaultModelPath,
+  isManagedEnabled,
+  managedModelConfigYaml,
+  parseProvisionResponse,
+  resolveApexEndpoints
+} = require('./apex-managed.cjs')
+const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
@@ -307,37 +316,68 @@ const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
 const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstrap-complete')
 const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
-// ── ApexNodes V0.1: default-provider preset (DeepSeek) ─────────────────────
-// Ship DeepSeek as the out-of-box text model so a fresh install only needs the
-// user's own DeepSeek API key, entered via the native Settings → Providers
-// "DeepSeek" card (which writes DEEPSEEK_API_KEY — exactly the env var the
-// runtime's first-class `deepseek` provider reads). We pre-seed config.yaml
-// BEFORE the first-launch installer runs: install.sh only creates config.yaml
-// from its template when absent, so this seed wins WITHOUT forking the runtime.
+// Shell UI locale block, appended to every seed. The runtime writes
+// display.language: en by default, which beats the China-first zh fallback (it
+// only triggers when the key is absent); pre-seeding zh makes a fresh install
+// open in Simplified Chinese.
+const SEED_DISPLAY_BLOCK =
+  '# Shell UI locale. The runtime writes display.language: en by default, which\n' +
+  '# beats the China-first zh fallback (it only triggers when the key is\n' +
+  '# absent); pre-seeding zh makes a fresh install open in Simplified Chinese.\n' +
+  'display:\n' +
+  '  language: zh\n'
+
+// ── ApexNodes default model preset ─────────────────────────────────────────
+// We pre-seed config.yaml BEFORE the first-launch installer runs: install.sh
+// only creates config.yaml from its template when absent, so this seed wins
+// WITHOUT forking the runtime. Idempotent + non-destructive: an existing
+// config.yaml (returning user, or one they edited) is left untouched.
 //
-// Idempotent + non-destructive: an existing config.yaml (returning user, or one
-// they edited) is left untouched. We intentionally do NOT set model.base_url —
-// the `deepseek` provider already pins inference_base_url=https://api.deepseek
-// .com/v1, and a bare api.deepseek.com (missing /v1) would 404.
+// Two default paths (see apex-managed.cjs):
+//   - MANAGED (V0.2, preferred): a signed-in user's relay key is on disk, so we
+//     point the runtime's inference at the ApexNodes relay (provider=custom +
+//     base_url=/relay/v1 + the user's key + deepseek-v4-pro). Zero-key chat — the
+//     user pays via their cloud account; the relay decouples display vs routed
+//     model (hc-184). Uses the same model.base_url/api_key fields the "Local /
+//     custom endpoint" BYOK flow writes, so no new runtime plumbing.
+//   - BYOK (fallback): no relay key (managed disabled, or not signed in yet) →
+//     ship DeepSeek direct, so a fresh install only needs the user's own
+//     DEEPSEEK_API_KEY, added in Settings › Providers (the DeepSeek card).
+//     We intentionally do NOT set model.base_url here — the `deepseek` provider
+//     already pins inference_base_url=https://api.deepseek.com/v1, and a bare
+//     api.deepseek.com (missing /v1) would 404.
 function seedDefaultModelConfig() {
   try {
     const configPath = path.join(HERMES_HOME, 'config.yaml')
     if (fs.existsSync(configPath)) return
     fs.mkdirSync(HERMES_HOME, { recursive: true })
-    const seed =
-      '# Seeded by ApexNodes Desktop (V0.1).\n' +
-      '# DeepSeek is the default provider. Add your key in Settings › Providers\n' +
-      '# (the DeepSeek card), which writes DEEPSEEK_API_KEY.\n' +
-      'model:\n' +
-      '  default: deepseek-v4-pro\n' +
-      '  provider: deepseek\n' +
-      '# Shell UI locale. The runtime writes display.language: en by default, which\n' +
-      '# beats the China-first zh fallback (it only triggers when the key is\n' +
-      '# absent); pre-seeding zh makes a fresh install open in Simplified Chinese.\n' +
-      'display:\n' +
-      '  language: zh\n'
+
+    const managed = resolveManagedConfig()
+    let seed
+    if (defaultModelPath({ enabled: isManagedEnabled(process.env), key: managed.key }) === 'managed') {
+      const block = managedModelConfigYaml(
+        buildManagedModelConfig(managed.key, process.env, { baseUrl: managed.baseUrl, model: managed.model })
+      )
+      seed =
+        '# Seeded by ApexNodes Desktop (V0.2 — managed).\n' +
+        '# Inference is routed through the ApexNodes relay using your signed-in\n' +
+        '# cloud account. Switch to your own provider any time in\n' +
+        '# Settings › Providers.\n' +
+        block +
+        SEED_DISPLAY_BLOCK
+      rememberLog(`[apexnodes] seeded managed relay config at ${configPath}`)
+    } else {
+      seed =
+        '# Seeded by ApexNodes Desktop (BYOK).\n' +
+        '# DeepSeek is the default provider. Add your key in Settings › Providers\n' +
+        '# (the DeepSeek card), which writes DEEPSEEK_API_KEY.\n' +
+        'model:\n' +
+        '  default: deepseek-v4-pro\n' +
+        '  provider: deepseek\n' +
+        SEED_DISPLAY_BLOCK
+      rememberLog(`[apexnodes] seeded default DeepSeek (BYOK) config at ${configPath}`)
+    }
     fs.writeFileSync(configPath, seed, { encoding: 'utf8' })
-    rememberLog(`[apexnodes] seeded default DeepSeek config at ${configPath}`)
   } catch (err) {
     rememberLog(`[apexnodes] could not seed default config: ${err && err.message ? err.message : err}`)
   }
@@ -352,6 +392,13 @@ const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.j
 // ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
+// apex-managed.json holds the signed-in user's ApexNodes relay key (encrypted
+// with safeStorage, same as the remote-gateway token). It backs the managed-LLM
+// default path: seedDefaultModelConfig reads it to seed config.yaml with the
+// relay endpoint so a fresh, signed-in install gets zero-key chat. Kept in its
+// own file (not connection.json) because the managed-LLM credential and the
+// remote-gateway session are unrelated concerns.
+const DESKTOP_MANAGED_CONFIG_PATH = path.join(app.getPath('userData'), 'apex-managed.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -4211,6 +4258,197 @@ function writeDesktopConnectionConfig(config) {
   connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
 }
 
+// ── ApexNodes managed-LLM credential persistence ────────────────────────────
+// The provision-key response { api_key, base_url, model } is stored in
+// apex-managed.json under userData — api_key encrypted (safeStorage, same as the
+// remote-gateway token); base_url + model in clear (server-truth routing, not
+// secrets). Read synchronously by seedDefaultModelConfig at boot, so it must be
+// cheap and never throw.
+
+function readManagedConfig() {
+  try {
+    const raw = fs.readFileSync(DESKTOP_MANAGED_CONFIG_PATH, 'utf8')
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+// The stored managed config: { key, baseUrl, model }. key is '' when none is
+// stored / managed is disabled. Centralizes the "do we have a managed
+// credential?" question for the boot seed, onboarding gate, and IPC status. The
+// server is the source of truth for baseUrl/model (from provision-key); env
+// defaults only fill gaps.
+function resolveManagedConfig() {
+  if (!isManagedEnabled(process.env)) {
+    return { key: '', baseUrl: '', model: '' }
+  }
+  const endpoints = resolveApexEndpoints(process.env)
+  const stored = readManagedConfig()
+  // An explicit env key (e.g. a CI/dev/admin-provisioned key for real-machine
+  // testing) wins over stored state, using env/default base_url + model.
+  const fromEnv = String(process.env.APEXNODES_RELAY_KEY || '').trim()
+  if (fromEnv) {
+    return { key: fromEnv, baseUrl: endpoints.relayBaseUrl, model: endpoints.model }
+  }
+  return {
+    key: decryptDesktopSecret(stored.relayKey),
+    baseUrl: String(stored.baseUrl || '').trim() || endpoints.relayBaseUrl,
+    model: String(stored.model || '').trim() || endpoints.model
+  }
+}
+
+// Just the decrypted relay key (or '') — thin wrapper for call sites that only
+// need to answer "is the user signed in to managed?".
+function resolveManagedRelayCredential() {
+  return resolveManagedConfig().key
+}
+
+// Persist the provision-key result. Pass null/empty to clear.
+function writeManagedConfig(provisioned) {
+  fs.mkdirSync(path.dirname(DESKTOP_MANAGED_CONFIG_PATH), { recursive: true })
+  const key = provisioned && typeof provisioned.apiKey === 'string' ? provisioned.apiKey.trim() : ''
+  const next = key
+    ? {
+        relayKey: encryptDesktopSecret(key),
+        baseUrl: String(provisioned.baseUrl || '').trim(),
+        model: String(provisioned.model || '').trim(),
+        savedAt: Date.now()
+      }
+    : {}
+  writeFileAtomic(DESKTOP_MANAGED_CONFIG_PATH, JSON.stringify(next, null, 2))
+}
+
+function clearManagedRelayCredential() {
+  try {
+    fs.rmSync(DESKTOP_MANAGED_CONFIG_PATH, { force: true })
+  } catch {
+    // Best effort.
+  }
+}
+
+// POST JSON to an ApexNodes auth endpoint, optionally with a Bearer JWT. Reuses
+// the oauth-net-request helpers (serializeJsonBody / setJsonRequestHeaders) +
+// Electron's net stack, the same transport fetchJsonViaOauthSession uses — but
+// WITHOUT the OAuth cookie session (managed-LLM auth is JWT Bearer, a separate
+// concern from the remote-gateway cookie jar).
+function apexAuthPostJson(url, { body, bearer, timeoutMs = 12_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    let parsed
+    try {
+      parsed = new URL(url)
+    } catch (error) {
+      reject(new Error(`Invalid ApexNodes URL: ${error.message}`))
+      return
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported ApexNodes URL protocol: ${parsed.protocol}`))
+      return
+    }
+
+    const payload = serializeJsonBody(body)
+    const request = electronNet.request({ method: 'POST', url, redirect: 'follow' })
+    setJsonRequestHeaders(request)
+    if (bearer) {
+      request.setHeader('Authorization', `Bearer ${bearer}`)
+    }
+
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      try {
+        request.abort()
+      } catch {
+        // already finished
+      }
+      reject(new Error(`Timed out connecting to ApexNodes after ${timeoutMs}ms`))
+    }, timeoutMs)
+
+    request.on('response', res => {
+      const chunks = []
+      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      res.on('end', () => {
+        if (timedOut) return
+        clearTimeout(timer)
+        const text = Buffer.concat(chunks).toString('utf8')
+        const statusCode = res.statusCode || 500
+        if (statusCode >= 400) {
+          const err = new Error(`${statusCode}: ${text || ''}`)
+          err.statusCode = statusCode
+          reject(err)
+          return
+        }
+        if (!text) {
+          resolve(null)
+          return
+        }
+        try {
+          resolve(JSON.parse(text))
+        } catch {
+          reject(new Error(`Invalid JSON from ${url} (status ${statusCode}): ${text.slice(0, 200)}`))
+        }
+      })
+    })
+    request.on('error', error => {
+      if (timedOut) return
+      clearTimeout(timer)
+      reject(error)
+    })
+    if (payload) request.write(payload)
+    request.end()
+  })
+}
+
+/**
+ * Sign in to ApexNodes with email + password and provision the managed relay
+ * key for this install via the P0 contract:
+ *   POST {API_BASE}/api/v1/desktop/provision-key  (Bearer JWT, body {})
+ *   200 → { api_key, base_url, model }
+ *
+ * Returns { ok, hasRelayKey }:
+ *   - ok=true, hasRelayKey=true  → key + base_url + model stored; managed live.
+ *   - ok=true, hasRelayKey=false → login worked but provision-key isn't
+ *     available yet (404/501) — caller falls back to BYOK.
+ *
+ * provision-key is isolated here so the desktop degrades gracefully until the
+ * server endpoint lands: a missing endpoint is NOT a login failure.
+ */
+async function apexManagedSignIn({ email, password }) {
+  const endpoints = resolveApexEndpoints(process.env)
+
+  const loginBody = await apexAuthPostJson(endpoints.loginUrl, {
+    body: { email: String(email || '').trim(), password: String(password || '') }
+  })
+  const accessToken = accessTokenFromLogin(loginBody)
+  if (!accessToken) {
+    throw new Error('ApexNodes sign-in did not return an access token.')
+  }
+
+  // Provision a relay-valid key for this user. Tolerate "endpoint not deployed
+  // yet" (404/501 or any fetch error): keep the BYOK fallback rather than
+  // failing the sign-in. Use base_url + model FROM THE RESPONSE (server-truth).
+  let provisioned = null
+  try {
+    const body = await apexAuthPostJson(endpoints.provisionKeyUrl, {
+      bearer: accessToken,
+      body: {}
+    })
+    provisioned = parseProvisionResponse(body, process.env)
+  } catch (error) {
+    rememberLog(
+      `[apexnodes] provision-key unavailable (${error && error.message ? error.message : error}); ` +
+        'managed default disabled, falling back to BYOK.'
+    )
+  }
+
+  if (provisioned) {
+    writeManagedConfig(provisioned)
+    return { ok: true, hasRelayKey: true }
+  }
+  return { ok: true, hasRelayKey: false }
+}
+
 // Returns the desktop's chosen profile name, or null when unset. "default" is
 // a valid stored value (pins the root HERMES_HOME explicitly); null means "no
 // preference" and preserves the legacy launch (no --profile flag).
@@ -5496,6 +5734,69 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   }
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
+})
+
+// ── ApexNodes managed-LLM IPC ───────────────────────────────────────────────
+// status: whether the managed default is enabled for this build and whether the
+// user is already signed in (relay key on disk). The renderer uses this to skip
+// the BYOK picker on first run and show "managed, zero-key" instead.
+ipcMain.handle('hermes:managed:status', async () => {
+  const endpoints = resolveApexEndpoints(process.env)
+  const managed = resolveManagedConfig()
+  return {
+    enabled: isManagedEnabled(process.env),
+    signedIn: Boolean(managed.key),
+    // When signed in, reflect the server-provided routing (base_url/model);
+    // otherwise the env/default for display.
+    model: managed.model || endpoints.model,
+    modelDisplay: endpoints.modelDisplay,
+    provider: endpoints.provider,
+    baseUrl: managed.baseUrl || endpoints.relayBaseUrl
+  }
+})
+// signIn: email+password → provision relay key (POST /api/v1/desktop/provision-key).
+// Returns the model assignment the renderer should apply via /api/model/set (the
+// SAME path the BYOK local-endpoint flow uses), so applying managed needs no new
+// runtime plumbing. When provision-key isn't deployed yet, hasRelayKey=false and
+// `assignment` is null — the renderer then falls back to the BYOK onboarding.
+ipcMain.handle('hermes:managed:signIn', async (_event, payload) => {
+  const email = String(payload?.email || '').trim()
+  const password = String(payload?.password || '')
+  if (!email || !password) {
+    return { ok: false, message: 'Email and password are required.' }
+  }
+  try {
+    const result = await apexManagedSignIn({ email, password })
+    if (!result.hasRelayKey) {
+      return { ok: true, hasRelayKey: false, assignment: null }
+    }
+    // Build the assignment from the STORED provision result (server-truth
+    // base_url + model), not env defaults.
+    const managed = resolveManagedConfig()
+    const block = buildManagedModelConfig(managed.key, process.env, {
+      baseUrl: managed.baseUrl,
+      model: managed.model
+    })
+    return {
+      ok: true,
+      hasRelayKey: true,
+      assignment: {
+        scope: 'main',
+        provider: block.provider,
+        model: block.default,
+        base_url: block.base_url,
+        api_key: block.api_key
+      }
+    }
+  } catch (error) {
+    return { ok: false, message: error && error.message ? error.message : String(error) }
+  }
+})
+// signOut: forget the relay key. The renderer is responsible for re-pointing the
+// model at a BYOK provider if the user wants to keep chatting.
+ipcMain.handle('hermes:managed:signOut', async () => {
+  clearManagedRelayCredential()
+  return { ok: true }
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))

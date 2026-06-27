@@ -98,6 +98,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const leftToolbarTools: TitlebarTool[] = [
     {
+      // On mobile the drawer overlays the trigger — leaving it visible inside
+      // the open drawer reads as a duplicate close affordance and is confusing.
+      // The drawer already closes on tap-outside, so just hide the trigger
+      // while it's open.
+      hidden: mobileStandalone && sidebarOpen,
       icon: <Codicon name={mobileStandalone ? 'menu' : 'layout-sidebar-left'} />,
       id: 'sidebar',
       label: leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar,

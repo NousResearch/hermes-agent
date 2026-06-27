@@ -1129,6 +1129,20 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     return auth_file
 
 
+def _codex_provider_state_has_usable_tokens(state: Dict[str, Any]) -> bool:
+    tokens = state.get("tokens")
+    if not isinstance(tokens, dict):
+        return False
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    return (
+        isinstance(access_token, str)
+        and bool(access_token.strip())
+        and isinstance(refresh_token, str)
+        and bool(refresh_token.strip())
+    )
+
+
 def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
     """Return a provider's persisted state.
 
@@ -1144,6 +1158,18 @@ def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Option
     if isinstance(providers, dict):
         state = providers.get(provider_id)
         if isinstance(state, dict):
+            if provider_id != "openai-codex" or _codex_provider_state_has_usable_tokens(state):
+                return dict(state)
+            global_store = _load_global_auth_store()
+            if global_store:
+                global_providers = global_store.get("providers")
+                if isinstance(global_providers, dict):
+                    global_state = global_providers.get(provider_id)
+                    if (
+                        isinstance(global_state, dict)
+                        and _codex_provider_state_has_usable_tokens(global_state)
+                    ):
+                        return dict(global_state)
             return dict(state)
 
     # Read-only fallback to the global-root auth store (profile mode only;
@@ -3891,13 +3917,8 @@ def _pool_codex_access_token() -> str:
     the original AuthError).
     """
     try:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-        pool = auth_store.get("credential_pool")
-        if not isinstance(pool, dict):
-            return ""
-        entries = pool.get("openai-codex")
-        if not isinstance(entries, list):
+        entries = read_credential_pool("openai-codex")
+        if not entries:
             return ""
 
         def _entry_usable(entry: Dict[str, Any]) -> bool:

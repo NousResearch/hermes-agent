@@ -81,8 +81,10 @@ def terminate_pid(pid: int, *, force: bool = False) -> None:
     because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
     """
     if force and _IS_WINDOWS:
+        from hermes_cli import _subprocess_compat
+
         try:
-            result = subprocess.run(
+            result = _subprocess_compat.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 text=True,

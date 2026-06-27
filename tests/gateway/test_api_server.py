@@ -3428,6 +3428,25 @@ class TestSessionIdHeader:
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
 
+    @pytest.mark.asyncio
+    async def test_session_id_continuation_rejects_oversized(self, auth_adapter):
+        """An over-long X-Hermes-Session-Id is rejected with 400 before the agent runs.
+
+        Matches the cap already enforced on create-session and
+        X-Hermes-Session-Key, so a caller can't push a multi-kilobyte id
+        into SessionDB lookups, the response-header echo, or logs.
+        """
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "x" * 1000, "Authorization": "Bearer sk-secret"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                )
+            assert resp.status == 400
+            mock_run.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # X-Hermes-Session-Key header (long-term memory scoping)

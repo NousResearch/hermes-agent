@@ -1038,6 +1038,30 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return raw, None
 
+    def _validate_session_id(self, session_id: str) -> Optional["web.Response"]:
+        """Validate a caller-supplied session identifier.
+
+        Shared by every path where a client can name a session — create,
+        fork, and ``X-Hermes-Session-Id`` continuation — so the same bounds
+        apply uniformly.  The create path historically validated inline while
+        the sibling paths drifted: fork and continuation rejected control
+        characters but never enforced the length cap.
+
+        Rejects control characters (header-injection guard on the echo path)
+        and values longer than ``_MAX_SESSION_HEADER_LEN`` (memory guard,
+        matching the ``X-Hermes-Session-Key`` cap).  Returns a 400
+        ``web.Response`` on failure, or ``None`` when the id is valid.
+        """
+        if not session_id or re.search(r'[\r\n\x00]', session_id):
+            return web.json_response(
+                _openai_error("Invalid session ID", code="invalid_session_id"), status=400
+            )
+        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
+            return web.json_response(
+                _openai_error("Session ID too long", code="invalid_session_id"), status=400
+            )
+        return None
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -1481,10 +1505,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         raw_id = body.get("id") or body.get("session_id")
         session_id = str(raw_id).strip() if raw_id else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        if not session_id or re.search(r'[\r\n\x00]', session_id):
-            return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
-        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
-            return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
+        id_err = self._validate_session_id(session_id)
+        if id_err:
+            return id_err
         if db.get_session(session_id):
             return web.json_response(_openai_error(f"Session already exists: {session_id}", code="session_exists"), status=409)
 
@@ -1586,8 +1609,9 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = self._ensure_session_db()
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
-        if not fork_id or re.search(r'[\r\n\x00]', fork_id):
-            return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
+        id_err = self._validate_session_id(fork_id)
+        if id_err:
+            return id_err
         if db.get_session(fork_id):
             return web.json_response(_openai_error(f"Session already exists: {fork_id}", code="session_exists"), status=409)
 
@@ -1896,12 +1920,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=403,
                 )
-            # Sanitize: reject control characters that could enable header injection.
-            if re.search(r'[\r\n\x00]', provided_session_id):
-                return web.json_response(
-                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
-                    status=400,
-                )
+            # Sanitize: reject control characters (header-injection guard) and
+            # over-long ids, matching the create/fork and X-Hermes-Session-Key caps.
+            id_err = self._validate_session_id(provided_session_id)
+            if id_err:
+                return id_err
             session_id = provided_session_id
             try:
                 db = self._ensure_session_db()

@@ -149,7 +149,7 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
-    def test_thread_start_passes_cwd_only(self):
+    def test_thread_start_passes_cwd_without_optional_fields_by_default(self):
         """thread/start carries cwd. We intentionally do NOT pass `permissions`
         on this codex version (experimentalApi-gated + requires matching
         config.toml [permissions] table). Letting codex use its default
@@ -160,6 +160,34 @@ class TestLifecycle:
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
+        assert "baseInstructions" not in params
+        assert "developerInstructions" not in params
+
+    def test_thread_start_passes_non_empty_instruction_params(self):
+        client = FakeClient()
+        s = make_session(
+            client,
+            base_instructions="SOUL identity",
+            developer_instructions="Hermes runtime guidance",
+        )
+        s.ensure_started()
+        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert params == {
+            "cwd": "/tmp",
+            "baseInstructions": "SOUL identity",
+            "developerInstructions": "Hermes runtime guidance",
+        }
+
+    def test_thread_start_omits_empty_instruction_params(self):
+        client = FakeClient()
+        s = make_session(
+            client,
+            base_instructions="",
+            developer_instructions="   ",
+        )
+        s.ensure_started()
+        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert params == {"cwd": "/tmp"}
 
     def test_close_idempotent(self):
         client = FakeClient()

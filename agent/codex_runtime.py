@@ -17,10 +17,11 @@ compatibility.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
+
+from agent.prompt_builder import load_soul_md
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +254,9 @@ def run_codex_app_server_turn(
         from agent.runtime_cwd import resolve_agent_cwd
 
         cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
+        base_instructions = None
+        if agent.load_soul_identity or not agent.skip_context_files:
+            base_instructions = load_soul_md()
         # Approval callback: defer to Hermes' standard prompt flow if a
         # CLI thread has installed one. Gateway / cron contexts get the
         # codex-side fail-closed default.
@@ -278,11 +282,14 @@ def run_codex_app_server_turn(
             except Exception:
                 logger.debug("codex tool-progress callback raised", exc_info=True)
 
-        agent._codex_session = CodexAppServerSession(
-            cwd=cwd,
-            approval_callback=approval_callback,
-            on_event=_on_codex_event,
-        )
+        session_kwargs = {
+            "cwd": cwd,
+            "approval_callback": approval_callback,
+            "on_event": _on_codex_event,
+        }
+        if base_instructions:
+            session_kwargs["base_instructions"] = base_instructions
+        agent._codex_session = CodexAppServerSession(**session_kwargs)
 
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early

@@ -7,7 +7,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
@@ -410,11 +410,24 @@ class MCPServerTransportMixin:
         common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
                   self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
         if config.get("transport") == "sse":
-            transport, label = self._sse_transport(*common), "SSE"
-        else:
-            transport = self._streamable_http_transport(*common, configured_header_names)
-            label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"
-        return await self._serve_transport(transport, label, float(connect_timeout))
+            return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
+        transport = self._streamable_http_transport(*common, configured_header_names)
+        label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"
+        try:
+            return await self._serve_transport(transport, label, float(connect_timeout))
+        except Exception as exc:
+            # SSE-only servers (e.g. WigAI for Bitwig Studio) reject the Streamable HTTP
+            # initialize request with 400 Bad Request, previously a permanent failure with
+            # 0 active tools unless the user set ``transport: sse`` (#53676). Fall back to
+            # SSE automatically on the initial connect; reconnects are excluded so a genuine
+            # 400 on an established transport is not silently masked.
+            root = _unwrap_exception_group(exc) if isinstance(exc, BaseExceptionGroup) else exc
+            if (self._ready.is_set()
+                    or getattr(getattr(root, "response", None), "status_code", None) != 400):
+                raise
+            logger.warning("MCP server '%s': Streamable HTTP returned 400, "
+                           "falling back to SSE transport", self.name)
+            return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
 
     # -------------------------------------------------------------- discovery
 

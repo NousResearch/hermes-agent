@@ -84,6 +84,10 @@ def create_swarm(
     root_title: Optional[str] = None,
     verifier_title: str = "Verify swarm outputs",
     synthesizer_title: str = "Synthesize swarm outputs",
+    verifier_body: Optional[str] = None,
+    synthesizer_body: Optional[str] = None,
+    verifier_skills: Optional[list[str]] = None,
+    synthesizer_skills: Optional[list[str]] = None,
     tenant: Optional[str] = None,
     created_by: str = "swarm-orchestrator",
     workspace_kind: str = "scratch",
@@ -173,16 +177,24 @@ def create_swarm(
         )
         worker_ids.append(worker_id)
 
-    verifier_body = (
-        "Review every worker handoff and blackboard update. Gate the swarm: "
-        "complete only with metadata {\"gate\": \"pass\"} when evidence is "
-        "sufficient; otherwise block with exact missing work."
-        + context_suffix
-    )
+    # Resolve verifier body: custom if provided, generic fallback otherwise
+    if verifier_body is None:
+        _verifier_body = (
+            "Review every worker handoff and blackboard update. Gate the swarm: "
+            "complete only with metadata {\"gate\": \"pass\"} when evidence is "
+            "sufficient; otherwise block with exact missing work."
+        )
+    else:
+        _verifier_body = verifier_body
+    _verifier_body += context_suffix
+
+    # Resolve verifier skills: custom if provided, default otherwise
+    _verifier_skills = verifier_skills if verifier_skills is not None else ["requesting-code-review"]
+
     verifier = kb.create_task(
         conn,
         title=verifier_title,
-        body=verifier_body,
+        body=_verifier_body,
         assignee=verifier_assignee,
         created_by=created_by,
         parents=worker_ids,
@@ -190,18 +202,26 @@ def create_swarm(
         priority=priority,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
-        skills=["requesting-code-review"],
+        skills=_verifier_skills,
     )
 
-    synthesizer_body = (
-        "Synthesize the verified worker outputs into the final deliverable. "
-        "Do not start until the verifier has passed the gate."
-        + context_suffix
-    )
+    # Resolve synthesizer body: custom if provided, generic fallback otherwise
+    if synthesizer_body is None:
+        _synthesizer_body = (
+            "Synthesize the verified worker outputs into the final deliverable. "
+            "Do not start until the verifier has passed the gate."
+        )
+    else:
+        _synthesizer_body = synthesizer_body
+    _synthesizer_body += context_suffix
+
+    # Resolve synthesizer skills: custom if provided, default otherwise
+    _synthesizer_skills = synthesizer_skills if synthesizer_skills is not None else ["humanizer"]
+
     synthesizer = kb.create_task(
         conn,
         title=synthesizer_title,
-        body=synthesizer_body,
+        body=_synthesizer_body,
         assignee=synthesizer_assignee,
         created_by=created_by,
         parents=[verifier],
@@ -209,7 +229,7 @@ def create_swarm(
         priority=priority,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
-        skills=["humanizer"],
+        skills=_synthesizer_skills,
     )
 
     created = SwarmCreated(root, worker_ids, verifier, synthesizer)

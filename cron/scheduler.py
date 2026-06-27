@@ -3046,11 +3046,4 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
 
 if __name__ == "__main__":
-    # Standalone background scheduler: drop any console a uv pythonw→python
-    # re-exec auto-allocated. No-op on POSIX / when run in-gateway.
-    try:
-        import hermes_bootstrap
-        hermes_bootstrap.detach_orphan_console()
-    except Exception:
-        pass
     tick(verbose=True)

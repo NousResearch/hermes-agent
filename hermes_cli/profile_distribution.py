@@ -71,7 +71,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
-from hermes_cli import _subprocess_compat
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +377,7 @@ def _git_clone(url: str, dest: Path) -> None:
     if re.match(r"^github\.com/[\w.-]+/[\w.-]+/?$", url):
         url = f"https://{url.rstrip('/')}"
     try:
-        _subprocess_compat.run(
+        subprocess.run(
             ["git", "clone", "--depth", "1", url, str(dest)],
             check=True,
             capture_output=True,

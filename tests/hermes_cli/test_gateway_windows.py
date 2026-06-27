@@ -29,31 +29,6 @@ def test_schtasks_fallback_does_not_hide_unknown_errors():
     assert gateway_windows._should_fall_back(1, "ERROR: The system cannot find the file specified.") is False
 
 
-def test_noninteractive_stop_skips_schtasks_query(monkeypatch, tmp_path):
-    """Desktop-triggered restarts must not invoke schtasks.exe.
-
-    schtasks is a console-subsystem binary; on Windows Terminal default hosts it
-    can visibly pop a terminal even for `/Query`. Noninteractive desktop actions
-    already stop the known gateway PID directly, so service-manager probing is
-    unnecessary.
-    """
-
-    script = tmp_path / "Hermes_Gateway.cmd"
-    script.write_text("", encoding="utf-8")
-
-    monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
-    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: tmp_path / "Hermes_Gateway.vbs")
-    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: tmp_path / "Hermes_Gateway.cmd")
-    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: pytest.fail("must not call schtasks"))
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-    monkeypatch.setattr(gateway_windows, "_collect_gateway_stop_pids", lambda pid=None: [])
-    monkeypatch.setattr(gateway_windows, "_force_terminate_known_gateway_pids", lambda pids: 0)
-
-    gateway_windows.stop()
-
-
 def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
     """A broken/empty locale must not leave us without a decoder (issue #38172)."""
 
@@ -135,23 +110,6 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
     assert str(site_packages) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
-
-
-def test_restart_relaunches_directly_without_start_service_probe(monkeypatch):
-    calls = []
-
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows, "stop", lambda: calls.append("stop"))
-    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_absent", lambda *a, **k: True)
-    monkeypatch.setattr(gateway_windows.time, "sleep", lambda *_a, **_k: None)
-    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: 4321)
-    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: calls.append(("report", via)))
-    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: [4321])
-    monkeypatch.setattr(gateway_windows, "start", lambda: pytest.fail("restart must not call start()"))
-
-    gateway_windows.restart()
-
-    assert calls == ["stop", ("report", "direct spawn (PID 4321)")]
 
 
 class TestStableWindowsGatewayWorkingDir:

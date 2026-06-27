@@ -24,7 +24,6 @@ from hermes_constants import get_hermes_home
 from hermes_cli.profiles import _get_default_hermes_home
 from plugins.plugin_utils import SingletonSlot
 from typing import Any, TYPE_CHECKING
-from hermes_cli import _subprocess_compat
 
 if TYPE_CHECKING:
     from honcho import Honcho
@@ -626,7 +625,7 @@ class HonchoClientConfig:
         import subprocess
 
         try:
-            root = _subprocess_compat.run(
+            root = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
                 capture_output=True, text=True, cwd=cwd, timeout=5,
                 stdin=subprocess.DEVNULL,

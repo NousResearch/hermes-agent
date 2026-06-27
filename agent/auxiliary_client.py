@@ -3624,6 +3624,37 @@ def _resolve_auto(
     # config.yaml (auxiliary.<task>.provider) still win over this.
     main_provider = str(runtime_provider or _read_main_provider() or "")
     main_model = str(runtime_model or _read_main_model() or "")
+
+    # MoA virtual provider: the "model" is a preset name (e.g. "opus-gpt") and
+    # there is no real "moa" HTTP endpoint, so resolving an aux client against
+    # provider="moa"/model=<preset> sends the preset name as the model id and
+    # the provider 400s ("opus-gpt is not a valid model ID"). Auxiliary tasks
+    # (title generation, compression, vision, …) don't need the reference
+    # fan-out — they should run on the aggregator, which is the preset's acting
+    # model. Resolve the MoA preset to its aggregator slot and continue Step 1
+    # with that real provider+model. Mirrors the MoA context-length resolution.
+    if main_provider == "moa":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import resolve_moa_preset
+
+            _preset = resolve_moa_preset(load_config().get("moa") or {}, main_model)
+            _agg = _preset.get("aggregator") or {}
+            _agg_provider = str(_agg.get("provider") or "").strip()
+            _agg_model = str(_agg.get("model") or "").strip()
+            if _agg_provider and _agg_model and _agg_provider.lower() != "moa":
+                main_provider = _agg_provider
+                main_model = _agg_model
+                # The MoA virtual runtime carries a non-HTTP base_url
+                # ("moa://local") and a placeholder api_key; they belong to the
+                # facade, not the aggregator's real provider. Drop them so the
+                # aggregator resolves through its own provider credentials.
+                runtime_base_url = ""
+                runtime_api_key = ""
+                runtime_api_mode = ""
+        except Exception:
+            logger.debug("MoA aux resolution to aggregator failed", exc_info=True)
+
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider

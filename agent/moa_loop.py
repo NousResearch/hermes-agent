@@ -55,6 +55,13 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         rt = resolve_runtime_provider(requested=provider, target_model=model)
+        resolved_provider = str(rt.get("provider") or provider).strip().lower()
+        # call_llm treats an explicit base_url as a custom endpoint. That is
+        # correct for ordinary OpenAI-compatible targets, but wrong for OAuth /
+        # adapter-backed providers whose provider branch adds auth headers and
+        # request-shape adapters. Keep those providers identified by name.
+        if resolved_provider in {"openai-codex", "xai-oauth"}:
+            return out
         # Pass the resolved endpoint through so call_llm builds the request for
         # the provider's actual API surface instead of auto-detecting. base_url
         # routes call_llm to the right adapter (incl. anthropic_messages mode);

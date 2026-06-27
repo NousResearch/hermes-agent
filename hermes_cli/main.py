@@ -258,6 +258,10 @@ import json
 import shutil
 import stat
 import subprocess
+from hermes_cli._subprocess_compat import (
+    windows_detach_popen_kwargs,
+    windows_hide_flags,
+)
 from pathlib import Path
 from typing import Optional
 
@@ -2105,7 +2109,7 @@ def _launch_tui(
     code: Optional[int] = None
     try:
         try:
-            code = subprocess.call(argv, cwd=str(cwd), env=env)
+            code = subprocess.call(argv, cwd=str(cwd), env=env)  # windows-footgun: ok — foreground TUI hand-off, console is intentional
         except KeyboardInterrupt:
             code = 130
 
@@ -2618,6 +2622,7 @@ def cmd_whatsapp(args):
             ],
             cwd=str(bridge_dir),
             env=with_hermes_node_path(),
+            creationflags=windows_hide_flags(),
         )
     except KeyboardInterrupt:
         pass
@@ -5289,7 +5294,7 @@ def _redownload_electron_dist(
     if mirror:
         dl_env["ELECTRON_MIRROR"] = mirror
     try:
-        subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False)
+        subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False, creationflags=windows_hide_flags())
     except OSError:
         return False
     return _electron_dist_ok(project_root)
@@ -5409,7 +5414,7 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         return
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False, creationflags=windows_hide_flags())
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
@@ -5474,7 +5479,7 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
 
     print("→ Configuring Electron Linux sandbox helper (sudo required)...")
     for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
-        if subprocess.run(command, check=False).returncode != 0:
+        if subprocess.run(command, check=False, creationflags=windows_hide_flags()).returncode != 0:
             print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
             return False
     return True
@@ -5585,7 +5590,7 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
-            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False, creationflags=windows_hide_flags())
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -5612,7 +5617,7 @@ def cmd_gui(args: argparse.Namespace):
                     # The purge can't remove a win-unpacked tree whose Hermes.exe
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
-                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False, creationflags=windows_hide_flags())
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -5628,7 +5633,7 @@ def cmd_gui(args: argparse.Namespace):
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)
-                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
+                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False, creationflags=windows_hide_flags())
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
@@ -5670,7 +5675,7 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False, creationflags=windows_hide_flags())
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:
@@ -5682,7 +5687,7 @@ def cmd_gui(args: argparse.Namespace):
         sys.exit(1)
 
     print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
-    launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)
+    launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False, creationflags=windows_hide_flags())
     sys.exit(launch_result.returncode)
 
 
@@ -5725,6 +5730,8 @@ def _find_stale_dashboard_pids(
 
     try:
         if sys.platform == "win32":
+            from hermes_cli import _subprocess_compat
+
             # wmic may emit text in the system code page (for example cp936
             # on zh-CN systems), not UTF-8. In text mode, subprocess output
             # decoding depends on Python's configuration (locale-dependent
@@ -5732,7 +5739,7 @@ def _find_stale_dashboard_pids(
             # here is errors="ignore": it prevents a reader-thread
             # UnicodeDecodeError from leaving result.stdout=None and turning
             # the later .split() into an AttributeError (#17049).
-            result = subprocess.run(
+            result = _subprocess_compat.run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
                 capture_output=True,
                 text=True,
@@ -5972,9 +5979,11 @@ def _kill_stale_dashboard_processes(
     failed: list[tuple[int, str]] = []
 
     if sys.platform == "win32":
+        from hermes_cli import _subprocess_compat
+
         for pid in pids:
             try:
-                result = subprocess.run(
+                result = _subprocess_compat.run(
                     ["taskkill", "/PID", str(pid), "/F"],
                     capture_output=True,
                     text=True,
@@ -6226,6 +6235,7 @@ def _update_via_zip(args):
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 cwd=PROJECT_ROOT,
                 check=True,
+                creationflags=windows_hide_flags(),
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
@@ -6315,6 +6325,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
         check=True,
+        creationflags=windows_hide_flags(),
     )
     stash_ref = subprocess.run(
         git_cmd + ["rev-parse", "--verify", "refs/stash"],
@@ -6735,6 +6746,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             git_cmd + ["pull", "--ff-only", "upstream", "main"],
             cwd=cwd,
             check=True,
+            creationflags=windows_hide_flags(),
         )
     except subprocess.CalledProcessError:
         print(
@@ -7006,6 +7018,7 @@ def _run_install_with_heartbeat(
             cwd=PROJECT_ROOT,
             check=True,
             env=env,
+            creationflags=windows_hide_flags(),
         )
     finally:
         done.set()
@@ -7803,6 +7816,7 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
             pip_cmd + ["install", "uv", "--only-binary", ":all:"],
             cwd=PROJECT_ROOT,
             check=False,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return None
@@ -8904,7 +8918,7 @@ def _cmd_update_pip(args):
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
 
     print(f"→ Running: {' '.join(cmd)}")
-    run_kwargs = {}
+    run_kwargs = {"creationflags": windows_hide_flags()}
     if export_virtualenv:
         run_kwargs["env"] = {**os.environ, "VIRTUAL_ENV": sys.prefix}
     result = subprocess.run(cmd, **run_kwargs)
@@ -9001,7 +9015,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # On Windows, git can fail with "unable to write loose object file: Invalid argument"
     # due to filesystem atomicity issues. Set the recommended workaround.
     if sys.platform == "win32" and git_dir.exists():
-        subprocess.run(
+        _subprocess_compat.run(
             [
                 "git",
                 "-c",
@@ -9377,6 +9391,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                     cwd=PROJECT_ROOT,
                     check=True,
+                    creationflags=windows_hide_flags(),
                 )
             if _is_termux_env():
                 install_group = "termux-all"
@@ -11468,7 +11483,7 @@ def cmd_dashboard(args):
         # re-executing the dashboard for a non-default profile.  Use
         # subprocess.Popen + sys.exit() on Windows to avoid the crash.
         if sys.platform == "win32":
-            proc = subprocess.Popen(reexec_argv, env=env)
+            proc = subprocess.Popen(reexec_argv, env=env)  # windows-footgun: ok — foreground re-exec, child owns the console
             sys.exit(proc.wait())
         else:
             os.execvpe(sys.executable, reexec_argv, env)

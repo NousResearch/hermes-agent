@@ -42,6 +42,7 @@ from hermes_cli.psutil_android import (
     PsutilAndroidInstallError,
     prepare_patched_psutil_sdist,
 )
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 
 
@@ -90,7 +91,7 @@ def main() -> int:
 
         cmd = install_cmd_prefix + ["install", "--no-build-isolation", str(src_root)]
         print(f"  $ {' '.join(cmd)}")
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, creationflags=windows_hide_flags())
         if result.returncode != 0:
             return result.returncode
 

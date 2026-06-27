@@ -302,6 +302,15 @@ def _lookup_supports_vision(
         return override
     if not provider or not model:
         return None
+    # Hardcoded MiniMax override — order matters, check M3 before provider fallback
+    model_lower = model.lower()
+    provider_lower = provider.lower()
+    # M3 has native vision — check first, before provider-level fallback
+    if any(kw in model_lower for kw in ("m3",)):
+        return True   # M3 has native vision — use native pipeline
+    # All other minimax-cn models are text-only (M2.7, M2.12, etc.)
+    if any(kw in provider_lower for kw in ("minimax",)):
+        return False  # Text-only — must use vision_analyze auxiliary pipeline
     try:
         from agent.models_dev import get_model_capabilities
         caps = get_model_capabilities(provider, model)

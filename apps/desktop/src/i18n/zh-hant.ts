@@ -1772,8 +1772,11 @@ export const zhHant = defineLocale({
     recommended: '建議',
     connected: '已連線',
     featuredPitch: '一個訂閱，300+ 前沿模型 — 執行 Hermes 的建議方式',
+    apiKeyProviderTitle: 'API 金鑰提供方',
+    apiKeyProviderPitch: '使用 TrustedRouter、OpenRouter 或直接模型提供方金鑰',
     openRouterPitch: '一個金鑰，數百個模型 — 穩定的預設選擇',
     apiKeyOptions: {
+      trustedrouter: { short: '可驗證路由器', description: '透過 TrustedRouter.com 使用 OpenAI 相容路由。' },
       openrouter: { short: '一個金鑰，多個模型', description: '用一個金鑰存取數百個模型。適合新安裝的預設選擇。' },
       openai: { short: 'GPT 等級模型', description: '直接存取 OpenAI 模型。' },
       gemini: { short: 'Gemini 模型', description: '直接存取 Google Gemini 模型。' },

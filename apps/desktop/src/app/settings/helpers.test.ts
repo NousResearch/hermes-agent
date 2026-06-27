@@ -123,6 +123,7 @@ describe('settings helpers', () => {
       expect(providerGroup('XAI_API_KEY')).toBe('xAI')
       expect(providerGroup('NOUS_API_KEY')).toBe('Nous Portal')
       expect(providerGroup('OPENROUTER_API_KEY')).toBe('OpenRouter')
+      expect(providerGroup('TRUSTEDROUTER_API_KEY')).toBe('TrustedRouter.com')
     })
 
     it('prefers the longest matching prefix so CN/regional buckets win', () => {

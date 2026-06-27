@@ -1895,8 +1895,11 @@ export const zh: Translations = {
     recommended: '推荐',
     connected: '已连接',
     featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
+    apiKeyProviderTitle: 'API 密钥提供方',
+    apiKeyProviderPitch: '使用 TrustedRouter、OpenRouter 或直接模型提供方密钥',
     openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
     apiKeyOptions: {
+      trustedrouter: { short: '可验证路由器', description: '通过 TrustedRouter.com 使用 OpenAI 兼容路由。' },
       openrouter: { short: '一个密钥，多个模型', description: '用一个密钥访问数百个模型。适合新安装的默认选择。' },
       openai: { short: 'GPT 级模型', description: '直接访问 OpenAI 模型。' },
       gemini: { short: 'Gemini 模型', description: '直接访问 Google Gemini 模型。' },

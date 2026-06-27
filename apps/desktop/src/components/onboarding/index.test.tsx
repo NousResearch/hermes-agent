@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
@@ -32,6 +32,28 @@ function setProviders(providers: OAuthProvider[]) {
 }
 
 const ctx: OnboardingContext = { requestGateway: async () => undefined as never }
+
+function ensureLocalStorage() {
+  if (typeof window.localStorage.getItem === 'function') {
+    return
+  }
+
+  const values = new Map<string, string>()
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => values.clear(),
+      getItem: (key: string) => values.get(key) ?? null,
+      removeItem: (key: string) => values.delete(key),
+      setItem: (key: string, value: string) => values.set(key, value)
+    }
+  })
+}
+
+beforeEach(() => {
+  ensureLocalStorage()
+})
 
 afterEach(() => {
   cleanup()
@@ -76,6 +98,7 @@ describe('onboarding Picker', () => {
 
     expect(screen.getByText('Anthropic API Key')).toBeTruthy()
     expect(screen.getByText('OpenAI OAuth (ChatGPT)')).toBeTruthy()
+    expect(screen.getByText('API key provider')).toBeTruthy()
     expect(screen.queryByText('Other sign-in options')).toBeNull()
     expect(screen.queryByText('Recommended')).toBeNull()
   })
@@ -98,5 +121,15 @@ describe('onboarding Picker', () => {
     render(<Picker ctx={ctx} />)
 
     expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
+  })
+
+  it('offers TrustedRouter in the native API-key picker', () => {
+    setProviders([])
+    $desktopOnboarding.set({ ...$desktopOnboarding.get(), mode: 'apikey' })
+    render(<Picker ctx={ctx} />)
+
+    expect(screen.getByText('TrustedRouter.com')).toBeTruthy()
+    expect(screen.getByText('OpenRouter')).toBeTruthy()
+    expect(screen.getByText('OpenAI-compatible routing through TrustedRouter.com.')).toBeTruthy()
   })
 })

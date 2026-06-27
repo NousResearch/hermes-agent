@@ -1023,6 +1023,7 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
+    ProviderEntry("trustedrouter",  "TrustedRouter.com",        "TrustedRouter.com (end-to-end encrypted OpenRouter-compatible router)"),
     ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
@@ -1187,6 +1188,11 @@ def group_providers(slugs):
 
 
 _PROVIDER_ALIASES = {
+    "tr": "trustedrouter",
+    "trusted-router": "trustedrouter",
+    "trustedrouter.com": "trustedrouter",
+    "quillrouter": "trustedrouter",
+    "quill-router": "trustedrouter",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",

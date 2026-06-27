@@ -42,11 +42,18 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 1
   },
   {
+    prefix: 'TRUSTEDROUTER_',
+    name: 'TrustedRouter.com',
+    description: 'OpenAI-compatible attested router',
+    docsUrl: 'https://trustedrouter.com/console/keys',
+    priority: 2
+  },
+  {
     prefix: 'ANTHROPIC_',
     name: 'Anthropic',
     description: 'Claude API access (Sonnet, Opus, Haiku)',
     docsUrl: 'https://console.anthropic.com/settings/keys',
-    priority: 2
+    priority: 3
   },
   {
     prefix: 'XAI_',

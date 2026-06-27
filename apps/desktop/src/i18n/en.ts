@@ -1719,8 +1719,14 @@ export const en: Translations = {
     recommended: 'Recommended',
     connected: 'Connected',
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
+    apiKeyProviderTitle: 'API key provider',
+    apiKeyProviderPitch: 'Use TrustedRouter, OpenRouter, or a direct model provider key',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
+      trustedrouter: {
+        short: 'attested router',
+        description: 'OpenAI-compatible routing through TrustedRouter.com.'
+      },
       openrouter: {
         short: 'one key, many models',
         description: 'Hosts hundreds of models behind a single key. Good default for new installs.'

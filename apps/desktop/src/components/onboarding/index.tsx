@@ -50,6 +50,12 @@ export interface ApiKeyOption {
 
 const API_KEY_OPTIONS: ApiKeyOption[] = [
   {
+    id: 'trustedrouter',
+    name: 'TrustedRouter.com',
+    envKey: 'TRUSTEDROUTER_API_KEY',
+    docsUrl: 'https://trustedrouter.com/console/keys'
+  },
+  {
     id: 'openrouter',
     name: 'OpenRouter',
     envKey: 'OPENROUTER_API_KEY',

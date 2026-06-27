@@ -290,6 +290,94 @@ class TestLearnPromptModes:
         assert "Parent Skill and Child Skill names" in norm
 
 
+def _decomposition_instructing_requests() -> list[str]:
+    """Every request in the corpus whose produced prompt instructs decomposition.
+
+    Decomposition guidance is emitted for explicit ``--decompose`` (DECOMPOSE)
+    and for the conditional decomposition path of AUTO, so any request resolving
+    to those two modes carries the child-reference partitioning block.
+    """
+    return [
+        r
+        for r in CORPUS
+        if parse_learn_request(r).mode in (LearnMode.AUTO, LearnMode.DECOMPOSE)
+    ]
+
+
+class TestLearnChildReferencePartitioning:
+    """Property 13: child reference partitioning.
+
+    Validates Requirements 14.1-14.7: every prompt that instructs decomposition
+    also instructs per-child reference partitioning, single-responsibility / no
+    duplication, write_file for child references, parent-pointers-only, both size
+    caps with split-an-oversized-reference, ALLOWED_SUBDIRS confinement, and the
+    three-level progressive-disclosure literals.
+    """
+
+    def test_partitioning_present_in_every_decomposition_prompt(self):
+        reqs = _decomposition_instructing_requests()
+        assert reqs
+        for req in reqs:
+            norm = _norm(build_learn_prompt(req))
+            # Header is emitted.
+            assert "CHILD-REFERENCE PARTITIONING" in norm
+            # Single-responsibility / no duplication.
+            assert "exactly ONE skill" in norm
+            assert "Do NOT duplicate the same source content across skills" in norm
+            # Per-child references folder + write_file action.
+            assert "each Child Skill's OWN `references/` folder" in norm
+            assert (
+                "write each child's reference files with the `skill_manage` "
+                "action `write_file`" in norm
+            )
+            # Parent excludes full reference content (pointers only).
+            assert "EXCLUDE the full body of any child reference" in norm
+            # Both size caps + split-an-oversized-reference.
+            assert "100,000-character `SKILL.md` content cap" in norm
+            assert "1 MiB (1,048,576-byte) per-file cap (`MAX_SKILL_FILE_BYTES`)" in norm
+            assert (
+                "split that material across multiple files under the child's "
+                "`references/` folder" in norm
+            )
+            # Supporting files confined to the allowed subdirs.
+            assert "ALLOWED_SUBDIRS = {references, templates, scripts, assets}" in norm
+            # Three-level progressive disclosure literals.
+            assert "skills_list()" in norm
+            assert "skill_view(name)" in norm
+            assert 'skill_view(name, "references/specific-file.md")' in norm
+            # Each child independently loadable.
+            assert "independently loadable and usable on its own" in norm
+
+    def test_partitioning_absent_from_single_and_update_prompts(self):
+        # SINGLE and UPDATE modes never instruct decomposition, so the
+        # partitioning block must not leak into them.
+        for req in (
+            "--no-decompose keep it one skill",
+            "--decompose --no-decompose ambiguous",
+            "--update auth-skill with new flow",
+            "update billing with tax rules",
+        ):
+            mode = parse_learn_request(req).mode
+            assert mode in (LearnMode.SINGLE, LearnMode.UPDATE)
+            assert "CHILD-REFERENCE PARTITIONING" not in build_learn_prompt(req)
+
+    def test_update_propagates_child_reference_deltas(self):
+        # Property 10 extension (Req 9.4/9.5): update mode instructs child
+        # reference delta propagation and parent-pointer consistency.
+        for req in (
+            "--update parent-skill with the new webhook docs",
+            "update acme-sdk with new pagination rules",
+        ):
+            assert parse_learn_request(req).mode is LearnMode.UPDATE
+            norm = _norm(build_learn_prompt(req))
+            assert "Child References" in norm
+            assert (
+                "THAT child's own `references/` folder using the `skill_manage` "
+                "actions `write_file`, `patch`, or `remove_file`" in norm
+            )
+            assert "update the Parent Pointers in the Parent Skill" in norm
+
+
 class TestLearnRegistryAdvertisesFlags:
     def test_args_hint_advertises_flags(self):
         from hermes_cli.commands import resolve_command

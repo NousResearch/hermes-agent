@@ -82,6 +82,26 @@ Skills use a token-efficient loading pattern. The agent doesn't load everything 
 
 This means skills don't cost tokens until they're actually used.
 
+### Hierarchical Skills
+
+When you point `/learn` at large or multi-topic material, it can author a
+**hierarchy** instead of one giant skill: a parent skill that orchestrates, plus
+focused child skills that each own one topic. Each child keeps its own
+`references/` folder, and the parent just links to them — so the agent loads only
+the child (and the one reference file) it needs:
+
+```bash
+# Auto-decomposes big material; force it with --decompose
+/learn --decompose the whole ~/projects/acme-sdk client library
+
+# Drill into a single child reference on demand
+skill_view("acme-sdk-auth", "references/oauth-flows.md")
+```
+
+For the full walkthrough — parent/child structure, `metadata.hermes.*` links,
+per-child reference partitioning, and updating a hierarchy — see
+[Skills System → Hierarchical Skills](/user-guide/features/skills#hierarchical-skills).
+
 ---
 
 ## Installing from the Hub

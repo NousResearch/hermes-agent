@@ -107,6 +107,162 @@ hands it to the agent as a normal turn. The agent saves the result with the
 `skill_manage` tool, so the [write-approval gate](#gating-agent-skill-writes-skillswrite_approval)
 applies if you have it on.
 
+### `/learn` flags
+
+`/learn` takes a few optional flags anywhere in the request. Unrecognized
+`--flags` are left untouched and treated as part of the source description.
+
+| Flag | Effect |
+|------|--------|
+| `--decompose` | Force a parent + children hierarchy, regardless of size. |
+| `--no-decompose` | Force a single skill, regardless of size. |
+| `--update <name>` | Delta-update an existing skill instead of authoring a new one. |
+| `--dry-run` | Preview the plan (skills, patches, files) and write nothing. |
+
+The natural-language form `update <name> with <sources>` is equivalent to
+`--update <name>`. If you pass both `--decompose` and `--no-decompose`,
+single-skill wins and the agent notes the conflict.
+
+```bash
+# Force a hierarchy for a big SDK
+/learn --decompose the whole ~/projects/acme-sdk client library
+
+# Preview the plan without writing anything
+/learn --decompose --dry-run ~/projects/acme-sdk
+
+# Fold new sources into an existing skill, patching only what changed
+/learn --update acme-sdk with the new pagination docs at https://docs.example.com/pagination
+/learn update acme-sdk with the new pagination docs at https://docs.example.com/pagination
+```
+
+These flags behave identically in the CLI, the messaging gateway, the TUI, and
+the dashboard — every surface routes the same request text through the same
+prompt builder, so the resulting skill hierarchy is the same everywhere.
+
+## Hierarchical Skills
+
+For large or multi-topic source material, `/learn` does not cram everything into
+one giant `SKILL.md`. Instead it **decomposes** the material into a small skill
+hierarchy: one **parent skill** that orchestrates, plus several focused
+**child skills** that each own a single responsibility.
+
+Decomposition kicks in automatically when the material would exceed the
+100,000-character per-skill limit or spans more than one distinct topic. You can
+force it either way with `--decompose` / `--no-decompose`.
+
+### How a hierarchy is structured
+
+- **The parent skill is a pointers-only orchestrator.** It holds a high-level
+  overview, a `## When to Use` section, and links to each child skill. It does
+  **not** copy the children's detailed material.
+- **Each child skill owns one topic** and is independently loadable — the agent
+  can `skill_view` a child directly without loading the parent first.
+- **Hierarchy links live under `metadata.hermes.*`** so the existing skill
+  loader reads them with no changes:
+  - `metadata.hermes.children` on the parent — the list of child skill names.
+  - `metadata.hermes.parent` on each child — the parent's name.
+  - `metadata.hermes.depends_on` — any cross-skill dependencies.
+
+### Per-child reference partitioning
+
+When the agent decomposes, it **partitions** the gathered source material across
+the skills by single responsibility. Each piece of source content lands in
+exactly one place — never duplicated across skills:
+
+- Each child skill gets its **own** `references/` folder containing only the
+  partitioned material for that child's topic. Reference files are written with
+  the `skill_manage` `write_file` action.
+- The parent stays lightweight: it **points at** a child's references, it does
+  not embed their full content.
+- Reference material is confined to `references/` (one of the allowed
+  subdirectories: `references`, `templates`, `scripts`, `assets`). A single
+  reference file is capped at 1 MiB, so oversized material is split across
+  several files under the same child's `references/` folder.
+
+### Worked example
+
+A `/learn --decompose` run over an SDK with auth, pagination, and webhooks might
+produce:
+
+```text
+~/.hermes/skills/acme-sdk/
+├── acme-sdk/                       # Parent skill — orchestrator
+│   └── SKILL.md                    # overview + when-to-use + links to children
+├── acme-sdk-auth/                  # Child skill — one responsibility
+│   ├── SKILL.md
+│   └── references/
+│       └── oauth-flows.md          # only auth material lives here
+├── acme-sdk-pagination/
+│   ├── SKILL.md
+│   └── references/
+│       └── cursor-paging.md        # only pagination material lives here
+└── acme-sdk-webhooks/
+    ├── SKILL.md
+    └── references/
+        ├── event-types.md          # webhook material, split across files
+        └── signature-verify.md
+```
+
+The parent's frontmatter records its children, and each child records its
+parent:
+
+```yaml
+# acme-sdk/SKILL.md (parent)
+name: acme-sdk
+description: Orchestrates the Acme SDK auth, paging, webhook skills.
+metadata:
+  hermes:
+    children: [acme-sdk-auth, acme-sdk-pagination, acme-sdk-webhooks]
+```
+
+```yaml
+# acme-sdk-auth/SKILL.md (child)
+name: acme-sdk-auth
+description: Authenticate against the Acme SDK with OAuth.
+metadata:
+  hermes:
+    parent: acme-sdk
+    depends_on: []
+```
+
+The parent body links to each child and its references instead of duplicating
+them — for example:
+
+```markdown
+## When to Use
+- Authenticating: see the `acme-sdk-auth` skill.
+- Paging large result sets: see the `acme-sdk-pagination` skill.
+- Handling webhook callbacks: see the `acme-sdk-webhooks` skill.
+
+For OAuth flow details, load `skill_view("acme-sdk-auth", "references/oauth-flows.md")`.
+```
+
+### Loading a child reference on demand
+
+The hierarchy preserves the three-level [progressive disclosure](#progressive-disclosure)
+pattern, so nothing loads until it is needed:
+
+- **Level 0** — `skills_list()` shows the parent and every child by name and
+  description.
+- **Level 1** — `skill_view("acme-sdk-auth")` loads one child's `SKILL.md` body.
+- **Level 2** — `skill_view("acme-sdk-auth", "references/oauth-flows.md")` loads a
+  single reference file within that child, on demand.
+
+Because each child owns its own references, the agent can drill straight into
+the one topic it needs — for example loading only the pagination child and its
+`references/cursor-paging.md` — without paying the token cost of the whole SDK.
+
+### Updating a hierarchy
+
+`/learn --update <name> with <new sources>` applies minimal, targeted patches
+instead of rewriting everything. When you update a parent skill, the agent reads
+the parent and the children listed under `metadata.hermes.children`, then patches
+only the children the new sources actually affect. If new sources change a
+child's reference material, the agent adds, updates, or removes files within that
+child's `references/` folder and repoints the parent's links so they stay
+consistent. Each modified skill gets its `version` bumped and a short change
+summary recorded.
+
 ## Progressive Disclosure
 
 Skills use a token-efficient loading pattern:

@@ -301,6 +301,41 @@ HIERARCHY RULES (when you decompose):
   `metadata.hermes.depends_on`. Do not introduce any new top-level frontmatter
   keys for these relationships."""
 
+# Child-reference partitioning guidance. Emitted alongside `_DECOMP_GUIDANCE`
+# for both AUTO (conditional decomposition path) and DECOMPOSE (forced) modes,
+# so any prompt that instructs decomposition also instructs partitioning the
+# gathered source material across the parent and children. Distilled from
+# Requirement 14 and the `skill_manage` write_file constraints in
+# `tools/skill_manager_tool.py` (ALLOWED_SUBDIRS, MAX_SKILL_FILE_BYTES).
+_CHILD_REFERENCE_GUIDANCE = """\
+CHILD-REFERENCE PARTITIONING (when you decompose):
+- Partition the gathered source material across the Parent Skill and the Child
+  Skills by single responsibility, so each piece of source content lives in
+  exactly ONE skill. Do NOT duplicate the same source content across skills.
+- Place in each Child Skill's OWN `references/` folder only the partitioned
+  source material relevant to that child's single responsibility, and write each
+  child's reference files with the `skill_manage` action `write_file`.
+- Keep the Parent Skill limited to a high-level overview plus pointers to the
+  child skills and their references. EXCLUDE the full body of any child reference
+  from the Parent Skill — the parent links to a child's references, it does not
+  copy them.
+- Respect BOTH size caps: the 100,000-character `SKILL.md` content cap AND the
+  separate 1 MiB (1,048,576-byte) per-file cap (`MAX_SKILL_FILE_BYTES`) that
+  applies to each supporting file. If a child's partitioned references would
+  exceed 1,048,576 bytes in a single file, split that material across multiple
+  files under the child's `references/` folder.
+- Supporting files are confined to ALLOWED_SUBDIRS = {references, templates,
+  scripts, assets}: `skill_manage` `write_file`/`remove_file` reject any path
+  outside those folders (and reject `..` traversal), so write every child
+  reference under that child's own `references/` folder.
+- Preserve three-level Progressive Disclosure for child references: Level 0
+  `skills_list()` (the catalog), Level 1 `skill_view(name)` (a skill's SKILL.md
+  body), and Level 2 `skill_view(name, "references/specific-file.md")` (one
+  reference file within a skill).
+- Author each Child Skill together with its references so the child is
+  independently loadable and usable on its own, without first loading the
+  Parent Skill."""
+
 # Delta-update guidance (UPDATE mode).
 _UPDATE_GUIDANCE = """\
 DELTA UPDATE: change only what the new sources affect; preserve everything else.
@@ -316,7 +351,16 @@ DELTA UPDATE: change only what the new sources affect; preserve everything else.
 - If the named skill is a Parent Skill, read it and its children listed under
   `metadata.hermes.children`, apply delta updates only to the children affected by
   the new sources, and keep `metadata.hermes.children`/`metadata.hermes.parent`
-  consistent when a child is added or removed."""
+  consistent when a child is added or removed.
+- When the new sources change a Child Skill's partitioned content (its Child
+  References), add, update, or remove the affected files within THAT child's own
+  `references/` folder using the `skill_manage` actions `write_file`, `patch`, or
+  `remove_file`. Leave any reference files the new sources do not touch unchanged.
+- When a child's Child References change, update the Parent Pointers in the Parent
+  Skill so the parent's links to the affected child references stay consistent —
+  add links for new reference files, repoint links whose target moved or was
+  renamed, and drop links to references that were removed. The Parent Skill keeps
+  pointing at the children's references; it does not copy their content."""
 
 # Dry-run wrapper (any mode).
 _DRYRUN_GUIDANCE = """\
@@ -373,7 +417,8 @@ def build_learn_prompt(user_request: str) -> str:
             "hierarchy (a parent skill plus focused child skills) rather than one "
             "monolithic skill.\n\n"
             f"{_gather_and_standards_block(req)}\n\n"
-            f"{_DECOMP_GUIDANCE}"
+            f"{_DECOMP_GUIDANCE}\n\n"
+            f"{_CHILD_REFERENCE_GUIDANCE}"
         )
     elif directive.mode is LearnMode.SINGLE:
         prompt = _baseline_single_skill_prompt(directive.source_text)
@@ -392,7 +437,8 @@ def build_learn_prompt(user_request: str) -> str:
         prompt = (
             f"{_baseline_single_skill_prompt(directive.source_text)}\n\n"
             f"{_THRESHOLD_RULE}\n\n"
-            f"{_DECOMP_GUIDANCE}"
+            f"{_DECOMP_GUIDANCE}\n\n"
+            f"{_CHILD_REFERENCE_GUIDANCE}"
         )
 
     if directive.dry_run:

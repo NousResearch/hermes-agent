@@ -1377,6 +1377,14 @@ DEFAULT_CONFIG = {
                                       # autoraise banner. Set False to keep the
                                       # 85% threshold autoraise but suppress the
                                       # user-facing notice in CLI/gateway output.
+        "codex_app_server_auto": "native",  # Codex app-server (codex CLI runtime) thread
+                                      # compaction mode. The codex agent owns the real
+                                      # thread context, so Hermes' summarizer cannot
+                                      # shrink it (#36801). native = codex decides when
+                                      # to compact its own thread (default); hermes =
+                                      # Hermes' compression threshold triggers
+                                      # thread/compact/start; off = never auto-trigger
+                                      # (codex may still compact natively).
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation

@@ -111,3 +111,27 @@ class TestPostDeliveryCallbackChaining:
     def test_non_callable_is_noop(self, adapter):
         adapter.register_post_delivery_callback("s", "not-callable")  # type: ignore[arg-type]
         assert adapter._post_delivery_callbacks == {}
+
+    def test_raw_callback_fires_for_generationed_pop(self, adapter):
+        """Regression for #31922: a callback registered WITHOUT a generation
+        carries no ownership, so a generationed pop must still fire it — it
+        cannot belong to a different run. Previously the pop returned None
+        whenever generation was not None, silently dropping the callback
+        (e.g. the `✓ Goal achieved` notice)."""
+        fired = []
+        adapter.register_post_delivery_callback("s", lambda: fired.append("raw"))
+        cb = adapter.pop_post_delivery_callback("s", generation=7)
+        assert cb is not None
+        cb()
+        assert fired == ["raw"]
+        # And the entry is consumed, not left dangling.
+        assert adapter._post_delivery_callbacks == {}
+
+    def test_raw_callback_still_fires_for_generationless_pop(self, adapter):
+        """The pre-existing generation-less path must keep working."""
+        fired = []
+        adapter.register_post_delivery_callback("s", lambda: fired.append("raw"))
+        cb = adapter.pop_post_delivery_callback("s")
+        assert cb is not None
+        cb()
+        assert fired == ["raw"]

@@ -3702,8 +3702,11 @@ class BasePlatformAdapter(ABC):
                 return None
             self._post_delivery_callbacks.pop(session_key, None)
             return callback if callable(callback) else None
-        if generation is not None:
-            return None
+        # Raw (generation-less) entry: it carries no generation ownership, so a
+        # generationed pop must still fire it — it cannot belong to a different
+        # run. Previously this returned None whenever ``generation is not None``,
+        # silently dropping the callback (e.g. the `✓ Goal achieved` notice when
+        # register saw generation=None but pop snapshotted a real generation). See #31922.
         self._post_delivery_callbacks.pop(session_key, None)
         return entry if callable(entry) else None
 

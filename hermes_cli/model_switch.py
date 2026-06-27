@@ -2283,28 +2283,15 @@ def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = 
     ``list_authenticated_providers()`` only returns real/auth-backed providers.
     The CLI model inventory adds MoA separately so named presets appear next to
     normal providers; gateway pickers call ``list_picker_providers()`` directly,
-    so they need the same virtual row here.
+    so they need the same virtual row here. Reuse the inventory's single row
+    builder so the row shape stays defined in one place.
     """
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_cli.inventory import _moa_provider_row
 
-        cfg = normalize_moa_config(load_config().get("moa") or {})
-        models = list(cfg.get("presets", {}).keys())
-        if not models:
+        moa_row = _moa_provider_row(current_provider)
+        if moa_row is None:
             return providers
-        moa_row = {
-            "slug": "moa",
-            "name": "Mixture of Agents",
-            "is_current": (current_provider or "").lower() == "moa",
-            "is_user_defined": False,
-            "models": models,
-            "total_models": len(models),
-            "source": "virtual",
-            "authenticated": True,
-            "auth_type": "virtual",
-            "warning": "Aggregator acts as the selected model; references provide analysis before each call.",
-        }
         return [moa_row] + [p for p in providers if str(p.get("slug", "")).lower() != "moa"]
     except Exception:
         return providers

@@ -12,7 +12,8 @@ model:
   
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
-  #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY or OPENAI_API_KEY)
+  #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY; OPENAI_API_KEY also works for legacy setups)
+  #   "openai-api"   - Direct OpenAI API (requires: OPENAI_API_KEY). Alias: "openai"
   #   "nous"         - Nous Portal OAuth (requires: hermes login)
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)

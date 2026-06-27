@@ -1542,6 +1542,22 @@ def test_resolve_provider_openrouter_unchanged():
     assert resolve_provider("openrouter") == "openrouter"
 
 
+def test_resolve_provider_openai_alias_returns_openai_api(monkeypatch):
+    """Explicit 'openai' should mean the direct OpenAI API provider."""
+    from hermes_cli.auth import resolve_provider
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert resolve_provider("openai") == "openai-api"
+
+
+def test_resolve_provider_auto_with_openai_key_still_prefers_openrouter(monkeypatch):
+    """Auto mode keeps the legacy OPENAI_API_KEY -> OpenRouter behavior."""
+    from hermes_cli.auth import resolve_provider
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert resolve_provider("auto") == "openrouter"
+
+
 def test_resolve_provider_lmstudio_returns_lmstudio(monkeypatch):
     """resolve_provider('lmstudio') must return 'lmstudio', not 'custom'.
 

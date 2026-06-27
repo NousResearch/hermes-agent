@@ -59,6 +59,9 @@ cli-config.yaml
 
 # Skills Hub state (lives in ~/.hermes/skills/.hub/ at runtime, but just in case)
 skills/.hub/
+
+# here.now publish state (local cache; may contain claim tokens/claim URLs)
+.herenow/
 ignored/
 .worktrees/
 environments/benchmarks/evals/

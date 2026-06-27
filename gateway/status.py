@@ -464,6 +464,30 @@ def _read_gateway_lock_record(lock_path: Optional[Path] = None) -> Optional[dict
     return _read_pid_record(lock_path or _get_gateway_lock_path())
 
 
+def _lock_record_points_to_live_gateway(lock_path: Path) -> bool:
+    """Best-effort read-only fallback for status checks.
+
+    Some constrained runners can read ``gateway.lock`` but cannot open it in
+    append mode to test the advisory lock.  In that case, trust the lock record
+    only if it points at a live process and carries Hermes gateway metadata.
+    """
+    record = _read_gateway_lock_record(lock_path)
+    pid = _pid_from_record(record)
+    if pid is None or not _pid_exists(pid):
+        return False
+
+    recorded_start = record.get("start_time")
+    current_start = _get_process_start_time(pid)
+    if (
+        recorded_start is not None
+        and current_start is not None
+        and current_start != recorded_start
+    ):
+        return False
+
+    return _record_looks_like_gateway(record)
+
+
 def _pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
     if not record:
         return None
@@ -653,7 +677,10 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     if not resolved_lock_path.exists():
         return False
 
-    handle = open(resolved_lock_path, "a+", encoding="utf-8")
+    try:
+        handle = open(resolved_lock_path, "a+", encoding="utf-8")
+    except PermissionError:
+        return _lock_record_points_to_live_gateway(resolved_lock_path)
     try:
         if _try_acquire_file_lock(handle):
             _release_file_lock(handle)

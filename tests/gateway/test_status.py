@@ -157,6 +157,33 @@ class TestGatewayPidState:
 
         assert status.is_gateway_runtime_lock_active() is False
 
+    def test_runtime_lock_status_uses_record_when_append_open_denied(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record = {
+            "pid": 4242,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run", "--replace"],
+            "start_time": None,
+        }
+        (tmp_path / "gateway.pid").write_text(json.dumps(record))
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text(json.dumps(record))
+
+        real_open = open
+
+        def _deny_append_open(path, mode="r", *args, **kwargs):
+            if Path(path) == lock_path and mode == "a+":
+                raise PermissionError("operation not permitted")
+            return real_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", _deny_append_open)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == 4242)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.is_gateway_runtime_lock_active() is True
+        assert status.get_running_pid() == 4242
+
     def test_get_running_pid_treats_pid_file_as_stale_without_runtime_lock(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"

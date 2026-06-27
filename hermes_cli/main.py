@@ -613,6 +613,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_bedrock,
     _model_flow_api_key_provider,
     _model_flow_anthropic,
+    _model_flow_moa,
 )
 logger = logging.getLogger(__name__)
 
@@ -3061,6 +3062,8 @@ def select_provider_and_model(args=None):
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
+    elif selected_provider == "moa":
+        _model_flow_moa(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":

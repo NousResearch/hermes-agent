@@ -23,12 +23,7 @@ beforeEach(() => {
 
 describe('deriveUserHistory', () => {
   it('returns user messages newest-first with empty/whitespace skipped', () => {
-    const messages = [
-      MSG('user', '   '),
-      MSG('assistant', 'hi'),
-      MSG('user', 'first'),
-      MSG('user', 'second')
-    ]
+    const messages = [MSG('user', '   '), MSG('assistant', 'hi'), MSG('user', 'first'), MSG('user', 'second')]
 
     expect(deriveUserHistory(messages, m => m.text)).toEqual(['second', 'first'])
   })
@@ -62,14 +57,10 @@ describe('browseBackward', () => {
 
     // Caller added a new message; ring is now [brand-new, youngest, older].
     // Cursor was at 0, next press advances to 1 -> "youngest".
-    expect(
-      browseBackward(SESSION_A, '', ['brand-new', 'youngest', 'older'])
-    ).toBe('youngest')
+    expect(browseBackward(SESSION_A, '', ['brand-new', 'youngest', 'older'])).toBe('youngest')
 
     // One more press -> "older".
-    expect(
-      browseBackward(SESSION_A, '', ['brand-new', 'youngest', 'older'])
-    ).toBe('older')
+    expect(browseBackward(SESSION_A, '', ['brand-new', 'youngest', 'older'])).toBe('older')
   })
 })
 

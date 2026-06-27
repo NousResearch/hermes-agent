@@ -1135,7 +1135,7 @@ class MatrixAdapter(BasePlatformAdapter):
     # Required overrides
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the Matrix homeserver and start syncing."""
         from mautrix.api import HTTPAPI
         from mautrix.client import Client

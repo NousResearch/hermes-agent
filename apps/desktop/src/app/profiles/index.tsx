@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import { SanitizedInput } from '@/components/ui/sanitized-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -26,6 +26,7 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
+import { slug } from '@/lib/sanitize'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -180,38 +181,38 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       )}
 
       <CreateProfileDialog
-          onClose={() => setCreateOpen(false)}
-          onCreate={async (name, cloneFrom) => handleCreate(name, cloneFrom)}
-          open={createOpen}
-          profiles={profiles ?? []}
-        />
+        onClose={() => setCreateOpen(false)}
+        onCreate={async (name, cloneFrom) => handleCreate(name, cloneFrom)}
+        open={createOpen}
+        profiles={profiles ?? []}
+      />
 
-        <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>{p.deleteTitle}</DialogTitle>
-              <DialogDescription>
-                {pendingDelete ? (
-                  <>
-                    {p.deleteDescPrefix}
-                    <span className="font-medium text-foreground">{pendingDelete.name}</span>
-                    {p.deleteDescMid}
-                    <span className="font-mono text-xs">{pendingDelete.path}</span>
-                    {p.deleteDescSuffix}
-                  </>
-                ) : null}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-                {t.common.cancel}
-              </Button>
-              <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-                {deleting ? p.deleting : t.common.delete}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{p.deleteTitle}</DialogTitle>
+            <DialogDescription>
+              {pendingDelete ? (
+                <>
+                  {p.deleteDescPrefix}
+                  <span className="font-medium text-foreground">{pendingDelete.name}</span>
+                  {p.deleteDescMid}
+                  <span className="font-mono text-xs">{pendingDelete.path}</span>
+                  {p.deleteDescSuffix}
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
+              {t.common.cancel}
+            </Button>
+            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
+              {deleting ? p.deleting : t.common.delete}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </OverlayView>
   )
 }
@@ -519,12 +520,13 @@ function CreateProfileDialog({
             <label className="text-xs font-medium" htmlFor="new-profile-name">
               {p.nameLabel}
             </label>
-            <Input
+            <SanitizedInput
               aria-invalid={invalid}
               autoFocus
               id="new-profile-name"
-              onChange={event => setName(event.target.value)}
+              onValueChange={setName}
               placeholder="my-profile"
+              sanitize={slug}
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
@@ -536,7 +538,10 @@ function CreateProfileDialog({
             <label className="text-xs font-medium" htmlFor="new-profile-clone-from">
               {p.cloneFrom}
             </label>
-            <Select onValueChange={value => setCloneFrom(value === '__none__' ? null : value)} value={cloneFrom ?? '__none__'}>
+            <Select
+              onValueChange={value => setCloneFrom(value === '__none__' ? null : value)}
+              value={cloneFrom ?? '__none__'}
+            >
               <SelectTrigger className="h-9 rounded-md" id="new-profile-clone-from">
                 <SelectValue />
               </SelectTrigger>
@@ -648,11 +653,12 @@ function RenameProfileDialog({
             <label className="text-xs font-medium" htmlFor="rename-profile-name">
               {p.newNameLabel}
             </label>
-            <Input
+            <SanitizedInput
               aria-invalid={invalid}
               autoFocus
               id="rename-profile-name"
-              onChange={event => setName(event.target.value)}
+              onValueChange={setName}
+              sanitize={slug}
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>

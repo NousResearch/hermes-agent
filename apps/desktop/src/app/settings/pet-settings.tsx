@@ -1,12 +1,16 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { PetThumb } from '@/components/pet/pet-thumb'
+import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Loader2, PawPrint, Trash2 } from '@/lib/icons'
+import { Download, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { $petInfo } from '@/store/pet'
@@ -16,6 +20,8 @@ import {
   $petGalleryError,
   $petGalleryStatus,
   adoptPet,
+  exportPet as exportPetAction,
+  type GalleryPet,
   loadPetGallery,
   loadPetThumb,
   PET_SCALE_DEFAULT,
@@ -23,6 +29,7 @@ import {
   PET_SCALE_MIN,
   rankedGalleryPets,
   removePet as removePetAction,
+  renamePet as renamePetAction,
   setPetEnabled,
   setPetScale
 } from '@/store/pet-gallery'
@@ -48,6 +55,9 @@ export function PetSettings() {
   const busySlug = useStore($petBusy)
   const petInfo = useStore($petInfo)
   const [query, setQuery] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState<GalleryPet | null>(null)
+  const [renameTarget, setRenameTarget] = useState<GalleryPet | null>(null)
+  const [renameValue, setRenameValue] = useState('')
   const scale = petInfo.scale ?? PET_SCALE_DEFAULT
 
   useEffect(() => {
@@ -69,6 +79,23 @@ export function PetSettings() {
 
   const removePet = (slug: string) => {
     void removePetAction(requestGateway, slug, copy.uninstallFailed(slug)).then(ok => ok && triggerHaptic('crisp'))
+  }
+
+  const exportPet = (slug: string) => {
+    void exportPetAction(requestGateway, slug, copy.exportFailed(slug)).then(ok => ok && triggerHaptic('crisp'))
+  }
+
+  const saveRename = () => {
+    if (!renameTarget || !renameValue.trim()) {
+      return
+    }
+
+    // Optimistic: the rename paints instantly, so close now and let the RPC
+    // settle in the background (it rolls back + surfaces an error on failure).
+    const { slug } = renameTarget
+    setRenameTarget(null)
+    triggerHaptic('crisp')
+    void renamePetAction(requestGateway, slug, renameValue, copy.renameFailed(slug))
   }
 
   const toggle = (on: boolean) => {
@@ -142,8 +169,15 @@ export function PetSettings() {
                               url={pet.spritesheetUrl}
                             />
                             <span className="min-w-0 flex-1">
-                              <span className="block truncate text-[length:var(--conversation-text-font-size)] font-medium">
-                                {pet.displayName}
+                              <span className="flex items-center gap-1.5">
+                                <span className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
+                                  {pet.displayName}
+                                </span>
+                                {pet.generated && (
+                                  <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-[0.625rem] font-medium text-primary">
+                                    {copy.generatedTag}
+                                  </span>
+                                )}
                               </span>
                               <span className="block truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                                 {pet.slug}
@@ -152,16 +186,36 @@ export function PetSettings() {
                             </span>
                             {isBusy && <Loader2 className="size-4 shrink-0 animate-spin text-(--ui-text-tertiary)" />}
                           </button>
-                          {pet.installed && !isBusy && (
-                            <button
-                              aria-label={copy.uninstall(pet.displayName)}
-                              className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-md bg-(--ui-bg-elevated)/80 text-(--ui-text-tertiary) opacity-0 backdrop-blur-sm transition hover:text-(--ui-red) focus-visible:opacity-100 group-hover:opacity-100"
-                              onClick={() => void removePet(pet.slug)}
-                              title={copy.uninstall(pet.displayName)}
-                              type="button"
-                            >
-                              <Trash2 className="size-3.5" />
-                            </button>
+                          {!isBusy && (pet.installed || pet.generated) && (
+                            <div className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
+                              {pet.generated && (
+                                <PetAction
+                                  icon={<Pencil className="size-3.5" />}
+                                  label={copy.rename(pet.displayName)}
+                                  onClick={() => {
+                                    setRenameValue(pet.displayName)
+                                    setRenameTarget(pet)
+                                  }}
+                                />
+                              )}
+                              {pet.generated && (
+                                <PetAction
+                                  icon={<Download className="size-3.5" />}
+                                  label={copy.exportPet(pet.displayName)}
+                                  onClick={() => exportPet(pet.slug)}
+                                />
+                              )}
+                              {pet.installed && (
+                                // Generated pets have no remote source — deletion is
+                                // permanent, so confirm; petdex pets just uninstall.
+                                <PetAction
+                                  danger
+                                  icon={<Trash2 className="size-3.5" />}
+                                  label={pet.generated ? copy.delete(pet.displayName) : copy.uninstall(pet.displayName)}
+                                  onClick={() => (pet.generated ? setConfirmDelete(pet) : removePet(pet.slug))}
+                                />
+                              )}
+                            </div>
                           )}
                         </div>
                       )
@@ -226,6 +280,86 @@ export function PetSettings() {
           />
         )}
       </div>
+
+      <ConfirmDialog
+        confirmLabel={copy.deleteConfirm}
+        description={copy.deleteBody}
+        destructive
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={async () => {
+          if (confirmDelete) {
+            const ok = await removePetAction(
+              requestGateway,
+              confirmDelete.slug,
+              copy.uninstallFailed(confirmDelete.slug)
+            )
+
+            if (!ok) {
+              throw new Error(copy.uninstallFailed(confirmDelete.slug))
+            }
+
+            triggerHaptic('crisp')
+          }
+        }}
+        open={confirmDelete !== null}
+        title={confirmDelete ? copy.deleteTitle(confirmDelete.displayName) : ''}
+      />
+
+      <Dialog onOpenChange={open => !open && setRenameTarget(null)} open={renameTarget !== null}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{copy.renameTitle}</DialogTitle>
+          </DialogHeader>
+          <Input
+            autoFocus
+            onChange={event => setRenameValue(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                saveRename()
+              }
+            }}
+            placeholder={copy.renamePlaceholder}
+            value={renameValue}
+          />
+          <DialogFooter>
+            <Button onClick={() => setRenameTarget(null)} type="button" variant="ghost">
+              {t.common.cancel}
+            </Button>
+            <Button disabled={!renameValue.trim()} onClick={saveRename}>
+              {copy.renameSave}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  )
+}
+
+/** A single hover-revealed icon action on a pet card (rename / export / delete). */
+function PetAction({
+  danger,
+  icon,
+  label,
+  onClick
+}: {
+  danger?: boolean
+  icon: ReactNode
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      aria-label={label}
+      className={cn(
+        'grid size-6 place-items-center rounded-md bg-(--ui-bg-elevated)/80 text-(--ui-text-tertiary) backdrop-blur-sm transition',
+        danger ? 'hover:text-(--ui-red)' : 'hover:text-foreground'
+      )}
+      onClick={onClick}
+      title={label}
+      type="button"
+    >
+      {icon}
+    </button>
   )
 }

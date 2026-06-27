@@ -637,7 +637,15 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
-  
+
+  # After the agent edits code without fresh passing verification, nudge it to
+  # verify before finishing. The default "auto" enables it on interactive
+  # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables
+  # it on conversational messaging surfaces (Telegram, Discord, etc.) where the
+  # verification summary would reach a human as chat noise. Set true or false to
+  # force it on or off; the HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
+  # verify_on_stop: auto
+
   # Enable verbose logging
   verbose: false
   
@@ -741,6 +749,7 @@ platform_toolsets:
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
+#       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
 #       command_menu:
 #         # Telegram allows up to 100 BotCommands; Hermes defaults to 60 so
 #         # all built-in commands plus common skill commands stay visible
@@ -782,7 +791,6 @@ platform_toolsets:
 #   image_gen    - image_generate  (requires FAL_KEY)
 #   skills       - skills_list, skill_view
 #   skills_hub   - skill_hub (search/install/manage from online registries — user-driven only)
-#   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
@@ -797,7 +805,7 @@ platform_toolsets:
 #
 # COMPOSITE:
 #   debugging    - terminal + web + file
-#   safe         - web + vision + moa (no terminal access)
+#   safe         - web + vision (no terminal access)
 #   all          - Everything available
 #
 #   web          - Web search and content extraction (web_search, web_extract)
@@ -808,7 +816,6 @@ platform_toolsets:
 #   vision       - Image analysis (vision_analyze)
 #   image_gen    - Image generation with FLUX (image_generate)
 #   skills       - Load skill documents (skills_list, skill_view)
-#   moa          - Mixture of Agents reasoning (mixture_of_agents)
 #   todo         - Task planning and tracking for multi-step work
 #   memory       - Persistent memory across sessions (personal notes + user profile)
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
@@ -817,7 +824,7 @@ platform_toolsets:
 #
 # Composite toolsets:
 #   debugging    - terminal + web + file (for troubleshooting)
-#   safe         - web + vision + moa (no terminal access)
+#   safe         - web + vision (no terminal access)
 
 # NOTE: The top-level "toolsets" key is deprecated and ignored.
 # Tool configuration is managed per-platform via platform_toolsets above.

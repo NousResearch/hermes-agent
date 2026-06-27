@@ -39,6 +39,7 @@ hermes [global-options] <command> [subcommand/options]
 |---------|---------|
 | `hermes chat` | Interactive or one-shot chat with the agent. |
 | `hermes model` | Interactively choose the default provider and model. |
+| `hermes moa` | Configure named Mixture of Agents presets selectable from the model picker. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
@@ -1119,6 +1120,18 @@ On a fresh install the first scheduled pass is deferred by one full `interval_ho
 
 See [Curator](../user-guide/features/curator.md) for behavior and config.
 
+## `hermes moa`
+
+Configure named Mixture of Agents presets. Presets appear as selectable models under a `Mixture of Agents` provider in every model picker; `/moa <prompt>` runs one prompt through the default preset.
+
+```bash
+hermes moa list
+hermes moa configure [name]
+hermes moa delete <name>
+```
+
+`hermes moa configure` reuses Hermes' provider → model picker for each reference model and the aggregator. A preset is an execution-mode configuration, not a primary model or provider.
+
 ## `hermes fallback`
 
 ```bash
@@ -1270,7 +1283,7 @@ Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `install` | Run the upstream cua-driver installer (macOS only). |
+| `install` | Run the upstream cua-driver installer (macOS, Windows, and Linux). |
 | `install --upgrade` | Re-run the installer even if cua-driver is already on PATH. The upstream script always pulls the latest release, so this performs an in-place upgrade. |
 | `status` | Print whether `cua-driver` is on `$PATH` and which version is installed. |
 

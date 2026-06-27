@@ -44,6 +44,12 @@ from utils import (
 
 logger = logging.getLogger("gateway.run")
 
+# Upper bound on the off-loop agent-resource cleanup during a /new or /reset
+# (see _handle_reset_command). A stuck teardown must not block the event loop;
+# past this the reset proceeds and the cleanup is left to finish (or leak) in
+# its worker thread. (#35994)
+_RESET_CLEANUP_TIMEOUT_S = 30.0
+
 
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code.
@@ -111,13 +117,44 @@ class GatewaySlashCommandsMixin:
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
         # Guard with getattr because test fixtures may skip __init__.
+        #
+        # _cleanup_agent_resources is synchronous and can block for a long time
+        # (agent.close() does subprocess teardown; shutdown_memory_provider()
+        # may do network IO). This handler runs ON the event loop when a
+        # Telegram/Discord/Slack confirm-button click resolves the slash-confirm
+        # (see _request_slash_confirm), so an inline call wedges the whole loop
+        # and the bot goes silent until restart (#35994). Offload it to a worker
+        # thread (via the contextvar-preserving executor helper) with a bounded
+        # timeout so the loop is never blocked.
         _cache_lock = getattr(self, "_agent_cache_lock", None)
         if _cache_lock is not None:
             with _cache_lock:
                 _cached = self._agent_cache.get(session_key)
                 _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
             if _old_agent is not None:
-                self._cleanup_agent_resources(_old_agent)
+                try:
+                    await asyncio.wait_for(
+                        self._run_in_executor_with_context(
+                            self._cleanup_agent_resources, _old_agent
+                        ),
+                        timeout=_RESET_CLEANUP_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    # wait_for cancels the await, but the worker thread cannot be
+                    # cancelled — a wedged teardown keeps running (or leaks) for
+                    # the gateway's lifetime. The reset proceeds regardless.
+                    logger.warning(
+                        "Agent resource cleanup for session %s exceeded %ss during "
+                        "/new reset; proceeding with reset (the worker thread is left "
+                        "to finish on its own). (#35994)",
+                        session_key, _RESET_CLEANUP_TIMEOUT_S,
+                    )
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "Agent resource cleanup for session %s failed during /new "
+                        "reset: %s (#35994)",
+                        session_key, cleanup_exc,
+                    )
         self._evict_cached_agent(session_key)
 
         # Discard any /queue overflow for this session — /new is a
@@ -1158,13 +1195,18 @@ class GatewaySlashCommandsMixin:
 
             if has_picker:
                 try:
-                    providers = list_picker_providers(
+                    # Offload blocking provider-listing (can fall through to a
+                    # synchronous urllib HTTP fetch on a stale cache) off the
+                    # event loop so the gateway doesn't freeze. See #41289.
+                    providers = await asyncio.to_thread(
+                        list_picker_providers,
                         current_provider=current_provider,
                         current_base_url=current_base_url,
                         current_model=current_model,
                         user_providers=user_provs,
                         custom_providers=custom_provs,
                         max_models=50,
+                        include_moa=True,
                     )
                 except Exception:
                     providers = []
@@ -1186,7 +1228,12 @@ class GatewaySlashCommandsMixin:
                         skew_error = _model_switch_skew_guard()
                         if skew_error:
                             return skew_error
-                        result = _switch_model(
+                        # Offload the switch off the event loop — switch_model()
+                        # can fall through to a synchronous models.dev HTTP fetch
+                        # (requests.get, 15s timeout) on a cold/expired cache,
+                        # which freezes the gateway otherwise. See #20525, #41289.
+                        result = await asyncio.to_thread(
+                            _switch_model,
                             raw_input=model_id,
                             current_provider=_cur_provider,
                             current_model=_cur_model,
@@ -1350,8 +1397,6 @@ class GatewaySlashCommandsMixin:
                         if mi:
                             if mi.max_output:
                                 lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
-                            if mi.has_cost_data():
-                                lines.append(t("gateway.model.cost_label", cost=mi.format_cost()))
                             lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
                         if result.warning_message:
                             lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
@@ -1379,7 +1424,10 @@ class GatewaySlashCommandsMixin:
             lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
 
             try:
-                providers = list_authenticated_providers(
+                # Offload blocking provider-listing off the event loop so the
+                # gateway doesn't freeze on a stale-cache HTTP fetch. See #41289.
+                providers = await asyncio.to_thread(
+                    list_authenticated_providers,
                     current_provider=current_provider,
                     current_base_url=current_base_url,
                     current_model=current_model,
@@ -1409,7 +1457,12 @@ class GatewaySlashCommandsMixin:
         skew_error = _model_switch_skew_guard()
         if skew_error:
             return skew_error
-        result = _switch_model(
+        # Offload the switch off the event loop — switch_model() can fall
+        # through to a synchronous models.dev HTTP fetch (requests.get, 15s
+        # timeout) on a cold/expired cache, which freezes the gateway
+        # otherwise. See #20525, #41289.
+        result = await asyncio.to_thread(
+            _switch_model,
             raw_input=model_input,
             current_provider=current_provider,
             current_model=current_model,
@@ -1481,6 +1534,11 @@ class GatewaySlashCommandsMixin:
             if _sess_db is not None:
                 try:
                     _sess_entry = self.session_store.get_or_create_session(source)
+                    # If this session was auto-reset, consume the flag so the
+                    # next regular message's cleanup does not wipe the model
+                    # override just stored below (Closes #48031).
+                    if getattr(_sess_entry, "was_auto_reset", False):
+                        _sess_entry.was_auto_reset = False
                     _sess_db.update_session_model(
                         _sess_entry.session_id, result.new_model
                     )
@@ -1579,8 +1637,6 @@ class GatewaySlashCommandsMixin:
             if mi:
                 if mi.max_output:
                     lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
-                if mi.has_cost_data():
-                    lines.append(t("gateway.model.cost_label", cost=mi.format_cost()))
                 lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
 
             # Cache notice
@@ -2769,9 +2825,14 @@ class GatewaySlashCommandsMixin:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                session_db=self._session_db,
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
+                # Prevent close() from ending the newly rotated session —
+                # the gateway session entry now points at the new id and
+                # must remain open for the next user turn.
+                tmp_agent._end_session_on_close = False
 
                 # Estimate with system prompt + tool schemas included so the
                 # figure reflects real request pressure, not a transcript-only
@@ -2805,7 +2866,7 @@ class GatewaySlashCommandsMixin:
                 # transcript replaced with the compacted set).
                 new_session_id = tmp_agent.session_id
                 rotated = new_session_id != session_entry.session_id
-                _in_place = bool(getattr(tmp_agent, "compression_in_place", False))
+                _in_place = bool(getattr(tmp_agent, "_last_compaction_in_place", False))
                 if rotated:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
@@ -3460,41 +3521,13 @@ class GatewaySlashCommandsMixin:
             # Session token usage — detailed breakdown matching CLI
             input_tokens = getattr(agent, "session_input_tokens", 0) or 0
             output_tokens = getattr(agent, "session_output_tokens", 0) or 0
-            cache_read = getattr(agent, "session_cache_read_tokens", 0) or 0
-            cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
 
             lines.append(t("gateway.usage.header_session"))
             lines.append(t("gateway.usage.label_model", model=agent.model))
             lines.append(t("gateway.usage.label_input_tokens", count=f"{input_tokens:,}"))
-            if cache_read:
-                lines.append(t("gateway.usage.label_cache_read", count=f"{cache_read:,}"))
-            if cache_write:
-                lines.append(t("gateway.usage.label_cache_write", count=f"{cache_write:,}"))
             lines.append(t("gateway.usage.label_output_tokens", count=f"{output_tokens:,}"))
             lines.append(t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}"))
             lines.append(t("gateway.usage.label_api_calls", count=agent.session_api_calls))
-
-            # Cost estimation
-            try:
-                from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
-                cost_result = estimate_usage_cost(
-                    agent.model,
-                    CanonicalUsage(
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        cache_read_tokens=cache_read,
-                        cache_write_tokens=cache_write,
-                    ),
-                    provider=getattr(agent, "provider", None),
-                    base_url=getattr(agent, "base_url", None),
-                )
-                if cost_result.amount_usd is not None:
-                    prefix = "~" if cost_result.status == "estimated" else ""
-                    lines.append(t("gateway.usage.label_cost", prefix=prefix, amount=f"{float(cost_result.amount_usd):.4f}"))
-                elif cost_result.status == "included":
-                    lines.append(t("gateway.usage.label_cost_included"))
-            except Exception:
-                pass
 
             # Context window and compressions
             ctx = agent.context_compressor

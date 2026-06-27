@@ -467,7 +467,7 @@ hermes config set memory.provider byterover
 | | |
 |---|---|
 | **适合场景** | 带用户 profile 和会话级图谱构建的语义召回 |
-| **依赖** | `pip install supermemory` + [API key](https://supermemory.ai) |
+| **依赖** | `pip install supermemory` + [API key](http://app.supermemory.ai/integrations?connect=hermes) |
 | **数据存储** | Supermemory Cloud |
 | **费用** | Supermemory 定价 |
 
@@ -498,9 +498,9 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 **主要特性：**
 - 自动上下文隔离——从捕获的轮次中剥离已召回的记忆，防止递归记忆污染
-- 会话结束时的对话导入，用于构建更丰富的图谱级知识
+- 在会话边界时将整个会话**一次性导入**
+- 会话结束时同时导入到对话端点（`/v4/conversations`），用于 Supermemory 的 profile 和图谱构建
 - 在第一轮及可配置间隔注入 profile 事实
-- 无意义消息过滤（跳过"ok"、"thanks"等）
 - **Profile 范围容器**——在 `container_tag` 中使用 `{identity}`（例如 `hermes-{identity}` → `hermes-coder`），按 Hermes profile 隔离记忆
 - **多容器模式**——启用 `enable_custom_container_tags` 并配置 `custom_containers` 列表，让 Agent 跨命名容器读写。自动操作（同步、预取）保持在主容器上。
 

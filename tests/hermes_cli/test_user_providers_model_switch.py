@@ -254,8 +254,13 @@ def test_openai_native_curated_catalog_is_non_empty():
     assert len(_PROVIDER_MODELS["openai"]) >= 4
 
 
-def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch):
-    """Built-in openai row must not report total_models=0 when creds exist."""
+def test_list_authenticated_providers_openai_alias_not_emitted_as_phantom(monkeypatch):
+    """Bare 'openai' is an alias to the OpenRouter aggregator, NOT a directly-
+    routable provider. It must NOT be emitted as its own picker row: selecting
+    such a row resolves via resolve_provider_full() to OpenRouter, silently
+    switching the user onto an endpoint they may have no key for (HTTP 401).
+    Real OpenAI access comes via 'openai-api' (direct) or a providers.openai
+    config entry — both of which carry api.openai.com. See model-picker bug."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(
         "agent.models_dev.fetch_models_dev",
@@ -271,8 +276,63 @@ def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch)
         max_models=50,
     )
     row = next((p for p in providers if p.get("slug") == "openai"), None)
-    assert row is not None
-    assert row["total_models"] > 0
+    assert row is None, (
+        "bare 'openai' alias must not appear as a standalone picker row — "
+        "it routes through OpenRouter and traps users without an OR key"
+    )
+
+
+def test_resolve_provider_full_user_config_openai_beats_alias():
+    """A providers.openai config entry must win over the built-in
+    'openai' → 'openrouter' alias. Regression for the model-picker bug
+    where users with provider=openai-api + a providers.openai config block
+    had their OpenAI selection silently routed to OpenRouter (HTTP 401)."""
+    from hermes_cli.providers import resolve_provider_full
+
+    user_providers = {
+        "openai": {
+            "name": "OpenAI-API",
+            "api": "https://api.openai.com/v1",
+            "transport": "codex_responses",
+            "models": {"gpt-5.4-nano": {}},
+        }
+    }
+    pdef = resolve_provider_full("openai", user_providers, [])
+    assert pdef is not None
+    # Must resolve to the user's direct endpoint, NOT the OpenRouter aggregator.
+    assert pdef.id == "openai"
+    assert pdef.source == "user-config"
+    assert pdef.base_url == "https://api.openai.com/v1"
+    assert "openrouter" not in pdef.base_url
+
+
+def test_switch_model_user_config_openai_does_not_hop_to_openrouter(monkeypatch):
+    """End-to-end: selecting a providers.openai config row in the picker must
+    resolve to api.openai.com, never silently switch to OpenRouter."""
+    monkeypatch.setenv("CUSTOM_OPENAI_API_KEY", "sk-resolved")
+    user_providers = {
+        "openai": {
+            "name": "OpenAI-API",
+            "api": "https://api.openai.com/v1",
+            "api_key": "${CUSTOM_OPENAI_API_KEY}",
+            "transport": "codex_responses",
+            "models": {"gpt-5.4-nano": {}, "gpt-4o-mini": {}},
+        }
+    }
+    result = switch_model(
+        raw_input="gpt-4o-mini",
+        current_provider="openai-api",
+        current_model="gpt-5.4-nano",
+        current_base_url="https://api.openai.com/v1",
+        current_api_key="sk-test",
+        explicit_provider="openai",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+    assert result.success, result.error_message
+    assert result.target_provider != "openrouter"
+    assert "openrouter" not in (result.base_url or "")
+    assert result.base_url == "https://api.openai.com/v1"
 
 
 def test_list_authenticated_providers_user_openai_official_url_fallback(monkeypatch):
@@ -984,3 +1044,141 @@ def test_user_provider_override_rejects_mangled_private_models(
 
     assert result.success is False
     assert result.error_message == "not found"
+
+
+# =============================================================================
+# Section 3 no-auth live discovery (PR #29575)
+# =============================================================================
+
+def test_section3_probes_no_key_endpoint_without_explicit_models(monkeypatch):
+    """A providers: entry with no api_key and no explicit models: list should
+    still probe /v1/models for live discovery — mirroring section 4's policy.
+
+    Regression for #29575: local self-hosted backends (llama.cpp, Ollama,
+    vLLM) that don't require auth previously showed an empty/minimal model
+    list because section 3 gated probing on ``api_url and api_key``.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    probed = {}
+
+    def _fake_fetch(api_key, api_url):
+        probed["called"] = True
+        probed["api_key"] = api_key
+        probed["api_url"] = api_url
+        return ["live-model-1", "live-model-2", "live-model-3"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fake_fetch)
+
+    user_providers = {
+        "local-llamacpp": {
+            "name": "Local llama.cpp",
+            "api": "http://localhost:8080/v1",
+            # No api_key, no models list — bare local endpoint.
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="local-llamacpp",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    assert probed.get("called") is True, "no-key bare endpoint should be probed"
+    assert probed["api_key"] == ""
+    row = next(p for p in providers if p["slug"] == "local-llamacpp")
+    assert row["models"] == ["live-model-1", "live-model-2", "live-model-3"]
+    assert row["total_models"] == 3
+
+
+def test_section3_skips_probe_when_no_key_but_explicit_models(monkeypatch):
+    """A no-key endpoint WITH an explicit models: list is the user narrowing a
+    public endpoint to a subset — skip live discovery and keep the list."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    def _fail_fetch(api_key, api_url):
+        raise AssertionError("should not probe when explicit models are set")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fail_fetch)
+
+    user_providers = {
+        "public-subset": {
+            "name": "Public Subset",
+            "api": "https://ollama.com/v1",
+            "models": ["only-a", "only-b"],
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="public-subset",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    row = next(p for p in providers if p["slug"] == "public-subset")
+    assert row["models"] == ["only-a", "only-b"]
+    assert row["total_models"] == 2
+
+
+def test_current_custom_model_is_surfaced_in_builtin_provider_row(monkeypatch):
+    """A custom/uncurated model selected via the CLI must appear in its
+    provider's picker row.
+
+    Regression: selecting `/model openrouter/<uncurated-name>` left the model
+    invisible in every picker (main model picker AND the MoA reference/aggregator
+    slot pickers, which read these rows), because the row only carried the
+    curated catalog. The current model is now injected at the front of the
+    current provider's list.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    # Pin a small curated catalog so the assertion is deterministic.
+    monkeypatch.setattr(
+        "hermes_cli.models.cached_provider_model_ids",
+        lambda slug, **kw: ["anthropic/claude-opus-4.8", "openai/gpt-5.5"]
+        if slug == "openrouter"
+        else [],
+    )
+
+    custom = "some-vendor/totally-custom-model-v9"
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_model=custom,
+        user_providers={},
+        custom_providers=[],
+    )
+
+    row = next(p for p in providers if p["slug"] == "openrouter")
+    assert custom in row["models"], row["models"]
+    assert row["models"][0] == custom  # injected at the front
+    assert row["total_models"] == 3
+
+
+def test_current_custom_model_not_leaked_into_other_provider_rows(monkeypatch):
+    """The current model is only injected into the CURRENT provider's row,
+    never into other providers (which can't serve it)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("NOUS_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "hermes_cli.models.cached_provider_model_ids",
+        lambda slug, **kw: ["curated/one"],
+    )
+
+    custom = "some-vendor/totally-custom-model-v9"
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_model=custom,
+        user_providers={},
+        custom_providers=[],
+    )
+
+    for row in providers:
+        if row["slug"] != "openrouter" and not row.get("is_current"):
+            assert custom not in row.get("models", []), f"leaked into {row['slug']}"

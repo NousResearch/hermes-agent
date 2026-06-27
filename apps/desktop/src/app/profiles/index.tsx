@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import {
   Dialog,
   DialogContent,
@@ -12,7 +11,8 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import { SanitizedInput } from '@/components/ui/sanitized-input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
   createProfile,
@@ -24,42 +24,36 @@ import {
   renameProfile,
   updateProfileSoul
 } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
+import { slug } from '@/lib/sanitize'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
-import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
-import { titlebarHeaderBaseClass } from '../shell/titlebar'
-import type { SetTitlebarToolGroup } from '../shell/titlebar-controls'
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
+import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
+import { OverlayView } from '../overlays/overlay-view'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
-
-const PROFILE_NAME_HINT = 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.'
 
 function isValidProfileName(name: string): boolean {
   return PROFILE_NAME_RE.test(name.trim())
 }
 
-interface ProfilesViewProps extends React.ComponentProps<'section'> {
-  setStatusbarItemGroup?: SetStatusbarItemGroup
-  setTitlebarToolGroup?: SetTitlebarToolGroup
+interface ProfilesViewProps {
+  onClose: () => void
 }
 
-export function ProfilesView({
-  setStatusbarItemGroup: _setStatusbarItemGroup,
-  setTitlebarToolGroup,
-  ...props
-}: ProfilesViewProps) {
+export function ProfilesView({ onClose }: ProfilesViewProps) {
+  const { t } = useI18n()
+  const p = t.profiles
   const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
-  const [refreshing, setRefreshing] = useState(false)
   const [selectedName, setSelectedName] = useState<null | string>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
   const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
-    setRefreshing(true)
-
     try {
       const { profiles: list } = await getProfiles()
       setProfiles(list)
@@ -71,33 +65,15 @@ export function ProfilesView({
         return list.find(p => p.is_default)?.name ?? list[0]?.name ?? null
       })
     } catch (err) {
-      notifyError(err, 'Failed to load profiles')
-    } finally {
-      setRefreshing(false)
+      notifyError(err, p.failedLoad)
     }
-  }, [])
+  }, [p])
+
+  useRefreshHotkey(refresh)
 
   useEffect(() => {
     void refresh()
   }, [refresh])
-
-  useEffect(() => {
-    if (!setTitlebarToolGroup) {
-      return
-    }
-
-    setTitlebarToolGroup('profiles', [
-      {
-        disabled: refreshing,
-        icon: <Codicon name="refresh" spinning={refreshing} />,
-        id: 'refresh-profiles',
-        label: refreshing ? 'Refreshing profiles' : 'Refresh profiles',
-        onSelect: () => void refresh()
-      }
-    ])
-
-    return () => setTitlebarToolGroup('profiles', [])
-  }, [refresh, refreshing, setTitlebarToolGroup])
 
   const selected = useMemo(() => {
     if (!profiles) {
@@ -108,19 +84,19 @@ export function ProfilesView({
   }, [profiles, selectedName])
 
   const handleCreate = useCallback(
-    async (name: string, cloneFromDefault: boolean) => {
+    async (name: string, cloneFrom: null | string) => {
       const trimmed = name.trim()
 
       if (!isValidProfileName(trimmed)) {
-        throw new Error(PROFILE_NAME_HINT)
+        throw new Error(p.nameHint)
       }
 
-      await createProfile({ name: trimmed, clone_from_default: cloneFromDefault })
-      notify({ kind: 'success', title: 'Profile created', message: trimmed })
+      await createProfile({ name: trimmed, clone_from: cloneFrom })
+      notify({ kind: 'success', title: p.created, message: trimmed })
       setSelectedName(trimmed)
       await refresh()
     },
-    [refresh]
+    [p, refresh]
   )
 
   const handleRename = useCallback(
@@ -132,15 +108,15 @@ export function ProfilesView({
       }
 
       if (!isValidProfileName(target)) {
-        throw new Error(PROFILE_NAME_HINT)
+        throw new Error(p.nameHint)
       }
 
       await renameProfile(from, target)
-      notify({ kind: 'success', title: 'Profile renamed', message: `${from} → ${target}` })
+      notify({ kind: 'success', title: p.renamed, message: `${from} → ${target}` })
       setSelectedName(target)
       await refresh()
     },
-    [refresh]
+    [p, refresh]
   )
 
   const handleConfirmDelete = useCallback(async () => {
@@ -152,113 +128,103 @@ export function ProfilesView({
 
     try {
       await deleteProfile(pendingDelete.name)
-      notify({ kind: 'success', title: 'Profile deleted', message: pendingDelete.name })
+      notify({ kind: 'success', title: p.deleted, message: pendingDelete.name })
       setPendingDelete(null)
       setSelectedName(null)
       await refresh()
     } catch (err) {
-      notifyError(err, 'Failed to delete profile')
+      notifyError(err, p.failedDelete)
     } finally {
       setDeleting(false)
     }
-  }, [pendingDelete, refresh])
+  }, [p, pendingDelete, refresh])
 
   return (
-    <section {...props} className="flex h-full min-w-0 flex-col overflow-hidden rounded-b-[0.9375rem] bg-background">
-      <header className={titlebarHeaderBaseClass}>
-        <h2 className="pointer-events-auto text-base font-semibold leading-none tracking-tight">Profiles</h2>
-        <span className="pointer-events-auto text-xs text-muted-foreground">
-          {profiles ? `${profiles.length} ${profiles.length === 1 ? 'profile' : 'profiles'}` : ''}
-        </span>
-      </header>
+    <OverlayView closeLabel={p.close} onClose={onClose}>
+      {!profiles ? (
+        <PageLoader label={p.loading} />
+      ) : (
+        <OverlaySplitLayout>
+          <OverlaySidebar>
+            <OverlayNewButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
+            {profiles.map(profile => (
+              <ProfileRow
+                active={selected?.name === profile.name}
+                key={profile.name}
+                onSelect={() => setSelectedName(profile.name)}
+                profile={profile}
+              />
+            ))}
+            {profiles.length === 0 && (
+              <p className="px-2 py-4 text-center text-xs text-muted-foreground">{p.noProfiles}</p>
+            )}
+          </OverlaySidebar>
 
-      <div className="min-h-0 flex-1 overflow-hidden rounded-b-[1.0625rem] border border-border/50 bg-background/85">
-        {!profiles ? (
-          <PageLoader label="Loading profiles..." />
-        ) : (
-          <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[16rem_minmax(0,1fr)]">
-            <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border/50 lg:border-b-0 lg:border-r">
-              <div className="border-b border-border/40 p-2">
-                <Button className="w-full" onClick={() => setCreateOpen(true)} size="sm">
-                  <Codicon name="add" />
-                  New profile
-                </Button>
-              </div>
-              <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-                {profiles.map(profile => (
-                  <li key={profile.name}>
-                    <ProfileRow
-                      active={selected?.name === profile.name}
-                      onSelect={() => setSelectedName(profile.name)}
-                      profile={profile}
-                    />
-                  </li>
-                ))}
-                {profiles.length === 0 && (
-                  <li className="px-2 py-4 text-center text-xs text-muted-foreground">No profiles yet.</li>
-                )}
-              </ul>
-            </aside>
-
-            <main className="min-h-0 overflow-hidden">
-              {selected ? (
-                <ProfileDetail
-                  key={selected.name}
-                  onDelete={() => setPendingDelete(selected)}
-                  onRename={newName => handleRename(selected.name, newName)}
-                  profile={selected}
-                />
-              ) : (
-                <div className="grid h-full place-items-center px-6 py-12 text-center text-sm text-muted-foreground">
-                  <div>
-                    <Users className="mx-auto size-6 text-muted-foreground/60" />
-                    <p className="mt-3">Select a profile to view its details.</p>
-                  </div>
+          <OverlayMain className="px-0">
+            {selected ? (
+              <ProfileDetail
+                key={selected.name}
+                onDelete={() => setPendingDelete(selected)}
+                onRename={newName => handleRename(selected.name, newName)}
+                profile={selected}
+              />
+            ) : (
+              <div className="grid h-full place-items-center px-6 py-12 text-center text-sm text-muted-foreground">
+                <div>
+                  <Users className="mx-auto size-6 text-muted-foreground/60" />
+                  <p className="mt-3">{p.selectPrompt}</p>
                 </div>
-              )}
-            </main>
-          </div>
-        )}
-      </div>
+              </div>
+            )}
+          </OverlayMain>
+        </OverlaySplitLayout>
+      )}
 
       <CreateProfileDialog
         onClose={() => setCreateOpen(false)}
-        onCreate={async (name, cloneFromDefault) => handleCreate(name, cloneFromDefault)}
+        onCreate={async (name, cloneFrom) => handleCreate(name, cloneFrom)}
         open={createOpen}
+        profiles={profiles ?? []}
       />
 
       <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Delete profile?</DialogTitle>
+            <DialogTitle>{p.deleteTitle}</DialogTitle>
             <DialogDescription>
               {pendingDelete ? (
                 <>
-                  This will delete <span className="font-medium text-foreground">{pendingDelete.name}</span> and remove
-                  its <span className="font-mono text-xs">{pendingDelete.path}</span> directory. This cannot be undone.
+                  {p.deleteDescPrefix}
+                  <span className="font-medium text-foreground">{pendingDelete.name}</span>
+                  {p.deleteDescMid}
+                  <span className="font-mono text-xs">{pendingDelete.path}</span>
+                  {p.deleteDescSuffix}
                 </>
               ) : null}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-              {deleting ? 'Deleting...' : 'Delete'}
+              {deleting ? p.deleting : t.common.delete}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </section>
+    </OverlayView>
   )
 }
 
 function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: () => void; profile: ProfileInfo }) {
+  const { t } = useI18n()
+  const p = t.profiles
+
   return (
     <button
       className={cn(
-        'flex w-full flex-col items-start gap-1 rounded-lg px-2.5 py-2 text-left transition-colors',
+        'flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors',
         active ? 'bg-accent text-foreground' : 'text-foreground/85 hover:bg-accent/60'
       )}
       onClick={onSelect}
@@ -266,11 +232,11 @@ function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: 
     >
       <span className="flex w-full items-center justify-between gap-2">
         <span className="truncate text-sm font-medium">{profile.name}</span>
-        {profile.is_default && <span className="text-[0.6rem] text-primary">default</span>}
+        {profile.is_default && <span className="text-[0.6rem] text-primary">{p.default}</span>}
       </span>
       <span className="text-[0.66rem] text-muted-foreground">
-        {profile.skill_count} {profile.skill_count === 1 ? 'skill' : 'skills'}
-        {profile.has_env ? ' · env' : ''}
+        {p.skills(profile.skill_count)}
+        {profile.has_env ? ` · ${p.env}` : ''}
       </span>
     </button>
   )
@@ -285,6 +251,8 @@ function ProfileDetail({
   onRename: (newName: string) => Promise<void>
   profile: ProfileInfo
 }) {
+  const { t } = useI18n()
+  const p = t.profiles
   const [renameOpen, setRenameOpen] = useState(false)
   const [copying, setCopying] = useState(false)
 
@@ -294,13 +262,13 @@ function ProfileDetail({
     try {
       const { command } = await getProfileSetupCommand(profile.name)
       await navigator.clipboard.writeText(command)
-      notify({ kind: 'success', title: 'Setup command copied', message: command })
+      notify({ kind: 'success', title: p.setupCopied, message: command })
     } catch (err) {
-      notifyError(err, 'Failed to copy setup command')
+      notifyError(err, p.failedCopy)
     } finally {
       setCopying(false)
     }
-  }, [profile.name])
+  }, [p, profile.name])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -313,7 +281,7 @@ function ProfileDetail({
                   <h3 className="text-xl font-semibold tracking-tight">{profile.name}</h3>
                   {profile.is_default && (
                     <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[0.65rem] font-medium text-primary">
-                      Default
+                      {p.defaultBadge}
                     </span>
                   )}
                   {profile.has_env && (
@@ -330,12 +298,12 @@ function ProfileDetail({
                 {!profile.is_default && (
                   <Button onClick={() => setRenameOpen(true)} size="sm" variant="outline">
                     <Pencil />
-                    Rename
+                    {p.rename}
                   </Button>
                 )}
                 <Button disabled={copying} onClick={() => void handleCopySetup()} size="sm" variant="outline">
                   <Terminal />
-                  {copying ? 'Copying...' : 'Copy setup'}
+                  {copying ? p.copying : p.copySetup}
                 </Button>
                 {!profile.is_default && (
                   <Button
@@ -345,24 +313,24 @@ function ProfileDetail({
                     variant="ghost"
                   >
                     <Trash2 />
-                    Delete
+                    {t.common.delete}
                   </Button>
                 )}
               </div>
             </div>
 
-            <dl className="grid gap-2 rounded-lg border border-border/40 bg-background/70 px-3 py-3 text-xs sm:grid-cols-2">
-              <DetailRow label="Model">
+            <dl className="grid gap-2 text-xs sm:grid-cols-2">
+              <DetailRow label={p.modelLabel}>
                 {profile.model ? (
                   <>
                     <span className="font-mono">{profile.model}</span>
                     {profile.provider && <span className="text-muted-foreground"> · {profile.provider}</span>}
                   </>
                 ) : (
-                  <span className="text-muted-foreground">Not set</span>
+                  <span className="text-muted-foreground">{p.notSet}</span>
                 )}
               </DetailRow>
-              <DetailRow label="Skills">{profile.skill_count}</DetailRow>
+              <DetailRow label={p.skillsLabel}>{profile.skill_count}</DetailRow>
             </dl>
           </header>
 
@@ -393,6 +361,8 @@ function DetailRow({ children, label }: { children: React.ReactNode; label: stri
 }
 
 function SoulEditor({ profileName }: { profileName: string }) {
+  const { t } = useI18n()
+  const p = t.profiles
   const [content, setContent] = useState('')
   const [original, setOriginal] = useState('')
   const [loading, setLoading] = useState(true)
@@ -417,7 +387,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
         }
       } catch (err) {
         if (requestRef.current === profileName) {
-          setError(err instanceof Error ? err.message : 'Failed to load SOUL.md')
+          setError(err instanceof Error ? err.message : p.failedLoadSoul)
         }
       } finally {
         if (requestRef.current === profileName) {
@@ -425,7 +395,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
         }
       }
     })()
-  }, [profileName])
+  }, [p, profileName])
 
   const dirty = content !== original
   const isEmpty = !content.trim()
@@ -437,9 +407,9 @@ function SoulEditor({ profileName }: { profileName: string }) {
     try {
       await updateProfileSoul(profileName, content)
       setOriginal(content)
-      notify({ kind: 'success', title: 'SOUL.md saved', message: profileName })
+      notify({ kind: 'success', title: p.soulSaved, message: profileName })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save SOUL.md')
+      setError(err instanceof Error ? err.message : p.failedSaveSoul)
     } finally {
       setSaving(false)
     }
@@ -450,22 +420,18 @@ function SoulEditor({ profileName }: { profileName: string }) {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">SOUL.md</h4>
-          <p className="text-xs text-muted-foreground">
-            The system prompt and persona instructions baked into this profile.
-          </p>
+          <p className="text-xs text-muted-foreground">{p.soulDesc}</p>
         </div>
-        {dirty && <span className="text-[0.65rem] text-muted-foreground">Unsaved changes</span>}
+        {dirty && <span className="text-[0.65rem] text-muted-foreground">{p.unsavedChanges}</span>}
       </div>
 
       {loading ? (
-        <div className="grid h-44 place-items-center rounded-md border border-border/40 bg-background/60 text-xs text-muted-foreground">
-          Loading SOUL.md...
-        </div>
+        <PageLoader className="min-h-44" label={p.loadingSoul} />
       ) : (
         <Textarea
           className="min-h-72 font-mono text-xs leading-5"
           onChange={event => setContent(event.target.value)}
-          placeholder={isEmpty ? 'Empty SOUL.md — start writing the persona...' : undefined}
+          placeholder={isEmpty ? p.emptySoul : undefined}
           value={content}
         />
       )}
@@ -480,7 +446,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
       <div className="flex justify-end">
         <Button disabled={!dirty || saving || loading} onClick={() => void handleSave()} size="sm">
           <Save />
-          {saving ? 'Saving...' : 'Save SOUL.md'}
+          {saving ? p.saving : p.saveSoul}
         </Button>
       </div>
     </section>
@@ -490,14 +456,18 @@ function SoulEditor({ profileName }: { profileName: string }) {
 function CreateProfileDialog({
   onClose,
   onCreate,
-  open
+  open,
+  profiles
 }: {
   onClose: () => void
-  onCreate: (name: string, cloneFromDefault: boolean) => Promise<void>
+  onCreate: (name: string, cloneFrom: null | string) => Promise<void>
   open: boolean
+  profiles: ProfileInfo[]
 }) {
+  const { t } = useI18n()
+  const p = t.profiles
   const [name, setName] = useState('')
-  const [cloneFromDefault, setCloneFromDefault] = useState(true)
+  const [cloneFrom, setCloneFrom] = useState<null | string>('default')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -507,7 +477,7 @@ function CreateProfileDialog({
     }
 
     setName('')
-    setCloneFromDefault(true)
+    setCloneFrom('default')
     setError(null)
     setSaving(false)
   }, [open])
@@ -519,7 +489,7 @@ function CreateProfileDialog({
     event.preventDefault()
 
     if (!trimmed || invalid) {
-      setError(invalid ? `Invalid name. ${PROFILE_NAME_HINT}` : 'Name is required.')
+      setError(invalid ? p.invalidName(p.nameHint) : p.nameRequired)
 
       return
     }
@@ -528,10 +498,10 @@ function CreateProfileDialog({
     setError(null)
 
     try {
-      await onCreate(trimmed, cloneFromDefault)
+      await onCreate(trimmed, cloneFrom)
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create profile')
+      setError(err instanceof Error ? err.message : p.failedCreate)
     } finally {
       setSaving(false)
     }
@@ -541,44 +511,51 @@ function CreateProfileDialog({
     <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>New profile</DialogTitle>
-          <DialogDescription>
-            Profiles are independent Hermes environments: separate config, skills, and SOUL.md.
-          </DialogDescription>
+          <DialogTitle>{p.newProfile}</DialogTitle>
+          <DialogDescription>{p.createDesc}</DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={handleSubmit}>
           <div className="grid gap-1.5">
             <label className="text-xs font-medium" htmlFor="new-profile-name">
-              Name
+              {p.nameLabel}
             </label>
-            <Input
+            <SanitizedInput
               aria-invalid={invalid}
               autoFocus
               id="new-profile-name"
-              onChange={event => setName(event.target.value)}
+              onValueChange={setName}
               placeholder="my-profile"
+              sanitize={slug}
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {PROFILE_NAME_HINT}
+              {p.nameHint}
             </p>
           </div>
 
-          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border/40 bg-background/50 px-3 py-2 text-sm">
-            <input
-              checked={cloneFromDefault}
-              className="size-4 accent-primary"
-              onChange={event => setCloneFromDefault(event.target.checked)}
-              type="checkbox"
-            />
-            <span>
-              <span className="font-medium">Clone from default</span>
-              <span className="ml-2 text-xs text-muted-foreground">
-                Copy config, skills, and SOUL.md from your default profile.
-              </span>
-            </span>
-          </label>
+          <div className="grid gap-1.5">
+            <label className="text-xs font-medium" htmlFor="new-profile-clone-from">
+              {p.cloneFrom}
+            </label>
+            <Select
+              onValueChange={value => setCloneFrom(value === '__none__' ? null : value)}
+              value={cloneFrom ?? '__none__'}
+            >
+              <SelectTrigger className="h-9 rounded-md" id="new-profile-clone-from">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">{p.cloneFromNone}</SelectItem>
+                {profiles.map(profile => (
+                  <SelectItem key={profile.name} value={profile.name}>
+                    {profile.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">{p.cloneFromDesc}</p>
+          </div>
 
           {error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -589,10 +566,10 @@ function CreateProfileDialog({
 
           <DialogFooter>
             <Button disabled={saving} onClick={onClose} type="button" variant="outline">
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button disabled={saving || !trimmed || invalid} type="submit">
-              {saving ? 'Creating...' : 'Create profile'}
+              {saving ? p.creating : p.createAction}
             </Button>
           </DialogFooter>
         </form>
@@ -612,6 +589,8 @@ function RenameProfileDialog({
   onRename: (newName: string) => Promise<void>
   open: boolean
 }) {
+  const { t } = useI18n()
+  const p = t.profiles
   const [name, setName] = useState(currentName)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
@@ -640,7 +619,7 @@ function RenameProfileDialog({
     }
 
     if (!trimmed || invalid) {
-      setError(invalid ? `Invalid name. ${PROFILE_NAME_HINT}` : 'Name is required.')
+      setError(invalid ? p.invalidName(p.nameHint) : p.nameRequired)
 
       return
     }
@@ -651,7 +630,7 @@ function RenameProfileDialog({
     try {
       await onRename(trimmed)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rename profile')
+      setError(err instanceof Error ? err.message : p.failedRename)
     } finally {
       setSaving(false)
     }
@@ -661,27 +640,29 @@ function RenameProfileDialog({
     <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Rename profile</DialogTitle>
+          <DialogTitle>{p.renameTitle}</DialogTitle>
           <DialogDescription>
-            Renaming updates the profile directory and any wrapper scripts in{' '}
-            <span className="font-mono">~/.local/bin</span>.
+            {p.renameDescPrefix}
+            <span className="font-mono">~/.local/bin</span>
+            {p.renameDescSuffix}
           </DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-3" onSubmit={handleSubmit}>
           <div className="grid gap-1.5">
             <label className="text-xs font-medium" htmlFor="rename-profile-name">
-              New name
+              {p.newNameLabel}
             </label>
-            <Input
+            <SanitizedInput
               aria-invalid={invalid}
               autoFocus
               id="rename-profile-name"
-              onChange={event => setName(event.target.value)}
+              onValueChange={setName}
+              sanitize={slug}
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {PROFILE_NAME_HINT}
+              {p.nameHint}
             </p>
           </div>
 
@@ -694,10 +675,10 @@ function RenameProfileDialog({
 
           <DialogFooter>
             <Button disabled={saving} onClick={onClose} type="button" variant="outline">
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button disabled={saving || invalid || unchanged} type="submit">
-              {saving ? 'Renaming...' : 'Rename'}
+              {saving ? p.renaming : p.rename}
             </Button>
           </DialogFooter>
         </form>

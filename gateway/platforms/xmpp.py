@@ -91,6 +91,11 @@ class XmppAdapter(BasePlatformAdapter):
     paying the slixmpp import / event-loop cost.
     """
 
+    # How long connect() waits for the session to establish before declaring a
+    # retryable failure. Kept under the gateway's per-platform connect timeout
+    # (_PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30s) so our own diagnosis wins.
+    _CONNECT_TIMEOUT_SECS = 20.0
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.XMPP)
         extra = config.extra or {}
@@ -119,6 +124,17 @@ class XmppAdapter(BasePlatformAdapter):
         self._session_ready: Optional[asyncio.Event] = None
         self._self_bare = self._bare(self.jid)
 
+        # True between session_start and the next disconnect. connect() waits
+        # on _session_ready (the asyncio.Event below) to know the session came
+        # up; this bool is the durable record of it for observability/tests.
+        # The escalate-vs-stay-quiet decision in _on_disconnected keys off
+        # _closing / has_fatal_error, not this flag.
+        self._session_established = False
+        # Set while disconnect() is tearing the client down on purpose, so the
+        # "disconnected" handler doesn't mistake a deliberate close for an
+        # outage and escalate it to a reconnect (#28919).
+        self._closing = False
+
         # Set of bare room JIDs we've configured for groupchat send routing.
         self._known_mucs = {r.room for r in self.muc_rooms}
 
@@ -131,7 +147,13 @@ class XmppAdapter(BasePlatformAdapter):
     # Lifecycle
     # -----------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # ``is_reconnect`` is part of the BasePlatformAdapter.connect contract.
+        # XMPP keeps no client-side offline queue (the server stores offline
+        # messages), so there is nothing extra to preserve or drop on a
+        # watcher-driven reconnect — we accept the flag and connect normally.
+        self._closing = False
+        self._session_established = False
         client = slixmpp.ClientXMPP(self.jid, self._password)
         # Plugins we need: chat states, MUC, HTTP File Upload, OOB, disco, ping.
         for plugin in ("xep_0030", "xep_0045", "xep_0066", "xep_0085", "xep_0199",
@@ -142,36 +164,75 @@ class XmppAdapter(BasePlatformAdapter):
             except Exception:
                 logger.warning("xmpp: failed to register slixmpp plugin %s", plugin)
 
-        # ADR-0001 §5: enforce TLS, refuse plaintext.
-        client.use_starttls = True
-        client.force_starttls = True
+        # ADR-0001 §5: enforce TLS, refuse plaintext. The load-bearing knob in
+        # current slixmpp is ``enable_plaintext = False`` (with STARTTLS allowed
+        # and Direct-TLS off by default); the legacy ``use_starttls`` /
+        # ``force_starttls`` names are set too so the posture holds across the
+        # supported slixmpp range (older releases honored those instead).
+        client.enable_starttls = True
+        client.enable_direct_tls = False
+        client.enable_plaintext = False
+        client.use_starttls = True       # legacy slixmpp name
+        client.force_starttls = True     # legacy slixmpp name
 
         client.add_event_handler("session_start", self._on_session_start)
         client.add_event_handler("message", self._on_message)
         client.add_event_handler("groupchat_message", self._on_message)
         client.add_event_handler("disconnected", self._on_disconnected)
-        client.add_event_handler("failed_auth", self._on_failed_auth)
+        # Handle "failed_all_auth" (fired once, after every SASL mechanism the
+        # server offered has been exhausted) rather than "failed_auth" (fired
+        # once per *rejected* mechanism). slixmpp moves on to the next
+        # mechanism after each failed_auth, so reacting to failed_auth marks
+        # the adapter dead even when a later mechanism (e.g. SCRAM after a
+        # rejected PLAIN) succeeds — silently poisoning a working connection
+        # (#28919).
+        client.add_event_handler("failed_all_auth", self._on_failed_all_auth)
 
         self.client = client
         self._session_ready = asyncio.Event()
 
-        connect_kwargs: Dict[str, Any] = {}
+        # slixmpp >=1.x uses ``connect(host, port)``; very old releases used
+        # ``connect(address=(host, port))``. Try the modern signature first and
+        # fall back WITHOUT dropping the configured host/port — an earlier
+        # version of this code silently discarded XMPP_HOST/XMPP_PORT on the
+        # fallback, sending the bot to SRV/JID-domain instead of the operator's
+        # server.
         if self.host:
-            connect_kwargs["address"] = (self.host, self.port)
-
-        try:
-            ok = client.connect(**connect_kwargs)
-        except TypeError:
-            # Older slixmpp signature
-            ok = client.connect()
-        if ok is False:
-            self._set_fatal_error(
-                "xmpp_connect_failed", "XMPP connect() returned False", retryable=True
-            )
-            return False
+            try:
+                client.connect(host=self.host, port=self.port)
+            except TypeError:
+                client.connect(address=(self.host, self.port))
+        else:
+            client.connect()
 
         loop = asyncio.get_event_loop()
         self._process_task = loop.create_task(self._run_process())
+
+        # ``connect()`` only kicks off the TCP/TLS/SASL handshake (slixmpp
+        # returns a Future, never a bool — so there is no synchronous failure to
+        # check here). Wait, bounded, for the session to actually establish
+        # before reporting success. Otherwise an unreachable server, a wrong
+        # host, or a rejected login would leave the gateway believing XMPP is
+        # connected over a dead socket with nothing driving recovery (#28919).
+        try:
+            await asyncio.wait_for(
+                self._session_ready.wait(), timeout=self._CONNECT_TIMEOUT_SECS
+            )
+        except asyncio.TimeoutError:
+            if not self.has_fatal_error:
+                self._set_fatal_error(
+                    "xmpp_connect_timeout",
+                    f"XMPP session did not establish within "
+                    f"{self._CONNECT_TIMEOUT_SECS:g}s — check XMPP_HOST/XMPP_PORT "
+                    "and server reachability",
+                    retryable=True,
+                )
+            await self.disconnect()
+            return False
+        if self.has_fatal_error:
+            # e.g. failed_all_auth fired (bad credentials) while we waited.
+            await self.disconnect()
+            return False
 
         logger.warning(
             "XMPP adapter is running without OMEMO. Messages are encrypted in "
@@ -181,6 +242,7 @@ class XmppAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        self._closing = True
         if self.client is not None:
             try:
                 self.client.disconnect()
@@ -202,6 +264,7 @@ class XmppAdapter(BasePlatformAdapter):
             logger.exception("xmpp: process loop crashed")
 
     async def _on_session_start(self, _event: Any) -> None:
+        self._session_established = True
         self.client.send_presence()
         try:
             await self.client.get_roster()
@@ -216,14 +279,35 @@ class XmppAdapter(BasePlatformAdapter):
             self._session_ready.set()
 
     async def _on_disconnected(self, _event: Any) -> None:
-        self._mark_disconnected()
+        self._session_established = False
+        # A deliberate disconnect(), or a failure we have already reported
+        # (e.g. failed_all_auth set a fatal error), needs no escalation —
+        # just record the disconnect and let the existing status stand.
+        if self._closing or self.has_fatal_error:
+            self._mark_disconnected()
+            return
+        # An unexpected drop of a live connection (server restart, network
+        # blip, ...). Escalate to a *retryable* fatal error AND notify the
+        # gateway so its reconnect watcher actually retries. Marking the
+        # adapter disconnected without notifying would leave the platform
+        # down with nothing driving a reconnect — a silently dead bridge in
+        # an otherwise-healthy gateway (#28919).
+        self._set_fatal_error(
+            "xmpp_connection_lost", "XMPP connection lost", retryable=True
+        )
+        await self._notify_fatal_error()
 
-    async def _on_failed_auth(self, _event: Any) -> None:
+    async def _on_failed_all_auth(self, _event: Any) -> None:
+        # Every SASL mechanism the server offered has been rejected —
+        # credentials are wrong or the account is disabled. Non-retryable,
+        # and we notify the gateway so the failure actually surfaces instead
+        # of leaving a connected-looking but dead adapter (#28919).
         self._set_fatal_error(
             "xmpp_auth_failed",
             "XMPP authentication failed — check XMPP_JID/XMPP_PASSWORD",
             retryable=False,
         )
+        await self._notify_fatal_error()
 
     # -----------------------------------------------------------------
     # Inbound
@@ -379,28 +463,33 @@ class XmppAdapter(BasePlatformAdapter):
     async def send_document(
         self,
         chat_id: str,
-        path: str,
+        file_path: str,
         caption: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        return await self._upload_and_send(chat_id, path, caption)
+        # Param name must match BasePlatformAdapter.send_document(file_path=...)
+        # — the gateway calls these by keyword, so a renamed positional arg
+        # raises TypeError and the attachment silently never sends.
+        return await self._upload_and_send(chat_id, file_path, caption)
 
     async def send_voice(
         self,
         chat_id: str,
-        path: str,
+        audio_path: str,
         **kwargs,
     ) -> SendResult:
-        return await self._upload_and_send(chat_id, path, caption=None)
+        # Param name must match BasePlatformAdapter.send_voice(audio_path=...).
+        return await self._upload_and_send(chat_id, audio_path, caption=None)
 
     async def send_video(
         self,
         chat_id: str,
-        path: str,
+        video_path: str,
         caption: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        return await self._upload_and_send(chat_id, path, caption)
+        # Param name must match BasePlatformAdapter.send_video(video_path=...).
+        return await self._upload_and_send(chat_id, video_path, caption)
 
     async def _upload_and_send(
         self, chat_id: str, path: str, caption: Optional[str]
@@ -502,7 +591,7 @@ async def send_xmpp_message(
     try:
         ok = await adapter.connect()
         if not ok:
-            return {"success": False, "error": adapter.fatal_error_message() or "connect failed"}
+            return {"success": False, "error": adapter.fatal_error_message or "connect failed"}
         # Wait for session_start (and any MUC joins) to complete, with a
         # bounded timeout so a slow/unresponsive server can't hang cron jobs.
         if adapter._session_ready is not None:

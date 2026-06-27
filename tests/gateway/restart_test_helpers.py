@@ -15,7 +15,7 @@ class RestartTestAdapter(BasePlatformAdapter):
         self.sent: list[str] = []
         self.sent_calls: list[tuple[str, str, object]] = []
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         return True
 
     async def disconnect(self):
@@ -66,6 +66,7 @@ def make_restart_runner(
     runner._background_tasks = set()
     runner._draining = False
     runner._restart_requested = False
+    runner._signal_initiated_shutdown = False
     runner._restart_task_started = False
     runner._restart_detached = False
     runner._restart_via_service = False

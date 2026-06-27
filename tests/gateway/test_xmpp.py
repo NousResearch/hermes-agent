@@ -10,6 +10,7 @@ See:
 - docs/adr/0001-xmpp-adapter-architecture.md — design contract
 - gateway/platforms/ADDING_A_PLATFORM.md — upstream integration checklist
 """
+import asyncio
 import inspect
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -391,16 +392,23 @@ class TestXmppConnectTLSPosture:
     async def test_connect_forces_starttls(self, monkeypatch):
         adapter = _make_xmpp_adapter(monkeypatch)
         fake_client = MagicMock()
-        fake_client.connect = MagicMock(return_value=True)
-        fake_client.process = MagicMock()
+        # connect() now waits for the session to come up before returning, so
+        # simulate session_start firing during client.connect().
+        fake_client.connect = MagicMock(
+            side_effect=lambda *a, **k: adapter._session_ready.set()
+        )
 
         with patch(
             "gateway.platforms.xmpp.slixmpp.ClientXMPP", return_value=fake_client
         ) as ctor:
-            await adapter.connect()
+            ok = await adapter.connect()
+            assert ok is True
             assert ctor.called
-            # ADR-0001 §5: STARTTLS must be enforced, not just attempted.
-            assert getattr(fake_client, "force_starttls", False) is True
+            # ADR-0001 §5: plaintext must be refused. Assert the knob slixmpp
+            # actually honors (enable_plaintext / enable_starttls); the legacy
+            # force_starttls attribute is inert in current slixmpp.
+            assert fake_client.enable_plaintext is False
+            assert fake_client.enable_starttls is True
 
 
 # ---------------------------------------------------------------------------
@@ -439,10 +447,12 @@ class TestXmppIntegrationWiring:
         assert Platform.XMPP.value == "xmpp"
 
     def test_authorization_maps_present(self):
-        # _is_user_authorized is a method on the gateway class — inspect the
-        # whole module rather than importing the bound method.
-        from gateway import run
-        src = inspect.getsource(run)
+        # Authorization (``_is_user_authorized`` / ``_get_unauthorized_dm_behavior``)
+        # lives in the ``gateway.authz_mixin`` mixin that the gateway runner
+        # composes in. XMPP must be registered in those maps so
+        # XMPP_ALLOWED_USERS / XMPP_ALLOW_ALL_USERS gate inbound senders.
+        from gateway import authz_mixin
+        src = inspect.getsource(authz_mixin)
         assert "XMPP_ALLOWED_USERS" in src
         assert "XMPP_ALLOW_ALL_USERS" in src
 
@@ -477,3 +487,174 @@ class TestXmppIntegrationWiring:
         from hermes_cli import gateway as gw
         src = inspect.getsource(gw)
         assert '"xmpp"' in src or "'xmpp'" in src
+
+
+# ---------------------------------------------------------------------------
+# Fatal-error handling / reconnect signalling (issue #28919)
+# ---------------------------------------------------------------------------
+
+class TestXmppFatalErrorHandling:
+    """Regression tests for issue #28919.
+
+    The original adapter reacted to slixmpp's per-mechanism ``failed_auth``
+    (which fires once for *each* SASL mechanism the server rejects, even when a
+    later mechanism succeeds) and so marked a perfectly healthy connection
+    dead. It also marked an unexpected disconnect without ever notifying the
+    gateway, so the reconnect watcher never ran and the bridge silently died
+    inside an otherwise-healthy gateway. The adapter must now:
+
+      * react to ``failed_all_auth`` (fires once, after *all* mechanisms fail),
+        never ``failed_auth``;
+      * call the fatal-error handler on any mid-life fatal so the gateway's
+        reconnect watcher is driven;
+      * distinguish a deliberate ``disconnect()`` from an unexpected drop;
+      * not let a late ``disconnected`` clobber a precise auth failure.
+    """
+
+    @pytest.mark.asyncio
+    async def test_connect_registers_failed_all_auth_not_failed_auth(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock(
+            side_effect=lambda *a, **k: adapter._session_ready.set()
+        )
+        events = []
+        fake_client.add_event_handler = MagicMock(
+            side_effect=lambda ev, handler: events.append(ev)
+        )
+        with patch(
+            "gateway.platforms.xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            await adapter.connect()
+        assert "failed_all_auth" in events
+        assert "failed_auth" not in events
+
+    @pytest.mark.asyncio
+    async def test_connect_accepts_is_reconnect_kwarg(self, monkeypatch):
+        # BasePlatformAdapter.connect(*, is_reconnect=False): the gateway's
+        # reconnect watcher calls connect(is_reconnect=True).
+        adapter = _make_xmpp_adapter(monkeypatch)
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock(
+            side_effect=lambda *a, **k: adapter._session_ready.set()
+        )
+        with patch(
+            "gateway.platforms.xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            assert await adapter.connect(is_reconnect=True) is True
+
+    @pytest.mark.asyncio
+    async def test_session_start_marks_session_established(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        adapter.client = MagicMock()
+        adapter.client.get_roster = AsyncMock()
+        adapter._session_ready = asyncio.Event()
+        await adapter._on_session_start(None)
+        assert adapter._session_established is True
+        assert adapter._session_ready.is_set()
+
+    @pytest.mark.asyncio
+    async def test_failed_all_auth_sets_nonretryable_fatal_and_notifies(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        notified = []
+        adapter.set_fatal_error_handler(lambda a: notified.append(a))
+        await adapter._on_failed_all_auth(None)
+        assert adapter.has_fatal_error
+        assert adapter.fatal_error_code == "xmpp_auth_failed"
+        assert adapter.fatal_error_retryable is False
+        assert notified == [adapter]
+
+    @pytest.mark.asyncio
+    async def test_unexpected_disconnect_escalates_retryable_and_notifies(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        notified = []
+        adapter.set_fatal_error_handler(lambda a: notified.append(a))
+        adapter._session_established = True  # a live session was up
+        await adapter._on_disconnected(None)
+        assert adapter.has_fatal_error
+        assert adapter.fatal_error_code == "xmpp_connection_lost"
+        assert adapter.fatal_error_retryable is True
+        assert notified == [adapter]
+        assert adapter._session_established is False
+
+    @pytest.mark.asyncio
+    async def test_deliberate_disconnect_does_not_escalate(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        notified = []
+        adapter.set_fatal_error_handler(lambda a: notified.append(a))
+        adapter._closing = True  # disconnect() sets this before teardown
+        await adapter._on_disconnected(None)
+        assert not adapter.has_fatal_error
+        assert notified == []
+
+    @pytest.mark.asyncio
+    async def test_disconnect_after_auth_failure_keeps_auth_fatal(self, monkeypatch):
+        # failed_all_auth fires, then slixmpp tears the stream down and fires
+        # 'disconnected'. The later disconnect must not overwrite the precise,
+        # non-retryable auth error with a generic retryable connection-lost.
+        adapter = _make_xmpp_adapter(monkeypatch)
+        await adapter._on_failed_all_auth(None)
+        await adapter._on_disconnected(None)
+        assert adapter.fatal_error_code == "xmpp_auth_failed"
+        assert adapter.fatal_error_retryable is False
+
+    @pytest.mark.asyncio
+    async def test_disconnect_sets_closing_flag(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        await adapter.disconnect()
+        assert adapter._closing is True
+
+    @pytest.mark.asyncio
+    async def test_connect_passes_configured_host_and_port(self, monkeypatch):
+        # XMPP_HOST/XMPP_PORT must actually reach slixmpp.connect — a prior bug
+        # passed connect(address=...) (rejected by current slixmpp) and the
+        # fallback silently dropped the host.
+        adapter = _make_xmpp_adapter(
+            monkeypatch, host="xmpp.example.org", port=5223
+        )
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock(
+            side_effect=lambda *a, **k: adapter._session_ready.set()
+        )
+        with patch(
+            "gateway.platforms.xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            ok = await adapter.connect()
+        assert ok is True
+        fake_client.connect.assert_called_once_with(
+            host="xmpp.example.org", port=5223
+        )
+
+    @pytest.mark.asyncio
+    async def test_connect_timeout_escalates_retryable_fatal(self, monkeypatch):
+        # If the session never establishes (unreachable server / wrong host),
+        # connect() must report failure with a retryable fatal so the gateway
+        # keeps the platform in its reconnect queue — not silently 'connected'.
+        adapter = _make_xmpp_adapter(monkeypatch)
+        adapter._CONNECT_TIMEOUT_SECS = 0.05  # don't actually wait
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock(return_value=None)  # never fires session_start
+        with patch(
+            "gateway.platforms.xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            ok = await adapter.connect()
+        assert ok is False
+        assert adapter.has_fatal_error
+        assert adapter.fatal_error_code == "xmpp_connect_timeout"
+        assert adapter.fatal_error_retryable is True
+
+    @pytest.mark.asyncio
+    async def test_media_methods_accept_base_keyword_names(self, monkeypatch, tmp_path):
+        # The gateway calls these by the BasePlatformAdapter keyword names
+        # (audio_path/video_path/file_path/image_path). A renamed positional
+        # arg raises TypeError and the attachment silently never delivers.
+        from unittest.mock import AsyncMock as _AsyncMock
+        adapter = _make_xmpp_adapter(monkeypatch)
+        adapter._upload_and_send = _AsyncMock(return_value=MagicMock(success=True))
+        f = tmp_path / "media.bin"
+        f.write_bytes(b"data")
+        await adapter.send_voice(chat_id="a@example.org", audio_path=str(f))
+        await adapter.send_video(chat_id="a@example.org", video_path=str(f), caption="v")
+        await adapter.send_document(chat_id="a@example.org", file_path=str(f), caption="d")
+        await adapter.send_image_file(chat_id="a@example.org", image_path=str(f))
+        assert adapter._upload_and_send.await_count == 4

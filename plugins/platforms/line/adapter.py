@@ -133,6 +133,21 @@ MEDIA_TOKEN_TTL_SECONDS = 1800  # 30 minutes; LINE caches the URL aggressively
 LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per LINE docs
 LINE_AV_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for voice/video
 
+# Map LINE webhook message types to the normalized MessageType the gateway
+# routes on. LINE has no separate "voice" type — audio messages are recorded
+# voice clips, so they map to VOICE (which the gateway sends through STT),
+# mirroring how Telegram/WhatsApp classify voice notes. Anything unknown
+# falls back to TEXT.
+_LINE_MESSAGE_TYPES = {
+    "text": MessageType.TEXT,
+    "image": MessageType.PHOTO,
+    "video": MessageType.VIDEO,
+    "audio": MessageType.VOICE,
+    "file": MessageType.DOCUMENT,
+    "location": MessageType.LOCATION,
+    "sticker": MessageType.STICKER,
+}
+
 # A 1×1 transparent PNG used as fallback video preview thumbnail when no
 # explicit preview is supplied — LINE requires ``previewImageUrl`` for
 # video messages. Sourced from the Python stdlib (no Pillow dependency).
@@ -725,7 +740,7 @@ class LineAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not self.channel_access_token or not self.channel_secret:
             self._set_fatal_error(
                 "config_missing",
@@ -968,7 +983,7 @@ class LineAdapter(BasePlatformAdapter):
 
         event_obj = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT if msg_type == "text" else MessageType.IMAGE,
+            message_type=_LINE_MESSAGE_TYPES.get(msg_type, MessageType.TEXT),
             source=source_obj,
             raw_message=event,
             message_id=message_id,

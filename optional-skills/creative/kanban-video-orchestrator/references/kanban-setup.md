@@ -101,7 +101,7 @@ default-config schema drift:
 configure_profile() {
     local profile="$1"
     local toolsets_json="$2"     # JSON array, e.g. '["kanban","terminal","file"]'
-    local skills_json="$3"       # JSON array, e.g. '["kanban-worker","ascii-video"]'
+    local skills_json="$3"       # JSON array, e.g. '["ascii-video"]'
     python3 - "$profile" "$toolsets_json" "$skills_json" <<'PY'
 import json, os, sys, yaml
 profile, ts_json, sk_json = sys.argv[1:4]
@@ -133,16 +133,16 @@ the entire production. **Critical content for the director's SOUL.md:**
 
 - **Anti-temptation rules:** "Do not execute the work yourself. For every
   concrete task, create a kanban task and assign it. Decompose, route, comment,
-  approve — that's the whole job." (The `kanban-orchestrator` skill provides
-  the deeper playbook; load it.)
+  approve — that's the whole job." (The kanban orchestration guidance is
+  auto-injected into every kanban worker's system prompt — no skill to load.)
 - **Decomposition steps:** Read `brief.md`, `TEAM.md`, `taste/`. Use the team
   graph in `TEAM.md` to fan out tasks.
 - **The workspace_path rule** (see below).
 
 Other profiles' SOUL.md is briefer; mostly mechanical: who you are, what you
 read, what you produce, what skills/tools to use, where to write outputs.
-Most non-director profiles should `always_load: kanban-worker` for the
-deeper-than-baseline kanban guidance.
+The kanban lifecycle guidance is auto-injected into every kanban worker's
+system prompt, so no profile needs to load a kanban skill.
 
 ### Initial kanban task
 
@@ -218,22 +218,24 @@ The director turns this into actual `kanban_create` calls.
 ## API-key prerequisites check
 
 Before firing the kanban, verify required keys are available. Check both
-`~/.hermes/.env` and macOS Keychain (if on macOS):
+the Hermes `.env` (`${HERMES_HOME:-$HOME/.hermes}/.env`) and macOS Keychain
+(if on macOS):
 
 ```bash
 check_key() {
     local var="$1"
     local kc_account="$2"
     local kc_service="$3"
-    if grep -q "^${var}=" ~/.hermes/.env 2>/dev/null && \
-       [ -n "$(grep "^${var}=" ~/.hermes/.env | cut -d= -f2-)" ]; then
+    local _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"
+    if grep -q "^${var}=" "$_hermes_env" 2>/dev/null && \
+       [ -n "$(grep "^${var}=" "$_hermes_env" | cut -d= -f2-)" ]; then
         return 0
     fi
     if command -v security >/dev/null 2>&1 && \
        security find-generic-password -a "${kc_account}" -s "${kc_service}" -w >/dev/null 2>&1; then
         return 0
     fi
-    echo "ERROR: ${var} not set in ~/.hermes/.env or Keychain (${kc_account}/${kc_service})"
+    echo "ERROR: ${var} not set in ${_hermes_env} or Keychain (${kc_account}/${kc_service})"
     return 1
 }
 

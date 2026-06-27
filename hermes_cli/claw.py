@@ -77,9 +77,11 @@ def _detect_openclaw_processes() -> list[str]:
 
     # -- process scan ------------------------------------------------------
     if sys.platform == "win32":
+        from hermes_cli import _subprocess_compat
+
         try:
             for exe in ("openclaw.exe", "clawd.exe"):
-                result = subprocess.run(
+                result = _subprocess_compat.run(
                     ["tasklist", "/FI", f"IMAGENAME eq {exe}"],
                     capture_output=True, text=True, timeout=5,
                 )
@@ -93,7 +95,7 @@ def _detect_openclaw_processes() -> list[str]:
                 'Where-Object { $_.CommandLine -match "openclaw|clawd" } | '
                 'Select-Object -First 1 ProcessId'
             )
-            result = subprocess.run(
+            result = _subprocess_compat.run(
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
                 capture_output=True, text=True, timeout=5,
             )
@@ -177,7 +179,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
         "conflicts (Telegram, Discord, and Slack only allow one active "
         "session per token)."
     )
-    print_info("Recommendation: stop the gateway first with 'hermes stop'.")
+    print_info("Recommendation: stop the gateway first with 'hermes gateway stop'.")
     print()
     if not auto_yes and not prompt_yes_no("Continue anyway?", default=False):
         print_info("Migration cancelled. Stop the gateway and try again.")

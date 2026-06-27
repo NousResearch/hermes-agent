@@ -98,6 +98,14 @@ class TestSchema:
         desc = SESSION_SEARCH_SCHEMA["description"].lower()
         assert "no llm" in desc
 
+    def test_schema_description_enforces_source_first_limit(self):
+        desc = SESSION_SEARCH_SCHEMA["description"].lower()
+        assert "source-first limit" in desc
+        assert "conversation history only" in desc
+        assert "direct source" in desc
+        assert "session_search as secondary" in desc
+        assert "not found" in desc
+
 
 class TestHiddenSources:
     def test_tool_source_hidden(self):
@@ -177,6 +185,48 @@ class TestDiscoveryShape:
     def test_no_results_returns_empty_list(self, db):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(query="zzz_no_such_term_zzz", db=db))
+        assert result["success"] is True
+        assert result["results"] == []
+        assert result["count"] == 0
+
+    def test_query_can_match_session_title_without_message_hit(self, db):
+        db.create_session("s_fingerprint", source="cli")
+        db.set_session_title("s_fingerprint", "fingerprint-login")
+        db.append_message("s_fingerprint", role="user", content="Let's configure PAM for biometric auth")
+        db.append_message("s_fingerprint", role="assistant", content="Checking Linux auth settings.")
+
+        result = json.loads(session_search(query="fingerprint-login", db=db))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        hit = result["results"][0]
+        assert hit["session_id"] == "s_fingerprint"
+        assert hit["title"] == "fingerprint-login"
+        assert hit["matched_role"] == "session_title"
+        assert "Session title matched" in hit["snippet"]
+
+    def test_title_query_strips_common_model_quoting(self, db):
+        db.create_session("s_fingerprint", source="cli")
+        db.set_session_title("s_fingerprint", "fingerprint-login")
+        db.append_message("s_fingerprint", role="user", content="PAM auth setup")
+
+        result = json.loads(session_search(query="`fingerprint-login`", db=db))
+
+        assert result["success"] is True
+        assert result["results"][0]["session_id"] == "s_fingerprint"
+        assert result["results"][0]["matched_role"] == "session_title"
+
+    def test_title_match_respects_current_session_filter(self, db):
+        db.create_session("s_current", source="cli")
+        db.set_session_title("s_current", "fingerprint-login")
+        db.append_message("s_current", role="user", content="PAM auth setup")
+
+        result = json.loads(session_search(
+            query="fingerprint-login",
+            current_session_id="s_current",
+            db=db,
+        ))
+
         assert result["success"] is True
         assert result["results"] == []
         assert result["count"] == 0
@@ -399,3 +449,192 @@ class TestShapePrecedence:
         _seed_modpack_sessions(db)
         result = json.loads(session_search(query=None, db=db))  # type: ignore
         assert result["mode"] == "browse"
+
+    def test_session_id_without_anchor_reads(self, db):
+        _seed_modpack_sessions(db)
+        # session_id alone (no anchor, no query) → read shape, not browse.
+        result = json.loads(session_search(session_id="s_oldest", db=db))
+        assert result["mode"] == "read"
+
+
+# =========================================================================
+# Read shape — dump a whole session by id (serves @session links)
+# =========================================================================
+
+class TestReadShape:
+    def test_read_returns_full_session(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(session_id="s_oldest", db=db))
+        assert result["success"] is True
+        assert result["mode"] == "read"
+        assert result["session_id"] == "s_oldest"
+        assert result["message_count"] == 5
+        assert result["truncated"] is False
+        assert len(result["messages"]) == 5
+        assert result["session_meta"]["title"] == "Building the Modpack"
+
+    def test_read_unknown_session_errors(self, db):
+        result = json.loads(session_search(session_id="ghost", db=db))
+        assert result["success"] is False
+
+    def test_read_truncates_large_session(self, db):
+        db.create_session("s_big", source="cli")
+        for i in range(50):
+            db.append_message("s_big", role="user" if i % 2 == 0 else "assistant", content=f"m{i}")
+        db._conn.commit()
+        result = json.loads(session_search(session_id="s_big", db=db))
+        assert result["mode"] == "read"
+        assert result["message_count"] == 50
+        assert result["truncated"] is True
+        assert len(result["messages"]) == 30  # head 20 + tail 10
+
+
+# =========================================================================
+# Cross-profile read — `profile` swaps in another profile's DB (read-only)
+# =========================================================================
+
+class TestCrossProfileRead:
+    def _patch_profiles(self, monkeypatch, home, exists=True):
+        from hermes_cli import profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+        monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
+        monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: exists)
+        monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: home)
+
+    def test_profile_param_reads_other_db(self, db, tmp_path, monkeypatch):
+        other_home = tmp_path / "other_home"
+        other_home.mkdir()
+        other = SessionDB(other_home / "state.db")
+        other.create_session("s_other", source="cli")
+        other._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?", ("Other Profile Chat", "s_other")
+        )
+        other.append_message("s_other", role="user", content="hello from the other profile")
+        other._conn.commit()
+
+        self._patch_profiles(monkeypatch, other_home)
+
+        # s_other lives only in the other profile; the current `db` lacks it.
+        result = json.loads(session_search(session_id="s_other", profile="other", db=db))
+        assert result["success"] is True
+        assert result["mode"] == "read"
+        assert result["session_meta"]["title"] == "Other Profile Chat"
+
+    def test_bare_id_locates_across_profiles(self, db, tmp_path, monkeypatch):
+        # The real-world failure: model dropped the owning profile and passed a
+        # bare id. The tool must scan profiles and find it anyway.
+        other_home = tmp_path / "asdf_home"
+        other_home.mkdir()
+        other = SessionDB(other_home / "state.db")
+        other.create_session("s_far", source="cli")
+        other.append_message("s_far", role="user", content="hi")
+        other._conn.commit()
+
+        from collections import namedtuple
+        from hermes_cli import profiles as profiles_mod
+        Info = namedtuple("Info", "name path")
+        monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: tmp_path / "default_home")
+        monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("asdf", other_home)])
+
+        # `db` (current profile) lacks s_far; no profile passed → scan finds it.
+        result = json.loads(session_search(session_id="s_far", db=db))
+        assert result["success"] is True
+        assert result["mode"] == "read"
+        assert result["profile"] == "asdf"
+
+    def test_unknown_profile_errors(self, db, monkeypatch, tmp_path):
+        self._patch_profiles(monkeypatch, tmp_path, exists=False)
+        result = json.loads(session_search(session_id="x", profile="ghost", db=db))
+        assert result["success"] is False
+        assert "ghost" in result.get("error", "")
+
+    def test_combined_value_autosplits(self, db, tmp_path, monkeypatch):
+        # Agent passed the raw "@session:<profile>/<id>" value as session_id with
+        # no separate profile — the tool should recover both.
+        other_home = tmp_path / "other_home"
+        other_home.mkdir()
+        other = SessionDB(other_home / "state.db")
+        other.create_session("s_other", source="cli")
+        other.append_message("s_other", role="user", content="hi")
+        other._conn.commit()
+
+        self._patch_profiles(monkeypatch, other_home)
+
+        # Every permutation the model might send must resolve to (asdf, s_other).
+        for kwargs in (
+            {"session_id": "asdf/s_other"},                    # full value, no profile
+            {"session_id": "asdf/s_other", "profile": "asdf"},  # full value AND profile
+            {"session_id": "s_other", "profile": "asdf"},       # bare id + profile
+        ):
+            result = json.loads(session_search(db=db, **kwargs))
+            assert result["success"] is True, kwargs
+            assert result["mode"] == "read"
+            assert result["session_id"] == "s_other"
+
+
+# =========================================================================
+# Cron demotion in discover ranking (#19434)
+# =========================================================================
+
+class TestCronDemotion:
+    def _seed_cron_and_interactive(self, db):
+        """One interactive (telegram) session and several cron sessions, all
+        matching the same query. Cron rows accumulate repetitive vocabulary
+        and out-number the user's single interactive session — the live-data
+        symptom in #19434.
+        """
+        now = int(time.time())
+        # Interactive user session — older, so it loses on bare recency too.
+        db.create_session("s_user", source="telegram")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                         (now - 90000, "s_user"))
+        db.append_message("s_user", role="user", content="how is the venom project going")
+        db.append_message("s_user", role="assistant", content="The venom project shipped its first milestone.")
+        # Several cron sessions, all newer and all stuffed with the same terms.
+        for i in range(8):
+            sid = f"cron_{i}"
+            db.create_session(sid, source="cron")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                             (now - 1000 - i, sid))
+            db.append_message(sid, role="user", content="venom project daily status")
+            db.append_message(sid, role="assistant", content="venom project venom project venom summary")
+        db._conn.commit()
+
+    def test_interactive_session_surfaces_above_cron(self, db):
+        self._seed_cron_and_interactive(db)
+        result = json.loads(session_search(query="venom project", limit=1, db=db))
+        assert result["success"] is True
+        assert result["count"] == 1
+        # With cron drowning FTS, bare BM25/recency would return a cron_* hit.
+        # Demotion must put the user's interactive session first.
+        assert result["results"][0]["source"] == "telegram"
+        assert result["results"][0]["session_id"] == "s_user"
+
+    def test_cron_still_reachable_when_only_match(self, db):
+        """Demotion must not exclude cron — when only cron matches, it still
+        comes back."""
+        now = int(time.time())
+        db.create_session("cron_only", source="cron")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                         (now - 500, "cron_only"))
+        db.append_message("cron_only", role="user", content="quarterly archive sweep")
+        db.append_message("cron_only", role="assistant", content="Archive sweep complete.")
+        db._conn.commit()
+        result = json.loads(session_search(query="archive sweep", db=db))
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["source"] == "cron"
+
+    def test_order_for_recall_is_stable_within_class(self):
+        from tools.session_search_tool import _order_for_recall
+        rows = [
+            {"id": 1, "source": "cron"},
+            {"id": 2, "source": "telegram"},
+            {"id": 3, "source": "cron"},
+            {"id": 4, "source": "cli"},
+            {"id": 5, "source": None},
+        ]
+        ordered = _order_for_recall(rows)
+        # Interactive rows first, in original relative order; cron last, in
+        # original relative order.
+        assert [r["id"] for r in ordered] == [2, 4, 5, 1, 3]

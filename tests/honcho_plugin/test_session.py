@@ -1,5 +1,7 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
+import time
+
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -1538,8 +1540,27 @@ class TestDialecticLifecycleSmoke:
             return provider, mock_manager, cfg
 
     def _await_thread(self, provider):
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=3.0)
+        """Block until the in-flight prefetch/prewarm thread has fully finished.
+
+        The earlier version did a single ``join(timeout=3.0)`` and then
+        proceeded regardless of whether the thread had actually finished. On a
+        loaded CI runner (6 parallel test slices), the background dialectic
+        thread's completion can slip past that 3s window, so the join times out
+        silently and the test reads ``_prefetch_result`` before the worker wrote
+        it — a flaky ``session-start prewarm must land`` failure. We instead join
+        in a loop up to a generous ceiling and assert the thread is dead, so a
+        genuine hang surfaces as a clear, non-flaky failure instead of a race.
+        """
+        thread = provider._prefetch_thread
+        if thread is None:
+            return
+        deadline = time.monotonic() + 30.0
+        while thread.is_alive() and time.monotonic() < deadline:
+            thread.join(timeout=1.0)
+        assert not thread.is_alive(), (
+            "prefetch/prewarm thread did not finish within 30s — "
+            "this is a real hang, not a timing flake"
+        )
 
     def test_full_multi_turn_session(self):
         """Walks init → turns 1..8 → session end. Asserts at every step that

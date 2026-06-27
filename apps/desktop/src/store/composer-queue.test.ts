@@ -7,7 +7,10 @@ import {
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  migrateQueuedPrompts,
+  promoteQueuedPrompt,
   removeQueuedPrompt,
+  shouldAutoDrain,
   updateQueuedPrompt,
   updateQueuedPromptText
 } from './composer-queue'
@@ -62,6 +65,20 @@ describe('composer queue store', () => {
     expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['draft two'])
   })
 
+  it('promotes a queued entry to the front', () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
+    const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second' })
+    const third = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'third' })
+
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+    expect(third).not.toBeNull()
+
+    expect(promoteQueuedPrompt(SESSION_KEY, third!.id)).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['third', 'first', 'second'])
+    expect(promoteQueuedPrompt(SESSION_KEY, third!.id)).toBe(false)
+  })
+
   it('updates queued text and attachment snapshot', () => {
     const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('f-1')], text: 'draft one' })
     const editedAttachments = [attachment('f-2'), attachment('f-3', 'image')]
@@ -98,5 +115,56 @@ describe('composer queue store', () => {
 
     const parsed = JSON.parse(String(raw)) as Record<string, { text: string }[]>
     expect(parsed[SESSION_KEY]?.[0]?.text).toBe('persist me')
+  })
+})
+
+describe('migrateQueuedPrompts', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+  })
+
+  it('moves entries from a dead runtime key onto the live one', () => {
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'stranded' })
+
+    expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(true)
+    expect(getQueuedPrompts('rt-old')).toEqual([])
+    expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['stranded'])
+    // The dead key is dropped from the store entirely.
+    expect($queuedPromptsBySession.get()['rt-old']).toBeUndefined()
+  })
+
+  it('appends after existing target entries (FIFO preserved)', () => {
+    enqueueQueuedPrompt('rt-new', { attachments: [], text: 'already here' })
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'migrated' })
+
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['already here', 'migrated'])
+  })
+
+  it('is a no-op when source is empty or keys match', () => {
+    expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(false)
+    expect(migrateQueuedPrompts('rt-x', 'rt-x')).toBe(false)
+  })
+})
+
+describe('shouldAutoDrain', () => {
+  it('drains whenever idle with a non-empty queue', () => {
+    expect(shouldAutoDrain({ isBusy: false, queueLength: 1 })).toBe(true)
+  })
+
+  it('drains on mount/reconnect with no observed busy edge', () => {
+    // The whole point of dropping the edge: a remount resets the busy ref, so an
+    // edge-gated drain would strand the entry. Idle + non-empty must still fire.
+    expect(shouldAutoDrain({ isBusy: false, queueLength: 2 })).toBe(true)
+  })
+
+  it('does not drain mid-turn', () => {
+    expect(shouldAutoDrain({ isBusy: true, queueLength: 1 })).toBe(false)
+  })
+
+  it('does not drain an empty queue', () => {
+    expect(shouldAutoDrain({ isBusy: false, queueLength: 0 })).toBe(false)
   })
 })

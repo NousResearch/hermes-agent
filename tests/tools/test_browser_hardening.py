@@ -54,7 +54,8 @@ class TestFindAgentBrowserCache:
 
     def test_cached_after_first_call(self):
         import tools.browser_tool as bt
-        with patch("shutil.which", return_value="/usr/bin/agent-browser"):
+        with patch("shutil.which", return_value="/usr/bin/agent-browser"), \
+             patch("tools.browser_tool.agent_browser_runnable", return_value=True):
             result1 = bt._find_agent_browser()
             result2 = bt._find_agent_browser()
         assert result1 == result2 == "/usr/bin/agent-browser"
@@ -88,6 +89,28 @@ class TestFindAgentBrowserCache:
         with pytest.raises(FileNotFoundError, match="cached"):
             bt._find_agent_browser()
 
+    def test_windows_prefers_native_agent_browser_exe_over_cmd_shim(self, tmp_path, monkeypatch):
+        import tools.browser_tool as bt
+
+        repo = tmp_path / "repo"
+        native = repo / "node_modules" / "agent-browser" / "bin" / "agent-browser-win32-x64.exe"
+        cmd = repo / "node_modules" / ".bin" / "agent-browser.cmd"
+        native.parent.mkdir(parents=True)
+        cmd.parent.mkdir(parents=True)
+        native.write_text("", encoding="utf-8")
+        cmd.write_text("", encoding="utf-8")
+
+        def fake_which(command, path=None):
+            return str(cmd) if path == str(cmd.parent) else None
+
+        monkeypatch.setattr(bt.sys, "platform", "win32")
+        monkeypatch.setattr(bt.shutil, "which", fake_which)
+        monkeypatch.setattr(bt, "agent_browser_runnable", lambda path: True)
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda path: "")
+        monkeypatch.setattr(bt, "__file__", str(repo / "tools" / "browser_tool.py"))
+
+        assert bt._find_agent_browser() == str(native)
+
 
 # ---------------------------------------------------------------------------
 # Caching: _get_command_timeout
@@ -113,6 +136,37 @@ class TestCommandTimeoutCache:
             _get_command_timeout()
             _get_command_timeout()
         mock_read.assert_called_once()
+
+
+class TestSessionInactivityTimeout:
+
+    def test_default_matches_config_default(self, monkeypatch):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from tools.browser_tool import _get_session_inactivity_timeout
+        monkeypatch.delenv("BROWSER_INACTIVITY_TIMEOUT", raising=False)
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert _get_session_inactivity_timeout() == DEFAULT_CONFIG["browser"]["inactivity_timeout"]
+
+    def test_reads_from_config_over_env(self, monkeypatch):
+        from tools.browser_tool import _get_session_inactivity_timeout
+        monkeypatch.setenv("BROWSER_INACTIVITY_TIMEOUT", "120")
+        cfg = {"browser": {"inactivity_timeout": 900}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_session_inactivity_timeout() == 900
+
+    def test_floor_at_30_seconds(self, monkeypatch):
+        from tools.browser_tool import _get_session_inactivity_timeout
+        monkeypatch.setenv("BROWSER_INACTIVITY_TIMEOUT", "120")
+        cfg = {"browser": {"inactivity_timeout": 1}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_session_inactivity_timeout() == 30
+
+    def test_invalid_config_preserves_env_fallback(self, monkeypatch):
+        from tools.browser_tool import _get_session_inactivity_timeout
+        monkeypatch.setenv("BROWSER_INACTIVITY_TIMEOUT", "240")
+        cfg = {"browser": {"inactivity_timeout": "not-an-int"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_session_inactivity_timeout() == 240
 
 
 # ---------------------------------------------------------------------------

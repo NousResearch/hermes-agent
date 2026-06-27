@@ -7,9 +7,73 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestPerJobToolsetMcpMerge:
+    """A per-job enabled_toolsets allowlist must not silently drop MCP servers."""
+
+    CFG = {
+        "mcp_servers": {
+            "finnhub": {"enabled": True},
+            "playwright": {"enabled": True},
+            "disabled_one": {"enabled": False},
+            "string_enabled": {"enabled": "true"},
+            "not_a_dict": "ignored",
+        }
+    }
+
+    def _enabled_names(self):
+        return {"finnhub", "playwright", "string_enabled"}
+
+    def test_native_only_list_gets_all_enabled_mcp_servers(self):
+        result = _merge_mcp_into_per_job_toolsets(["web", "terminal"], self.CFG)
+        assert result[:2] == ["web", "terminal"]
+        assert set(result) == {"web", "terminal"} | self._enabled_names()
+
+    def test_disabled_servers_are_not_added(self):
+        result = _merge_mcp_into_per_job_toolsets(["web"], self.CFG)
+        assert "disabled_one" not in result
+
+    def test_explicit_mcp_name_is_treated_as_allowlist(self):
+        # User named one server -> add nothing further.
+        result = _merge_mcp_into_per_job_toolsets(["web", "finnhub"], self.CFG)
+        assert result == ["web", "finnhub"]
+        assert "playwright" not in result
+
+    def test_no_mcp_sentinel_opts_out_and_is_stripped(self):
+        result = _merge_mcp_into_per_job_toolsets(["web", "no_mcp"], self.CFG)
+        assert result == ["web"]
+        assert not (set(result) & self._enabled_names())
+
+    def test_no_mcp_config_adds_nothing(self):
+        result = _merge_mcp_into_per_job_toolsets(["web"], {})
+        assert result == ["web"]
+
+    def test_no_duplicate_when_listed_name_also_globally_enabled(self):
+        result = _merge_mcp_into_per_job_toolsets(["finnhub", "finnhub"], self.CFG)
+        assert result.count("finnhub") == 2  # input dups preserved, none added
+
+    def test_resolver_uses_merge_for_per_job_lists(self):
+        job = {"enabled_toolsets": ["web", "terminal"]}
+        result = _resolve_cron_enabled_toolsets(job, self.CFG)
+        assert set(result) == {"web", "terminal"} | self._enabled_names()
+
+    def test_resolver_empty_per_job_falls_through_to_platform(self):
+        # No per-job list -> must delegate to _get_platform_tools (the platform
+        # fallback), NOT the per-job merge. Stub the platform resolver and assert
+        # it is the path taken and its result is returned.
+        job = {"enabled_toolsets": None}
+        sentinel = ["web", "finnhub"]
+        with patch("hermes_cli.tools_config._get_platform_tools",
+                   return_value=set(sentinel)) as m_platform:
+            result = _resolve_cron_enabled_toolsets(job, self.CFG)
+        m_platform.assert_called_once()
+        # _get_platform_tools args: (cfg, "cron")
+        assert m_platform.call_args[0][1] == "cron"
+        assert set(result) == set(sentinel)
 
 
 class TestResolveOrigin:
@@ -625,9 +689,15 @@ class TestDeliverResultWrapping:
 
         # run_coroutine_threadsafe returns concurrent.futures.Future (has timeout kwarg)
         def fake_run_coro(coro, _loop):
+            # Actually run the routed coroutine (router._deliver_to_platform)
+            # so the underlying adapter.send is invoked, then wrap the real
+            # result in a completed Future (matching run_coroutine_threadsafe).
+            import asyncio as _asyncio
             future = Future()
-            future.set_result(MagicMock(success=True))
-            coro.close()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
             return future
 
         job = {
@@ -676,9 +746,15 @@ class TestDeliverResultWrapping:
         loop.is_running.return_value = True
 
         def fake_run_coro(coro, _loop):
+            # Actually run the routed coroutine (router._deliver_to_platform)
+            # so the underlying adapter.send is invoked, then wrap the real
+            # result in a completed Future (matching run_coroutine_threadsafe).
+            import asyncio as _asyncio
             future = Future()
-            future.set_result(MagicMock(success=True))
-            coro.close()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
             return future
 
         job = {
@@ -719,9 +795,15 @@ class TestDeliverResultWrapping:
         loop.is_running.return_value = True
 
         def fake_run_coro(coro, _loop):
+            # Actually run the routed coroutine (router._deliver_to_platform)
+            # so the underlying adapter.send is invoked, then wrap the real
+            # result in a completed Future (matching run_coroutine_threadsafe).
+            import asyncio as _asyncio
             future = Future()
-            future.set_result(MagicMock(success=True))
-            coro.close()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
             return future
 
         job = {
@@ -763,9 +845,15 @@ class TestDeliverResultWrapping:
         loop.is_running.return_value = True
 
         def fake_run_coro(coro, _loop):
+            # Actually run the routed coroutine (router._deliver_to_platform)
+            # so the underlying adapter.send is invoked, then wrap the real
+            # result in a completed Future (matching run_coroutine_threadsafe).
+            import asyncio as _asyncio
             future = Future()
-            future.set_result(MagicMock(success=True))
-            coro.close()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
             return future
 
         job = {
@@ -911,6 +999,125 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
+
+    def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
+        """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).
+        For cron, that abnormal-empty explainer must be treated as empty so it
+        is suppressed instead of delivered (Manfredi's Telegram symptom)."""
+        from run_agent import AIAgent
+        explainer = AIAgent._format_turn_completion_explanation("empty_response_exhausted")
+        assert explainer  # sanity: the explainer text exists
+        job = {"id": "test-job", "name": "test", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent._format_turn_completion_explanation = (
+                AIAgent._format_turn_completion_explanation
+            )
+            mock_agent.run_conversation.return_value = {
+                "final_response": explainer,
+                "turn_exit_reason": "empty_response_exhausted",
+            }
+            mock_agent_cls.return_value = mock_agent
+            # Patch the class staticmethod the scheduler calls.
+            mock_agent_cls._format_turn_completion_explanation = (
+                AIAgent._format_turn_completion_explanation
+            )
+
+            success, output, final_response, error = run_job(job)
+
+        # The explainer is stripped to empty inside run_job; the downstream
+        # firing body (process_job) then suppresses delivery and marks the run
+        # a soft failure via its empty-response guard.  Here we assert the
+        # load-bearing transform: the "⚠️ No reply…" text never reaches delivery.
+        assert final_response == ""
+
+    def test_run_job_real_report_on_empty_reason_still_delivers(self, tmp_path):
+        """Defensive: a real report must NOT be suppressed even if the result
+        carries an abnormal turn_exit_reason — only the exact explainer text is."""
+        from run_agent import AIAgent
+        job = {"id": "test-job", "name": "test", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "Daily report: 4 PRs merged.",
+                "turn_exit_reason": "empty_response_exhausted",
+            }
+            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls._format_turn_completion_explanation = (
+                AIAgent._format_turn_completion_explanation
+            )
+
+            success, output, final_response, error = run_job(job)
+
+        assert final_response == "Daily report: 4 PRs merged."
+        assert success is True
+
+    def test_run_job_titles_cron_session_from_job_not_important_hint(self, tmp_path):
+        # The cron session's first message is the injected "[IMPORTANT: …]"
+        # hint, which used to surface as the sidebar/history row label. run_job
+        # must title the session from the job (name → short prompt → id).
+        job = {
+            "id": "test-job",
+            "name": "Morning digest",
+            "prompt": "summarize my inbox",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            run_job(job)
+
+        fake_db.set_session_title.assert_called_once()
+        sid, title = fake_db.set_session_title.call_args[0]
+        assert sid.startswith("cron_test-job_")
+        assert "IMPORTANT" not in title
+        assert title.startswith("Morning digest")
 
     def test_run_job_closes_agent_on_failure_to_prevent_fd_leak(self, tmp_path):
         # Regression: if ``run_conversation`` raises, the ephemeral cron
@@ -1269,6 +1476,52 @@ class TestRunJobSessionPersistence:
         assert error is None
         assert final_response == "all good"
 
+    def test_run_job_delivers_max_iteration_fallback_summary(self, tmp_path):
+        """Cron should deliver a usable max-iteration fallback summary.
+
+        A cron run can exhaust the iteration budget, get a final text summary
+        from the no-tools fallback call, and still have ``completed=False`` in
+        the generic agent result. That should not make cron raise the report
+        text as a RuntimeError.
+        """
+        job = {
+            "id": "summary-job",
+            "name": "summary",
+            "prompt": "finish the report",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "final fallback report",
+                "completed": False,
+                "failed": False,
+                "turn_exit_reason": "max_iterations_reached(60/60)",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "final fallback report"
+        assert "final fallback report" in output
+        assert "(FAILED)" not in output
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.
@@ -1450,7 +1703,7 @@ class TestRunJobConfigLogging:
         }
 
         # Mock heavy post-yaml work so the test only exercises the warning
-        # path. Without these mocks, _run_job_impl continues into provider
+        # path. Without these mocks, run_job continues into provider
         # resolution and MCP discovery, both of which can spawn subprocesses
         # / hit the network and have caused this test to time out on CI
         # (>30s wall clock) under load. See PR #33661 follow-up.
@@ -1546,9 +1799,40 @@ class TestRunJobConfigEnvVarExpansion:
             "config.yaml ${VAR} was not expanded in the cron execution path."
         )
 
+    def test_legacy_agent_prefill_messages_file_is_loaded(self, tmp_path, monkeypatch):
+        """Cron accepts the legacy agent.prefill_messages_file fallback."""
+        prefill = [{"role": "system", "content": "legacy cron prefill"}]
+        (tmp_path / "prefill.json").write_text(json.dumps(prefill), encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n"
+            "  prefill_messages_file: prefill.json\n",
+            encoding="utf-8",
+        )
+
+        job = {"id": "prefill-job", "name": "prefill test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["prefill_messages"] == prefill
+
     def test_fallback_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
         """${VAR} in config.yaml fallback_providers model: is expanded."""
         (tmp_path / "config.yaml").write_text(
+            "model: primary-model\n"
             "fallback_providers:\n"
             "  - provider: openrouter\n"
             "    model: ${_HERMES_TEST_CRON_FALLBACK}\n"
@@ -1603,6 +1887,238 @@ class TestRunJobConfigEnvVarExpansion:
         kwargs = mock_agent_cls.call_args.kwargs
         # Unresolved refs are kept verbatim — _expand_env_vars contract
         assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
+
+
+class TestRunJobModelResolution:
+    """Verify defensive model resolution for jobs stored with ``model: null``.
+
+    Issue #23979: a cron job created without an explicit model is stored as
+    ``model: null``. At fire time the scheduler must:
+      1. fall back to ``HERMES_MODEL`` env if set,
+      2. else fall back to config.yaml ``model.default`` if set,
+      3. else fail fast with an actionable error — never let an empty string
+         reach the provider where it surfaces as an opaque 400.
+    """
+
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+    }
+
+    def test_null_job_model_falls_back_to_env(self, tmp_path, monkeypatch):
+        """``model: null`` on the job uses HERMES_MODEL when set."""
+        (tmp_path / "config.yaml").write_text("")
+        monkeypatch.setenv("HERMES_MODEL", "env-model")
+
+        job = {"id": "null-model-job", "name": "null model", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "env-model"
+
+    def test_null_job_model_falls_back_to_config_default(self, tmp_path, monkeypatch):
+        """``model: null`` on the job uses config.yaml model.default when env is empty."""
+        (tmp_path / "config.yaml").write_text("model:\n  default: config-default-model\n")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "cfg-default-job", "name": "cfg default", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "config-default-model"
+
+    def test_explicit_null_model_block_in_config_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        """``model: null`` in config.yaml must not overwrite a resolved HERMES_MODEL.
+
+        Regression: before #23979 the resolver coerced ``model: null`` to
+        ``{}`` only via the ``.get("model", {})`` default — which does not
+        fire when the key is present with a None value. The resolver then
+        skipped both branches and kept the env value, but a similar
+        ``model: {default: null}`` shape would call ``.get("default", model)``
+        which returns ``None`` and clobbered ``model``.
+        """
+        (tmp_path / "config.yaml").write_text("model:\n  default: null\n")
+        monkeypatch.setenv("HERMES_MODEL", "env-model")
+
+        job = {"id": "null-default-job", "name": "null default", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert mock_agent_cls.call_args.kwargs["model"] == "env-model"
+
+    def test_no_model_anywhere_fails_with_actionable_error(self, tmp_path, monkeypatch):
+        """All three sources empty → fail fast with a clear message, not an opaque 400."""
+        (tmp_path / "config.yaml").write_text("")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "no-model-job", "name": "no model anywhere", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            success, _, _, error = run_job(job)
+
+        assert success is False
+        assert error is not None
+        assert "no model configured" in error
+        # AIAgent must never be constructed with an empty model — that's
+        # precisely the bug we're guarding against.
+        mock_agent_cls.assert_not_called()
+
+    def test_job_model_update_takes_effect_on_next_run(self, tmp_path, monkeypatch):
+        """The per-job model is re-read every tick — no in-memory cache.
+
+        This is the property the original bug report asked for. We verify
+        it by calling run_job twice with the same job dict mutated between
+        calls, simulating the storage update flow.
+        """
+        (tmp_path / "config.yaml").write_text("")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "updated-model-job", "name": "updated", "prompt": "hi", "model": "first-model"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            run_job(job)
+            assert mock_agent_cls.call_args.kwargs["model"] == "first-model"
+
+            job["model"] = "second-model"  # simulates jobs.json being rewritten
+            run_job(job)
+            assert mock_agent_cls.call_args.kwargs["model"] == "second-model"
+
+    def test_config_model_as_plain_string(self, tmp_path, monkeypatch):
+        """config.yaml ``model:`` given as a bare string is used directly."""
+        (tmp_path / "config.yaml").write_text("model: string-form-model\n")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "string-cfg-job", "name": "string cfg", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "string-form-model"
+
+    def test_config_model_alias_key_resolves(self, tmp_path, monkeypatch):
+        """A ``model: {model: ...}`` alias key resolves like the CLI sibling.
+
+        ``hermes_cli/oneshot.py``, ``fallback_cmd.py`` and ``prompt_size.py``
+        all accept ``model.model`` as an alias for ``model.default``. The cron
+        resolver mirrors that so a config that works in the CLI also works in
+        cron.
+        """
+        (tmp_path / "config.yaml").write_text("model:\n  model: alias-key-model\n")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "alias-job", "name": "alias", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "alias-key-model"
+
+    def test_corrupt_config_yaml_does_not_crash_with_job_model(self, tmp_path, monkeypatch):
+        """A malformed config.yaml degrades gracefully when the job has a model."""
+        (tmp_path / "config.yaml").write_text("{{{invalid yaml!!!")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "corrupt-job", "name": "corrupt", "prompt": "hi", "model": "explicit-model"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        # Explicit job model survives the corrupt-config fall-through.
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "explicit-model"
 
 
 class TestRunJobSkillBacked:
@@ -1861,6 +2377,52 @@ class TestSilentDelivery:
             from cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_not_called()
+
+    def test_bracketless_silent_variants_suppress(self):
+        """Bracketless near-markers the model emits when it drops brackets
+        must still suppress delivery (#51438, #46917)."""
+        from cron.scheduler import tick
+        for marker in ("SILENT", "NO_REPLY", "NO REPLY", "no_reply"):
+            with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+                 patch("cron.scheduler.run_job", return_value=(True, "# output", marker, None)), \
+                 patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+                 patch("cron.scheduler._deliver_result") as deliver_mock, \
+                 patch("cron.scheduler.mark_job_run"):
+                tick(verbose=False)
+            deliver_mock.assert_not_called()
+
+    def test_report_quoting_marker_mid_sentence_still_delivers(self):
+        """A genuine report that merely mentions the token mid-sentence must
+        be delivered — the old substring check wrongly swallowed it."""
+        response = "I considered staying [SILENT] but here is the summary: 3 items merged."
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+
+    def test_is_cron_silence_response_contract(self):
+        """Direct behavior contract for the cron silence matcher."""
+        from cron.scheduler import _is_cron_silence_response as sil
+        # Suppress: bare/bracketed/bracketless tokens, prefix, trailing-line.
+        assert sil("[SILENT]")
+        assert sil("[silent] nothing new")
+        assert sil("[SILENT] No changes detected")
+        assert sil("2 deals filtered.\n\n[SILENT]")
+        assert sil("SILENT")
+        assert sil("NO_REPLY")
+        assert sil("NO REPLY")
+        assert sil("Summary.\nSILENT")
+        # Deliver: real content, mid-sentence quotes, bare words, junk.
+        assert not sil("Daily report: 4 PRs merged.")
+        assert not sil("I stayed [SILENT] but here is the report: 3 items.")
+        assert not sil("Silent retry succeeded after 2 attempts.")
+        assert not sil("[SILENT")  # malformed open-bracket is not the sentinel
+        assert not sil("")
+        assert not sil("   \n\t ")
 
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""
@@ -2406,15 +2968,20 @@ class TestParallelTick:
 
 
 class TestDeliverResultTimeoutCancelsFuture:
-    """When future.result(timeout=60) raises TimeoutError in the live
-    adapter delivery path, _deliver_result must cancel the orphan
-    coroutine so it cannot duplicate-send after the standalone fallback.
+    """When future.result(timeout=60) raises TimeoutError in the live adapter
+    delivery path, the outcome depends on whether the coroutine was already
+    running.  future.cancel() returning False means it is in flight on the wire
+    (cannot be un-sent) → treat as DELIVERED and skip the standalone fallback to
+    avoid a duplicate (#38922).  future.cancel() returning True means it never
+    started (wedged loop) → nothing was sent, so fall through to standalone or
+    the message is silently dropped.  Regression for #38922.
     """
 
-    def test_live_adapter_timeout_cancels_future_and_falls_back(self):
-        """End-to-end: live adapter hangs past the 60s budget, _deliver_result
-        patches the timeout down to a fast value, confirms future.cancel() fires,
-        and verifies the standalone fallback path still delivers."""
+    def test_live_adapter_timeout_assumes_delivered_no_duplicate(self):
+        """End-to-end: live adapter confirmation times out past the 60s budget.
+        The fix (#38922) treats the send as already-dispatched/delivered and
+        does NOT run the standalone fallback — otherwise the message is sent
+        twice."""
         from gateway.config import Platform
         from concurrent.futures import Future
 
@@ -2430,18 +2997,19 @@ class TestDeliverResultTimeoutCancelsFuture:
         loop = MagicMock()
         loop.is_running.return_value = True
 
-        # A real concurrent.futures.Future so .cancel() has real semantics,
-        # but we override .result() to raise TimeoutError exactly like the
-        # 60s wait firing in production.
+        # A real concurrent.futures.Future, but we override .result() to raise
+        # TimeoutError exactly like the 60s wait firing in production.  We make
+        # .cancel() return False to simulate the coroutine being ALREADY RUNNING
+        # on the gateway loop (in flight on the wire) — the case where the send
+        # cannot be un-sent and a standalone resend would be a duplicate.
         captured_future = Future()
         cancel_calls = []
-        original_cancel = captured_future.cancel
 
-        def tracking_cancel():
+        def in_flight_cancel():
             cancel_calls.append(True)
-            return original_cancel()
+            return False  # already running — cannot be cancelled
 
-        captured_future.cancel = tracking_cancel
+        captured_future.cancel = in_flight_cancel
         captured_future.result = MagicMock(side_effect=TimeoutError("timed out"))
 
         def fake_run_coro(coro, _loop):
@@ -2467,30 +3035,25 @@ class TestDeliverResultTimeoutCancelsFuture:
                 loop=loop,
             )
 
-        # 1. The orphan future was cancelled on timeout (the bug fix)
-        assert cancel_calls == [True], "future.cancel() must fire on TimeoutError"
-        # 2. The standalone fallback delivered — no double send, no silent drop
+        # 1. cancel() was attempted (returned False = in flight).
+        assert cancel_calls == [True], "future.cancel() should be attempted on TimeoutError"
+        # 2. Delivery is reported successful (no error string returned).
         assert result is None, f"expected successful delivery, got error: {result!r}"
-        standalone_send.assert_awaited_once()
+        # 3. The standalone fallback must NOT run — that is the #38922 fix:
+        #    an in-flight confirmation timeout is assume-delivered, not a resend.
+        standalone_send.assert_not_awaited()
 
-    def test_live_adapter_thread_fallback_records_delivery_error(self):
-        """A cron target with an explicit topic must not be marked clean if
-        Telegram falls back to the base chat after "thread not found".
-        """
+    def test_live_adapter_timeout_before_dispatch_falls_back_to_standalone(self):
+        """When the coroutine never started (loop wedged) — future.cancel()
+        returns True — nothing was sent, so _deliver_result MUST fall through
+        to the standalone path rather than silently dropping the message.
+        This is the inverse of the assume-delivered case and guards against the
+        wedged-loop silent drop."""
         from gateway.config import Platform
-        from gateway.platforms.base import SendResult
         from concurrent.futures import Future
 
-        send_result = SendResult(
-            success=True,
-            message_id="42",
-            raw_response={
-                "requested_thread_id": 7072,
-                "thread_fallback": True,
-            },
-        )
-        adapter = MagicMock()
-        adapter.send = AsyncMock(return_value=send_result)
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
 
         pconfig = MagicMock()
         pconfig.enabled = True
@@ -2500,17 +3063,133 @@ class TestDeliverResultTimeoutCancelsFuture:
         loop = MagicMock()
         loop.is_running.return_value = True
 
-        job = {
-            "id": "thread-fallback-job",
-            "deliver": "telegram:226252250:7072",
-        }
+        captured_future = Future()
+        cancel_calls = []
 
-        completed_future = Future()
-        completed_future.set_result(send_result)
+        def never_dispatched_cancel():
+            cancel_calls.append(True)
+            return True  # callback never ran — successfully cancelled
+
+        captured_future.cancel = never_dispatched_cancel
+        captured_future.result = MagicMock(side_effect=TimeoutError("timed out"))
 
         def fake_run_coro(coro, _loop):
             coro.close()
-            return completed_future
+            return captured_future
+
+        job = {
+            "id": "timeout-undispatched-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert cancel_calls == [True], "future.cancel() should be attempted"
+        # The standalone path MUST run — the message was never sent.
+        standalone_send.assert_awaited_once()
+        assert result is None, f"standalone should have delivered, got: {result!r}"
+
+    def test_live_adapter_real_exception_falls_back_to_standalone(self):
+        """A non-timeout send Exception (real failure, not a slow confirmation)
+        must fall through to the standalone path so the message is still
+        delivered.  Guards the `except Exception: raise` branch — the bug class
+        where broadening the timeout handler to swallow all exceptions would
+        silently drop messages."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        captured_future = Future()
+        captured_future.result = MagicMock(side_effect=RuntimeError("adapter exploded"))
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return captured_future
+
+        job = {
+            "id": "send-error-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        # A real exception must NOT be assume-delivered: standalone runs.
+        standalone_send.assert_awaited_once()
+        assert result is None, f"standalone should have delivered, got: {result!r}"
+
+    def test_live_adapter_private_dm_topic_routes_via_direct_messages_topic_id(self):
+        """#22773: a cron target to a PRIVATE Telegram chat with a numeric topic
+        id must be routed via ``direct_messages_topic_id`` (Bot API DM topics),
+        NOT a bare ``message_thread_id`` (which Bot API 10.0 rejects / mis-routes
+        to General).  The cron live-adapter path routes through the gateway
+        DeliveryRouter, which applies the same three-mode routing as live
+        messages.
+        """
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(success=True, message_id="42")
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=send_result)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        # DeliveryRouter consults the silence-narration config flag.
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "dm-topic-job",
+            "deliver": "telegram:226252250:7072",  # private chat + numeric topic
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
@@ -2522,15 +3201,258 @@ class TestDeliverResultTimeoutCancelsFuture:
                 loop=loop,
             )
 
-        assert result == (
-            "configured thread_id 7072 for telegram:226252250 was not found; "
-            "delivered without thread_id"
+        assert result is None, f"expected clean delivery, got: {result!r}"
+        adapter.send.assert_called_once()
+        sent_chat_id, sent_text = adapter.send.call_args[0][0], adapter.send.call_args[0][1]
+        sent_metadata = adapter.send.call_args[1]["metadata"]
+        assert sent_chat_id == "226252250"
+        assert sent_text == "Hello world"
+        # The topic must be addressed via direct_messages_topic_id, and a bare
+        # message_thread_id must NOT be set (that is the Bot API 10.0 bug).
+        assert str(sent_metadata.get("direct_messages_topic_id")) == "7072"
+        assert not sent_metadata.get("message_thread_id")
+
+    def test_live_adapter_private_dm_topic_media_routes_via_direct_messages_topic_id(self, tmp_path, monkeypatch):
+        """#22773 (media): MEDIA attachments to a private DM topic must also be
+        routed via ``direct_messages_topic_id``, not a bare ``message_thread_id``
+        — the media path previously used the bare thread_id and landed
+        attachments in the General lane."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        media_root = tmp_path / "media-cache"
+        media_file = media_root / "chart.png"
+        media_file.parent.mkdir(parents=True, exist_ok=True)
+        media_file.write_bytes(b"media")
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (media_root,),
         )
-        adapter.send.assert_called_once_with(
-            "226252250",
-            "Hello world",
-            metadata={"thread_id": "7072"},
+        media_path = media_file.resolve()
+
+        adapter = AsyncMock()
+        adapter.send.return_value = SendResult(success=True, message_id="1")
+        adapter.send_image_file.return_value = SendResult(success=True, message_id="2")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "dm-topic-media-job",
+            "deliver": "telegram:226252250:7072",  # private chat + numeric topic
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                f"Chart attached\nMEDIA:{media_path}",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        adapter.send_image_file.assert_called_once()
+        media_metadata = adapter.send_image_file.call_args[1]["metadata"]
+        assert str(media_metadata.get("direct_messages_topic_id")) == "7072"
+        assert not media_metadata.get("message_thread_id")
+        assert not media_metadata.get("thread_id")
+
+    def test_live_adapter_forum_thread_fallback_records_delivery_error(self):
+        """A forum/supergroup cron target whose configured topic is gone must
+        NOT be reported as a clean delivery: when the Telegram adapter falls
+        back to the base chat (raw_response thread_fallback), the scheduler must
+        record the "delivered without thread_id" delivery error.  Regression
+        coverage for the thread_fallback-recording branch (kept distinct from
+        the #22773 routing fix)."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(
+            success=True,
+            message_id="42",
+            raw_response={
+                "requested_thread_id": 17,
+                "thread_fallback": True,
+            },
         )
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=send_result)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        # Forum supergroup (negative chat_id) + numeric topic → mode 1
+        # (message_thread_id); NOT a private DM topic.
+        job = {
+            "id": "forum-fallback-job",
+            "deliver": "telegram:-1001234567890:17",
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is not None
+        assert "was not found; delivered without thread_id" in result
+        # Forum target routes via message_thread_id (mode 1), not DM-topic.
+        sent_metadata = adapter.send.call_args[1]["metadata"]
+        assert not sent_metadata.get("direct_messages_topic_id")
+
+
+class TestDeliverResultLiveAdapterUnconfirmed:
+    """Regression for #47056.
+
+    When a live adapter's send() returns ``None`` (swallowed exception / busy
+    platform) or a result object that lacks an explicit ``success`` attribute
+    (bare dict / partial object), the scheduler must NOT log "delivered via
+    live adapter" and silently drop the message.  Every unconfirmed shape must
+    fall through to the standalone delivery path so the message actually
+    arrives.  The pre-fix check ``send_result is None or not getattr(...,
+    "success", True)`` let a ``.success``-less object default to True = silent
+    success.
+    """
+
+    def _run(self, send_value):
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = send_value
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        completed_future = Future()
+        completed_future.set_result(send_value)
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        job = {
+            "id": "unconfirmed-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+        return result, standalone_send
+
+    def test_none_result_falls_through_to_standalone(self):
+        """send() returning None must trigger the standalone fallback, not a
+        silent "delivered" log."""
+        result, standalone_send = self._run(None)
+        assert result is None, f"standalone should have delivered, got: {result!r}"
+        standalone_send.assert_awaited_once()
+
+    def test_result_missing_success_attr_falls_through(self):
+        """A result object with no ``success`` attribute is a contract
+        violation and must NOT be counted as delivered (it defaulted to True
+        before the fix)."""
+        class _NoSuccess:
+            pass
+
+        result, standalone_send = self._run(_NoSuccess())
+        assert result is None, f"standalone should have delivered, got: {result!r}"
+        standalone_send.assert_awaited_once()
+
+    def test_confirmed_success_does_not_fall_through(self):
+        """A genuine SendResult(success=True) is confirmed — the standalone
+        path must NOT run (no duplicate)."""
+        result, standalone_send = self._run(MagicMock(success=True, raw_response=None))
+        assert result is None
+        standalone_send.assert_not_awaited()
+
+
+class TestDeliverOriginUnresolvableIsLocal:
+    """Regression for #43014.
+
+    A cron job created in a CLI session has no {platform, chat_id} origin.
+    With ``deliver=origin`` (or auto-detect / deliver=None) and no configured
+    platform home channel, delivery is unresolvable — but that is the EXPECTED
+    state for CLI jobs, not an error.  _deliver_result must return None (treat
+    as local; output stays in last_output), not the "no delivery target
+    resolved" error string that previously fired on every run.
+    """
+
+    def _deliver(self, job, monkeypatch):
+        import cron.scheduler as sched
+        # No home channel for any platform → origin is unresolvable.
+        monkeypatch.setattr(sched, "_get_home_target_chat_id", lambda *_: "")
+        return _deliver_result(job, "CLI bulletin")
+
+    def test_origin_with_no_home_channels_returns_none(self, monkeypatch):
+        job = {"id": "cli-job", "deliver": "origin", "origin": "cli-session-provenance"}
+        assert self._deliver(job, monkeypatch) is None
+
+    def test_omitted_deliver_autodetect_returns_none(self, monkeypatch):
+        # deliver key present but None (auto-detect) previously errored with
+        # "no delivery target resolved for deliver=None".
+        job = {"id": "cli-job", "deliver": None, "origin": "cli-session-provenance"}
+        assert self._deliver(job, monkeypatch) is None
+
+    def test_explicit_platform_with_no_channel_still_errors(self, monkeypatch):
+        # A concrete platform target that cannot resolve is still a real error
+        # (this must NOT be silently swallowed by the origin→local fallback).
+        job = {"id": "tg-job", "deliver": "telegram"}
+        result = self._deliver(job, monkeypatch)
+        assert result is not None
+        assert "no delivery target resolved" in result
 
 
 class TestSendMediaTimeoutCancelsFuture:
@@ -2597,3 +3519,481 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
+
+
+class TestCronDeliveryTargets:
+    """``cron_delivery_targets`` powers the dashboard delivery dropdown.
+
+    It must list every configured + cron-deliverable platform (no hardcoded
+    set), flag whether each has its home channel set, and never include
+    platforms whose gateway isn't configured.
+    """
+
+    def _patch_connected(self, monkeypatch, names):
+        import gateway.config as gateway_config
+
+        class _Platform:
+            def __init__(self, value):
+                self.value = value
+
+        class _GatewayConfig:
+            def get_connected_platforms(self_inner):
+                return [_Platform(n) for n in names]
+
+        monkeypatch.setattr(
+            gateway_config, "load_gateway_config", lambda: _GatewayConfig()
+        )
+
+    def test_lists_configured_platforms_flagging_missing_home_channel(self, monkeypatch):
+        from cron.scheduler import cron_delivery_targets
+
+        self._patch_connected(monkeypatch, ["matrix", "telegram"])
+        monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+
+        targets = {t["id"]: t for t in cron_delivery_targets()}
+
+        assert set(targets) == {"matrix", "telegram"}
+        # Configured but no home channel → surfaced, flagged for the UI.
+        assert targets["matrix"]["home_target_set"] is False
+        assert targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
+        assert targets["telegram"]["home_target_set"] is False
+
+    def test_home_channel_set_marks_target_ready(self, monkeypatch):
+        from cron.scheduler import cron_delivery_targets
+
+        self._patch_connected(monkeypatch, ["matrix"])
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
+
+        targets = {t["id"]: t for t in cron_delivery_targets()}
+
+        assert targets["matrix"]["home_target_set"] is True
+
+    def test_unconfigured_platforms_excluded(self, monkeypatch):
+        from cron.scheduler import cron_delivery_targets
+
+        # Only telegram is connected; matrix env var set but gateway not configured.
+        self._patch_connected(monkeypatch, ["telegram"])
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
+
+        ids = {t["id"] for t in cron_delivery_targets()}
+
+        assert ids == {"telegram"}
+        assert "matrix" not in ids
+
+    def test_no_gateway_config_returns_empty(self, monkeypatch):
+        import gateway.config as gateway_config
+        from cron.scheduler import cron_delivery_targets
+
+        def _boom():
+            raise RuntimeError("no gateway config")
+
+        monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
+
+        assert cron_delivery_targets() == []
+
+
+class TestHomeTargetEnvVarRegistry:
+    """Regression: ``_HOME_TARGET_ENV_VARS`` must include every gateway
+    platform that supports cron-driven outbound delivery. Missing an
+    entry means ``hermes cron create --deliver=<platform>`` silently
+    fails to route through the platform's home channel."""
+
+    def test_whatsapp_cloud_registered(self):
+        """``deliver=whatsapp_cloud`` routes through
+        WHATSAPP_CLOUD_HOME_CHANNEL — added alongside the existing
+        ``whatsapp`` Baileys entry."""
+        from cron.scheduler import _HOME_TARGET_ENV_VARS
+
+        assert "whatsapp_cloud" in _HOME_TARGET_ENV_VARS
+        assert _HOME_TARGET_ENV_VARS["whatsapp_cloud"] == "WHATSAPP_CLOUD_HOME_CHANNEL"
+
+    def test_baileys_whatsapp_still_registered(self):
+        """Sanity guard: the Cloud addition didn't disturb Baileys
+        whatsapp routing."""
+        from cron.scheduler import _HOME_TARGET_ENV_VARS
+
+        assert _HOME_TARGET_ENV_VARS.get("whatsapp") == "WHATSAPP_HOME_CHANNEL"
+
+
+class TestCronDeliveryMirror:
+    """cron.mirror_delivery / per-job attach_to_session: opt-in append of a
+    cron delivery into the target chat's gateway session transcript.
+
+    Default OFF preserves the historical isolation guarantee byte-for-byte.
+    When enabled, delivery rides the existing gateway.mirror.mirror_to_session
+    so cron uses exactly the same path interactive send_message mirroring uses.
+    """
+
+    def test_gate_default_off(self):
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        # No per-job flag, no config -> off (historical behaviour).
+        assert _cron_mirror_delivery_enabled({}, {}) is False
+        assert _cron_mirror_delivery_enabled({"id": "x"}, {"cron": {}}) is False
+
+    def test_gate_global_config_on(self):
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        assert _cron_mirror_delivery_enabled({}, {"cron": {"mirror_delivery": True}}) is True
+
+    def test_gate_per_job_overrides_global(self):
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        # Per-job False wins even if global is on.
+        assert _cron_mirror_delivery_enabled(
+            {"attach_to_session": False}, {"cron": {"mirror_delivery": True}}
+        ) is False
+        # Per-job True wins even if global is off/absent.
+        assert _cron_mirror_delivery_enabled(
+            {"attach_to_session": True}, {"cron": {"mirror_delivery": False}}
+        ) is True
+
+    def test_mirror_calls_mirror_to_session_when_enabled(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1", "name": "Daily Brief"}, "telegram", "123",
+                "Daily brief Task #2", thread_id=None, enabled=True,
+            )
+        m.assert_called_once()
+        args, kwargs = m.call_args
+        assert args[0] == "telegram"
+        assert args[1] == "123"
+        assert "Task #2" in args[2]
+        assert kwargs.get("source_label") == "cron"
+
+    def test_mirror_writes_user_role_with_label_not_assistant(self):
+        """Regression for #2221 / #2313: the cron brief must mirror as a USER
+        turn (with a [Cron delivery: ...] label), NOT assistant — an
+        assistant-role mirror lands as assistant->assistant after the agent's
+        last turn and breaks strict alternation on non-Anthropic providers."""
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1", "name": "Morning Brief"}, "telegram", "123",
+                "Market movers today", thread_id=None, enabled=True,
+            )
+        m.assert_called_once()
+        args, kwargs = m.call_args
+        assert kwargs.get("role") == "user", "cron mirror must be a user turn, not assistant"
+        # The brief text is prefixed with a human-readable cron-delivery label
+        # so replay (where the mirror metadata is dropped at the SQLite
+        # boundary) still distinguishes it from a genuine user message.
+        assert args[2].startswith("[Cron delivery: Morning Brief]")
+        assert "Market movers today" in args[2]
+
+    def test_mirror_noop_when_disabled(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "should not mirror",
+                enabled=False,
+            )
+        m.assert_not_called()
+
+    def test_mirror_noop_on_empty_text(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery({"id": "j1"}, "telegram", "123", "   ", enabled=True)
+        m.assert_not_called()
+
+    def test_mirror_swallows_cold_start_miss(self):
+        """A missing target session (cold start) must NOT raise — delivery
+        already succeeded; the mirror is best-effort."""
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=False) as m:
+            # Should not raise.
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "brief", enabled=True
+            )
+        m.assert_called_once()
+
+    def test_mirror_swallows_exceptions(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", side_effect=RuntimeError("boom")):
+            # Must not propagate — a delivery that succeeded is never failed by
+            # a mirror error.
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "brief", enabled=True
+            )
+
+    def test_delivery_mirrors_clean_content_not_wrapped(self):
+        """When enabled, the mirror receives the CLEAN agent output, not the
+        cron header/footer-wrapped delivery text."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        mirror_mock.assert_called_once()
+        mirrored_text = mirror_mock.call_args[0][2]
+        # Clean content, no cron wrapper.
+        assert "Here is today's summary." in mirrored_text
+        assert "Cronjob Response:" not in mirrored_text
+        assert "To stop or manage this job" not in mirrored_text
+
+    def test_delivery_does_not_mirror_when_gate_off(self):
+        """Default path: a job with no opt-in must never touch the mirror."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        mirror_mock.assert_not_called()
+
+    # --- origin-scoping (mirror only into the conversation that created the job) ---
+
+    def test_target_matches_origin_exact(self):
+        from cron.scheduler import _target_matches_origin
+
+        origin = {"platform": "telegram", "chat_id": "123"}
+        assert _target_matches_origin(origin, "telegram", "123", None) is True
+        # Case-insensitive platform match.
+        assert _target_matches_origin(origin, "Telegram", "123", None) is True
+
+    def test_target_matches_origin_rejects_other_chat(self):
+        from cron.scheduler import _target_matches_origin
+
+        origin = {"platform": "telegram", "chat_id": "123"}
+        # Different chat (fan-out / explicit other target) -> not the origin.
+        assert _target_matches_origin(origin, "telegram", "999", None) is False
+        # Different platform (deliver=all broadcast) -> not the origin.
+        assert _target_matches_origin(origin, "discord", "123", None) is False
+        # No origin at all (API/script job, home-channel fallback) -> never.
+        assert _target_matches_origin({}, "telegram", "123", None) is False
+
+    def test_target_matches_origin_thread_scoped(self):
+        from cron.scheduler import _target_matches_origin
+
+        origin = {"platform": "telegram", "chat_id": "123", "thread_id": "17"}
+        assert _target_matches_origin(origin, "telegram", "123", "17") is True
+        # Same chat, wrong/lost thread lane -> not the same conversation.
+        assert _target_matches_origin(origin, "telegram", "123", None) is False
+        assert _target_matches_origin(origin, "telegram", "123", "99") is False
+
+    def test_delivery_does_not_mirror_fanout_non_origin_target(self):
+        """Even with the gate ON, a delivery to a chat that is NOT the job's
+        origin (explicit fan-out target) must not be mirrored — the mirror is
+        scoped to the origin conversation, and the fan-out chat may have no
+        session at all."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                # Explicit delivery to a DIFFERENT chat than the origin.
+                "deliver": "telegram:999",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        # Delivered to 999, but origin is 123 -> no mirror.
+        mirror_mock.assert_not_called()
+
+    def test_delivery_mirrors_only_origin_target_in_fanout(self):
+        """deliver to BOTH origin and another chat: only the origin target is
+        mirrored."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                # Fan out to the origin chat (123) AND another chat (999).
+                "deliver": "telegram:123,telegram:999",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        # Exactly one mirror, and it is the origin chat (123) — not 999.
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args[0][1] == "123"
+
+    # --- multi-participant parity with send_message (user_id passthrough) ---
+
+    def test_mirror_passes_user_id_through(self):
+        """The helper forwards user_id to mirror_to_session so a per-user-
+        isolated group resolves to the exact member who scheduled the job —
+        parity with interactive send_message."""
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "brief",
+                thread_id=None, user_id="U999", enabled=True,
+            )
+        m.assert_called_once()
+        assert m.call_args.kwargs.get("user_id") == "U999"
+
+    def test_delivery_forwards_origin_user_id(self):
+        """End-to-end: a job whose origin carries user_id mirrors with that
+        user_id, so multi-participant resolution matches send_message."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123", "user_id": "U42"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("user_id") == "U42"
+
+    # --- continuable cron: thread-preferred (Teknium's interface) ---
+
+    def test_open_thread_returns_id_on_thread_platform(self):
+        """On a thread-capable adapter, _open_continuable_cron_thread returns
+        the new thread id from create_handoff_thread."""
+        from cron.scheduler import _open_continuable_cron_thread
+
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value="9001")
+
+        # safe_schedule_threadsafe hands the coro to the gateway loop and
+        # returns a future. Patch it to close the coro and return a ready
+        # future carrying the adapter's thread id.
+        def _run_now(coro, _loop):
+            coro.close()
+            fut = MagicMock()
+            fut.result.return_value = "9001"
+            return fut
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now):
+            tid = _open_continuable_cron_thread(
+                {"id": "j1", "name": "Brief"}, adapter, "123", loop=MagicMock(),
+            )
+        assert tid == "9001"
+
+    def test_open_thread_returns_none_on_dm_platform(self):
+        """A DM-only adapter (WhatsApp) inherits the base create_handoff_thread
+        that returns None → _open_continuable_cron_thread returns None so the
+        caller falls back to DM-session mirroring."""
+        from cron.scheduler import _open_continuable_cron_thread
+
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value=None)
+
+        def _run_now(coro, _loop):
+            fut = MagicMock()
+            fut.result.return_value = None
+            coro.close()
+            return fut
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now):
+            tid = _open_continuable_cron_thread(
+                {"id": "j1", "name": "Brief"}, adapter, "123", loop=MagicMock(),
+            )
+        assert tid is None
+
+    def test_open_thread_none_without_capability_or_loop(self):
+        """No create_handoff_thread attr, or no loop → None (no crash)."""
+        from cron.scheduler import _open_continuable_cron_thread
+
+        adapter_no_cap = MagicMock(spec=[])  # no create_handoff_thread
+        assert _open_continuable_cron_thread(
+            {"id": "j1"}, adapter_no_cap, "123", loop=MagicMock(),
+        ) is None
+
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value="9001")
+        assert _open_continuable_cron_thread(
+            {"id": "j1"}, adapter, "123", loop=None,
+        ) is None
+
+    def test_seed_thread_session_creates_session_and_mirrors(self):
+        """Seeding a freshly-opened thread creates the thread-keyed session via
+        the adapter's live store and appends the brief via mirror_to_session."""
+        from cron.scheduler import _seed_cron_thread_session
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            _seed_cron_thread_session(
+                {"id": "j1"}, adapter, "telegram", "123", "9001",
+                "Daily brief Task #2", chat_name="Ops",
+            )
+
+        # Session row created for the thread, then brief mirrored into it.
+        store.get_or_create_session.assert_called_once()
+        seeded_source = store.get_or_create_session.call_args[0][0]
+        assert seeded_source.chat_type == "thread"
+        assert seeded_source.thread_id == "9001"
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") == "9001"
+
+    def test_seed_thread_session_noop_on_empty_text(self):
+        from cron.scheduler import _seed_cron_thread_session
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+        with patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            _seed_cron_thread_session(
+                {"id": "j1"}, adapter, "telegram", "123", "9001", "   ",
+            )
+        store.get_or_create_session.assert_not_called()
+        mirror_mock.assert_not_called()

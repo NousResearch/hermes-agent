@@ -1,54 +1,60 @@
-import { IconDownload, IconRefresh, IconUpload } from '@tabler/icons-react'
-import { useEffect, useRef, useState } from 'react'
+import { useRef } from 'react'
 
+import { codiconIcon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Globe, Info, KeyRound, Package, Wrench } from '@/lib/icons'
+import { Archive, Bell, Download, Globe, Info, KeyRound, RefreshCw, Settings2, Upload, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
-import { OverlaySearchInput } from '../overlays/overlay-search-input'
 import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
-import { SEARCH_PLACEHOLDER, SECTIONS } from './constants'
+import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
-import { KeysSettings } from './keys-settings'
+import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { McpSettings } from './mcp-settings'
-import { ToolsSettings } from './tools-settings'
-import type { SettingsPageProps, SettingsQueryKey, SettingsView as SettingsViewId } from './types'
+import { NotificationsSettings } from './notifications-settings'
+import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
+import { SessionsSettings } from './sessions-settings'
+import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
+  'providers',
   'gateway',
   'keys',
   'mcp',
-  'tools',
+  'notifications',
+  'sessions',
   'about'
 ]
 
-export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPageProps) {
+export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+  const { t } = useI18n()
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  // Providers subnav (Accounts vs API keys) lives in its own param so each
+  // sub-view is deep-linkable and survives a refresh.
+  const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
+  const [keysView, setKeysView] = useRouteEnumParam<KeysView>('kview', KEYS_VIEWS, 'tools')
 
-  const [queries, setQueries] = useState<Record<SettingsQueryKey, string>>({
-    about: '',
-    config: '',
-    gateway: '',
-    keys: '',
-    mcp: '',
-    tools: ''
-  })
+  const openProviderView = (view: ProviderView) => {
+    setActiveView('providers')
+    setProviderView(view)
+  }
 
-  const searchInputRef = useRef<HTMLInputElement>(null)
+  const openKeysView = (view: KeysView) => {
+    setActiveView('keys')
+    setKeysView(view)
+  }
+
   const importInputRef = useRef<HTMLInputElement | null>(null)
-
-  const queryKey: SettingsQueryKey = activeView.startsWith('config:') ? 'config' : (activeView as SettingsQueryKey)
-  const query = queries[queryKey]
-  const setQuery = (next: string) => setQueries(c => ({ ...c, [queryKey]: next }))
 
   const exportConfig = async () => {
     try {
@@ -62,12 +68,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
       URL.revokeObjectURL(url)
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, 'Export failed')
+      notifyError(err, t.settings.exportFailed)
     }
   }
 
   const resetConfig = async () => {
-    if (!window.confirm('Reset all settings to Hermes defaults?')) {
+    if (!window.confirm(t.settings.resetConfirm)) {
       return
     }
 
@@ -76,39 +82,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
       triggerHaptic('success')
       onConfigSaved?.()
     } catch (err) {
-      notifyError(err, 'Reset failed')
+      notifyError(err, t.settings.resetFailed)
     }
   }
 
-  // OverlayView handles Esc; this just adds Cmd/Ctrl+P → focus search.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
-        e.preventDefault()
-        searchInputRef.current?.focus()
-        searchInputRef.current?.select()
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
-
   return (
-    <OverlayView
-      closeLabel="Close settings"
-      headerContent={
-        <OverlaySearchInput
-          containerClassName="w-[min(36rem,calc(100vw-32rem))] min-w-80"
-          inputRef={searchInputRef}
-          onChange={setQuery}
-          placeholder={SEARCH_PLACEHOLDER[queryKey]}
-          value={query}
-        />
-      }
-      onClose={onClose}
-    >
+    <OverlayView closeLabel={t.settings.closeSettings} onClose={onClose}>
       <OverlaySplitLayout>
         <OverlaySidebar>
           {SECTIONS.map(s => {
@@ -116,73 +95,125 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
 
             return (
               <OverlayNavItem
-                active={activeView === view && !queries.config.trim()}
+                active={activeView === view}
                 icon={s.icon}
                 key={s.id}
-                label={s.label}
+                label={t.settings.sections[s.id] ?? s.label}
                 onClick={() => setActiveView(view)}
               />
             )
           })}
+          <OverlayNavItem
+            active={activeView === 'notifications'}
+            icon={Bell}
+            label={t.settings.nav.notifications}
+            onClick={() => setActiveView('notifications')}
+          />
           <div className="my-2 h-px bg-border/30" />
+          <OverlayNavItem
+            active={activeView === 'providers'}
+            icon={Zap}
+            label={t.settings.nav.providers}
+            onClick={() => setActiveView('providers')}
+          />
+          {activeView === 'providers' && (
+            <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
+              <OverlayNavItem
+                active={providerView === 'accounts'}
+                icon={codiconIcon('account')}
+                label={t.settings.nav.providerAccounts}
+                nested
+                onClick={() => openProviderView('accounts')}
+              />
+              <OverlayNavItem
+                active={providerView === 'keys'}
+                icon={KeyRound}
+                label={t.settings.nav.providerApiKeys}
+                nested
+                onClick={() => openProviderView('keys')}
+              />
+            </div>
+          )}
           <OverlayNavItem
             active={activeView === 'gateway'}
             icon={Globe}
-            label="Gateway"
+            label={t.settings.nav.gateway}
             onClick={() => setActiveView('gateway')}
           />
           <OverlayNavItem
             active={activeView === 'keys'}
             icon={KeyRound}
-            label="API Keys"
+            label={t.settings.nav.apiKeys}
             onClick={() => setActiveView('keys')}
           />
-          <OverlayNavItem
-            active={activeView === 'tools'}
-            icon={Package}
-            label="Skills & Tools"
-            onClick={() => setActiveView('tools')}
-          />
+          {activeView === 'keys' && (
+            <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
+              <OverlayNavItem
+                active={keysView === 'tools'}
+                icon={Wrench}
+                label={t.settings.nav.keysTools}
+                nested
+                onClick={() => openKeysView('tools')}
+              />
+              <OverlayNavItem
+                active={keysView === 'settings'}
+                icon={Settings2}
+                label={t.settings.nav.keysSettings}
+                nested
+                onClick={() => openKeysView('settings')}
+              />
+            </div>
+          )}
           <OverlayNavItem
             active={activeView === 'mcp'}
             icon={Wrench}
-            label="MCP"
+            label={t.settings.nav.mcp}
             onClick={() => setActiveView('mcp')}
+          />
+          <OverlayNavItem
+            active={activeView === 'sessions'}
+            icon={Archive}
+            label={t.settings.nav.archivedChats}
+            onClick={() => setActiveView('sessions')}
           />
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
             active={activeView === 'about'}
             icon={Info}
-            label="About"
+            label={t.settings.nav.about}
             onClick={() => setActiveView('about')}
           />
           <div className="mt-auto flex items-center gap-1 pt-2">
-            <OverlayIconButton onClick={() => void exportConfig()} title="Export config">
-              <IconDownload className="size-3.5" />
-            </OverlayIconButton>
-            <OverlayIconButton
-              onClick={() => {
-                triggerHaptic('open')
-                importInputRef.current?.click()
-              }}
-              title="Import config"
-            >
-              <IconUpload className="size-3.5" />
-            </OverlayIconButton>
-            <OverlayIconButton
-              className="hover:text-destructive"
-              onClick={() => {
-                triggerHaptic('warning')
-                void resetConfig()
-              }}
-              title="Reset to defaults"
-            >
-              <IconRefresh className="size-3.5" />
-            </OverlayIconButton>
+            <Tip label={t.settings.exportConfig}>
+              <OverlayIconButton onClick={() => void exportConfig()}>
+                <Download className="size-3.5" />
+              </OverlayIconButton>
+            </Tip>
+            <Tip label={t.settings.importConfig}>
+              <OverlayIconButton
+                onClick={() => {
+                  triggerHaptic('open')
+                  importInputRef.current?.click()
+                }}
+              >
+                <Upload className="size-3.5" />
+              </OverlayIconButton>
+            </Tip>
+            <Tip label={t.settings.resetToDefaults}>
+              <OverlayIconButton
+                className="hover:text-destructive"
+                onClick={() => {
+                  triggerHaptic('warning')
+                  void resetConfig()
+                }}
+              >
+                <RefreshCw className="size-3.5" />
+              </OverlayIconButton>
+            </Tip>
           </div>
         </OverlaySidebar>
 
-        <OverlayMain className="p-0">
+        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
@@ -194,14 +225,18 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
               activeSectionId={activeView.slice('config:'.length)}
               importInputRef={importInputRef}
               onConfigSaved={onConfigSaved}
-              query={queries.config}
+              onMainModelChanged={onMainModelChanged}
             />
+          ) : activeView === 'providers' ? (
+            <ProvidersSettings onClose={onClose} onViewChange={setProviderView} view={providerView} />
           ) : activeView === 'keys' ? (
-            <KeysSettings query={queries.keys} />
+            <KeysSettings view={keysView} />
           ) : activeView === 'mcp' ? (
-            <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} query={queries.mcp} />
+            <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} />
+          ) : activeView === 'notifications' ? (
+            <NotificationsSettings />
           ) : (
-            <ToolsSettings query={queries.tools} />
+            <SessionsSettings />
           )}
         </OverlayMain>
       </OverlaySplitLayout>

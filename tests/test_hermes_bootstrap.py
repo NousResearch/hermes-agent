@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import os
+import platform
 import subprocess
 import sys
 import textwrap
@@ -231,6 +232,82 @@ class TestStdioReconfigureErrorHandling:
         hb.apply_windows_utf8_bootstrap()
 
 
+class TestWindowsPlatformProbeGuard:
+    def test_windows_bootstrap_disables_platform_syscmd_subprocess(self):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        hb._bootstrap_applied = False
+
+        original = getattr(platform, "_syscmd_ver", None)
+        try:
+            hb.apply_windows_utf8_bootstrap()
+
+            assert platform._syscmd_ver("Windows", "", "") == ("Windows", "", "")
+        finally:
+            if original is not None:
+                platform._syscmd_ver = original
+
+
+class TestDetachOrphanConsole:
+    """detach_orphan_console() frees a solo-owned console (the uv pythonw→python
+    phantom) but leaves a shared interactive console attached, and is a pure
+    no-op on POSIX. It is intentionally NOT run at import time."""
+
+    def test_noop_on_posix(self):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = False
+        assert hb.detach_orphan_console() is False
+
+    def test_not_called_at_import_time(self):
+        # The FreeConsole catch-all must be opt-in per background entry point,
+        # never an import side effect (would detach the interactive CLI/TUI).
+        import pathlib
+        src = pathlib.Path(_fresh_import().__file__).read_text(encoding="utf-8")
+        body = src.split("def detach_orphan_console")[0]
+        assert "FreeConsole" not in body, (
+            "FreeConsole must live only inside detach_orphan_console(), not in "
+            "apply_windows_utf8_bootstrap() / module import path"
+        )
+
+    def _fake_ctypes(self, monkeypatch, window, nproc):
+        import ctypes
+
+        class _K:
+            def __init__(self):
+                self.freed = False
+            def GetConsoleWindow(self):
+                return window
+            def GetConsoleProcessList(self, buf, n):
+                return nproc
+            def FreeConsole(self):
+                self.freed = True
+
+        k = _K()
+        monkeypatch.setattr(ctypes, "windll", type("_W", (), {"kernel32": k})(), raising=False)
+        return k
+
+    def test_frees_when_solo_owner(self, monkeypatch):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        k = self._fake_ctypes(monkeypatch, window=1, nproc=1)
+        assert hb.detach_orphan_console() is True
+        assert k.freed is True
+
+    def test_leaves_shared_console_attached(self, monkeypatch):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        k = self._fake_ctypes(monkeypatch, window=1, nproc=2)
+        assert hb.detach_orphan_console() is False
+        assert k.freed is False
+
+    def test_noop_without_console(self, monkeypatch):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        k = self._fake_ctypes(monkeypatch, window=0, nproc=1)
+        assert hb.detach_orphan_console() is False
+        assert k.freed is False
+
+
 class TestEntryPointsImportBootstrap:
     """Every Hermes entry point must import hermes_bootstrap as its
     first non-docstring import.  We check this by scanning source files
@@ -311,3 +388,88 @@ class TestEntryPointsImportBootstrap:
             f"configured before anything else initializes.  Move the "
             f"'import hermes_bootstrap' line to be the first import."
         )
+
+
+class TestHardenImportPath:
+    """harden_import_path() must keep a same-named package in the launch
+    directory from shadowing Hermes's own top-level modules — covering both
+    the relative ('' / '.') and absolute-path forms the cwd can take on
+    sys.path (issue #51286)."""
+
+    def _run(self, hb, path_seed, env=None):
+        original = sys.path[:]
+        original_env = os.environ.get("HERMES_PYTHON_SRC_ROOT")
+        try:
+            sys.path[:] = path_seed
+            if env is not None:
+                os.environ["HERMES_PYTHON_SRC_ROOT"] = env
+            elif "HERMES_PYTHON_SRC_ROOT" in os.environ:
+                del os.environ["HERMES_PYTHON_SRC_ROOT"]
+            hb.harden_import_path(src_root="/opt/hermes")
+            return sys.path[:]
+        finally:
+            sys.path[:] = original
+            if original_env is None:
+                os.environ.pop("HERMES_PYTHON_SRC_ROOT", None)
+            else:
+                os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
+
+    def test_relative_cwd_forms_removed(self):
+        hb = _fresh_import()
+        result = self._run(hb, ["", ".", "/opt/hermes", "/usr/lib/python"])
+        assert "" not in result
+        assert "." not in result
+
+    def test_src_root_forced_to_front(self):
+        hb = _fresh_import()
+        result = self._run(hb, ["", "/opt/hermes", "/usr/lib/python"])
+        assert result[0] == "/opt/hermes"
+
+    def test_absolute_cwd_path_loses_to_src_root(self):
+        # The real #51286 bug: the launch dir is present as its own absolute
+        # path (venv activation / a project on PYTHONPATH), ahead of the
+        # Hermes root.  The guard must relocate Hermes to the front.
+        hb = _fresh_import()
+        result = self._run(hb, ["/home/user/tg-ws-proxy", "/opt/hermes"])
+        assert result[0] == "/opt/hermes"
+        # The cwd absolute path may still appear (it can hold legit deps),
+        # but only AFTER the Hermes root.
+        assert result.index("/opt/hermes") < result.index("/home/user/tg-ws-proxy")
+
+    def test_src_root_not_duplicated(self):
+        hb = _fresh_import()
+        result = self._run(hb, ["/opt/hermes", "/opt/hermes", ""])
+        assert result.count("/opt/hermes") == 1
+
+    def test_env_var_used_when_no_arg(self):
+        hb = _fresh_import()
+        original = sys.path[:]
+        original_env = os.environ.get("HERMES_PYTHON_SRC_ROOT")
+        try:
+            sys.path[:] = ["", "/cwd/proj", "/usr/lib"]
+            os.environ["HERMES_PYTHON_SRC_ROOT"] = "/env/hermes"
+            hb.harden_import_path()
+            assert sys.path[0] == "/env/hermes"
+        finally:
+            sys.path[:] = original
+            if original_env is None:
+                os.environ.pop("HERMES_PYTHON_SRC_ROOT", None)
+            else:
+                os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
+
+    def test_defaults_to_module_dir(self):
+        # With neither arg nor env var, the helper anchors on the bootstrap
+        # module's own directory — the repo root for shipped entry points.
+        hb = _fresh_import()
+        original = sys.path[:]
+        original_env = os.environ.get("HERMES_PYTHON_SRC_ROOT")
+        try:
+            sys.path[:] = ["", "/somewhere/else"]
+            os.environ.pop("HERMES_PYTHON_SRC_ROOT", None)
+            hb.harden_import_path()
+            expected = os.path.dirname(os.path.abspath(hb.__file__))
+            assert sys.path[0] == expected
+        finally:
+            sys.path[:] = original
+            if original_env is not None:
+                os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env

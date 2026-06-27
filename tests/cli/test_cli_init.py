@@ -247,6 +247,73 @@ class TestPromptToolkitTerminalCompatibility:
 
         assert renderer.cpr_not_supported_callback is None
 
+    def test_cpr_disabled_output_marks_renderer_not_supported(self):
+        """CPR-disabled output must make prompt_toolkit skip ESC[6n entirely.
+
+        The root cause of #13870 is that prompt_toolkit sends ESC[6n cursor
+        queries whose CPR replies leak into the display over tunnels/slow PTYs.
+        Building the output with enable_cpr=False is what stops the queries:
+        the renderer marks CPR NOT_SUPPORTED and never calls ask_for_cpr().
+        """
+        import sys as _sys
+        from cli import _build_cpr_disabled_output
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.layout import Layout, Window, FormattedTextControl
+        from prompt_toolkit.renderer import CPR_Support
+
+        out = _build_cpr_disabled_output(_sys.stdout)
+        assert out is not None
+        # The contract: this output does not respond to CPR.
+        assert out.enable_cpr is False
+        assert out.responds_to_cpr is False
+
+        # And wired into an Application, the renderer treats CPR as unsupported,
+        # so request_absolute_cursor_position() never sends ESC[6n.
+        app = Application(
+            layout=Layout(Window(FormattedTextControl("x"))),
+            output=out,
+            full_screen=False,
+        )
+        assert app.renderer.cpr_support == CPR_Support.NOT_SUPPORTED
+
+    def test_cpr_disabled_output_returns_none_on_failure(self):
+        """A non-fileno stdout must degrade to None (default output fallback)."""
+        from cli import _build_cpr_disabled_output
+
+        class _NoFileno:
+            def fileno(self):
+                raise OSError("not a real fd")
+
+        # Build must not raise; worst case it returns a usable output or None.
+        # The hard guarantee is no exception escapes (startup must never break).
+        result = _build_cpr_disabled_output(_NoFileno())
+        assert result is None or result.enable_cpr is False
+
+    def test_cpr_gating_local_vs_tunnel(self, monkeypatch):
+        """CPR is only suppressed on tunneled links / explicit opt-out.
+
+        CPR works fine on local terminals and is only a layout hint, so the fix
+        for #13870 must not change default behavior locally — it gates on
+        _terminal_may_leak_cpr(). Local (no SSH env) -> CPR left enabled;
+        SSH session or PROMPT_TOOLKIT_NO_CPR=1 -> CPR suppressed.
+        """
+        from cli import _terminal_may_leak_cpr
+
+        for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "PROMPT_TOOLKIT_NO_CPR"):
+            monkeypatch.delenv(var, raising=False)
+
+        # Local terminal: leave prompt_toolkit's default (CPR on) untouched.
+        assert _terminal_may_leak_cpr() is False
+
+        # SSH session: the tunnel where the leak reproduces.
+        monkeypatch.setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 51234")
+        assert _terminal_may_leak_cpr() is True
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+
+        # prompt_toolkit's own explicit opt-out is honored.
+        monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "1")
+        assert _terminal_may_leak_cpr() is True
+
 
 class TestSingleQueryState:
     def test_voice_and_interrupt_state_initialized_before_run(self):
@@ -588,6 +655,38 @@ class TestRootLevelProviderOverride:
         result = _normalize_root_model_keys(config)
         assert result["model"]["provider"] == "correct-provider"
         assert "provider" not in result  # root key still cleaned up
+
+    def test_normalize_model_api_base_aliases_to_base_url(self):
+        """model.api_base is migrated to model.base_url (issue #8919)."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "model": {
+                "provider": "custom",
+                "api_base": "http://localhost:4000",
+                "api_key": "my-key",
+                "default": "default",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["base_url"] == "http://localhost:4000"
+        assert "api_base" not in result["model"]  # alias cleaned up
+
+    def test_normalize_api_base_does_not_override_base_url(self):
+        """An explicit model.base_url is never overridden by api_base."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "model": {
+                "provider": "custom",
+                "api_base": "http://wrong:9999",
+                "base_url": "http://localhost:4000",
+                "default": "default",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["base_url"] == "http://localhost:4000"
+        assert "api_base" not in result["model"]
 
     def test_normalize_root_context_length_migrates_to_model(self):
         """Root-level context_length is migrated into the model section."""

@@ -478,6 +478,13 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
+    elif tts_provider == "piper":
+        import shutil
+        piper_ok = shutil.which("piper") is not None
+        if piper_ok:
+            tool_status.append(("Text-to-Speech (Piper local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (Piper — not installed)", False, "python -m pip install piper-tts"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -1083,6 +1090,7 @@ def _setup_tts_provider(config: dict):
         "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
         "kittentts": "KittenTTS",
+        "piper": "Piper",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -1107,9 +1115,10 @@ def _setup_tts_provider(config: dict):
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
+            "Piper (local on-device, free, ONNX voice models)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1227,6 +1236,15 @@ def _setup_tts_provider(config: dict):
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
+
+    elif selected == "piper":
+        import shutil
+        if shutil.which("piper"):
+            print_success("Piper is already installed")
+        else:
+            print()
+            print_info("Piper runs local ONNX voice models. Install with: python -m pip install piper-tts")
+            print_info("After setup, set tts.piper.model to your .onnx voice model path.")
 
     elif selected == "kittentts":
         # Check if already installed

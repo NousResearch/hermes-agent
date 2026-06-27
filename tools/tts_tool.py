@@ -2,7 +2,7 @@
 """
 Text-to-Speech Tool Module
 
-Supports seven TTS providers:
+Supports ten TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
@@ -10,6 +10,8 @@ Supports seven TTS providers:
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
+- KittenTTS (local, free, no API key): On-device TTS via KittenTTS, needs kittentts installed
+- Piper (local, free, no API key): On-device TTS via Piper ONNX voice models
 
 Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
@@ -98,6 +100,17 @@ def _import_kittentts():
     return KittenTTS
 
 
+def _check_piper_available(tts_config: Optional[Dict[str, Any]] = None) -> bool:
+    """Return True when a Piper executable is configured or on PATH."""
+    cfg = (tts_config or {}).get("piper", {}) if isinstance(tts_config, dict) else {}
+    command = str(cfg.get("command") or DEFAULT_PIPER_COMMAND).strip()
+    if not command:
+        return False
+    if Path(command).expanduser().exists():
+        return True
+    return shutil.which(command) is not None
+
+
 # ===========================================================================
 # Defaults
 # ===========================================================================
@@ -109,6 +122,8 @@ DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
+DEFAULT_PIPER_COMMAND = "piper"
+DEFAULT_PIPER_SAMPLE_RATE = 22050
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
@@ -152,6 +167,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
+    "piper": 5000,        # local ONNX voices; keep requests modest
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -924,6 +940,72 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
     return output_path
 
 
+def _piper_value_args(cfg: Dict[str, Any]) -> list[str]:
+    """Build optional numeric/string Piper CLI flags from config."""
+    args: list[str] = []
+    for key, flag in (
+        ("speaker", "--speaker"),
+        ("length_scale", "--length_scale"),
+        ("noise_scale", "--noise_scale"),
+        ("noise_w", "--noise_w"),
+        ("sentence_silence", "--sentence_silence"),
+    ):
+        value = cfg.get(key)
+        if value is not None and str(value).strip() != "":
+            args.extend([flag, str(value)])
+    return args
+
+
+def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using the local Piper CLI and an ONNX voice model."""
+    piper_config = tts_config.get("piper", {}) if isinstance(tts_config, dict) else {}
+    command = str(piper_config.get("command") or DEFAULT_PIPER_COMMAND).strip()
+    command_path = Path(command).expanduser() if command else None
+    executable = str(command_path) if command_path and command_path.exists() else shutil.which(command)
+    if not executable:
+        raise FileNotFoundError(
+            "Piper provider selected but the 'piper' executable was not found. "
+            "Install it with: python -m pip install piper-tts"
+        )
+
+    model = piper_config.get("model") or piper_config.get("model_path")
+    if not model:
+        raise ValueError("Piper provider requires tts.piper.model pointing to a .onnx voice model")
+    model_path = Path(str(model)).expanduser()
+    if not model_path.exists():
+        raise FileNotFoundError(f"Piper voice model not found: {model_path}")
+
+    config_path = piper_config.get("config") or piper_config.get("config_path")
+    if config_path:
+        config_path = str(Path(str(config_path)).expanduser())
+        if not Path(config_path).exists():
+            raise FileNotFoundError(f"Piper voice config not found: {config_path}")
+
+    wav_path = output_path if output_path.endswith(".wav") else output_path.rsplit(".", 1)[0] + ".wav"
+    cmd = [executable, "--model", str(model_path), "--output_file", wav_path]
+    if config_path:
+        cmd.extend(["--config", config_path])
+    cmd.extend(_piper_value_args(piper_config))
+
+    subprocess.run(
+        cmd,
+        input=text,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=int(piper_config.get("timeout", 120)),
+    )
+
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            subprocess.run([ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path], check=True, timeout=30)
+            os.remove(wav_path)
+        else:
+            os.rename(wav_path, output_path)
+    return output_path
+
+
 # ===========================================================================
 # Main tool function
 # ===========================================================================
@@ -1061,6 +1143,16 @@ def text_to_speech_tool(
             logger.info("Generating speech with KittenTTS (local, ~25MB)...")
             _generate_kittentts(text, file_str, tts_config)
 
+        elif provider == "piper":
+            if not _check_piper_available(tts_config):
+                return json.dumps({
+                    "success": False,
+                    "error": "Piper provider selected but the 'piper' executable was not found. "
+                             "Install it with: python -m pip install piper-tts"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Piper (local ONNX voice)...")
+            _generate_piper_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -1100,7 +1192,7 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV — all need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax", "xai", "kittentts") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax", "xai", "kittentts", "piper") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -1186,6 +1278,8 @@ def check_tts_requirements() -> bool:
     if _check_neutts_available():
         return True
     if _check_kittentts_available():
+        return True
+    if _check_piper_available(_load_tts_config()):
         return True
     return False
 

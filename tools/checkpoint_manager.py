@@ -51,6 +51,7 @@ project until total store size is under ``max_total_size_mb``.
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -58,7 +59,7 @@ import subprocess
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils import env_int
 
@@ -536,6 +537,14 @@ def _list_projects(store: Path) -> List[Dict]:
         meta["_hash"] = dir_hash
         out.append(meta)
     return out
+
+
+def _coerce_project_timestamp(value: Any) -> float:
+    try:
+        parsed = float(value or 0)
+    except (OverflowError, TypeError, ValueError):
+        return 0.0
+    return parsed if math.isfinite(parsed) else 0.0
 
 
 def _dir_file_count(path: str) -> int:
@@ -1374,7 +1383,7 @@ def prune_checkpoints(
             if delete_orphans and (not workdir or not Path(workdir).exists()):
                 reason = "orphan"
             elif retention_days > 0:
-                last_touch = float(meta.get("last_touch", 0) or 0)
+                last_touch = _coerce_project_timestamp(meta.get("last_touch"))
                 if last_touch > 0 and last_touch < cutoff:
                     reason = "stale"
             if reason is None:

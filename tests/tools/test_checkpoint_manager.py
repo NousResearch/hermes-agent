@@ -915,6 +915,37 @@ class TestPruneCheckpointsV2:
         assert (base / "store" / "projects" / f"{fresh_hash}.json").exists()
         assert not meta_path.exists()
 
+    @pytest.mark.parametrize(
+        "last_touch",
+        ["not-a-timestamp", float("nan"), float("inf"), float("-inf")],
+    )
+    def test_invalid_last_touch_does_not_abort_prune(
+        self, tmp_path, monkeypatch, last_touch
+    ):
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / "f").write_text("content")
+
+        m = CheckpointManager(enabled=True)
+        assert m.ensure_checkpoint(str(work), "initial") is True
+
+        dir_hash = _project_hash(str(work))
+        meta_path = base / "store" / "projects" / f"{dir_hash}.json"
+        meta = json.loads(meta_path.read_text())
+        meta["last_touch"] = last_touch
+        meta_path.write_text(json.dumps(meta))
+
+        result = prune_checkpoints(
+            retention_days=30, delete_orphans=False, checkpoint_base=base,
+        )
+
+        assert result["scanned"] >= 1
+        assert result["deleted_stale"] == 0
+        assert meta_path.exists()
+
     def test_legacy_archive_dirs_also_pruned(self, tmp_path, monkeypatch):
         """legacy-<ts>/ dirs older than retention_days get wiped."""
         base = tmp_path / "checkpoints"

@@ -500,6 +500,11 @@ DANGEROUS_PATTERNS = [
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
     (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
+    # --force-with-lease must precede the generic --force / -f patterns so the
+    # safer leased force-push gets its own description and can be allowlisted
+    # independently. The trailing \b prevents partial matches on values like
+    # `--force-with-lease=ref`.
+    (r'\bgit\s+push\b.*--force-with-lease\b', "git force push with lease (safer; aborts if remote moved)"),
     (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),

@@ -1201,6 +1201,26 @@ class TestGitDestructiveOps:
         dangerous, _, desc = detect_dangerous_command(cmd)
         assert dangerous is True
 
+    def test_git_push_force_with_lease_distinct_description(self):
+        """--force-with-lease must match a more specific pattern that comes
+        before the generic --force, so it gets its own description and can
+        be allowlisted independently of plain --force / -f."""
+        cmd = "git push --force-with-lease origin main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "lease" in desc.lower()
+        # And must NOT collide with the generic force-push description.
+        plain_cmd = "git push --force origin main"
+        _, _, plain_desc = detect_dangerous_command(plain_cmd)
+        assert desc != plain_desc
+
+    def test_git_push_force_with_lease_equals_value(self):
+        """--force-with-lease=ref form must still match the lease pattern."""
+        cmd = "git push --force-with-lease=main:abc123 origin main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "lease" in desc.lower()
+
     def test_git_clean_force_detected(self):
         cmd = "git clean -fd"
         dangerous, _, desc = detect_dangerous_command(cmd)

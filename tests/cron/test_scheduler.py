@@ -1191,6 +1191,48 @@ class TestRunJobSessionPersistence:
         assert success is True
         cleanup_mock.assert_called_once()
 
+    def test_run_job_clears_cron_session_env_after_tick(self, tmp_path, monkeypatch):
+        # Regression: the gateway runs cron in-process. Leaving
+        # HERMES_CRON_SESSION=1 in os.environ after a job makes later
+        # interactive gateway sessions look like cron sessions, so
+        # execute_code can be blocked by cron approval policy.
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        job = {
+            "id": "env-clean-job",
+            "name": "env-clean",
+            "prompt": "hello",
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, _final_response, _error = run_job(job)
+
+        assert success is True
+        assert "HERMES_CRON_SESSION" not in os.environ
+
+    def test_run_job_restores_existing_cron_session_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "external")
+        job = {
+            "id": "env-restore-job",
+            "name": "env-restore",
+            "prompt": "hello",
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, _final_response, _error = run_job(job)
+
+        assert success is True
+        assert os.environ["HERMES_CRON_SESSION"] == "external"
+
     def _make_run_job_patches(self, tmp_path):
         """Common patches for run_job tests."""
         fake_db = MagicMock()

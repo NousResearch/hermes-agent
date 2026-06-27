@@ -2154,9 +2154,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     agent = None
 
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
+    # Mark this run as a cron session so the approval system can apply
+    # cron_mode.  os.environ is process-wide, and gateway runs the scheduler
+    # in-process; restore the previous value in finally so one cron tick does
+    # not poison later interactive gateway sessions.
+    _prior_cron_session = os.environ.get("HERMES_CRON_SESSION", "_UNSET_")
     os.environ["HERMES_CRON_SESSION"] = "1"
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
@@ -2707,6 +2709,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
+        if _prior_cron_session == "_UNSET_":
+            os.environ.pop("HERMES_CRON_SESSION", None)
+        else:
+            os.environ["HERMES_CRON_SESSION"] = _prior_cron_session
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:

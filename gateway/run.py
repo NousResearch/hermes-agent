@@ -848,6 +848,12 @@ def _build_gateway_agent_history(
     # on resume and loops the restart forever (#49201).
     agent_history = _strip_dangling_tool_call_tail(agent_history)
 
+    # Repair partial tool-call results: when a crash killed the process
+    # after some but not all tool results were persisted, append synthetic
+    # error results for the missing IDs so the API doesn't reject the
+    # resume with HTTP 400.
+    agent_history = _repair_partial_tool_call_results(agent_history)
+
     observed_context = "\n".join(observed_group_context).strip() or None
     return agent_history, observed_context
 
@@ -1037,6 +1043,85 @@ def _strip_dangling_tool_call_tail(
         len(last.get("tool_calls") or []),
     )
     return agent_history[:-1]
+
+
+def _repair_partial_tool_call_results(
+    agent_history: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Append synthetic error results for tool_call_ids missing after a crash.
+
+    When a gateway process is killed mid-tool-call, some tool results may
+    have been persisted while others were not.  On resume, the API sees an
+    incomplete ``assistant(tool_calls)`` → ``tool`` sequence (some call IDs
+    have results, others don't) and returns HTTP 400.
+
+    ``_strip_dangling_tool_call_tail`` handles the zero-results case by
+    removing the entire assistant message.  This function handles the
+    *partial* case: an ``assistant(tool_calls)`` followed by SOME but not
+    ALL corresponding ``tool`` results.  It appends synthetic error results
+    for each missing ``tool_call_id`` so the assistant→tool sequence is
+    complete and the API accepts it.
+    """
+    if not agent_history:
+        return agent_history
+
+    # Walk backwards to find the last assistant message with tool_calls.
+    last_assistant_idx = None
+    last_assistant = None
+    for idx in range(len(agent_history) - 1, -1, -1):
+        msg = agent_history[idx]
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and msg.get("tool_calls")
+        ):
+            last_assistant = msg
+            last_assistant_idx = idx
+            break
+
+    if last_assistant is None:
+        return agent_history
+
+    expected_ids = set()
+    for tc in last_assistant["tool_calls"]:
+        tc_id = tc.get("id") if isinstance(tc, dict) else None
+        if tc_id:
+            expected_ids.add(tc_id)
+
+    if not expected_ids:
+        return agent_history
+
+    # Collect tool_call_ids present in messages after the assistant.
+    present_ids = set()
+    for msg in agent_history[last_assistant_idx + 1:]:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        tc_id = msg.get("tool_call_id")
+        if tc_id:
+            present_ids.add(tc_id)
+
+    missing = expected_ids - present_ids
+    if not missing:
+        return agent_history
+
+    logger.debug(
+        "Repairing partial tool-call results: appending %d synthetic "
+        "error result(s) for missing tool_call_ids %s",
+        len(missing),
+        sorted(missing),
+    )
+
+    result = list(agent_history)
+    for call_id in sorted(missing):
+        result.append({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": '{"error": "Tool result lost: process terminated before tool output was persisted."}',
+        })
+
+    return result
 
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"

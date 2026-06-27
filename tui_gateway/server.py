@@ -265,6 +265,12 @@ class _SlashWorker:
         if model:
             argv += ["--model", model]
 
+        popen_kwargs: dict = {}
+        if sys.platform == "win32":
+            # Escape the parent job (Electron/Desktop) so AssignProcessToJobObject
+            # can bind the worker to our kill-on-close job (#48643).
+            popen_kwargs["creationflags"] = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+
         self._closed = False
         self.proc = subprocess.Popen(
             argv,
@@ -275,7 +281,11 @@ class _SlashWorker:
             bufsize=1,
             cwd=os.getcwd(),
             env=os.environ.copy(),
+            **popen_kwargs,
         )
+        from tui_gateway.slash_worker_lifecycle import attach_slash_worker_kill_job
+
+        self._win_kill_job = attach_slash_worker_kill_job(self.proc)
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
 
@@ -833,6 +843,10 @@ def _start_idle_reaper() -> None:
 
 atexit.register(_shutdown_sessions)
 _start_idle_reaper()
+
+from tui_gateway.slash_worker_lifecycle import maybe_reap_orphan_slash_workers_on_startup
+
+maybe_reap_orphan_slash_workers_on_startup()
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────

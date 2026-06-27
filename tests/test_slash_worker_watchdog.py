@@ -1,4 +1,5 @@
 import psutil
+import pytest
 
 from tui_gateway import slash_worker
 
@@ -19,3 +20,18 @@ def test_is_orphaned_false_when_parent_alive_and_matches():
     assert (
         slash_worker._is_orphaned(me.pid, me.create_time(), getppid=lambda: me.pid) is False
     )
+
+
+def test_is_orphaned_true_when_parent_is_zombie(monkeypatch):
+    me = psutil.Process()
+
+    class ZombieParent:
+        def status(self):
+            return psutil.STATUS_ZOMBIE
+
+        def create_time(self):
+            return me.create_time()
+
+    monkeypatch.setattr(slash_worker.psutil, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(slash_worker.psutil, "Process", lambda pid: ZombieParent())
+    assert slash_worker._is_orphaned(me.pid, me.create_time(), getppid=lambda: me.pid) is True

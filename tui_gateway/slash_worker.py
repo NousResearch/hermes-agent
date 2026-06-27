@@ -47,7 +47,10 @@ def _is_orphaned(original_ppid, parent_create_time, getppid=os.getppid) -> bool:
     try:
         if not psutil.pid_exists(original_ppid):
             return True
-        return psutil.Process(original_ppid).create_time() != parent_create_time
+        parent = psutil.Process(original_ppid)
+        if parent.status() in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+            return True
+        return parent.create_time() != parent_create_time
     except psutil.Error:
         return True
 

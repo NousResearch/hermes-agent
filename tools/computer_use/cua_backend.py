@@ -107,6 +107,33 @@ _DESKTOP_WINDOW_NAMES = (
 _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 
 
+def _cua_no_overlay() -> bool:
+    """True when Hermes should pass ``--no-overlay`` to cua-driver.
+
+    Reads ``computer_use.no_overlay`` from config.yaml.  Default is
+    ``None`` (auto-detect): disable the overlay on Linux / headless / WSL2
+    where it serves no visual purpose and can consume CPU indefinitely
+    (#28152, #47032).  Explicit ``True`` / ``False`` in config overrides
+    auto-detection.  Fails SAFE — toward enabling the overlay (False)
+    when config is unreadable, because the flag only takes effect on
+    cua-driver ≥ 0.6.x and an older driver ignores unknown flags.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        cu = cfg.get("computer_use") or {}
+        val = cu.get("no_overlay")
+        if val is not None:
+            return bool(val)
+    except Exception:
+        pass
+    # Auto-detect: disable on Linux (covers WSL2, headless, containers).
+    # macOS and Windows get the overlay by default — it's visually useful
+    # there, even though macOS has the vImage redraw bug on some versions.
+    return sys.platform == "linux"
+
+
 def _cua_telemetry_disabled() -> bool:
     """True when Hermes should disable cua-driver telemetry for this user.
 
@@ -158,6 +185,13 @@ def _resolve_mcp_invocation(
     Falls back to ``(driver_cmd, ["mcp"])`` for older drivers that don't
     expose ``manifest``, or any indeterminate failure — the wrapper must
     not refuse to start just because the discovery hop failed.
+
+    When ``computer_use.no_overlay`` is enabled (or auto-detected on
+    Linux), ``--no-overlay`` is appended to suppress the cursor overlay
+    rendering loop that can consume CPU indefinitely when idle
+    (#28152, #47032).  Older drivers that don't recognise the flag will
+    reject it; callers should fall back to the no-overlay invocation on
+    spawn failure.
     """
     try:
         from tools.environments.local import _sanitize_subprocess_env
@@ -171,28 +205,35 @@ def _resolve_mcp_invocation(
             env=_sanitize_subprocess_env(cua_driver_child_env()),
         )
     except Exception:
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     out = (proc.stdout or "").strip()
     if proc.returncode != 0 or not out:
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     try:
         manifest = json.loads(out)
     except (ValueError, TypeError):
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     if not isinstance(manifest, dict):
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     invocation = manifest.get("mcp_invocation")
     if not isinstance(invocation, dict):
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     args = invocation.get("args")
     command = invocation.get("command")
     if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     if not isinstance(command, str) or not command:
         # The driver knows the subcommand but didn't surface its own path.
         # Keep our resolved driver_cmd; the args are still authoritative.
-        return driver_cmd, args
-    return command, args
+        return driver_cmd, _mcp_args_with_overlay_flag(args)
+    return command, _mcp_args_with_overlay_flag(args)
+
+
+def _mcp_args_with_overlay_flag(args: List[str]) -> List[str]:
+    """Return *args* with ``--no-overlay`` appended when the config says to."""
+    if _cua_no_overlay():
+        return [*args, "--no-overlay"]
+    return list(args)
 
 # Regex to parse element lines from get_window_state AX tree markdown.
 #

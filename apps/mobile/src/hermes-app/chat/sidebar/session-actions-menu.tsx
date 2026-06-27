@@ -275,13 +275,17 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
       <DropdownMenu onOpenChange={setOpen} open={open}>
         <DropdownMenuTrigger asChild>
           <div
-            className="contents"
             onContextMenu={onContextMenu}
             onPointerCancel={clearLongPress}
             onPointerDown={onPointerDown}
             onPointerLeave={clearLongPress}
             onPointerMove={onPointerMove}
             onPointerUp={clearLongPress}
+            // Kill iOS's long-press text-selection loupe + callout so a
+            // 500ms hold opens our menu instead of zooming the row text.
+            // (display:contents would drop these styles from inherit chain,
+            // so render as a real box.)
+            style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
           >
             {children}
           </div>

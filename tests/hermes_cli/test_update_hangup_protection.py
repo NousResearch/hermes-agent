@@ -17,7 +17,9 @@ import pytest
 from hermes_cli.main import (
     _UpdateOutputStream,
     _finalize_update_output,
+    _format_update_elapsed,
     _install_hangup_protection,
+    _timed_update_stage,
 )
 
 
@@ -151,6 +153,50 @@ class TestUpdateOutputStream:
 
         stream = _UpdateOutputStream(_StreamWithEncoding(), io.StringIO())
         assert stream.encoding == "utf-8"
+
+
+# -----------------------------------------------------------------------------
+# Update stage timing helpers
+# -----------------------------------------------------------------------------
+
+
+class TestUpdateStageTiming:
+    def test_format_update_elapsed_clamps_negative_values(self):
+        assert _format_update_elapsed(-1.0) == "0.0s"
+
+    def test_format_update_elapsed_seconds(self):
+        assert _format_update_elapsed(12.34) == "12.3s"
+
+    def test_format_update_elapsed_minutes(self):
+        assert _format_update_elapsed(65.2) == "1m 05s"
+
+    def test_format_update_elapsed_hours(self):
+        assert _format_update_elapsed(3661.0) == "1h 01m 01s"
+
+    def test_timed_update_stage_reports_success(self, monkeypatch, capsys):
+        import hermes_cli.main as m
+
+        ticks = iter([10.0, 12.34])
+        monkeypatch.setattr(m._time, "monotonic", lambda: next(ticks))
+
+        with _timed_update_stage("Fetching updates", "Fetched updates"):
+            pass
+
+        out = capsys.readouterr().out
+        assert "Fetched updates in 2.3s" in out
+
+    def test_timed_update_stage_reports_system_exit_failure(self, monkeypatch, capsys):
+        import hermes_cli.main as m
+
+        ticks = iter([20.0, 23.0])
+        monkeypatch.setattr(m._time, "monotonic", lambda: next(ticks))
+
+        with pytest.raises(SystemExit):
+            with _timed_update_stage("Fetching updates", "Fetched updates"):
+                raise SystemExit(1)
+
+        out = capsys.readouterr().out
+        assert "Fetching updates failed in 3.0s" in out
 
 
 # -----------------------------------------------------------------------------

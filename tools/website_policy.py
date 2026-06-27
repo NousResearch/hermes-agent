@@ -280,3 +280,114 @@ def check_website_access(url: str, config_path: Optional[Path] = None) -> Option
                 ),
             }
     return None
+
+
+# ---------------------------------------------------------------------------
+# URL Whitelist (browser.url_whitelist in config.yaml)
+# ---------------------------------------------------------------------------
+# When configured, only URLs matching the whitelist patterns are allowed.
+# This is the inverse of the blocklist: blocklist denies specific domains,
+# whitelist denies everything NOT in the list.
+#
+# Config example:
+#   browser:
+#     url_whitelist:
+#       - "*.toutiao.com"
+#       - "*.douyin.com"
+#       - "example.com"
+
+_whitelist_cache_lock = threading.Lock()
+_cached_whitelist: Optional[List[str]] = None
+_cached_whitelist_path: Optional[str] = None
+_cached_whitelist_time: float = 0.0
+
+
+def _load_url_whitelist(config_path: Optional[Path] = None) -> List[str]:
+    """Load browser.url_whitelist from config.yaml.
+
+    Returns a list of hostname patterns. Empty list means no whitelist
+    (all URLs allowed).
+    """
+    global _cached_whitelist, _cached_whitelist_path, _cached_whitelist_time
+
+    resolved_path = str(config_path) if config_path else "__default__"
+    now = time.monotonic()
+
+    if config_path is None:
+        with _whitelist_cache_lock:
+            if (
+                _cached_whitelist is not None
+                and _cached_whitelist_path == resolved_path
+                and (now - _cached_whitelist_time) < _CACHE_TTL_SECONDS
+            ):
+                return _cached_whitelist
+
+    config_path = config_path or _get_default_config_path()
+    if not config_path.exists():
+        return []
+
+    try:
+        import yaml
+    except ImportError:
+        return []
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    except Exception:
+        return []
+
+    browser = config.get("browser", {})
+    if not isinstance(browser, dict):
+        return []
+
+    whitelist = browser.get("url_whitelist", [])
+    if not isinstance(whitelist, list):
+        return []
+
+    # Normalize patterns
+    normalized = []
+    for entry in whitelist:
+        if isinstance(entry, str) and entry.strip():
+            normalized.append(entry.strip().lower())
+
+    if config_path == _get_default_config_path():
+        with _whitelist_cache_lock:
+            _cached_whitelist = normalized
+            _cached_whitelist_path = "__default__"
+            _cached_whitelist_time = now
+
+    return normalized
+
+
+def check_url_whitelist(
+    url: str, config_path: Optional[Path] = None
+) -> Optional[Dict[str, str]]:
+    """Check whether a URL is allowed by the browser URL whitelist.
+
+    Returns ``None`` if access is allowed (whitelist empty or URL matches),
+    or a dict with block metadata if the URL is not in the whitelist.
+    """
+    whitelist = _load_url_whitelist(config_path)
+    if not whitelist:
+        return None  # No whitelist = allow all
+
+    host = _extract_host_from_urlish(url)
+    if not host:
+        return None
+
+    for pattern in whitelist:
+        if _match_host_against_rule(host, pattern):
+            return None  # Allowed
+
+    logger.info("Blocked URL %s — not in browser.url_whitelist", url)
+    return {
+        "url": url,
+        "host": host,
+        "rule": "url_whitelist",
+        "source": "config",
+        "message": (
+            f"Blocked: '{host}' is not in browser.url_whitelist. "
+            f"Allowed domains: {', '.join(whitelist)}"
+        ),
+    }

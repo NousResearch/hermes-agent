@@ -2496,6 +2496,17 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
         })
 
+    # URL whitelist check — when browser.url_whitelist is configured,
+    # only allow navigation to matching domains.
+    from tools.website_policy import check_url_whitelist
+    whitelist_blocked = check_url_whitelist(url)
+    if whitelist_blocked:
+        return json.dumps({
+            "success": False,
+            "error": whitelist_blocked["message"],
+            "blocked_by_policy": {"host": whitelist_blocked["host"], "rule": whitelist_blocked["rule"], "source": whitelist_blocked["source"]},
+        })
+
     # Camofox backend — delegate after safety checks pass
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_navigate

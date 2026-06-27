@@ -189,6 +189,10 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     return target
 
 
+def install_path_relative_to_skills_dir(install_dir: Path) -> str:
+    return install_dir.resolve().relative_to(SKILLS_DIR.resolve()).as_posix()
+
+
 def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
     """Fetch a URL with SSRF and redirect-target validation."""
     current_url = url
@@ -3450,7 +3454,7 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(SKILLS_DIR)),
+        install_path=install_path_relative_to_skills_dir(install_dir),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
     )

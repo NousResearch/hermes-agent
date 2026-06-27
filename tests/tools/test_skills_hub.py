@@ -2358,6 +2358,57 @@ class TestInstallPathSafety:
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
 
+    def test_install_from_quarantine_records_path_when_skills_dir_is_symlink(
+        self, tmp_path
+    ):
+        """A symlinked skills root still records a relative install path."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        real_skills_dir = tmp_path / "real-skills"
+        real_skills_dir.mkdir()
+        skills_dir = tmp_path / "skills-link"
+        try:
+            skills_dir.symlink_to(real_skills_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation unsupported on this platform")
+
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: good-skill\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="good-skill",
+            files={"SKILL.md": "---\nname: good-skill\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="good-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+        record_calls = []
+
+        class Lock:
+            def record_install(self, **kwargs):
+                record_calls.append(kwargs)
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch.object(hub, "HubLockFile", lambda: Lock()), \
+             patch.object(hub, "append_audit_log", lambda *args, **kwargs: None):
+            install_dir = hub.install_from_quarantine(
+                q_dir, "good-skill", "", bundle, scan_result,
+            )
+
+        assert install_dir == real_skills_dir / "good-skill"
+        assert record_calls[0]["install_path"] == "good-skill"
+
 
 # ---------------------------------------------------------------------------
 # parallel_search_sources — overall_timeout must be honoured even when a

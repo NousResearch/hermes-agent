@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_constants import get_hermes_home
-from hermes_cli import _subprocess_compat
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +243,7 @@ def _install_uv_windows(env: dict[str, str]) -> None:
     cmd = (
         'irm https://astral.sh/uv/install.ps1 | iex'
     )
-    _subprocess_compat.run(
+    subprocess.run(
         ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd],
         env=env,
         check=True,

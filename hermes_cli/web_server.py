@@ -2481,52 +2481,16 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
     _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": None}
 
 
-def _dashboard_spawn_details() -> Tuple[str, Dict[str, str]]:
-    """Return (executable, env overlay) for detached dashboard actions.
-
-    On Windows this mirrors the gateway's uv-safe detached launcher logic so
-    action spawns do not regress to console python.exe (which creates a visible
-    terminal window). Non-Windows callsites get the current interpreter and no
-    env overlay.
-    """
+def _dashboard_spawn_executable() -> str:
+    """Prefer pythonw.exe for detached dashboard actions on Windows."""
     if sys.platform != "win32":
-        return sys.executable, {}
-
+        return sys.executable
     exe = sys.executable
-    try:
-        from hermes_cli.gateway_windows import _resolve_detached_python
-
-        venv_root = os.environ.get("VIRTUAL_ENV", "").strip()
-        if not venv_root:
-            for candidate in (PROJECT_ROOT / "venv", PROJECT_ROOT / ".venv"):
-                if (candidate / "Scripts" / "python.exe").exists():
-                    venv_root = str(candidate)
-                    break
-        probe_exe = (
-            os.path.join(venv_root, "Scripts", "python.exe")
-            if venv_root
-            else exe
-        )
-        windowless_exe, venv_dir, extra_pythonpath = _resolve_detached_python(probe_exe)
-        env_overlay: Dict[str, str] = {}
-        if venv_dir:
-            env_overlay["VIRTUAL_ENV"] = str(venv_dir)
-            site_packages = Path(venv_dir) / "Lib" / "site-packages"
-            if site_packages.exists() and str(site_packages) not in extra_pythonpath:
-                extra_pythonpath = [*extra_pythonpath, str(site_packages)]
-        if extra_pythonpath:
-            existing = os.environ.get("PYTHONPATH", "")
-            env_overlay["PYTHONPATH"] = os.pathsep.join(
-                [*extra_pythonpath, existing] if existing else list(extra_pythonpath)
-            )
-        return windowless_exe, env_overlay
-    except Exception:
-        # Best-effort fallback: sibling pythonw keeps the legacy no-console path.
-        if exe.lower().endswith("python.exe"):
-            pythonw = os.path.join(os.path.dirname(exe), "pythonw.exe")
-            if os.path.isfile(pythonw):
-                return pythonw, {}
-    return exe, {}
+    if exe.lower().endswith("python.exe"):
+        pythonw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        if os.path.isfile(pythonw):
+            return pythonw
+    return exe
 
 
 def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
@@ -2543,20 +2507,15 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
     )
 
-    spawn_executable, spawn_env_overlay = _dashboard_spawn_details()
-    cmd = [spawn_executable, "-m", "hermes_cli.main", *subcommand]
+    cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
 
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
-        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1", **spawn_env_overlay},
+        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
     }
-    log_file.write(f"spawn executable: {spawn_executable}\n".encode())
-    if spawn_env_overlay:
-        keys = ",".join(sorted(spawn_env_overlay.keys()))
-        log_file.write(f"spawn env overlay keys: {keys}\n".encode())
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = windows_detach_flags()
     else:
@@ -2814,7 +2773,7 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
     or git is unavailable. Never raises into the request path.
     """
     try:
-        out = _subprocess_compat.run(
+        out = subprocess.run(
             [
                 "git",
                 "-C",
@@ -10574,7 +10533,7 @@ async def open_profile_terminal_endpoint(name: str):
         command = _profile_setup_command(name)
 
         if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", "start", "", command])  # windows-footgun: ok — open terminal for user (Windows branch)
+            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
         elif sys.platform == "darwin":
             escaped = command.replace("\\", "\\\\").replace('"', '\\"')
             applescript = (
@@ -10583,7 +10542,7 @@ async def open_profile_terminal_endpoint(name: str):
                 f'do script "{escaped}"\n'
                 "end tell"
             )
-            subprocess.Popen(["osascript", "-e", applescript])  # windows-footgun: ok — open Terminal.app (macOS, visible by design)
+            subprocess.Popen(["osascript", "-e", applescript])
         else:
             terminal_commands = [
                 ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),
@@ -10603,7 +10562,7 @@ async def open_profile_terminal_endpoint(name: str):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 ) == 0:
-                    subprocess.Popen(popen_args)  # windows-footgun: ok — open OS terminal for user
+                    subprocess.Popen(popen_args)
                     break
             else:
                 raise HTTPException(
@@ -13474,7 +13433,6 @@ _mount_plugin_api_routes()
 # always mounted — the gate middleware decides whether to enforce auth,
 # not whether the routes exist.
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
-from hermes_cli import _subprocess_compat
 app.include_router(_dashboard_auth_router)
 
 mount_spa(app)
@@ -13589,15 +13547,6 @@ def start_server(
     — used when a profile alias (``<profile> dashboard``) routes to the
     machine dashboard.
     """
-    # Desktop spawns this backend via a no-console venv python; a uv
-    # pythonw→python re-exec can still auto-allocate a console. Drop it.
-    # No-op on POSIX and when launched from an interactive shell.
-    try:
-        import hermes_bootstrap
-        hermes_bootstrap.detach_orphan_console()
-    except Exception:
-        pass
-
     import uvicorn
 
     try:

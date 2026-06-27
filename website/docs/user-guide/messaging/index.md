@@ -237,7 +237,7 @@ GATEWAY_ALLOW_ALL_USERS=true
 
 ### DM Pairing (Alternative to Allowlists)
 
-Instead of manually configuring user IDs, unknown users receive a one-time pairing code when they DM the bot:
+Instead of manually configuring user IDs, unknown users receive a one-time pairing code when they DM the bot. Email is the exception: unknown email senders are ignored unless email pairing is explicitly enabled.
 
 ```bash
 # The user sees: "Pairing code: XKGH5N7P"

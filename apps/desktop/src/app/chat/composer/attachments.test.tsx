@@ -2,9 +2,9 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider } from '@/i18n/context'
+import type { ComposerAttachment } from '@/store/composer'
 
 import { AttachmentList } from './attachments'
-import type { ComposerAttachment } from '@/store/composer'
 
 function makeAttachment(id: string, label = 'test.pdf'): ComposerAttachment {
   return { id, kind: 'file', label }
@@ -55,10 +55,7 @@ describe('AttachmentList', () => {
   })
 
   it('does not crash when attachments array contains null entries', () => {
-    const attachments = [
-      null as unknown as ComposerAttachment,
-      makeAttachment('a', 'valid.txt')
-    ]
+    const attachments = [null as unknown as ComposerAttachment, makeAttachment('a', 'valid.txt')]
 
     expect(() => {
       renderWithI18n(<AttachmentList attachments={attachments} />)

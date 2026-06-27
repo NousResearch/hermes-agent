@@ -267,6 +267,25 @@ class TestGatewayConfigRoundtrip:
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_email_defaults_to_ignore_for_unauthorized_dm_behavior(self):
+        config = GatewayConfig(
+            platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
+        )
+
+        assert config.get_unauthorized_dm_behavior(Platform.EMAIL) == "ignore"
+
+    def test_email_can_opt_into_pairing_for_unauthorized_dm_behavior(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.EMAIL: PlatformConfig(
+                    enabled=True,
+                    extra={"unauthorized_dm_behavior": "pair"},
+                ),
+            },
+        )
+
+        assert config.get_unauthorized_dm_behavior(Platform.EMAIL) == "pair"
+
     def test_from_dict_coerces_quoted_false_always_log_local(self):
         restored = GatewayConfig.from_dict({"always_log_local": "false"})
         assert restored.always_log_local is False
@@ -881,6 +900,25 @@ class TestLoadGatewayConfig:
 
         assert config.platforms[Platform.TELEGRAM].extra["rich_messages"] is False
 
+    def test_loads_telegram_rich_drafts_from_gateway_platform_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      extra:\n"
+            "        rich_drafts: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["rich_drafts"] is True
+
     def test_load_config_default_keeps_telegram_rich_messages_opt_in(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -892,6 +930,7 @@ class TestLoadGatewayConfig:
         config = load_config()
 
         assert config["telegram"]["extra"]["rich_messages"] is False
+        assert config["telegram"]["extra"]["rich_drafts"] is False
 
     def test_bridges_telegram_extra_base_url_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

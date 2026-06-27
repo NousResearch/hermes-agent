@@ -8,13 +8,18 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    agent_browser_runnable,
     find_hermes_node_executable,
     find_node_executable,
     find_node_executable_on_path,
     get_default_hermes_root,
+    get_hermes_dir,
     get_hermes_home,
+    heal_hermes_managed_node,
+    hermes_managed_node_tree_present,
     iter_hermes_node_dirs,
     is_container,
+    node_tool_runnable,
     parse_reasoning_effort,
     secure_parent_dir,
     with_hermes_node_path,
@@ -130,6 +135,7 @@ class TestHermesManagedNode:
         npm_cmd.write_text("@echo off\n")
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(hermes_constants, "node_tool_runnable", lambda path: True)
 
         assert find_hermes_node_executable("npm") == str(npm_cmd)
 
@@ -162,6 +168,30 @@ class TestHermesManagedNode:
 
         assert find_node_executable("npm") == str(npm_cmd)
 
+    def test_windows_skips_broken_managed_npm_without_path_fallback(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        managed_npm = home / "node" / "npm.cmd"
+        managed_npm.parent.mkdir(parents=True)
+        managed_npm.write_text("@echo off\n")
+        bin_dir = tmp_path / "nodejs"
+        bin_dir.mkdir()
+        path_npm = bin_dir / "npm.cmd"
+        path_npm.write_text("@echo off\n")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PATH", str(bin_dir))
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", lambda: False)
+        monkeypatch.setattr(
+            hermes_constants,
+            "node_tool_runnable",
+            lambda path: False,
+        )
+
+        assert hermes_managed_node_tree_present() is True
+        assert find_node_executable("npm") is None
+        assert find_node_executable("npm") != str(path_npm)
+
     def test_with_hermes_node_path_prepends_existing_managed_dirs(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
         node_dir = home / "node"
@@ -176,6 +206,117 @@ class TestHermesManagedNode:
 
         assert parts[:2] == [str(node_dir), str(bin_dir)]
         assert parts[-1] == "system-node"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
+class TestNodeToolRunnable:
+    """node_tool_runnable() rejects broken Hermes-managed npm/node wrappers."""
+
+    def _stub(self, tmp_path, name, body, mode=0o755):
+        path = tmp_path / name
+        path.write_text(body)
+        path.chmod(mode)
+        return path
+
+    def test_none_and_empty_rejected(self):
+        assert node_tool_runnable(None) is False
+        assert node_tool_runnable("") is False
+
+    def test_runnable_stub_accepted(self, tmp_path):
+        good = self._stub(tmp_path, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
+        assert node_tool_runnable(str(good)) is True
+
+    def test_nonzero_exit_rejected(self, tmp_path):
+        bad = self._stub(tmp_path, "npm", "#!/bin/sh\nexit 1\n")
+        assert node_tool_runnable(str(bad)) is False
+
+    def test_broken_managed_npm_heals_when_node_still_runs(self, tmp_path, monkeypatch):
+        """npm can fail while node --version still succeeds (missing lib/cli.js)."""
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        self._stub(managed_bin, "node", "#!/bin/sh\necho '22.0.0'\nexit 0\n")
+        broken_npm = self._stub(managed_bin, "npm", "#!/bin/sh\nexit 1\n")
+        heal_called = {"value": False}
+
+        system_bin = tmp_path / "system-bin"
+        system_bin.mkdir()
+        self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", str(system_bin))
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+
+        def _heal():
+            heal_called["value"] = True
+            broken_npm.write_text("#!/bin/sh\necho '22.0.0'\nexit 0\n")
+            broken_npm.chmod(0o755)
+            return True
+
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", _heal)
+
+        resolved = find_node_executable("npm")
+        assert heal_called["value"] is True
+        assert resolved == str(broken_npm)
+        assert resolved != str(system_bin / "npm")
+
+    def test_broken_managed_npm_heals_instead_of_path_fallback(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        broken_npm = self._stub(managed_bin, "npm", "#!/bin/sh\nexit 1\n")
+        healed_npm = self._stub(managed_bin, "npm", "#!/bin/sh\necho '22.0.0'\nexit 0\n")
+
+        system_bin = tmp_path / "system-bin"
+        system_bin.mkdir()
+        good_npm = self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", str(system_bin))
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+
+        def _heal():
+            broken_npm.write_text(healed_npm.read_text())
+            broken_npm.chmod(0o755)
+            return True
+
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", _heal)
+
+        assert find_hermes_node_executable("npm") == str(healed_npm)
+        assert find_node_executable("npm") == str(healed_npm)
+        assert find_node_executable("npm") != str(good_npm)
+
+    def test_broken_managed_npm_returns_none_when_heal_fails(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        self._stub(managed_bin, "npm", "#!/bin/sh\nexit 1\n")
+
+        system_bin = tmp_path / "system-bin"
+        system_bin.mkdir()
+        self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", str(system_bin))
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", lambda: False)
+
+        assert find_node_executable("npm") is None
+
+    def test_healthy_managed_npm_still_preferred(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        managed_npm = self._stub(managed_bin, "npm", "#!/bin/sh\necho '22.0.0'\nexit 0\n")
+
+        system_bin = tmp_path / "system-bin"
+        system_bin.mkdir()
+        self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", str(system_bin))
+
+        assert find_node_executable("npm") == str(managed_npm)
 
 
 class TestIsContainer:
@@ -424,3 +565,222 @@ class TestSecureParentDir:
         secure_parent_dir(link_target)
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
+class TestAgentBrowserRunnable:
+    """agent_browser_runnable() validates the resolved CLI actually runs.
+
+    Regression coverage for issue #48521: a dangling global symlink left by
+    agent-browser's npm postinstall is reported by ``which`` but fails at exec
+    with exit 127, silently breaking every browser tool. The validator must
+    reject it (and other non-runnable candidates) so callers fall through.
+    """
+
+    def _stub(self, tmp_path, name, body, mode=0o755):
+        p = tmp_path / name
+        p.write_text(body)
+        p.chmod(mode)
+        return p
+
+    def test_none_and_empty_rejected(self):
+        assert agent_browser_runnable(None) is False
+        assert agent_browser_runnable("") is False
+
+    def test_dangling_symlink_rejected(self, tmp_path):
+        link = tmp_path / "agent-browser"
+        link.symlink_to(tmp_path / "does-not-exist")
+        # exists() follows the link → False, so it's rejected without exec.
+        assert agent_browser_runnable(str(link)) is False
+
+    def test_runnable_binary_accepted(self, tmp_path):
+        good = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho 'agent-browser 0.27.1'\nexit 0\n")
+        assert agent_browser_runnable(str(good)) is True
+
+    def test_nonzero_exit_rejected(self, tmp_path):
+        bad = self._stub(tmp_path, "agent-browser", "#!/bin/sh\nexit 127\n")
+        assert agent_browser_runnable(str(bad)) is False
+
+    def test_not_executable_rejected(self, tmp_path):
+        noexec = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho hi\n", mode=0o644)
+        assert agent_browser_runnable(str(noexec)) is False
+
+    def test_npx_fallback_form_accepted(self):
+        # The "npx agent-browser" command form is not a real file; npx resolves
+        # the package at run time, so the validator trusts it without stat.
+        assert agent_browser_runnable("npx agent-browser") is True
+        assert agent_browser_runnable("/usr/local/bin/npx agent-browser") is True
+
+
+class TestGetHermesDir:
+    """Tests for ``get_hermes_dir(new_subpath, old_name)``.
+
+    Contract: prefer the legacy ``<old_name>/`` location, but only when
+    it has content. An empty legacy stub must fall through to the new
+    layout so dormant install scaffolds don't orphan populated data at
+    ``<new_subpath>/``. Regression guard for #27602.
+    """
+
+    def _set_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def test_neither_exists_returns_new(self, tmp_path, monkeypatch):
+        self._set_home(tmp_path, monkeypatch)
+        result = get_hermes_dir("platforms/pairing", "pairing")
+        assert result == tmp_path / "platforms/pairing"
+
+    def test_legacy_populated_returns_legacy(self, tmp_path, monkeypatch):
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "image_cache"
+        legacy.mkdir()
+        (legacy / "cached.png").write_bytes(b"x")
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == legacy
+
+    def test_legacy_populated_with_subdir_returns_legacy(self, tmp_path, monkeypatch):
+        """Sub-directories count as content (e.g. nested cache layout)."""
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "matrix" / "store"
+        legacy.mkdir(parents=True)
+        (legacy / "session").mkdir()  # subdir, not a file
+        result = get_hermes_dir("platforms/matrix/store", "matrix/store")
+        assert result == legacy
+
+    def test_legacy_empty_returns_new(self, tmp_path, monkeypatch):
+        """The #27602 regression: empty legacy dir orphans populated new dir.
+
+        Without the fix, the resolver returned the empty legacy path
+        unconditionally, causing the pairing store to forget every
+        previously-approved user when an empty ``pairing/`` stub had
+        been pre-created at install time.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "pairing"
+        legacy.mkdir()
+        # Populated new layout — this is the data that must not be orphaned.
+        new = tmp_path / "platforms" / "pairing"
+        new.mkdir(parents=True)
+        (new / "telegram-approved.json").write_text("[]")
+        result = get_hermes_dir("platforms/pairing", "pairing")
+        assert result == new
+
+    def test_legacy_empty_and_new_missing_returns_new(self, tmp_path, monkeypatch):
+        """Empty legacy + no new yet — return the new path (will be created lazily).
+
+        Slight behaviour change vs the old resolver (which would return the
+        empty legacy dir): the new path is what every consumer mkdirs into
+        when it doesn't exist, so the next write lands in the canonical
+        location instead of perpetuating the empty stub.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "audio_cache"
+        legacy.mkdir()
+        result = get_hermes_dir("cache/audio", "audio_cache")
+        assert result == tmp_path / "cache/audio"
+
+    def test_legacy_is_file_treated_as_content(self, tmp_path, monkeypatch):
+        """A non-directory file at the legacy path counts as occupied.
+
+        Defensive against odd installs where the caller previously wrote a
+        single file instead of a directory. We honour whatever's there.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "image_cache"
+        legacy.write_bytes(b"sentinel")
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == legacy
+
+    def test_unreadable_legacy_dir_kept(self, tmp_path, monkeypatch):
+        """If we can't enumerate the legacy dir, assume occupied — never
+        accidentally orphan legacy data on a transient permission error.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "whatsapp" / "session"
+        legacy.mkdir(parents=True)
+        # Populate the new path too. The point is to verify that an
+        # OSError on iterdir does NOT fall through to the new layout.
+        new = tmp_path / "platforms" / "whatsapp" / "session"
+        new.mkdir(parents=True)
+        (new / "creds.json").write_text("{}")
+
+        real_iterdir = Path.iterdir
+
+        def boom(self):
+            if self == legacy:
+                raise PermissionError("simulated")
+            return real_iterdir(self)
+
+        monkeypatch.setattr(Path, "iterdir", boom)
+        result = get_hermes_dir(
+            "platforms/whatsapp/session", "whatsapp/session"
+        )
+        assert result == legacy
+
+    def test_unstatable_legacy_dir_kept(self, tmp_path, monkeypatch):
+        """A ``PermissionError`` raised by the existence check itself (e.g.
+        an unreadable parent) must NOT be read as "absent".
+
+        The old ``Path.exists()``/``Path.is_dir()`` gate swallowed
+        ``PermissionError`` and returned ``False``, so an unreadable legacy
+        dir fell through to the new layout and orphaned legacy data —
+        contradicting the docstring's "assume occupied on errors" intent.
+        With the ``lstat()``-based gate this raises and is caught as
+        occupied. Regression guard for the #27602 follow-up.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "pairing"
+        legacy.mkdir()
+        # Populate the new path; it must NOT be selected.
+        new = tmp_path / "platforms" / "pairing"
+        new.mkdir(parents=True)
+        (new / "telegram-approved.json").write_text("[]")
+
+        real_lstat = Path.lstat
+
+        def boom(self):
+            if self == legacy:
+                raise PermissionError("simulated unreadable parent")
+            return real_lstat(self)
+
+        monkeypatch.setattr(Path, "lstat", boom)
+        result = get_hermes_dir("platforms/pairing", "pairing")
+        assert result == legacy
+
+    def test_dangling_legacy_symlink_returns_new(self, tmp_path, monkeypatch):
+        """A dangling legacy symlink must NOT shadow populated new-layout data.
+
+        ``lstat()`` reports the link itself (not its missing target), so the
+        helper must resolve the link and treat a broken target as absent —
+        matching the old ``exists()`` gate, which followed the link and
+        returned False for a dangling one. Otherwise a stale broken symlink
+        would orphan real data (a stricter variant of the #27602 bug).
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "pairing"
+        legacy.symlink_to(tmp_path / "does-not-exist")
+        new = tmp_path / "platforms" / "pairing"
+        new.mkdir(parents=True)
+        (new / "discord-approved.json").write_text("[]")
+        result = get_hermes_dir("platforms/pairing", "pairing")
+        assert result == new
+
+    def test_symlink_to_populated_dir_returns_legacy(self, tmp_path, monkeypatch):
+        """A legacy symlink pointing at a populated directory is honoured."""
+        self._set_home(tmp_path, monkeypatch)
+        real = tmp_path / "real_store"
+        real.mkdir()
+        (real / "cached.png").write_bytes(b"x")
+        legacy = tmp_path / "image_cache"
+        legacy.symlink_to(real)
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == legacy
+
+    def test_symlink_to_empty_dir_returns_new(self, tmp_path, monkeypatch):
+        """A legacy symlink pointing at an EMPTY directory falls through."""
+        self._set_home(tmp_path, monkeypatch)
+        empty = tmp_path / "empty_real"
+        empty.mkdir()
+        legacy = tmp_path / "audio_cache"
+        legacy.symlink_to(empty)
+        result = get_hermes_dir("cache/audio", "audio_cache")
+        assert result == tmp_path / "cache/audio"

@@ -3,15 +3,16 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
+import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { type Translations, useI18n } from '@/i18n'
-import { AlertCircle, CheckCircle2, Sparkles } from '@/lib/icons'
+import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $activeSessionId } from '@/store/session'
 import {
   $subagentsBySession,
+  allSubagents,
   buildSubagentTree,
   type SubagentNode,
   type SubagentStatus,
@@ -77,15 +78,12 @@ interface AgentsViewProps {
 
 export function AgentsView({ onClose }: AgentsViewProps) {
   const { t } = useI18n()
-  const activeSessionId = useStore($activeSessionId)
   const subagentsBySession = useStore($subagentsBySession)
 
-  const activeSubagents = useMemo(
-    () => (activeSessionId ? (subagentsBySession[activeSessionId] ?? []) : []),
-    [activeSessionId, subagentsBySession]
-  )
-
-  const tree = useMemo(() => buildSubagentTree(activeSubagents), [activeSubagents])
+  // Aggregate every session, matching the status-bar indicator — a subagent
+  // running in a background session must still be visible here, or the two
+  // desync ("Agents N running" vs an empty tree).
+  const tree = useMemo(() => buildSubagentTree(allSubagents(subagentsBySession)), [subagentsBySession])
 
   return (
     <OverlayView
@@ -212,7 +210,7 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   if (tree.length === 0) {
     return (
       <div className="grid place-items-center gap-3 py-12 text-center">
-        <Sparkles className="size-6 text-muted-foreground/60" />
+        <Codicon className="text-muted-foreground/60" name="hubot" size="1.5rem" />
         <p className="text-sm font-medium text-foreground/90">{t.agents.emptyTitle}</p>
         <p className="max-w-md text-xs leading-relaxed text-muted-foreground/75">{t.agents.emptyDesc}</p>
       </div>

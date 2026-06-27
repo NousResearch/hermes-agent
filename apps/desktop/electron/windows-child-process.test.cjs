@@ -36,6 +36,20 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   requireHiddenChildOptions(source, /spawn\(\s*backend\.command,\s*backend\.args/)
   requireHiddenChildOptions(source, /hermesProcess = spawn\(\s*backend\.command,\s*backend\.args/)
   requireHiddenChildOptions(source, /spawn\(\s*py,\s*\['-m', 'hermes_cli\.main', 'uninstall', '--gui-summary'\]/)
+
+  assert.match(source, /function unwrapWindowsVenvHermesCommand\(command, dashboardArgs\)/)
+  assert.match(source, /existing Hermes no-console Python at/)
+  assert.match(source, /function getNoConsoleVenvPython\(venvRoot\)/)
+  assert.match(source, /function toNoConsolePython\(pythonPath\)/)
+  assert.match(source, /function applyWindowsNoConsoleSpawnHints\(backend\)/)
+  assert.match(source, /function readVenvHome\(venvRoot\)/)
+  assert.match(source, /path\.join\(venvRoot, 'Scripts', 'pythonw\.exe'\)/)
+  assert.match(source, /backendStartFailure/)
+  assert.match(source, /HERMES_DESKTOP_READY_FILE/)
+  assert.match(source, /readyFile: true/)
+  assert.match(source, /function getVenvSitePackagesEntries\(venvRoot\)/)
+  assert.match(source, /path\.join\(venvRoot, 'Lib', 'site-packages'\)/)
+  assert.match(source, /args: \['-m', 'hermes_cli\.main', \.\.\.dashboardArgs\]/)
 })
 
 test('intentional or interactive desktop child processes stay documented', () => {
@@ -53,5 +67,5 @@ test('bootstrap PowerShell runner hides Windows console children', () => {
   const source = readElectronFile('bootstrap-runner.cjs')
 
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
-  requireHiddenChildOptions(source, 'spawn(ps, fullArgs')
+  requireHiddenChildOptions(source, /spawn\(\s*ps,\s*fullArgs/)
 })

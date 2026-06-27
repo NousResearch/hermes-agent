@@ -327,6 +327,22 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    # One-shot (`hermes -z`) bypasses HermesCLI._init_agent(), which is what kicks
+    # off MCP discovery (a background thread) for interactive/gateway sessions.
+    # Without it, the AIAgent below snapshots an empty MCP registry, so one-shot
+    # runs silently have zero MCP tools. Connect any configured MCP servers
+    # synchronously here, before the agent is built, so `-z` gets the same MCP
+    # tools an interactive chat turn would.
+    try:
+        from hermes_cli.mcp_startup import _has_configured_mcp_servers
+
+        if _has_configured_mcp_servers():
+            from tools.mcp_tool import discover_mcp_tools
+
+            discover_mcp_tools()
+    except Exception:
+        pass
+
     session_db = _create_session_db_for_oneshot()
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.

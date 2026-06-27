@@ -224,6 +224,7 @@ class EventBridge:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
+        self._last_poll_message_keys: Dict[str, set[str]] = {}
         # In-memory approval tracking (populated from events)
         self._pending_approvals: Dict[str, dict] = {}
         # mtime cache — skip expensive work when files haven't changed
@@ -391,6 +392,7 @@ class EventBridge:
                 continue
 
             last_seen = self._last_poll_timestamps.get(session_key, 0.0)
+            last_seen_keys = self._last_poll_message_keys.get(session_key, set())
 
             try:
                 messages = db.get_messages(session_id)
@@ -416,6 +418,20 @@ class EventBridge:
                             return 0.0
                 return 0.0
 
+            def _message_key(msg: dict) -> str:
+                msg_id = msg.get("id")
+                if msg_id not in (None, ""):
+                    return f"id:{msg_id}"
+                return json.dumps(
+                    {
+                        "role": msg.get("role", ""),
+                        "timestamp": msg.get("timestamp", ""),
+                        "content": _extract_message_content(msg),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+
             # Find messages newer than our last seen timestamp
             new_messages = []
             for msg in messages:
@@ -423,7 +439,7 @@ class EventBridge:
                 role = msg.get("role", "")
                 if role not in {"user", "assistant"}:
                     continue
-                if ts > last_seen:
+                if ts > last_seen or (ts == last_seen and _message_key(msg) not in last_seen_keys):
                     new_messages.append(msg)
 
             for msg in new_messages:
@@ -442,12 +458,27 @@ class EventBridge:
                     },
                 ))
 
-            # Update last seen to the most recent message timestamp
-            all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
+            # Update the watermark using only user-visible message roles.
+            visible_messages = [
+                m for m in messages
+                if m.get("role", "") in ("user", "assistant")
+            ]
+            all_ts = [_ts_float(m.get("timestamp", 0)) for m in visible_messages]
             if all_ts:
                 latest = max(all_ts)
                 if latest > last_seen:
                     self._last_poll_timestamps[session_key] = latest
+                    self._last_poll_message_keys[session_key] = {
+                        _message_key(m)
+                        for m in visible_messages
+                        if _ts_float(m.get("timestamp", 0)) == latest
+                    }
+                elif latest == last_seen:
+                    self._last_poll_message_keys[session_key] = {
+                        _message_key(m)
+                        for m in visible_messages
+                        if _ts_float(m.get("timestamp", 0)) == latest
+                    }
 
 
 # ---------------------------------------------------------------------------

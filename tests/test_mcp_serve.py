@@ -1232,6 +1232,120 @@ class TestEventBridgePollE2E:
         assert len(r2["events"]) == 1
         assert r2["events"][0]["content"] == "New reply!"
 
+    def test_poll_detects_new_message_with_same_timestamp(self, tmp_path, monkeypatch):
+        """A new message with the same timestamp as the last seen one must not be dropped."""
+        import mcp_serve
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        session_id = "20260329_150000_same_ts"
+        db_path = tmp_path / "state.db"
+
+        sessions_data = {
+            "agent:main:telegram:dm:same-ts": {
+                "session_key": "agent:main:telegram:dm:same-ts",
+                "session_id": session_id,
+                "platform": "telegram",
+                "updated_at": "2026-03-29T15:00:05",
+                "origin": {"platform": "telegram", "chat_id": "same-ts"},
+            }
+        }
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+        _create_test_db(db_path, session_id, [
+            {"role": "user", "content": "First", "timestamp": "2026-03-29T15:00:01"},
+        ])
+
+        class TestDB:
+            def get_messages(self, sid):
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                    (sid,),
+                ).fetchall()
+                conn.close()
+                return [dict(r) for r in rows]
+
+        db = TestDB()
+        bridge = mcp_serve.EventBridge()
+
+        bridge._poll_once(db)
+        r1 = bridge.poll_events(after_cursor=0)
+        assert len(r1["events"]) == 1
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            (session_id, "assistant", "Same-second reply", "2026-03-29T15:00:01"),
+        )
+        conn.commit()
+        conn.close()
+        os.utime(db_path, None)
+
+        bridge._poll_once(db)
+        r2 = bridge.poll_events(after_cursor=r1["next_cursor"])
+        assert len(r2["events"]) == 1
+        assert r2["events"][0]["content"] == "Same-second reply"
+
+    def test_poll_ignores_tool_timestamps_for_watermark(self, tmp_path, monkeypatch):
+        """Tool-only rows must not move the watermark past later user-visible messages."""
+        import mcp_serve
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        session_id = "20260329_150000_tool_ts"
+        db_path = tmp_path / "state.db"
+
+        sessions_data = {
+            "agent:main:telegram:dm:tool-ts": {
+                "session_key": "agent:main:telegram:dm:tool-ts",
+                "session_id": session_id,
+                "platform": "telegram",
+                "updated_at": "2026-03-29T15:00:10",
+                "origin": {"platform": "telegram", "chat_id": "tool-ts"},
+            }
+        }
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+        _create_test_db(db_path, session_id, [
+            {"role": "user", "content": "First", "timestamp": "2026-03-29T15:00:01"},
+            {"role": "tool", "content": '{"result":"ok"}', "timestamp": "2026-03-29T15:00:10"},
+        ])
+
+        class TestDB:
+            def get_messages(self, sid):
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                    (sid,),
+                ).fetchall()
+                conn.close()
+                return [dict(r) for r in rows]
+
+        db = TestDB()
+        bridge = mcp_serve.EventBridge()
+
+        bridge._poll_once(db)
+        r1 = bridge.poll_events(after_cursor=0)
+        assert len(r1["events"]) == 1
+        assert r1["events"][0]["content"] == "First"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            (session_id, "assistant", "Visible reply", "2026-03-29T15:00:05"),
+        )
+        conn.commit()
+        conn.close()
+        os.utime(db_path, None)
+
+        bridge._poll_once(db)
+        r2 = bridge.poll_events(after_cursor=r1["next_cursor"])
+        assert len(r2["events"]) == 1
+        assert r2["events"][0]["content"] == "Visible reply"
+
     def test_poll_interval_is_200ms(self):
         """Verify the poll interval constant."""
         from mcp_serve import POLL_INTERVAL

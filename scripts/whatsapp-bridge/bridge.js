@@ -576,6 +576,30 @@ app.post('/edit', async (req, res) => {
   }
 });
 
+// React to a message (progress indicators: 👀 while processing, ✅/❌ when done).
+// Baileys replaces a sender's prior reaction automatically; an empty `emoji`
+// removes it. Targets an INBOUND message, so the key is fromMe:false and carries
+// the original participant (required to key reactions in groups).
+app.post('/send-reaction', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId, participant, emoji } = req.body;
+  if (!chatId || !messageId) {
+    return res.status(400).json({ error: 'chatId and messageId are required' });
+  }
+
+  try {
+    const key = { remoteJid: chatId, id: messageId, fromMe: false };
+    if (participant) key.participant = participant;
+    await sendWithTimeout(chatId, { react: { text: emoji || '', key } });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // MIME type map and media type inference for /send-media
 const MIME_MAP = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',

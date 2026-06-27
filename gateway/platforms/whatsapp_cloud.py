@@ -1961,6 +1961,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             user_id=sender_id,
             user_name=sender_name or None,
         )
+        # Owner detection at intake (mirrors Signal). Resolves LID->phone via the
+        # on-disk alias map so only the owner gets owner-level trust.
+        self._set_owner_flag(source)
 
         # Cloud API timestamps are unix seconds (string). MessageEvent
         # doesn't enforce a type but downstream code formats with it.

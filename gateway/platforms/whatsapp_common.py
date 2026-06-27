@@ -37,6 +37,11 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from gateway.whatsapp_identity import (
+    expand_whatsapp_aliases,
+    normalize_whatsapp_identifier,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +208,41 @@ class WhatsAppBehaviorMixin:
             return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
         # "open" — all groups allowed
         return True
+
+    def _set_owner_flag(self, source) -> None:
+        """Owner detection at intake — the WhatsApp analogue of Signal's
+        adapter-side resolution (see gateway/platforms/signal.py). The owner is
+        whoever is listed in ``WHATSAPP_ALLOWED_USERS`` (read straight from the
+        env, exactly as Signal reads ``SIGNAL_ALLOWED_USERS`` into
+        ``dm_allow_from``, and as the gateway's central ``_is_owner`` reads it —
+        the adapter's own ``self._allow_from`` is only the DM *gating* list and
+        may be empty when ``dm_policy=open``). A group sender is usually a LID
+        (``####@lid``) while the allowlist may hold a phone, so resolve both
+        sides through the on-disk alias map (``whatsapp_identity``) before
+        matching. ``"*"`` is open-DM, never an owner. Sets ``source.is_owner`` so
+        only the owner gets owner-level persona treatment; the generic gateway
+        fallback (``_is_owner``) is left untouched for everything else.
+        """
+        raw = os.getenv("WHATSAPP_ALLOWED_USERS", "")
+        owner_ids = {x.strip() for x in raw.split(",") if x.strip() and x.strip() != "*"}
+        owner_ids |= {x for x in getattr(self, "_allow_from", set()) if x and x != "*"}
+        if not owner_ids:
+            return
+        expanded: set[str] = set()
+        for _oid in owner_ids:
+            expanded |= expand_whatsapp_aliases(_oid)
+        if expanded:
+            owner_ids = expanded
+        candidates: set[str] = set()
+        uid = getattr(source, "user_id", None)
+        if uid:
+            candidates.add(uid)
+            candidates |= expand_whatsapp_aliases(uid)
+            norm = normalize_whatsapp_identifier(uid)
+            if norm:
+                candidates.add(norm)
+        if candidates & owner_ids:
+            source.is_owner = True
 
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")

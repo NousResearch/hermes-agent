@@ -260,6 +260,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
@@ -1015,7 +1016,79 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 pass
         except Exception:
             pass  # Ignore typing indicator failures
-    
+
+    # ------------------------------------------------------------------
+    # Reactions / processing lifecycle hooks (progress indicators)
+    # 👀 while the agent is processing, swapped for ✅ (success) / ❌ (failure)
+    # when done, and cleared on CANCELLED so it never lingers (parity with the
+    # Telegram adapter). WhatsApp replaces a sender's existing reaction, so the
+    # swap needs no explicit remove. Reactions go through the bridge's
+    # /send-reaction endpoint. Disable with WHATSAPP_REACTIONS=false.
+    # ------------------------------------------------------------------
+
+    def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
+        """Global toggle (WHATSAPP_REACTIONS, default on). The bridge already
+        drops unauthorized DMs (group members are authorized wholesale), so a
+        message that reaches this hook is already allowed."""
+        return os.getenv("WHATSAPP_REACTIONS", "true").lower() not in {"false", "0", "no"}
+
+    def _extract_reaction_target(self, event: MessageEvent):
+        """Return (chat_id, message_id, participant) for the Baileys reaction key,
+        or None if the event lacks the raw bridge data needed to react."""
+        raw = getattr(event, "raw_message", None)
+        if not isinstance(raw, dict):
+            return None
+        chat_id = raw.get("chatId") or getattr(getattr(event, "source", None), "chat_id", None)
+        message_id = raw.get("messageId") or getattr(event, "message_id", None)
+        if not chat_id or not message_id:
+            return None
+        participant = raw.get("senderId")  # needed to key group reactions
+        return (chat_id, message_id, participant)
+
+    async def send_reaction(self, chat_id: str, message_id: str, participant, emoji: str) -> bool:
+        """React to a message via the bridge (empty emoji clears the reaction)."""
+        if not self._running or not self._http_session:
+            return False
+        try:
+            import aiohttp
+
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/send-reaction",
+                json={
+                    "chatId": chat_id,
+                    "messageId": message_id,
+                    "participant": participant,
+                    "emoji": emoji,
+                },
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                return resp.status == 200
+        except Exception:
+            return False  # reactions are best-effort, never block processing
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """React with 👀 when processing begins."""
+        if not self._reactions_enabled(event):
+            return
+        target = self._extract_reaction_target(event)
+        if target:
+            await self.send_reaction(*target, "👀")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: "ProcessingOutcome") -> None:
+        """Swap 👀 for ✅ (success) / ❌ (failure); clear it on CANCELLED so it
+        doesn't linger (parity with Telegram)."""
+        if not self._reactions_enabled(event):
+            return
+        target = self._extract_reaction_target(event)
+        if not target:
+            return
+        if outcome == ProcessingOutcome.CANCELLED:
+            await self.send_reaction(*target, "")      # clear the in-progress 👀
+        elif outcome == ProcessingOutcome.SUCCESS:
+            await self.send_reaction(*target, "✅")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self.send_reaction(*target, "❌")
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a WhatsApp chat."""
         if not self._running or not self._http_session:
@@ -1170,7 +1243,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
             )
-            
+            # Owner detection at intake: resolve the group sender (LID) to the
+            # owner via WHATSAPP_ALLOWED_USERS and set source.is_owner (mirror of
+            # the Cloud adapter; the generic _is_owner stays the DM fallback).
+            self._set_owner_flag(source)
+
             # Download media URLs to the local cache so agent tools
             # can access them reliably regardless of URL expiration.
             raw_urls = data.get("mediaUrls", [])

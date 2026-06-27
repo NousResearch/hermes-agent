@@ -1646,6 +1646,41 @@ def get_model_context_length(
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
 
+    # 0a. MoA preset name → aggregator slug.  When the caller passes a
+    # preset name (e.g. "alex-max") with provider="moa", look up the
+    # preset's aggregator model and continue the resolution chain against
+    # that slug instead.  Without this, every MoA preset falls through to
+    # the 256K fallback because preset names never appear in any
+    # context-length table (cache, models.dev, OpenRouter metadata,
+    # hardcoded catalog).  Pre-fix UX bug: /model switching to a MoA
+    # preset reported "Context: 256,000 tokens" while the underlying
+    # aggregator (e.g. minimax/minimax-m3) actually exposes 1M tokens.
+    # Only triggered when provider="moa" and the model is a
+    # preset-name-shaped identifier (no slash, no colon).
+    if provider == "moa" and model and "/" not in model and ":" not in model:
+        try:
+            from hermes_cli.moa_config import normalize_moa_config
+            from hermes_cli.config import load_config
+
+            _moa_cfg = normalize_moa_config(load_config().get("moa") or {})
+            _preset = _moa_cfg.get("presets", {}).get(model)
+            if _preset:
+                _agg = _preset.get("aggregator") if isinstance(_preset, dict) else None
+                if isinstance(_agg, dict):
+                    _agg_model = _agg.get("model")
+                    if _agg_model:
+                        logger.debug(
+                            "MoA preset %r resolved to aggregator %r for context lookup",
+                            model, _agg_model,
+                        )
+                        model = _agg_model
+                        base_url = ""
+                        _agg_provider = _agg.get("provider")
+                        if _agg_provider:
+                            provider = _agg_provider
+        except Exception as _e:
+            logger.debug("MoA preset resolution skipped: %s", _e)
+
     # 0b. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.

@@ -146,3 +146,112 @@ class TestResolveDisplayContextLength:
                 custom_providers=custom_provs,
             )
         assert ctx == 400_000
+
+
+class TestMoAPresetContextDisplay:
+    """Regression test for /model context-length display when switching to a
+    MoA preset name.
+
+    Bug (June 2026): ``/model alex-max`` (or any MoA preset) showed
+    ``Context: 256,000 tokens`` even though the underlying aggregator
+    (e.g. ``minimax/minimax-m3``) exposes 1M tokens.  The display path
+    passed the preset name ``alex-max`` straight into the context-length
+    resolver, which never found a match and fell through to the
+    256K fallback.  The fix in ``agent/model_metadata.get_model_context_length``
+    step 0a resolves a MoA preset name to its aggregator slug before the
+    normal resolution chain runs.
+    """
+
+    _FAKE_MOA_CONFIG = {
+        "moa": {
+            "default_preset": "alex-max",
+            "active_preset": "alex-max",
+            "presets": {
+                "alex-max": {
+                    "enabled": True,
+                    "reference_models": [
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+                        {"provider": "openrouter", "model": "xiaomi/mimo-v2.5-pro"},
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "minimax/minimax-m3",
+                    },
+                },
+            },
+        },
+    }
+
+    def test_moa_preset_name_resolves_to_aggregator_context(self):
+        """``alex-max`` with ``provider="moa"`` must surface the aggregator's
+        context window (1M for ``minimax/minimax-m3``), not the 256K fallback.
+        """
+        from unittest.mock import patch as _p
+        from agent import model_metadata as _mm
+        import hermes_cli.config as _hcfg
+
+        with _p.object(_hcfg, "load_config", return_value=self._FAKE_MOA_CONFIG), \
+             _p.object(_mm, "get_cached_context_length", return_value=None), \
+             _p.object(_mm, "fetch_endpoint_model_metadata", return_value={}), \
+             _p.object(_mm, "fetch_model_metadata", return_value={
+                 "minimax/minimax-m3": {"context_length": 1_048_576},
+             }), \
+             _p.object(_mm, "is_local_endpoint", return_value=False), \
+             _p.object(_mm, "_is_known_provider_base_url", return_value=False):
+            ctx = resolve_display_context_length(
+                "alex-max",
+                "moa",
+                base_url="",
+                api_key="",
+            )
+        # Aggregator (minimax/minimax-m3) is 1M tokens.  Must not be the 256K fallback.
+        assert ctx is not None
+        assert ctx >= 1_000_000, (
+            f"MoA preset 'alex-max' must resolve to aggregator context (>=1M), "
+            f"got {ctx:,}.  Pre-fix bug displayed 256,000."
+        )
+
+    def test_unknown_moa_preset_falls_back(self):
+        """An unknown MoA preset name must still fall back gracefully (256K)
+        rather than raising or returning ``None``.
+        """
+        from unittest.mock import patch as _p
+        from agent import model_metadata as _mm
+        import hermes_cli.config as _hcfg
+
+        with _p.object(_hcfg, "load_config", return_value=self._FAKE_MOA_CONFIG), \
+             _p.object(_mm, "get_cached_context_length", return_value=None), \
+             _p.object(_mm, "fetch_endpoint_model_metadata", return_value={}), \
+             _p.object(_mm, "fetch_model_metadata", return_value={}), \
+             _p.object(_mm, "is_local_endpoint", return_value=False), \
+             _p.object(_mm, "_is_known_provider_base_url", return_value=False):
+            ctx = resolve_display_context_length(
+                "does-not-exist",
+                "moa",
+                base_url="",
+                api_key="",
+            )
+        assert ctx == 256_000  # documented fallback
+
+    def test_non_moa_provider_does_not_rewrite_preset_name(self):
+        """A bare preset name passed without ``provider="moa"`` must NOT be
+        rewritten — it must hit the regular resolution chain (and fall back
+        to 256K because ``alex-max`` is not a real provider slug).
+        """
+        from unittest.mock import patch as _p
+        from agent import model_metadata as _mm
+        import hermes_cli.config as _hcfg
+
+        with _p.object(_hcfg, "load_config", return_value=self._FAKE_MOA_CONFIG), \
+             _p.object(_mm, "get_cached_context_length", return_value=None), \
+             _p.object(_mm, "fetch_endpoint_model_metadata", return_value={}), \
+             _p.object(_mm, "fetch_model_metadata", return_value={}), \
+             _p.object(_mm, "is_local_endpoint", return_value=False), \
+             _p.object(_mm, "_is_known_provider_base_url", return_value=False):
+            ctx = resolve_display_context_length(
+                "alex-max",
+                "openrouter",  # not moa
+                base_url="",
+                api_key="",
+            )
+        assert ctx == 256_000  # no rewriting happens

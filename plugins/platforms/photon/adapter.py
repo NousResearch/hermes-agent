@@ -184,6 +184,24 @@ def _markdown_enabled() -> bool:
     }
 
 
+def _standalone_retry_count() -> int:
+    raw = os.getenv("PHOTON_STANDALONE_SEND_RETRIES", "1").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 1
+    return max(0, min(value, 3))
+
+
+def _standalone_retry_delay() -> float:
+    raw = os.getenv("PHOTON_STANDALONE_RETRY_BASE_DELAY_SECONDS", "2").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 2.0
+    return max(0.0, min(value, 30.0))
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 
@@ -516,6 +534,9 @@ class PhotonAdapter(BasePlatformAdapter):
             await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
+            return
+        if msg_id:
+            self._mark_seen(msg_id)
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()
@@ -526,13 +547,18 @@ class PhotonAdapter(BasePlatformAdapter):
         # New or expired: record and enforce a HARD size bound (evict oldest,
         # insertion-order) so a burst of unique ids within the window can't grow
         # the dict without limit — not just the expired-only prune.
+        self._mark_seen(msg_id)
+        return False
+
+    def _mark_seen(self, msg_id: str) -> None:
+        now = time.time()
+        seen = self._seen_messages
         if msg_id in seen:
             del seen[msg_id]  # refresh insertion order
         seen[msg_id] = now
         if len(seen) > _DEDUP_MAX_SIZE:
             for old in list(seen.keys())[: len(seen) - _DEDUP_MAX_SIZE]:
                 del seen[old]
-        return False
 
     async def _dispatch_inbound(self, event: Dict[str, Any]) -> None:
         """Normalize a sidecar inbound event and dispatch it to the gateway.
@@ -1368,17 +1394,25 @@ class PhotonAdapter(BasePlatformAdapter):
             "[photon] Send failed: %s - retrying plain-text message",
             error_str,
         )
-        fallback_result = await self.send(
-            chat_id=chat_id,
-            content=text[: self.MAX_MESSAGE_LENGTH],
-            reply_to=reply_to,
-            metadata=metadata,
+        plain_text = strip_markdown(text)[: self.MAX_MESSAGE_LENGTH] or text[
+            : self.MAX_MESSAGE_LENGTH
+        ]
+        fallback_result = await self._sidecar_send(
+            chat_id,
+            plain_text,
+            markdown=False,
         )
         if not fallback_result.success:
             logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
         return fallback_result
 
-    async def _sidecar_send(self, space_id: str, text: str) -> SendResult:
+    async def _sidecar_send(
+        self,
+        space_id: str,
+        text: str,
+        *,
+        markdown: Optional[bool] = None,
+    ) -> SendResult:
         if len(text) > self.MAX_MESSAGE_LENGTH:
             logger.warning(
                 "[photon] truncating outbound from %d to %d chars",
@@ -1388,7 +1422,9 @@ class PhotonAdapter(BasePlatformAdapter):
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
         # Omit the key when disabled so an older sidecar (pre-`format`)
         # keeps accepting the body during a half-upgraded restart.
-        if _markdown_enabled():
+        if markdown is None:
+            markdown = _markdown_enabled()
+        if markdown:
             body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send", body)
@@ -1596,24 +1632,69 @@ async def _standalone_send(
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
     headers = {"X-Hermes-Sidecar-Token": token}
     last_message_id: Optional[str] = None
+
+    async def post_sidecar(
+        client: "httpx.AsyncClient",
+        path: str,
+        body: Dict[str, Any],
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        resp = await client.post(f"{base}{path}", json=body, headers=headers)
+        if resp.status_code != 200:
+            return None, f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+        data = resp.json() or {}
+        if not data.get("ok"):
+            return None, data.get("error") or "sidecar reported failure"
+        return data, None
+
+    async def post_text_with_retry(
+        client: "httpx.AsyncClient",
+        text: str,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        retries = _standalone_retry_count()
+        base_delay = _standalone_retry_delay()
+        use_markdown = _markdown_enabled()
+        body: Dict[str, Any] = {
+            "spaceId": chat_id,
+            "text": text[:_MAX_MESSAGE_LENGTH],
+        }
+        if use_markdown:
+            body["format"] = "markdown"
+
+        last_error: Optional[str] = None
+        for attempt in range(retries + 1):
+            data, error = await post_sidecar(client, "/send", body)
+            if error is None:
+                return data, None
+            last_error = error
+            if attempt >= retries or not PhotonAdapter._is_retryable_error(error):
+                break
+            delay = base_delay * (2 ** attempt)
+            logger.warning(
+                "[photon] Standalone send failed (attempt %d/%d, retrying in %.1fs): %s",
+                attempt + 1,
+                retries + 1,
+                delay,
+                error,
+            )
+            await asyncio.sleep(delay)
+
+        if use_markdown:
+            plain = strip_markdown(body["text"])[:_MAX_MESSAGE_LENGTH] or body["text"]
+            fallback_body = {"spaceId": chat_id, "text": plain}
+            data, fallback_error = await post_sidecar(client, "/send", fallback_body)
+            if fallback_error is None:
+                return data, None
+            return None, fallback_error
+
+        return None, last_error or "sidecar reported failure"
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             # 1. Text body first (if any), so it leads the conversation.
             if message:
-                send_body: Dict[str, Any] = {
-                    "spaceId": chat_id,
-                    "text": message[:_MAX_MESSAGE_LENGTH],
-                }
-                if _markdown_enabled():
-                    send_body["format"] = "markdown"
-                resp = await client.post(
-                    f"{base}/send", json=send_body, headers=headers,
-                )
-                if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json() or {}
-                if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                data, error = await post_text_with_retry(client, message)
+                if error is not None:
+                    return {"error": error}
                 last_message_id = data.get("messageId")
 
             # 2. Each attachment as a separate /send-attachment call.
@@ -1634,14 +1715,9 @@ async def _standalone_send(
                 }
                 if guessed:
                     att_body["mimeType"] = guessed
-                resp = await client.post(
-                    f"{base}/send-attachment", json=att_body, headers=headers,
-                )
-                if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json() or {}
-                if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                data, error = await post_sidecar(client, "/send-attachment", att_body)
+                if error is not None:
+                    return {"error": error}
                 last_message_id = data.get("messageId") or last_message_id
 
         return {"success": True, "message_id": last_message_id}

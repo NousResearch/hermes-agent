@@ -28,6 +28,7 @@ guarantee.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
 from typing import Sequence
 
@@ -38,6 +39,8 @@ __all__ = [
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
+    "run_hidden",
+    "popen_hidden",
 ]
 
 
@@ -199,6 +202,35 @@ def windows_hide_flags() -> int:
     if not IS_WINDOWS:
         return 0
     return _CREATE_NO_WINDOW
+
+
+def run_hidden(*args, **kwargs):
+    """``subprocess.run`` that never flashes a console window on Windows.
+
+    Injects ``creationflags=windows_hide_flags()`` (``CREATE_NO_WINDOW`` on
+    win32, ``0`` on POSIX), OR-ed with any ``creationflags`` the caller
+    already passed, then delegates to :func:`subprocess.run`.
+
+    Use this for EVERY console-subsystem binary (``gh``, ``git``, ``where``,
+    version probes …) spawned from a windowless context. The desktop runs its
+    gateway under ``pythonw.exe``, which has no console of its own, so each
+    un-hidden console child allocates — and briefly flashes — a brand-new
+    console window. Centralizing the flag here means call sites can't forget
+    it. No-op on POSIX. See #52310.
+    """
+    kwargs["creationflags"] = kwargs.pop("creationflags", 0) | windows_hide_flags()
+    return subprocess.run(*args, **kwargs)
+
+
+def popen_hidden(*args, **kwargs):
+    """``subprocess.Popen`` counterpart of :func:`run_hidden`.
+
+    Same console-hiding contract; use when you need a handle to the running
+    child (streaming output, ``communicate()`` …) rather than ``run``'s
+    blocking call. No-op on POSIX. See #52310.
+    """
+    kwargs["creationflags"] = kwargs.pop("creationflags", 0) | windows_hide_flags()
+    return subprocess.Popen(*args, **kwargs)
 
 
 def windows_detach_popen_kwargs() -> dict:

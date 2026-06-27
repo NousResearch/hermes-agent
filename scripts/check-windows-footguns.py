@@ -111,6 +111,8 @@ EXCLUDED_SUFFIXES = {
 EXCLUDED_FILES = {
     "scripts/check-windows-footguns.py",
     "CONTRIBUTING.md",
+    # This checker's own tests carry footgun patterns as fixture strings.
+    "tests/scripts/test_check_windows_footguns.py",
 }
 
 
@@ -327,6 +329,153 @@ FOOTGUNS: list[Footgun] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Console-binary spawn check (multi-line aware)
+# ---------------------------------------------------------------------------
+#
+# The per-line FOOTGUNS regexes above can't reliably check this one: a
+# subprocess call that spawns a console binary (git, gh, …) usually spans
+# several lines, and the ``creationflags=`` that makes it safe sits on a
+# *different* line from the ``["git", …]`` argv. So we detect it by parsing
+# the call span instead. The bug it guards against: a console-subsystem
+# binary spawned from the windowless desktop gateway (pythonw.exe) without
+# CREATE_NO_WINDOW flashes a black console window on Windows. See #52310.
+
+# argv[0] basenames that own a console and therefore flash a window when
+# spawned without hidden-window creationflags from a windowless parent.
+CONSOLE_SPAWN_BINARIES = frozenset(
+    {
+        "git", "gh", "cmd", "where", "node", "npm", "npx", "pwsh",
+        "powershell", "wsl", "ssh", "conhost", "tmux", "rg",
+    }
+)
+
+# Tokens whose presence anywhere in the call mean the window is already
+# handled — explicit flags, the hidden/detached helpers, or a startupinfo
+# that hides the window.
+_SPAWN_FLAG_OK_TOKENS = (
+    "creationflags",
+    "windows_hide_flags",
+    "windows_detach_flags",
+    "windows_detach_popen_kwargs",
+    "run_hidden",
+    "popen_hidden",
+    "startupinfo",
+)
+
+_SPAWN_CALL_RE = re.compile(
+    r"\bsubprocess\.(?:run|Popen|call|check_call|check_output)\s*\("
+)
+_FIRST_STRING_RE = re.compile(r"""(['"])(.*?)\1""", re.DOTALL)
+
+CONSOLE_SPAWN_FOOTGUN = Footgun(
+    name="subprocess spawn of a console binary without hidden-window flags",
+    # Never matches via the per-line engine; detected by
+    # find_console_spawn_matches(), which is call-span aware.
+    pattern=re.compile(r"(?!)"),
+    message=(
+        "subprocess.run/Popen of a console-subsystem binary (git, gh, …) "
+        "without creationflags spawns a visible console window when the "
+        "parent has none — the desktop gateway runs under pythonw.exe, so "
+        "each such spawn flashes a black window on Windows."
+    ),
+    fix=(
+        "Use hermes_cli._subprocess_compat.run_hidden()/popen_hidden() (or "
+        "pass creationflags=windows_hide_flags()). If this can never run from "
+        "the windowless gateway, suppress with `# windows-footgun: ok`."
+    ),
+)
+
+
+def _balanced_call_span(text: str, open_paren_idx: int) -> str:
+    """Return a call's source from its opening ``(`` to the matching ``)``,
+    balancing nested parens and skipping string literals. Falls back to the
+    rest of the file if the parens never balance."""
+    depth = 0
+    quote: str | None = None
+    i = open_paren_idx
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if quote is not None:
+            if c == "\\":
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_paren_idx : i + 1]
+        i += 1
+    return text[open_paren_idx:]
+
+
+def _basename_no_ext(token: str) -> str:
+    base = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for ext in (".exe", ".cmd", ".bat", ".com"):
+        if base.endswith(ext):
+            return base[: -len(ext)]
+    return base
+
+
+def _spawn_argv0_candidates(span: str) -> set[str]:
+    """Best-effort argv[0] basenames for a call span, from its first string
+    literal. Returns both interpretations so either matches:
+    - the whole literal (an argv-list program path, may contain spaces:
+      ``"C:/Program Files/Git/bin/git.exe"`` → ``git``)
+    - its first whitespace token (a ``shell=True`` command line:
+      ``"git status"`` → ``git``)
+    Empty set when the program is a variable (no literal to read)."""
+    m = _FIRST_STRING_RE.search(span)
+    if not m:
+        return set()
+    raw = m.group(2).strip()
+    if not raw:
+        return set()
+    return {_basename_no_ext(raw), _basename_no_ext(raw.split()[0])}
+
+
+def find_console_spawn_matches(text: str) -> list[tuple[int, str, Footgun]]:
+    """Flag subprocess spawns of console binaries that don't hide the window.
+
+    Multi-line aware (see the module note above). Skips calls that already
+    pass flags / use a helper, calls whose program is a variable, calls
+    inside docstrings or comments, and any call span carrying the
+    ``# windows-footgun: ok`` marker."""
+    lines = text.splitlines()
+    out: list[tuple[int, str, Footgun]] = []
+    for m in _SPAWN_CALL_RE.finditer(text):
+        before = text[: m.start()]
+        # Heuristic docstring skip: an odd number of triple-quotes before the
+        # call means we're inside one (mirrors scan_file's docstring handling).
+        if before.count('"""') % 2 or before.count("'''") % 2:
+            continue
+        open_idx = m.end() - 1
+        span = _balanced_call_span(text, open_idx)
+        if not (_spawn_argv0_candidates(span) & CONSOLE_SPAWN_BINARIES):
+            continue
+        if any(tok in span for tok in _SPAWN_FLAG_OK_TOKENS):
+            continue
+        # The `# windows-footgun: ok` marker usually sits at the end of the
+        # line — i.e. *outside* the call's parentheses — so check every line
+        # the call spans, not just the span text.
+        start_line = before.count("\n")  # 0-based
+        end_line = text.count("\n", 0, open_idx + len(span))  # 0-based
+        call_lines = lines[start_line : end_line + 1]
+        if any(SUPPRESS_MARKER.search(cl) for cl in call_lines):
+            continue
+        first = call_lines[0] if call_lines else ""
+        if first.lstrip().startswith("#"):
+            continue
+        out.append((start_line + 1, first.rstrip(), CONSOLE_SPAWN_FOOTGUN))
+    return out
+
+
 def should_scan_file(path: Path) -> bool:
     """Return True if this file is in scope for the checker."""
     # Skip the excluded dirs
@@ -485,6 +634,17 @@ def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footg
     return matches
 
 
+def scan_console_spawn_file(path: Path) -> list[tuple[int, str, Footgun]]:
+    """Run only the multi-line console-spawn check on a file. Kept separate
+    from :func:`scan_file` so the repo-wide ``--all`` line-footgun gate stays
+    independent of this contextual, diff-scoped rule."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return find_console_spawn_matches(text)
+
+
 def get_staged_files() -> list[Path]:
     """Return paths staged in the current git index. Empty on non-git trees."""
     try:
@@ -534,6 +694,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Scan files changed vs. the given git ref (e.g. --diff main).",
     )
     p.add_argument(
+        "--console-spawns",
+        action="store_true",
+        help=(
+            "Run ONLY the console-binary-spawn check (git/gh/… spawned "
+            "without hidden-window flags). Reachability is contextual, so "
+            "this is kept out of the repo-wide --all line-footgun gate and "
+            "meant to run diff-scoped (e.g. --console-spawns --diff main)."
+        ),
+    )
+    p.add_argument(
         "--list",
         action="store_true",
         help="List all known footgun rules and exit.",
@@ -543,7 +713,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def print_rules() -> None:
     print("Known Windows footguns checked by this script:\n")
-    for i, fg in enumerate(FOOTGUNS, start=1):
+    for i, fg in enumerate([*FOOTGUNS, CONSOLE_SPAWN_FOOTGUN], start=1):
         print(f"{i:2}. {fg.name}")
         print(f"    {fg.message}")
         print(f"    Fix: {fg.fix}")
@@ -598,7 +768,11 @@ def main(argv: list[str]) -> int:
     files_scanned = 0
     for path in iter_files(roots):
         files_scanned += 1
-        matches = scan_file(path, FOOTGUNS)
+        matches = (
+            scan_console_spawn_file(path)
+            if args.console_spawns
+            else scan_file(path, FOOTGUNS)
+        )
         for lineno, line, fg in matches:
             rel = path.relative_to(REPO_ROOT).as_posix()
             print(f"{rel}:{lineno}: [{fg.name}]")

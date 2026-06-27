@@ -655,7 +655,11 @@ that touches the OS, assume *any* platform can hit your code path.
 
 > **Before you PR:** run `scripts/check-windows-footguns.py` to catch the
 > common Windows-unsafe patterns in your diff. It's grep-based and cheap;
-> CI runs it on every PR too.
+> CI runs it on every PR too. Spawning a console binary (`git`, `gh`, …)?
+> Use `hermes_cli._subprocess_compat.run_hidden()` / `popen_hidden()` so it
+> can't flash a console window from the windowless desktop gateway — CI's
+> `--console-spawns` guard (`check-windows-footguns.py --console-spawns
+> --diff <base>`) blocks new raw spawns introduced by your diff.
 
 ### Critical rules
 

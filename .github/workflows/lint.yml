@@ -188,6 +188,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history so the console-spawn guard below can diff vs. the
+          # PR base (three-dot diff needs the merge base).
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
@@ -196,3 +200,14 @@ jobs:
 
       - name: Run footgun checker
         run: python scripts/check-windows-footguns.py --all
+
+      - name: Console-spawn guard (changed files only)
+        # Whether a console-binary spawn flashes a window depends on WHERE it
+        # runs (the windowless gateway flashes; an interactive CLI doesn't), so
+        # this rule is kept out of the repo-wide --all gate and instead blocks
+        # only NEW console spawns introduced by this PR. Pre-existing call
+        # sites are a tracked backlog, migrated to run_hidden() over time.
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          python scripts/check-windows-footguns.py --console-spawns --diff "origin/${{ github.base_ref }}"

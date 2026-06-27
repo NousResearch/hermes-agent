@@ -720,21 +720,29 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_cwd = self.cwd
 
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+        popen_kwargs = {
+            "text": True,
+            "env": run_env,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            "start_new_session": True,
+            "cwd": _popen_cwd,
+        }
 
-        proc = subprocess.Popen(
-            args,
-            text=True,
-            env=run_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=_popen_cwd,
-            **_popen_kwargs,
-        )
+        if _IS_WINDOWS:
+            popen_kwargs["creationflags"] = windows_hide_flags(
+                breakaway_from_job=True
+            )
+            try:
+                proc = subprocess.Popen(args, **popen_kwargs)
+            except OSError:
+                popen_kwargs["creationflags"] = windows_hide_flags()
+                proc = subprocess.Popen(args, **popen_kwargs)
+        else:
+            proc = subprocess.Popen(args, **popen_kwargs)
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)

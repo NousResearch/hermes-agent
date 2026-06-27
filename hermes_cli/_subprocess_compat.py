@@ -183,7 +183,7 @@ def windows_detach_flags_without_breakaway() -> int:
     return _CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW
 
 
-def windows_hide_flags() -> int:
+def windows_hide_flags(*, breakaway_from_job: bool = False) -> int:
     """Return Win32 creationflags that merely hide the child's console
     window without detaching the child.  0 on non-Windows.
 
@@ -195,10 +195,19 @@ def windows_hide_flags() -> int:
     ``DETACHED_PROCESS`` — the child still inherits stdio handles so
     ``capture_output=True`` works.  ``DETACHED_PROCESS`` would sever
     stdio and break stdout capture.
+
+    ``breakaway_from_job=True`` adds ``CREATE_BREAKAWAY_FROM_JOB`` for
+    callers running under a Desktop/Electron job object where
+    ``CREATE_NO_WINDOW`` alone still allows a visible console flash.
+    Some job objects reject breakaway with ``OSError``; those callers
+    should retry once without the bit.
     """
     if not IS_WINDOWS:
         return 0
-    return _CREATE_NO_WINDOW
+    flags = _CREATE_NO_WINDOW
+    if breakaway_from_job:
+        flags |= _CREATE_BREAKAWAY_FROM_JOB
+    return flags
 
 
 def windows_detach_popen_kwargs() -> dict:

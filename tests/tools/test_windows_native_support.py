@@ -624,6 +624,52 @@ class TestSubprocessCompatHelpers:
         assert fallback & 0x00000008, "fallback missing DETACHED_PROCESS"
         assert fallback & 0x08000000, "fallback missing CREATE_NO_WINDOW"
 
+    def test_windows_hide_flags_can_opt_into_breakaway(self, monkeypatch):
+        from hermes_cli import _subprocess_compat as sc
+
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+
+        assert sc.windows_hide_flags() == 0x08000000
+        assert sc.windows_hide_flags(breakaway_from_job=True) == (
+            0x08000000 | 0x01000000
+        )
+
+    def test_local_environment_run_bash_retries_without_breakaway(self, monkeypatch):
+        import tools.environments.local as local_mod
+
+        calls: list[int] = []
+
+        def fake_popen(args, **kwargs):
+            calls.append(kwargs.get("creationflags", 0))
+            if len(calls) == 1:
+                raise OSError(5, "Access is denied")
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.stdin = None
+            return proc
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: "bash")
+        monkeypatch.setattr(local_mod, "_make_run_env", lambda env: {})
+        monkeypatch.setattr(local_mod, "_resolve_safe_cwd", lambda cwd: cwd)
+        monkeypatch.setattr(local_mod.subprocess, "Popen", fake_popen)
+
+        with mock.patch.object(
+            local_mod.LocalEnvironment,
+            "init_session",
+            autospec=True,
+            return_value=None,
+        ):
+            env = local_mod.LocalEnvironment(cwd="/tmp", timeout=10, env={})
+
+        proc = env._run_bash("echo hi")
+
+        assert proc.pid == 12345
+        assert calls == [
+            local_mod.windows_hide_flags(breakaway_from_job=True),
+            local_mod.windows_hide_flags(),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # tui_gateway/entry.py signal installation survives absent POSIX signals

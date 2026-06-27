@@ -345,6 +345,11 @@ browser:
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
+  # Camofox browser backend settings (requires camofox-browser npm package)
+  # camofox:
+  #   viewport:
+  #     width: 1920    # 320–3840
+  #     height: 1080   # 240–2160
 
 # =============================================================================
 # Tool Loop Guardrails

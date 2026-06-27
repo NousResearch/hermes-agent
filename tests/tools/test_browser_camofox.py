@@ -437,6 +437,87 @@ class TestCamofoxVisionConfig:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Viewport configuration
+# ---------------------------------------------------------------------------
+
+
+class TestCamofoxViewportConfig:
+    """Tests for _get_viewport_config and viewport in _ensure_tab."""
+
+    @patch("tools.browser_camofox.load_config")
+    def test_viewport_none_when_not_configured(self, mock_config, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_config.return_value = _config_with_camofox()
+        from tools.browser_camofox import _get_viewport_config
+        assert _get_viewport_config() is None
+
+    @patch("tools.browser_camofox.load_config")
+    def test_viewport_returns_configured_dimensions(self, mock_config, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_config.return_value = _config_with_camofox(viewport={"width": 1920, "height": 1080})
+        from tools.browser_camofox import _get_viewport_config
+        result = _get_viewport_config()
+        assert result == {"width": 1920, "height": 1080}
+
+    @patch("tools.browser_camofox.load_config")
+    def test_viewport_rejects_out_of_range_width(self, mock_config, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_config.return_value = _config_with_camofox(viewport={"width": 100, "height": 720})
+        from tools.browser_camofox import _get_viewport_config
+        assert _get_viewport_config() is None
+
+    @patch("tools.browser_camofox.load_config")
+    def test_viewport_rejects_out_of_range_height(self, mock_config, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_config.return_value = _config_with_camofox(viewport={"width": 1280, "height": 5000})
+        from tools.browser_camofox import _get_viewport_config
+        assert _get_viewport_config() is None
+
+    @patch("tools.browser_camofox.load_config")
+    def test_viewport_rejects_non_dict(self, mock_config, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_config.return_value = _config_with_camofox(viewport="1280x720")
+        from tools.browser_camofox import _get_viewport_config
+        assert _get_viewport_config() is None
+
+    @patch("tools.browser_camofox.load_config")
+    def test_viewport_rejects_non_integer_values(self, mock_config, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_config.return_value = _config_with_camofox(viewport={"width": "1280", "height": "720"})
+        from tools.browser_camofox import _get_viewport_config
+        assert _get_viewport_config() is None
+
+    @patch("tools.browser_camofox.requests.post")
+    @patch("tools.browser_camofox.load_config")
+    def test_ensure_tab_passes_viewport_to_api(self, mock_config, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_config.return_value = _config_with_camofox(viewport={"width": 1920, "height": 1080})
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab_vp"})
+
+        from tools.browser_camofox import _ensure_tab
+        _ensure_tab("vp_task", "https://example.com")
+
+        call_body = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert call_body["viewport"] == {"width": 1920, "height": 1080}
+        assert call_body["userId"]
+        assert call_body["sessionKey"]
+        assert call_body["url"] == "https://example.com"
+
+    @patch("tools.browser_camofox.requests.post")
+    @patch("tools.browser_camofox.load_config")
+    def test_ensure_tab_omits_viewport_when_not_configured(self, mock_config, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_config.return_value = _config_with_camofox()
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab_novp"})
+
+        from tools.browser_camofox import _ensure_tab
+        _ensure_tab("novp_task", "https://example.com")
+
+        call_body = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert "viewport" not in call_body
+
+
 class TestBrowserToolRouting:
     """Verify that browser_tool.py delegates to camofox when CAMOFOX_URL is set."""
 

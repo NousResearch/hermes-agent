@@ -369,6 +369,20 @@ def build_turn_context(
             lambda _tokens: False,
         )
         _preflight_deferred = _defer_preflight(_preflight_tokens)
+        # Codex app-server threads are compacted by the codex agent itself;
+        # Hermes only initiates compaction in "hermes" mode (#36801).
+        _codex_native_auto = (
+            getattr(agent, "api_mode", None) == "codex_app_server"
+            and str(
+                getattr(
+                    agent,
+                    "codex_app_server_auto_compaction",
+                    "native",
+                )
+                or "native"
+            ).lower()
+            in {"native", "off"}
+        )
 
         if not _preflight_deferred:
             _last = _compressor.last_prompt_tokens
@@ -396,6 +410,12 @@ def build_turn_context(
                 "(~%s seconds remaining, session %s)",
                 int(_compression_cooldown.get("remaining_seconds", 0.0)),
                 agent.session_id or "none",
+            )
+        elif _codex_native_auto:
+            logger.info(
+                "Skipping Hermes preflight compression for codex app-server "
+                "(mode=%s); Hermes will not start thread compaction here.",
+                getattr(agent, "codex_app_server_auto_compaction", "native"),
             )
         elif _compressor.should_compress(_preflight_tokens):
             logger.info(

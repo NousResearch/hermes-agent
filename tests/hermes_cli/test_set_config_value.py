@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.config import set_config_value, config_command
+from hermes_cli.config import config_command, load_config, set_config_value
 
 
 @pytest.fixture(autouse=True)
@@ -123,6 +123,22 @@ class TestConfigYamlRouting:
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
+
+    def test_terminal_working_dir_alias_writes_canonical_cwd(self, _isolated_hermes_home):
+        set_config_value("terminal.working_dir", "/tmp/project")
+        config = _read_config(_isolated_hermes_home)
+        assert "cwd: /tmp/project" in config
+        assert "working_dir" not in config
+
+    def test_load_config_accepts_legacy_terminal_working_dir(self, _isolated_hermes_home):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "terminal:\n"
+            "  working_dir: /tmp/legacy-project\n"
+        )
+
+        config = load_config()
+
+        assert config["terminal"]["cwd"] == "/tmp/legacy-project"
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ from hermes_cli.profiles import (
     validate_profile_name,
     get_profile_dir,
     create_profile,
+    _count_skills,
     delete_profile,
     list_profiles,
     set_active_profile,
@@ -703,6 +704,60 @@ class TestListProfiles:
         profiles = list_profiles()
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
+
+
+class TestCountSkills:
+    """Tests for _count_skills()."""
+
+    def test_prunes_excluded_and_support_dirs_without_rglob(self, profile_env, monkeypatch):
+        default_home = profile_env / ".hermes"
+        skills_dir = default_home / "skills"
+        real_skill = skills_dir / "real"
+        (real_skill / "SKILL.md").parent.mkdir(parents=True)
+        (real_skill / "SKILL.md").write_text("---\nname: real\n---\n", encoding="utf-8")
+        (skills_dir / ".venv" / "archived" / "SKILL.md").parent.mkdir(parents=True)
+        (skills_dir / ".venv" / "archived" / "SKILL.md").write_text(
+            "---\nname: archived\n---\n",
+            encoding="utf-8",
+        )
+        (skills_dir / "node_modules" / "vendor" / "SKILL.md").parent.mkdir(parents=True)
+        (skills_dir / "node_modules" / "vendor" / "SKILL.md").write_text(
+            "---\nname: vendor\n---\n",
+            encoding="utf-8",
+        )
+        (real_skill / "references" / "legacy" / "SKILL.md").parent.mkdir(parents=True)
+        (real_skill / "references" / "legacy" / "SKILL.md").write_text(
+            "---\nname: legacy\n---\n",
+            encoding="utf-8",
+        )
+
+        def _fail_rglob(self, pattern):
+            raise AssertionError(f"Path.rglob should not be used for {pattern}")
+
+        monkeypatch.setattr(Path, "rglob", _fail_rglob)
+
+        assert _count_skills(default_home) == 1
+
+    def test_reuses_cached_count_when_signature_is_unchanged(self, profile_env, monkeypatch):
+        default_home = profile_env / ".hermes"
+        skills_dir = default_home / "skills"
+        skills_dir.mkdir()
+        scan_calls = 0
+
+        def _iter_skills(_root, _index_name):
+            nonlocal scan_calls
+            scan_calls += 1
+            yield skills_dir / "one" / "SKILL.md"
+            yield skills_dir / "two" / "SKILL.md"
+
+        profiles._SKILL_COUNT_CACHE.clear()
+        monkeypatch.setattr(profiles, "iter_skill_index_files", _iter_skills)
+        monkeypatch.setattr(profiles, "_skills_dir_signature", lambda _path: 42.0)
+        monkeypatch.setattr(profiles.time, "time", lambda: 100.0)
+
+        assert _count_skills(default_home) == 2
+        assert _count_skills(default_home) == 2
+        assert scan_calls == 1
 
 
 # ===================================================================

@@ -1850,6 +1850,17 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
         },
     )
 
+    # Mock copilot token resolution so the gh_cli entry survives
+    # borrowed-credential pruning inside load_pool() (pitfall #13).
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("ghp_fake", "gh auth token"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda token: token,
+    )
+
     from types import SimpleNamespace
     from hermes_cli.auth import is_source_suppressed
     from hermes_cli.auth_commands import auth_remove_command

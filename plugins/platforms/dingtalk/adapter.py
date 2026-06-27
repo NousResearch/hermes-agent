@@ -1432,6 +1432,31 @@ class _IncomingHandler(
         """
         return
 
+    async def raw_process(self, callback_message: "CallbackMessage"):
+        """Bridge for dingtalk-stream >= 0.24.
+
+        The SDK dispatches incoming messages via ``raw_process()`` on
+        registered handlers.  The base ``ChatbotHandler.raw_process()``
+        calls ``self.process()`` *synchronously*, which silently drops
+        the coroutine returned by our async override.  This explicit
+        override awaits ``process()`` and returns a proper ACK.
+        """
+        try:
+            result = await self.process(callback_message)
+            if isinstance(result, tuple):
+                status, msg = result
+            else:
+                status, msg = AckMessage.STATUS_OK, "OK"
+        except Exception:
+            status, msg = AckMessage.STATUS_SYSTEM_EXCEPTION, "error"
+
+        ack = AckMessage()
+        ack.code = status
+        ack.headers.message_id = callback_message.headers.message_id
+        ack.headers.content_type = Headers.CONTENT_TYPE_APPLICATION_JSON
+        ack.message = msg
+        return ack
+
     async def process(self, message: "CallbackMessage"):
         """Called by dingtalk-stream (>=0.20) when a message arrives.
 

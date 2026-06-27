@@ -196,6 +196,8 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
+_cached_preferred_local_chromium: Optional[str] = None
+_preferred_local_chromium_resolved = False
 
 
 def _get_command_timeout() -> int:
@@ -221,6 +223,94 @@ def _get_command_timeout() -> int:
         logger.debug("Could not read command_timeout from config: %s", e)
     _cached_command_timeout = result
     return result
+
+
+def _get_preferred_local_chromium_executable() -> Optional[str]:
+    """Return a Playwright-managed Chromium binary when available.
+
+    Some Linux hosts expose ``chromium``/``chromium-browser`` as a Snap wrapper.
+    That binary can work for simple ``--dump-dom`` commands but hang under
+    agent-browser's daemon/CDP startup path, leaving browser tool calls to time
+    out and orphan local daemons. Prefer Playwright's cached Chromium build for
+    agent-browser local sessions when the user has not explicitly selected a
+    browser executable.
+    """
+    global _cached_preferred_local_chromium, _preferred_local_chromium_resolved
+    if _preferred_local_chromium_resolved:
+        return _cached_preferred_local_chromium
+
+    _preferred_local_chromium_resolved = True
+    candidates: list[Path] = []
+    for root in _chromium_search_roots():
+        root_path = Path(root).expanduser()
+        if not root_path.is_dir():
+            continue
+        candidates.extend(root_path.glob("chromium-*/chrome-linux64/chrome"))
+        candidates.extend(root_path.glob("chromium-*/chrome-linux/chrome"))
+
+    existing = [p for p in candidates if p.is_file() and os.access(p, os.X_OK)]
+    if existing:
+        # Prefer the newest cached browser directory/build.
+        preferred = max(existing, key=lambda p: p.stat().st_mtime)
+        _cached_preferred_local_chromium = str(preferred)
+    return _cached_preferred_local_chromium
+
+
+def _is_snap_chromium_executable(path: str) -> bool:
+    """Return True for Ubuntu Snap Chromium wrapper paths.
+
+    ``agent-browser`` accepts ``AGENT_BROWSER_EXECUTABLE_PATH``, but pointing it
+    at Ubuntu's Snap Chromium wrapper is unstable in headless daemon mode on this
+    class of host: browser calls can start Chrome yet leave the CLI waiting until
+    Hermes' command timeout.  Treat the known Snap wrappers as an implicit
+    system default rather than a deliberate custom browser choice, so we can
+    prefer Playwright's managed Chromium when it is available.
+    """
+    if not path:
+        return False
+    try:
+        path_obj = Path(path).expanduser()
+        raw = str(path_obj)
+        resolved = str(path_obj.resolve()) if path_obj.exists() else ""
+        if "/snap/" in raw or resolved == "/usr/bin/snap" or "/snap/" in resolved:
+            return True
+        if path_obj.name in {"chromium", "chromium-browser"} and path_obj.is_file():
+            try:
+                head = path_obj.read_text(errors="ignore")[:4096]
+            except OSError:
+                head = ""
+            return "/snap/bin/chromium" in head or "snap install chromium" in head
+    except OSError:
+        return False
+    return False
+
+
+def _prepend_env_path(env: Dict[str, str], key: str, value: str) -> None:
+    """Prepend ``value`` to an environment path variable if it exists."""
+    if not value or not os.path.isdir(value):
+        return
+    current = env.get(key, "")
+    parts = [p for p in current.split(os.pathsep) if p]
+    if value not in parts:
+        env[key] = os.pathsep.join([value, *parts])
+
+
+def _apply_local_chromium_env(browser_env: Dict[str, str]) -> None:
+    """Stabilize local agent-browser launches on hosts with Snap Chromium.
+
+    This is intentionally environment-only: it does not edit global config.
+    It respects deliberate custom browser paths, but overrides Ubuntu's Snap
+    Chromium wrapper when Playwright's managed Chromium is available because the
+    Snap wrapper hangs under agent-browser's local daemon/CDP startup path.
+    """
+    current_executable = browser_env.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+    if not current_executable or _is_snap_chromium_executable(current_executable):
+        preferred = _get_preferred_local_chromium_executable()
+        if preferred:
+            browser_env["AGENT_BROWSER_EXECUTABLE_PATH"] = preferred
+
+    hermes_lib_dir = get_hermes_home() / "browser-libs" / "root" / "usr" / "lib" / "x86_64-linux-gnu"
+    _prepend_env_path(browser_env, "LD_LIBRARY_PATH", str(hermes_lib_dir))
 
 
 def _get_vision_model() -> Optional[str]:
@@ -874,6 +964,7 @@ def _run_chrome_fallback_command(
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
     browser_env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
     browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+    _apply_local_chromium_env(browser_env)
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
         browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
@@ -2131,6 +2222,7 @@ def _run_browser_command(
         # used during CLI discovery.
         browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+        _apply_local_chromium_env(browser_env)
 
         # Tell the agent-browser daemon to self-terminate after being idle
         # for our configured inactivity timeout.  This is the daemon-side
@@ -3677,6 +3769,7 @@ def cleanup_all_browsers() -> None:
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
+    global _cached_preferred_local_chromium, _preferred_local_chromium_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
@@ -3685,6 +3778,8 @@ def cleanup_all_browsers() -> None:
     _cached_chromium_installed = None
     _cached_browser_engine = None
     _browser_engine_resolved = False
+    _cached_preferred_local_chromium = None
+    _preferred_local_chromium_resolved = False
 
 # ============================================================================
 # Requirements Check

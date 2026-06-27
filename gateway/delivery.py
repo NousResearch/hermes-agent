@@ -40,6 +40,107 @@ _SILENCE_NARRATION = re.compile(
 )
 
 
+# Matches a MarkdownV2-escaped pipe (``\|``) outside of formatting markers and
+# inline code spans.  Used to detect and rewind overly-aggressive pipe-table
+# escaping in cron-delivered agent outputs (#53632).
+_MARKDOWNV2_TABLE_BAR = re.compile(
+    r'(?<!\\)(?<![`*_~])\|(?![`*_~])'
+)
+# Backslash-escape the pipe literal sequence, so the two-char token ``\|``
+# (rather than just ``|``) is what we count and replace.
+_MARKDOWNV2_ESCAPED_TABLE_BAR = re.compile(r'\\\|')
+
+
+def _looks_like_cron_markdownv2_table(content: Optional[str]) -> bool:
+    r"""Return True if ``content`` looks like a MarkdownV2-escaped pipe table.
+
+    A model that follows Telegram Bot API MarkdownV2 syntax emits table rows
+    with ``\|`` instead of ``|``.  Telegram's MarkdownV2 parser renders the
+    backslash-pipe verbatim as ``\|`` - which is what cron recipients see in
+    their broken-tables bug report (#53632).  Detection rules:
+
+    * At least one line in the content carries ``>=3`` ``\|`` tokens AND
+      the line matches a ``header / separator / data`` row shape (bars
+      bracketing text segments between them).
+    * At least 6 total escaped pipes across the whole content (a real pipe
+      table has 3 rows * 2 pipes/row minimum: header + separator + body).
+
+    Conservative: returns False for prose that merely contains ``\|`` as an
+    escape artifact (e.g. arithmetic ``a \| b``).
+    """
+    if not content:
+        return False
+    total_escaped = sum(
+        len(_MARKDOWNV2_ESCAPED_TABLE_BAR.findall(line))
+        for line in content.splitlines()
+    )
+    if total_escaped < 6:
+        return False
+    pipe_table_like_lines = 0
+    for line in content.splitlines():
+        if len(_MARKDOWNV2_ESCAPED_TABLE_BAR.findall(line)) >= 3:
+            # A pipe-table row has text on both sides of at least one bar, e.g.
+            # ``\| Date \| Event \|``.  Re-split on the bars to confirm.
+            re_split = _MARKDOWNV2_ESCAPED_TABLE_BAR.split(line.strip())
+            non_empty = [cell for cell in re_split if cell.strip()]
+            if len(non_empty) >= 3:
+                pipe_table_like_lines += 1
+    return pipe_table_like_lines >= 2  # at least header + one data row
+
+
+def _unescape_markdownv2_tables(content: str) -> str:
+    r"""Rewind ``\|`` to ``|`` inside lines that look like pipe-table rows.
+
+    LLM prompts that instruct ``"use Telegram MarkdownV2 syntax"`` cause the
+    model to emit table bars already-escaped: ``\| Date \| Event \|``.
+    Passing that string straight through Telegram's MarkdownV2 renderer shows
+    ``\|`` as literal text instead of rendering a native table (#53632).
+
+    This function rewinds the over-escape **only** on lines that match a
+    pipe-table row shape (``>=3`` escaped bars with cells on both sides).
+    Lines that don't match - code, prose, arithmetic - are returned
+    untouched.  The downstream adapter's normal MarkdownV2 escaping then
+    re-applies the ``\|`` once (the documented behavior) and Telegram
+    renders the table natively.
+
+    Code-block isolation is intentionally NOT done here: the only caller
+    hooks cron-delivered agent outputs whose format pipeline runs *after*
+    code-block delimiters have already been extracted by the adapter layer.
+    If a cron message contains ``\|`` inside a code fence (rare; the model
+    normally doesn't format code in MarkdownV2), the over-escape is harmless
+    - Telegram shows ``\|`` inside the code block, which is the same
+    behavior as today.
+    """
+    if not content:
+        return content
+    # Drive the unescaper off the same detection predicate as the gate
+    # uses (``_deliver_to_platform`` in the DeliveryRouter).  This keeps
+    # the two paths in lock-step — every input that the gate would have
+    # rewound gets rewound here, and only those inputs.
+    if not _looks_like_cron_markdownv2_table(content):
+        return content
+    out_lines = []
+    changed = False
+    for line in content.splitlines():
+        escaped = _MARKDOWNV2_ESCAPED_TABLE_BAR.findall(line)
+        if len(escaped) >= 3:
+            re_split = _MARKDOWNV2_ESCAPED_TABLE_BAR.split(line.strip())
+            non_empty = [cell for cell in re_split if cell.strip()]
+            if len(non_empty) >= 3:
+                # Pipe-table row shape — restore plain pipes so adapter's
+                # MarkdownV2 escape re-applies once and Telegram renders
+                # a native table.
+                new_line = line.replace('\\|', '|')
+                if new_line != line:
+                    changed = True
+                out_lines.append(new_line)
+                continue
+        out_lines.append(line)
+    if not changed:
+        return content
+    return '\n'.join(out_lines)
+
+
 def _is_silence_narration(content: Optional[str]) -> bool:
     """Return True when ``content`` is *only* a silence-narration token.
 
@@ -391,6 +492,35 @@ class DeliveryRouter:
                 "filtered": "silence_narration",
                 "delivered": False,
             }
+
+        # Guard: rewind MarkdownV2-escaped pipe tables in cron-delivered agent
+        # outputs (#53632). Some prompts instruct models to use Telegram
+        # MarkdownV2 syntax directly, which causes the LLM to emit table bars
+        # already-escaped (``\|``). Telegram renders those literal ``\|`` as
+        # plain text - the recipient sees broken tables. This guard restores
+        # the plain ``|`` so the adapter's normal MarkdownV2 escape re-applies
+        # once and Telegram renders the table natively.
+        #
+        # Scope: ONLY cron-routed deliveries (job_id metadata set) for the
+        # Telegram platform. Other paths (interactive streaming final, other
+        # platforms, non-cron tool sends) are unchanged so the rewinding can't
+        # collide with `_send_telegram` family PRs (#46118 / #46952 / #47190).
+        is_cron_path = bool((metadata or {}).get("job_id"))
+        if (
+            target.platform == Platform.TELEGRAM
+            and is_cron_path
+            and _looks_like_cron_markdownv2_table(content)
+        ):
+            pre_len = len(content)
+            content = _unescape_markdownv2_tables(content)
+            if len(content) != pre_len:
+                logger.debug(
+                    "Rewound MarkdownV2-escaped pipe table in cron output "
+                    "(%d -> %d chars) for telegram chat=%s",
+                    pre_len,
+                    len(content),
+                    target.chat_id,
+                )
 
         send_metadata = dict(metadata or {})
         is_named_telegram_private_topic = False

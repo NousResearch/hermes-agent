@@ -11,6 +11,7 @@ avoid retrying with a partial topic route that can render outside the lane.
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1359,6 +1360,56 @@ async def test_send_marks_pool_timeout_retryable_after_exhaustion():
     assert result.success is False
     assert result.retryable is True
     assert attempt[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_send_refreshes_general_pool_after_pool_timeout(monkeypatch):
+    """A wedged general request pool should be drained before retrying.
+
+    This is the recovery path for Telegram's send side: when PTB reports a
+    pool timeout, the request was never sent, so the adapter can safely reset
+    the general Bot API request object and retry with a fresh pool.
+    """
+    adapter = _make_adapter()
+
+    class _RecordingRequest:
+        def __init__(self):
+            self.shutdown = AsyncMock()
+            self.initialize = AsyncMock()
+
+    polling_request = _RecordingRequest()
+    general_request = _RecordingRequest()
+    bot = SimpleNamespace(
+        _request=[polling_request, general_request],
+        send_chat_action=AsyncMock(return_value=None),
+    )
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if general_request.shutdown.await_count == 0:
+            raise FakeTimedOut(
+                "Pool timeout: All connections in the connection pool are "
+                "occupied. Request was *not* sent to Telegram."
+            )
+        return SimpleNamespace(message_id=203)
+
+    bot.send_message = AsyncMock(side_effect=mock_send_message)
+    adapter._bot = bot
+    adapter._app = SimpleNamespace(bot=bot)
+
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock())
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "203"
+    assert attempt[0] == 2
+    assert general_request.shutdown.await_count == 1
+    assert general_request.initialize.await_count == 1
+    assert polling_request.shutdown.await_count == 0
+    assert polling_request.initialize.await_count == 0
 
 
 @pytest.mark.asyncio

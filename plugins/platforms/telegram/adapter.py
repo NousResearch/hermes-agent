@@ -1470,6 +1470,46 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return False
 
+    async def _drain_bot_request_pool(self, request_index: int, pool_name: str) -> None:
+        """Reset one PTB request pool in place.
+
+        PTB stores the getUpdates request and the general Bot API request in a
+        private ``Bot._request`` tuple. When one side wedges into pool timeout,
+        shutting down and re-initializing that specific request object gives the
+        next retry a fresh httpx client without disturbing the other path.
+        """
+        app = getattr(self, "_app", None)
+        bot = getattr(app, "bot", None)
+        if not bot:
+            return
+        try:
+            request_pool = bot._request[request_index]  # noqa: SLF001
+        except Exception:
+            return
+        try:
+            await request_pool.shutdown()
+        except Exception:
+            logger.debug(
+                "[%s] %s request shutdown failed (non-fatal)",
+                self.name,
+                pool_name,
+                exc_info=True,
+            )
+        try:
+            await request_pool.initialize()
+            logger.debug(
+                "[%s] %s request pool drained before retry",
+                self.name,
+                pool_name,
+            )
+        except Exception:
+            logger.debug(
+                "[%s] %s request re-initialize failed (non-fatal)",
+                self.name,
+                pool_name,
+                exc_info=True,
+            )
+
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx connection pool used for getUpdates polling.
 
@@ -1487,31 +1527,11 @@ class TelegramAdapter(BasePlatformAdapter):
         ``(get_updates_request, general_request)``.  There is no public
         accessor for the polling request; review if upgrading to PTB 23+.
         """
-        if not (self._app and self._app.bot):
-            return
-        try:
-            # PTB 22.x: _request is a (get_updates, general) tuple;
-            # no public accessor exists for the polling request.
-            polling_req = self._app.bot._request[0]  # noqa: SLF001
-        except Exception:
-            return
-        try:
-            await polling_req.shutdown()
-        except Exception:
-            logger.debug(
-                "[%s] Polling request shutdown failed (non-fatal)",
-                self.name, exc_info=True,
-            )
-        try:
-            await polling_req.initialize()
-            logger.debug(
-                "[%s] Polling request pool drained before reconnect", self.name
-            )
-        except Exception:
-            logger.debug(
-                "[%s] Polling request re-initialize failed (non-fatal)",
-                self.name, exc_info=True,
-            )
+        await self._drain_bot_request_pool(0, "Polling")
+
+    async def _drain_general_request_pool(self) -> None:
+        """Reset the general Bot API request pool used for send/edit calls."""
+        await self._drain_bot_request_pool(1, "General")
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
@@ -2837,6 +2857,12 @@ class TelegramAdapter(BasePlatformAdapter):
                             and not self._looks_like_pool_timeout(send_err)
                         ):
                             raise
+                        if self._looks_like_pool_timeout(send_err):
+                            # The general Bot API pool is the one that backs
+                            # send/edit calls; if it wedges, refresh it before
+                            # the next retry so we do not keep hammering a dead
+                            # client.
+                            await self._drain_general_request_pool()
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
                             logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",

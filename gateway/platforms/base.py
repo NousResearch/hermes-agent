@@ -3418,8 +3418,10 @@ class BasePlatformAdapter(ABC):
         document extensions route through ``send_document``.  The dispatch
         partition lives in ``gateway/run.py``.
 
-        Paths inside fenced code blocks (``` ... ```) and inline code
-        (`...`) are ignored so that code samples are never mutilated.
+        Paths inside fenced code blocks (``` ... ```) are ignored so that code
+        samples are never mutilated. Inline code is also ignored unless the
+        inline span contains only a local path and the surrounding line looks
+        like a file-delivery claim.
 
         Returns:
             Tuple of (list of expanded file paths, cleaned text with the
@@ -3437,24 +3439,63 @@ class BasePlatformAdapter(ABC):
             re.IGNORECASE,
         )
 
-        # Build spans covered by fenced code blocks and inline code
-        code_spans: list = []
+        # Build spans covered by fenced code blocks and inline code.
+        fenced_spans: list = []
         for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
-            code_spans.append((m.start(), m.end()))
+            fenced_spans.append((m.start(), m.end()))
+        inline_spans: list = []
         for m in re.finditer(r'`[^`\n]+`', content):
-            code_spans.append((m.start(), m.end()))
+            inline_spans.append((m.start(), m.end()))
 
-        def _in_code(pos: int) -> bool:
-            return any(s <= pos < e for s, e in code_spans)
+        def _span_containing(spans: list, pos: int):
+            for start, end in spans:
+                if start <= pos < end:
+                    return start, end
+            return None
 
-        found: list = []  # (raw_match_text, expanded_path)
+        def _looks_like_inline_delivery(span: tuple, raw_path: str) -> bool:
+            start, end = span
+            inline_text = content[start + 1:end - 1].strip()
+            if inline_text != raw_path:
+                return False
+
+            line_start = content.rfind('\n', 0, start) + 1
+            line_end = content.find('\n', end)
+            if line_end == -1:
+                line_end = len(content)
+            line = content[line_start:line_end].lower()
+
+            delivery_patterns = (
+                r'\bfichier\s+(?:disponible|joint|attach|créé|cree|généré|genere|prêt|pret)',
+                r'\bfile\s+(?:available|attached|created|generated|ready)',
+                r'\bvoici\b',
+                r'\bhere(?: is|\'s)\b',
+                r'\bci-joint\b',
+                r'\battached\b',
+                r'\bdownload\b',
+                r'\btélécharg',
+                r'\btelecharg',
+                r'\bresultat\b',
+                r'\brésultat\b',
+                r'\benvoy',
+                r'\blivr',
+            )
+            return any(re.search(pattern, line) for pattern in delivery_patterns)
+
+        found: list = []  # (text_to_remove, expanded_path)
         for match in path_re.finditer(content):
-            if _in_code(match.start()):
+            if _span_containing(fenced_spans, match.start()):
                 continue
             raw = match.group(0)
+            text_to_remove = raw
+            inline_span = _span_containing(inline_spans, match.start())
+            if inline_span:
+                if not _looks_like_inline_delivery(inline_span, raw):
+                    continue
+                text_to_remove = content[inline_span[0]:inline_span[1]]
             expanded = os.path.expanduser(raw)
             if os.path.isfile(expanded):
-                found.append((raw, expanded))
+                found.append((text_to_remove, expanded))
             else:
                 # The reply mentions a deliverable-looking path that does not
                 # exist on disk, so it is silently dropped from native delivery.

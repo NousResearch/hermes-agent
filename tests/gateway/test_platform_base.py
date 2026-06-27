@@ -649,6 +649,43 @@ class TestMediaExtensionAllowlistParity:
         assert "Here is your report:" in stripped
 
 
+class TestExtractLocalFiles:
+    def test_extracts_inline_code_delivery_path(self, tmp_path):
+        pdf_path = tmp_path / "fiche_poste_conseiller_vendeur.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+
+        content = f"Fichier disponible : `{pdf_path}`"
+
+        files, cleaned = BasePlatformAdapter.extract_local_files(content)
+
+        assert files == [str(pdf_path)]
+        assert str(pdf_path) not in cleaned
+        assert "`" not in cleaned
+        assert "Fichier disponible" in cleaned
+
+    def test_keeps_inline_code_sample_path(self, tmp_path):
+        pdf_path = tmp_path / "example.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+
+        content = f"Use `cat {pdf_path}` to inspect the file."
+
+        files, cleaned = BasePlatformAdapter.extract_local_files(content)
+
+        assert files == []
+        assert cleaned == content
+
+    def test_keeps_fenced_code_path(self, tmp_path):
+        pdf_path = tmp_path / "example.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+
+        content = f"```text\n{pdf_path}\n```"
+
+        files, cleaned = BasePlatformAdapter.extract_local_files(content)
+
+        assert files == []
+        assert cleaned == content
+
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(

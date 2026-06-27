@@ -890,13 +890,20 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
         logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
         return None
 
-    raw = result.stdout.strip()
+    raw = result.stdout
+    # Be defensive: subprocess wrappers (and test mocks) sometimes hand back
+    # a non-string stdout. Bail out cleanly instead of crashing the whole
+    # credential resolution chain — the caller will fall back to the JSON
+    # credential file.
+    if not isinstance(raw, str):
+        return None
+    raw = raw.strip()
     if not raw:
         return None
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 

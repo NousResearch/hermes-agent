@@ -12,6 +12,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
+    _read_claude_code_credentials_from_keychain,
     _refresh_oauth_token,
     _to_plain_data,
     _write_claude_code_credentials,
@@ -690,6 +691,32 @@ class TestRunOauthSetupToken:
             token = run_oauth_setup_token()
 
         assert token is None
+
+
+class TestReadClaudeCodeCredentialsFromKeychain:
+    """Regression coverage for issue #27003 — the keychain reader must not
+    crash when subprocess.run hands back a non-string stdout (e.g. a
+    MagicMock left unconfigured by a higher-level test mocking subprocess)."""
+
+    def test_non_string_stdout_returns_none(self, monkeypatch):
+        import agent.anthropic_adapter as mod
+
+        monkeypatch.setattr(mod.platform, "system", lambda: "Darwin")
+        with patch("subprocess.run") as mock_run:
+            # Unconfigured MagicMock — .stdout is itself a MagicMock,
+            # which previously crashed json.loads with a TypeError.
+            mock_run.return_value = MagicMock(returncode=0)
+            result = _read_claude_code_credentials_from_keychain()
+        assert result is None
+
+    def test_invalid_json_stdout_returns_none(self, monkeypatch):
+        import agent.anthropic_adapter as mod
+
+        monkeypatch.setattr(mod.platform, "system", lambda: "Darwin")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="not-json\n")
+            result = _read_claude_code_credentials_from_keychain()
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

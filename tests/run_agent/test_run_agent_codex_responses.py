@@ -690,6 +690,48 @@ def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatc
     assert response.usage.total_tokens == 11
 
 
+def test_run_codex_stream_treats_sdk_null_output_parse_error_as_empty_terminal_output(monkeypatch):
+    """Regression: some Responses-compatible stream iterators raise before
+    yielding ``response.completed`` when that event carries ``output:null``.
+
+    Hermes has already consumed the durable ``response.output_item.done`` items
+    at that point, so the SDK parse failure should behave like an empty/null
+    terminal output field rather than crashing the turn.
+    """
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="item arrived before parse error")],
+    )
+
+    class _SdkNullOutputParseErrorStream:
+        closed = False
+
+        def __iter__(self):
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(type="response.output_item.done", item=output_item)
+            raise TypeError("'NoneType' object is not iterable")
+
+        def close(self):
+            self.closed = True
+
+    create_stream = _SdkNullOutputParseErrorStream()
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert create_stream.closed is True
+    assert response.status == "completed"
+    assert response.output == [output_item]
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

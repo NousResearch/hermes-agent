@@ -438,6 +438,13 @@ def _event_field(event: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _is_sdk_null_output_parse_error(exc: BaseException) -> bool:
+    if not isinstance(exc, TypeError):
+        return False
+    message = str(exc).lower()
+    return "nonetype" in message and "not iterable" in message
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -507,7 +514,24 @@ def _consume_codex_event_stream(
     terminal_error: Any = None
     saw_terminal = False
 
-    for event in event_iter:
+    event_iterator = iter(event_iter)
+    while True:
+        try:
+            event = next(event_iterator)
+        except StopIteration:
+            break
+        except TypeError as exc:
+            if not _is_sdk_null_output_parse_error(exc):
+                raise
+            logger.debug(
+                "Codex Responses SDK raised while parsing stream terminal output; "
+                "treating terminal output as empty. error=%s",
+                exc,
+            )
+            saw_terminal = True
+            terminal_status = terminal_status or "completed"
+            break
+
         if on_event is not None:
             try:
                 on_event(event)

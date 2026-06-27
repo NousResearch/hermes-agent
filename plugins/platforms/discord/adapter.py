@@ -4595,6 +4595,7 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as direct_error:
             display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
             reason = f"Auto-threaded from mention by {display_name}"
+            seed_msg = None
             try:
                 seed_msg = await message.channel.send(f"\U0001f9f5 Thread created by Hermes: **{thread_name}**")
                 thread = await seed_msg.create_thread(
@@ -4604,6 +4605,23 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return thread
             except Exception as fallback_error:
+                # The seed message announces "Thread created by Hermes" *before*
+                # create_thread() is confirmed to succeed.  When the thread call
+                # then fails (commonly a Discord 429 rate-limit on thread
+                # creation), the announcement is left orphaned in the channel and
+                # the caller falls back to replying inline — so the user sees a
+                # "Thread created" message with no thread behind it (#issue).
+                # Delete the orphaned seed message so the announcement only ever
+                # survives when a real thread exists.
+                if seed_msg is not None:
+                    try:
+                        await seed_msg.delete()
+                    except Exception as cleanup_error:
+                        logger.debug(
+                            "[%s] Could not delete orphaned auto-thread seed message: %s",
+                            self.name,
+                            cleanup_error,
+                        )
                 logger.warning(
                     "[%s] Auto-thread creation failed. Direct error: %s. Fallback error: %s",
                     self.name,

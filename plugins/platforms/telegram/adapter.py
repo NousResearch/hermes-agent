@@ -505,6 +505,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_type: Optional[str] = None,
         thread_id: Optional[str] = None,
         user_name: Optional[str] = None,
+        user_handle: Optional[str] = None,
     ) -> bool:
         """Return whether a Telegram inline-button caller may perform gated actions."""
         normalized_user_id = str(user_id or "").strip()
@@ -529,6 +530,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_type=normalized_chat_type,
                     user_id=normalized_user_id,
                     user_name=str(user_name).strip() if user_name else None,
+                    user_handle=str(user_handle).lstrip("@").strip() or None if user_handle else None,
                     thread_id=str(thread_id) if thread_id is not None else None,
                 )
                 return bool(auth_fn(source))
@@ -4232,6 +4234,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+        query_user_handle = getattr(query.from_user, "username", None)
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
@@ -4249,6 +4252,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_chat_type=query_chat_type,
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
+                query_user_handle=query_user_handle,
             )
             return
 
@@ -4271,6 +4275,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_type=str(query_chat_type) if query_chat_type is not None else None,
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
+                    user_handle=query_user_handle,
                 ):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
@@ -4337,6 +4342,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_type=str(query_chat_type) if query_chat_type is not None else None,
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
+                    user_handle=query_user_handle,
                 ):
                     await query.answer(text="⛔ You are not authorized to answer this prompt.")
                     return
@@ -4437,6 +4443,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_type=str(query_chat_type) if query_chat_type is not None else None,
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
+                    user_handle=query_user_handle,
                 ):
                     await query.answer(text="⛔ You are not authorized to answer this prompt.")
                     return
@@ -4539,6 +4546,7 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_type=str(query_chat_type) if query_chat_type is not None else None,
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
+            user_handle=query_user_handle,
         ):
             await query.answer(text="⛔ You are not authorized to answer update prompts.")
             return
@@ -4595,6 +4603,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type,
         query_thread_id,
         query_user_name,
+        query_user_handle=None,
     ) -> None:
         """Dispatch a gmail-triage inline-button callback (gt:verb:arg)."""
         parts = data.split(":", 2)
@@ -4610,6 +4619,7 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_type=str(query_chat_type) if query_chat_type is not None else None,
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
+            user_handle=query_user_handle,
         ):
             await query.answer(text="⛔ You are not authorized to act on this email.")
             return
@@ -5912,7 +5922,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _telegram_group_observe_shared_source(self, source):
         """Return a chat/topic-scoped source for observed Telegram group context."""
-        return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
+        return dataclasses.replace(
+            source, user_id=None, user_name=None, user_handle=None, user_id_alt=None
+        )
 
     def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
         user_id = event.source.user_id or "unknown"
@@ -7096,6 +7108,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     else (chat.title if chat_type == "channel" else None)
                 )
             ),
+            user_handle=getattr(user, "username", None) if user else None,
             thread_id=thread_id_str,
             chat_topic=chat_topic,
             message_id=str(message.message_id),

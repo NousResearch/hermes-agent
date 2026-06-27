@@ -338,6 +338,18 @@ TELEGRAM_HOME_CHANNEL_NAME="My Notes"
 Group chat IDs are negative numbers (e.g., `-1001234567890`). Your personal DM chat ID is the same as your user ID.
 :::
 
+### Finding Your Numeric IDs
+
+`TELEGRAM_ALLOWED_USERS`, `TELEGRAM_HOME_CHANNEL`, and other Telegram ID settings work most reliably with **numeric IDs** rather than @usernames. To find yours:
+
+1. Open Telegram and message [@userinfobot](https://t.me/userinfobot)
+2. Send `/id` — the bot replies with your numeric user ID (e.g., `469682876`)
+3. For groups/channels: add @userinfobot to the group and send `/id@userinfobot`
+
+:::warning
+Prefer numeric IDs. For `TELEGRAM_ALLOWED_USERS`, a `@username` is accepted as a best-effort fallback (matched case-insensitively against the sender's current username), but usernames can change, so it's less reliable than a numeric ID. For `TELEGRAM_HOME_CHANNEL`, a `@username` only works for public channels/supergroups — DMs require the numeric chat ID. Non-numeric values log a one-time warning.
+:::
+
 ### Cron deliveries in topic mode
 
 If you have topic mode enabled in your bot DM, cron messages delivered to the root chat land in the system-only lobby — replying there opens no session and you see the "main chat is reserved for system commands" notice. Create a dedicated forum topic (e.g. `Cron`) and set:

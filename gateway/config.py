@@ -1259,6 +1259,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     telegram_home = os.getenv("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:
+        # Warn if TELEGRAM_HOME_CHANNEL looks like a @username instead of a
+        # numeric chat ID. Telegram Bot API accepts @username chat IDs for
+        # public channels/supergroups, but private DMs require the numeric ID.
+        # A warning here catches accidental username-typed config before it
+        # causes a "chat not found" error at runtime.
+        if not telegram_home.lstrip("-").isdigit():
+            logger.warning(
+                "TELEGRAM_HOME_CHANNEL='%s' is not a numeric chat ID. "
+                "The Telegram Bot API accepts @username chat IDs for public "
+                "channels/supergroups, but private DMs require the numeric chat "
+                "ID (e.g. '469682876'). Send /id to @userinfobot to find your "
+                "numeric chat ID.",
+                telegram_home,
+            )
         config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
             platform=Platform.TELEGRAM,
             chat_id=telegram_home,

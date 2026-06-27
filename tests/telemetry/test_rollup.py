@@ -21,7 +21,7 @@ def _seed(tmp_path):
     em.emit(RunEvent(run_id="r1", trace_id="t1", entrypoint="gateway",
                      platform="telegram", end_reason="completed",
                      start_ns=now - 90_000_000, end_ns=now,
-                     model_call_count=2, tool_call_count=2, estimated_cost_usd=2.1))
+                     model_call_count=2, tool_call_count=2))
     em.emit(ModelCallEvent(span_id="m1", run_id="r1", provider="anthropic",
                            model="claude-opus-4", input_tokens=60000, output_tokens=8000))
     em.emit(ModelCallEvent(span_id="m2", run_id="r1", provider="anthropic",

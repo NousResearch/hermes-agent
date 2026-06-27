@@ -182,7 +182,6 @@ def _on_post_api_request(**kw: Any) -> None:
         cache_write_tokens=int(usage.get("cache_write_tokens") or 0),
         reasoning_tokens=int(usage.get("reasoning_tokens") or 0),
         latency_ms=latency_ms,
-        end_reason="completed",
     )
     with _runs_lock:
         run["model_call_count"] += 1
@@ -324,30 +323,33 @@ def _on_session_finalize(**kw: Any) -> None:
         model_call_count=run.get("model_call_count", 0),
         tool_call_count=run.get("tool_call_count", 0),
         error_count=run.get("error_count", 0),
-        estimated_cost_usd=_as_float(kw.get("estimated_cost_usd")),
-        cost_status=kw.get("cost_status"),
     ))
     spans.clear_run()
 
 
 def _coarse_end_reason(kw: Dict[str, Any]) -> str:
+    """Map a finalize payload to a coarse end reason.
+
+    Production finalize callers pass ``reason`` (e.g. "shutdown", "session_expired",
+    "session_reset"); the older ``turn_exit_reason``/``interrupted``/``failed`` keys are
+    honored when present. Defaults to "ended".
+    """
     if kw.get("interrupted"):
         return "interrupted"
     if kw.get("failed"):
         return "failed"
-    reason = str(kw.get("turn_exit_reason") or "").lower()
+    reason = str(kw.get("turn_exit_reason") or kw.get("reason") or "").lower()
     if "max_iteration" in reason:
         return "max_iterations"
     if "timeout" in reason:
         return "timeout"
-    return "completed"
-
-
-def _as_float(v: Any) -> Optional[float]:
-    try:
-        return float(v) if v is not None else None
-    except (TypeError, ValueError):
-        return None
+    if "expired" in reason:
+        return "expired"
+    if "reset" in reason:
+        return "reset"
+    if "shutdown" in reason or "complete" in reason:
+        return "completed"
+    return reason or "ended"
 
 
 # ── subagent lineage (reserved) ─────────────────────────────────────────────

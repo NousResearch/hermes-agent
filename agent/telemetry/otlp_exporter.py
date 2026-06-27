@@ -140,15 +140,13 @@ def _span_attrs(ev: Dict[str, Any]) -> Dict[str, Any]:
     attrs: Dict[str, Any] = {"hermes.event": kind or "unknown"}
     keep_by_kind = {
         "run": ("entrypoint", "platform", "end_reason",
-                "model_call_count", "tool_call_count", "error_count",
-                "estimated_cost_usd", "cost_status"),
+                "model_call_count", "tool_call_count", "error_count"),
         "span": ("trace_id", "run_id", "parent_span_id", "name", "kind",
                  "start_ns", "end_ns", "status"),
         "model_call": ("provider", "model", "base_url",
                        "input_tokens", "output_tokens", "cache_read_tokens",
-                       "cache_write_tokens", "reasoning_tokens", "latency_ms",
-                       "ttft_ms", "end_reason"),
-        "tool_call": ("tool_name", "backend", "duration_ms", "result_class"),
+                       "cache_write_tokens", "reasoning_tokens", "latency_ms"),
+        "tool_call": ("tool_name", "duration_ms", "result_class"),
         "error": ("error_class", "subsystem", "recovery"),
     }
     for col in keep_by_kind.get(kind, ()):  # type: ignore[arg-type]

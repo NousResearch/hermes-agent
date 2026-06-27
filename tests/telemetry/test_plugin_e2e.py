@@ -63,7 +63,7 @@ def _fire_one_turn(invoke_hook):
     invoke_hook("post_tool_call", session_id="s1", platform="cli",
                 function_name="web_search", duration_ms=210, result='{"data": "ok"}')
     invoke_hook("on_session_finalize", session_id="s1", platform="cli",
-                turn_exit_reason="completed", estimated_cost_usd=0.01, cost_status="known")
+                reason="shutdown")
 
 
 def test_real_dispatch_writes_tel_rows(runtime):

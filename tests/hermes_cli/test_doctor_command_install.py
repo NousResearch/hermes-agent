@@ -1,5 +1,6 @@
 """Tests for the Command Installation check in hermes doctor."""
 
+import os
 import sys
 import types
 from argparse import Namespace
@@ -238,6 +239,70 @@ class TestDoctorCommandInstallation:
         out = _run_doctor(fix=False)
         assert "Command Installation" in out
         assert "$PREFIX/bin" in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_root_fhs_uses_usr_local_bin(self, monkeypatch, tmp_path):
+        """On a root Linux FHS install the command link is /usr/local/bin/hermes,
+        not ~/.local/bin (mirrors install.sh's ROOT_FHS_LAYOUT branch)."""
+        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
+
+        # FHS command link in a tmp dir standing in for /usr/local/bin.
+        fhs_bin_dir = tmp_path / "usr_local_bin"
+        fhs_bin_dir.mkdir(parents=True)
+        fhs_link = fhs_bin_dir / "hermes"
+        fhs_link.symlink_to(hermes_bin)
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+        monkeypatch.setattr(doctor_mod, "_ROOT_FHS_LINK", fhs_link)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out = _run_doctor(fix=False)
+        assert "Command Installation" in out
+        assert "/usr/local/bin" in out
+        assert "correct target" in out
+        # Must NOT fall into the ~/.local/bin branch and report a false miss.
+        assert "~/.local/bin/hermes not found" not in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_root_fhs_fix_does_not_create_stray_local_bin(self, monkeypatch, tmp_path):
+        """`doctor --fix` on a healthy root FHS install must not litter a
+        wrong-PATH ~/.local/bin/hermes symlink."""
+        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
+
+        fhs_bin_dir = tmp_path / "usr_local_bin"
+        fhs_bin_dir.mkdir(parents=True)
+        fhs_link = fhs_bin_dir / "hermes"
+        fhs_link.symlink_to(hermes_bin)
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+        monkeypatch.setattr(doctor_mod, "_ROOT_FHS_LINK", fhs_link)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        _run_doctor(fix=True)
+        assert not (tmp_path / ".local" / "bin" / "hermes").exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_legacy_root_install_falls_through_to_local_bin(self, monkeypatch, tmp_path):
+        """A root install whose link is still under ~/.local/bin (no FHS link)
+        must fall through to the legacy branch unchanged."""
+        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
+
+        # No /usr/local/bin/hermes link exists — point the probe at a missing path.
+        fhs_link = tmp_path / "usr_local_bin" / "hermes"
+        cmd_link_dir = tmp_path / ".local" / "bin"
+        cmd_link_dir.mkdir(parents=True)
+        (cmd_link_dir / "hermes").symlink_to(hermes_bin)
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+        monkeypatch.setattr(doctor_mod, "_ROOT_FHS_LINK", fhs_link)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out = _run_doctor(fix=False)
+        assert "~/.local/bin/hermes → correct target" in out
+        assert "/usr/local/bin" not in out
 
     def test_windows_skips_check(self, monkeypatch, tmp_path):
         """On Windows, the Command Installation section is skipped."""

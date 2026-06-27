@@ -19,6 +19,12 @@ PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
 _DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.hermes/profiles/coder)
 
+# Command-link location for a root FHS-layout install (install.sh's
+# get_command_link_dir ROOT_FHS_LAYOUT branch: /usr/local/bin/hermes).
+# Module-level so the Command Installation check and its tests reference the
+# same path (tests monkeypatch it to a tmp dir to avoid touching /usr/local).
+_ROOT_FHS_LINK = Path("/usr/local/bin/hermes")
+
 # Load environment variables from ~/.hermes/.env so API key checks work
 _env_path = get_env_path()
 load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".env")
@@ -1337,6 +1343,17 @@ def run_doctor(args):
         if _is_termux_env and _prefix:
             _cmd_link_dir = Path(_prefix) / "bin"
             _cmd_link_display = "$PREFIX/bin"
+        elif (
+            sys.platform == "linux"
+            and getattr(os, "geteuid", lambda: 1)() == 0
+            and (_ROOT_FHS_LINK.is_symlink() or _ROOT_FHS_LINK.exists())
+        ):
+            # Root Linux FHS install (install.sh ROOT_FHS_LAYOUT): the command
+            # link lives at /usr/local/bin/hermes, not ~/.local/bin. Key on the
+            # link existing so legacy root installs (link still under
+            # ~/.local/bin) fall through to the else branch unchanged.
+            _cmd_link_dir = _ROOT_FHS_LINK.parent
+            _cmd_link_display = "/usr/local/bin"
         else:
             _cmd_link_dir = Path.home() / ".local" / "bin"
             _cmd_link_display = "~/.local/bin"

@@ -1483,6 +1483,32 @@ class AIAgent:
             review_memory=review_memory,
             review_skills=review_skills,
         )
+
+        # Issue #28976: announce the start so the user knows a background
+        # update kicked off — previously only the end was reported, and
+        # only when something actually changed, so the work was invisible
+        # whenever it ran or completed as a no-op. Same two surfaces and
+        # same `💾 Self-improvement review:` prefix as the end notice in
+        # ``agent.background_review`` so CLI and gateway consumers can
+        # correlate start/end pairs.
+        if review_memory and review_skills:
+            scope = "memory + skills"
+        elif review_memory:
+            scope = "memory"
+        else:
+            scope = "skills"
+        start_msg = f"💾 Self-improvement review: starting ({scope})…"
+        try:
+            self._safe_print(f"  {start_msg}")
+        except Exception:
+            pass
+        bg_cb = getattr(self, "background_review_callback", None)
+        if bg_cb:
+            try:
+                bg_cb(start_msg)
+            except Exception:
+                pass
+
         t = threading.Thread(target=target, daemon=True, name="bg-review")
         t.start()
 

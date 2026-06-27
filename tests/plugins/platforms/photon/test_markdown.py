@@ -127,3 +127,101 @@ async def test_standalone_send_includes_markdown_format(
 
     assert result.get("success") is True
     assert posted[0][1]["format"] == "markdown"
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_retries_retryable_sidecar_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
+    monkeypatch.setenv("PHOTON_STANDALONE_RETRY_BASE_DELAY_SECONDS", "0")
+
+    posted: List[Tuple[str, Dict[str, Any]]] = []
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, payload: Dict[str, Any]) -> None:
+            self._payload = payload
+
+        def json(self) -> Dict[str, Any]:
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url: str, json: Dict[str, Any], headers=None):
+            posted.append((url, json))
+            if len(posted) == 1:
+                return _Resp({"ok": False, "error": "internal sidecar error"})
+            return _Resp({"ok": True, "messageId": "m-retry"})
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+
+    cfg = PlatformConfig(enabled=True, token="", extra={})
+    result = await photon_adapter._standalone_send(cfg, "+15551234567", _MD)
+
+    assert result.get("success") is True
+    assert result.get("message_id") == "m-retry"
+    assert len(posted) == 2
+    assert posted[0][0].endswith("/send")
+    assert posted[1][0].endswith("/send")
+    assert posted[0][1]["format"] == "markdown"
+    assert posted[1][1]["format"] == "markdown"
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_falls_back_to_plain_text_after_markdown_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
+    monkeypatch.setenv("PHOTON_STANDALONE_RETRY_BASE_DELAY_SECONDS", "0")
+
+    posted: List[Tuple[str, Dict[str, Any]]] = []
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, payload: Dict[str, Any]) -> None:
+            self._payload = payload
+
+        def json(self) -> Dict[str, Any]:
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url: str, json: Dict[str, Any], headers=None):
+            posted.append((url, json))
+            if len(posted) <= 2:
+                return _Resp({"ok": False, "error": "internal sidecar error"})
+            return _Resp({"ok": True, "messageId": "m-plain"})
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+
+    cfg = PlatformConfig(enabled=True, token="", extra={})
+    result = await photon_adapter._standalone_send(cfg, "+15551234567", _MD)
+
+    assert result.get("success") is True
+    assert result.get("message_id") == "m-plain"
+    assert len(posted) == 3
+    assert posted[0][1]["format"] == "markdown"
+    assert posted[1][1]["format"] == "markdown"
+    assert "format" not in posted[2][1]
+    assert posted[2][1]["text"] == "bold and code"

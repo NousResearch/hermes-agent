@@ -18,7 +18,13 @@ import json
 import logging
 import random
 import re
-import sqlite3
+import sys as _sys
+
+try:
+    import pysqlite3 as sqlite3  # type: ignore
+    _sys.modules["sqlite3"] = sqlite3  # process-wide swap so other importers pick it up
+except ImportError:
+    import sqlite3  # type: ignore
 import threading
 import time
 from pathlib import Path

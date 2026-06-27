@@ -17,6 +17,23 @@ test('normalizeWhatsAppIdentifier strips jid syntax and plus prefix', () => {
   assert.equal(normalizeWhatsAppIdentifier('19175395595:12@s.whatsapp.net'), '19175395595');
 });
 
+test('normalizeWhatsAppIdentifier: device-suffixed bot id matches a suffix-less mention (group @mention / reply-to-bot regression)', () => {
+  // A bot self-id (sock.user.id / .lid) arrives WITH a device suffix, while a
+  // mentionedJid / quotedParticipant usually arrives WITHOUT one. Both must
+  // collapse to the same bare id, or mention-gated groups and reply-to-bot
+  // detection silently never match.
+  assert.equal(
+    normalizeWhatsAppIdentifier('15551234567:46@s.whatsapp.net'),
+    normalizeWhatsAppIdentifier('15551234567@s.whatsapp.net'),
+  );
+  assert.equal(
+    normalizeWhatsAppIdentifier('99887766554433:46@lid'),
+    normalizeWhatsAppIdentifier('99887766554433@lid'),
+  );
+  // and both reduce to the bare id
+  assert.equal(normalizeWhatsAppIdentifier('15551234567:46@s.whatsapp.net'), '15551234567');
+});
+
 test('expandWhatsAppIdentifiers resolves phone and lid aliases from session files', () => {
   const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
 

@@ -18,6 +18,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+
+
+def _get_env(key: str, default: str = "") -> str:
+    """Read env var from Hermes .env file first, then os.environ."""
+    try:
+        from hermes_cli.config import get_env_value
+        val = (get_env_value(key) or "").strip()
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.environ.get(key, default)
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -473,7 +485,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return "supermemory"
 
     def is_available(self) -> bool:
-        api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
+        api_key = _get_env("SUPERMEMORY_API_KEY", "")
         if not api_key:
             return False
         try:
@@ -504,11 +516,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._session_id = session_id
         self._turn_count = 0
         self._config = _load_supermemory_config(self._hermes_home)
-        self._api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
+        self._api_key = _get_env("SUPERMEMORY_API_KEY", "")
 
         # Resolve container tag: env var > config > default.
         # Supports {identity} template for profile-scoped containers.
-        env_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip()
+        env_tag = _get_env("SUPERMEMORY_CONTAINER_TAG", "").strip()
         raw_tag = env_tag or self._config["container_tag"]
         identity = kwargs.get("agent_identity", "default")
         self._container_tag = _sanitize_tag(raw_tag.replace("{identity}", identity))

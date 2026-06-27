@@ -71,15 +71,19 @@ See the [Where the logs go](#where-the-logs-go) section below for the full routi
 :::
 
 :::note Tool-loop hard stops for unattended gateways
-The `tool_loop_guardrails.hard_stop_enabled` setting defaults to `false`, which is reasonable for interactive CLI and TUI sessions where a person can see repeated tool-call warnings. In unattended gateway or server deployments, warnings alone may not stop an agent that gets stuck in a repeated tool-call loop. Operators who want circuit-breaker behavior should explicitly enable hard stops in the profile's `config.yaml`:
+Failure-based hard stops remain opt-in: `tool_loop_guardrails.hard_stop_enabled` defaults to `false`, which is reasonable for interactive CLI and TUI sessions where a person can see repeated tool-call warnings. Repeated identical results from idempotent read-only tools use the independent `no_progress_hard_stop_enabled` gate, which defaults to `true`. For unattended gateway or server deployments, enable failure hard stops explicitly in the profile's `config.yaml`:
 
 ```yaml
 tool_loop_guardrails:
+  warnings_enabled: true
   hard_stop_enabled: true
+  no_progress_hard_stop_enabled: true
   hard_stop_after:
     exact_failure: 5
     idempotent_no_progress: 5
 ```
+
+Set `no_progress_hard_stop_enabled: false` to opt out of blocking repeated identical read-only results, even when `hard_stop_enabled` is `true`. Setting `warnings_enabled: false` only suppresses warning guidance; it does not disable either hard-stop gate.
 :::
 
 Note: the API server is gated on `API_SERVER_ENABLED=true`. To expose it beyond `127.0.0.1` inside the container, also set `API_SERVER_HOST=0.0.0.0` and an `API_SERVER_KEY` (minimum 8 characters — generate one with `openssl rand -hex 32`). Example:

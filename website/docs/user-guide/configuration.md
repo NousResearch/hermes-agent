@@ -1404,14 +1404,15 @@ agent:
 
 ## Tool-Loop Guardrails
 
-Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects; it does not hard-stop, since a person watching the CLI/TUI can intervene.
+Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent read-only call returning the same result with no progress. Failure loops are warning-first by default so a person watching the CLI/TUI can intervene. Repeated identical results from idempotent read-only tools are blocked by default once they reach the no-progress threshold, because another identical call cannot provide new information.
 
 For unattended gateway / server deployments, enable hard stops so a stuck agent is circuit-broken instead of burning the iteration budget:
 
 ```yaml
 tool_loop_guardrails:
-  warnings_enabled: true       # inject warnings into tool results (default: true)
-  hard_stop_enabled: false     # also BLOCK the call past the hard-stop threshold (default: false)
+  warnings_enabled: true               # inject warnings into tool results (default: true)
+  hard_stop_enabled: false             # block repeated failures (default: false)
+  no_progress_hard_stop_enabled: true  # block repeated identical read-only results (default: true)
   warn_after:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
@@ -1422,7 +1423,13 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 ```
 
-`hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
+The three controls are independent:
+
+- `warnings_enabled` controls only the guidance appended to tool results. Setting it to `false` does not disable either hard-stop gate.
+- `hard_stop_enabled` controls hard stops for repeated tool failures and defaults to `false`. In unattended deployments (gateway, cron, kanban workers), set it to `true` so repeated failures are blocked rather than only warned.
+- `no_progress_hard_stop_enabled` controls hard stops for repeated identical results from idempotent read-only tools and defaults to `true`. Set it to `false` to opt out, even when `hard_stop_enabled` is `true`.
+
+Both hard-stop gates use their corresponding values under `hard_stop_after`. See also [Docker / unattended deployments](docker.md).
 
 ## TTS Configuration
 

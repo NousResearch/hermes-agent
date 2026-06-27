@@ -4602,6 +4602,82 @@ class TestRunConversation:
         third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
         assert "truncated by the output length limit" in third_call_messages[-1]["content"]
 
+    def test_ollama_provider_without_url_signature_still_triggers_heuristic(self, agent):
+        """provider='ollama' triggers the heuristic even when the base URL
+        carries no ``ollama``/``:11434`` signature (e.g. a reverse proxy)."""
+        self._setup_agent(agent)
+        agent.base_url = "http://my-proxy.internal:9000/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "ollama"
+        agent.model = "glm-5.1:cloud"
+
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        misreported_stop = _mock_response(
+            content="Based on the search results, the best next",
+            finish_reason="stop",
+        )
+        continued = _mock_response(
+            content=" step is to update the config.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            tool_turn,
+            misreported_stop,
+            continued,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 3
+        third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
+        assert "truncated by the output length limit" in third_call_messages[-1]["content"]
+
+    def test_zai_via_local_proxy_does_not_trigger_heuristic(self, agent):
+        """Issue #13971: a local LiteLLM proxy forwarding to remote Z.AI
+        must NOT be treated as an Ollama backend. provider='zai' on
+        localhost:8000 with no ollama/:11434 signature reports stop
+        correctly and the response should be delivered as-is."""
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:8000/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "zai"
+        agent.model = "glm-5-turbo"
+
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        # Complete response ending without ASCII punctuation — must NOT be
+        # reclassified as truncated.
+        normal_stop = _mock_response(
+            content="Done — the config has been updated",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [tool_turn, normal_stop]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert result["final_response"] == "Done — the config has been updated"
 
     def test_length_thinking_exhausted_skips_continuation(self, agent):
         """When finish_reason='length' but content is only thinking, skip retries."""

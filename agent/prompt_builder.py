@@ -243,7 +243,10 @@ KANBAN_GUIDANCE = (
     "- **Workspace.** `cd $HERMES_KANBAN_WORKSPACE` first. For a `worktree` kind "
     "with no `.git`, `git worktree add <path> "
     "${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo, then "
-    "cd there.\n"
+    "cd there. For a project-linked task the workspace is a fresh "
+    "`<repo>/.worktrees/<task-id>` and `$HERMES_KANBAN_BRANCH` a deterministic "
+    "`<project-slug>/<task-id>` — the main repo is two levels up, so run "
+    "`git worktree add` from there.\n"
     "- **Deliverables.** Files a human wants go in "
     "`kanban_complete(artifacts=[<absolute paths>])` (top-level param; paths in "
     "`metadata` are NOT uploaded). Files must exist at completion.\n"
@@ -614,7 +617,12 @@ DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
-        "Please do not use markdown as it does not render. "
+        "Standard markdown (**bold**, *italic*, ~~strike~~, # headers, "
+        "`code`, ```code blocks```, [links](url)) is auto-converted to "
+        "WhatsApp's native syntax (*bold*, _italic_, ~strike~, monospace) — "
+        "feel free to write in markdown, and use bullet lists ('- item') "
+        "freely. Tables are NOT supported — prefer bullet lists or labeled "
+        "key:value pairs. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. The file "
         "will be sent as a native WhatsApp attachment — images (.jpg, .png, "
@@ -679,7 +687,11 @@ PLATFORM_HINTS = {
     ),
     "signal": (
         "You are on a text messaging communication platform, Signal. "
-        "Please do not use markdown as it does not render. "
+        "Standard markdown (**bold**, *italic*, ~~strike~~, # headers, "
+        "`code`, ```code blocks```) is auto-converted to Signal's native "
+        "rich formatting — feel free to write in markdown, and use bullet "
+        "lists ('- item') freely (they render as • bullets). Tables are NOT "
+        "supported — prefer bullet lists or labeled key:value pairs. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio as attachments, and other "

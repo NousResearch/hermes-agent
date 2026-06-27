@@ -182,7 +182,10 @@ describe('buildToolView title actions', () => {
     const view = buildToolView(
       part({
         args: { limit: 5, offset: 1, path: './package.json' },
-        result: { content: '1|{\n2|  "name": "bb-rainbows",\n3|  "private": true,\n4|  "version": "0.0.1",\n5|  "type": "module",\n6|  "description": "extra"' },
+        result: {
+          content:
+            '1|{\n2|  "name": "bb-rainbows",\n3|  "private": true,\n4|  "version": "0.0.1",\n5|  "type": "module",\n6|  "description": "extra"'
+        },
         toolName: 'read_file'
       }),
       ''
@@ -247,7 +250,10 @@ describe('buildToolView title actions', () => {
     ] as const
 
     for (const [command, expectedTitle] of rows) {
-      const view = buildToolView(part({ args: { command }, result: { output: 'ok', exit_code: 0 }, toolName: 'terminal' }), '')
+      const view = buildToolView(
+        part({ args: { command }, result: { output: 'ok', exit_code: 0 }, toolName: 'terminal' }),
+        ''
+      )
 
       expect(view.title).toBe(expectedTitle)
     }
@@ -320,8 +326,6 @@ describe('buildToolView caps serialized result size', () => {
 
 describe('countDiffLineStats', () => {
   it('counts added and removed lines', () => {
-    expect(
-      countDiffLineStats(`--- a/x\n+++ b/x\n@@\n-old\n+new\n context\n+another`)
-    ).toEqual({ added: 2, removed: 1 })
+    expect(countDiffLineStats(`--- a/x\n+++ b/x\n@@\n-old\n+new\n context\n+another`)).toEqual({ added: 2, removed: 1 })
   })
 })

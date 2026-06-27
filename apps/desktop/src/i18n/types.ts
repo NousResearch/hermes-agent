@@ -87,6 +87,22 @@ export interface Translations {
     off: string
   }
 
+  fileMenu: {
+    revealFinder: string
+    revealExplorer: string
+    revealFileManager: string
+    revealInSidebar: string
+    copyPath: string
+    copyRelativePath: string
+    rename: string
+    delete: string
+    renameTitle: string
+    renameLabel: string
+    deleteTitle: (name: string) => string
+    deleteBody: string
+    pathCopied: string
+  }
+
   boot: {
     ready: string
     desktopBootFailedWithMessage: (message: string) => string
@@ -285,6 +301,12 @@ export interface Translations {
       toolViewDesc: string
       translucencyTitle: string
       translucencyDesc: string
+      embedsTitle: string
+      embedsDesc: string
+      embedsAsk: string
+      embedsAlways: string
+      embedsOff: string
+      embedsReset: (count: number) => string
       product: string
       productDesc: string
       technical: string
@@ -663,6 +685,8 @@ export interface Translations {
     searchPlaceholder: string
     goTo: string
     goToSession: string
+    branches: string
+    startInBranch: (branch: string) => string
     commandCenter: string
     appearance: string
     settings: string
@@ -1007,13 +1031,73 @@ export interface Translations {
     cronJobs: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
+    showProjects: string
+    showSessions: string
     groupTitleGrouped: string
     groupTitleUngrouped: string
     allPinned: string
     shiftClickHint: string
     noWorkspace: string
+    noProject: string
+    projectEmpty: string
+    noSessions: string
+    projects: {
+      sectionLabel: string
+      newButton: string
+      createTitle: string
+      createDesc: string
+      renameTitle: string
+      addFolderTitle: string
+      namePlaceholder: string
+      foldersLabel: string
+      ideaLabel: string
+      ideaPlaceholder: string
+      ideaGenerate: string
+      ideaGenerating: string
+      ideaShuffle: string
+      noFolders: string
+      addFolder: string
+      primaryBadge: string
+      removeFolder: string
+      create: string
+      menu: string
+      menuRename: string
+      menuAppearance: string
+      noColor: string
+      menuAddFolder: string
+      menuSetActive: string
+      menuDelete: string
+      reveal: string
+      copyPath: string
+      removeFromSidebar: string
+      createFailed: string
+      deleteConfirm: string
+      startWork: string
+      newWorktreeTitle: string
+      newWorktreeDesc: string
+      branchPlaceholder: string
+      startWorkFailed: string
+      convertBranch: string
+      convertBranchTitle: string
+      convertBranchDesc: string
+      convertBranchPlaceholder: string
+      convertBranchInstead: string
+      branchOpenExisting: string
+      branchSwitchHome: string
+      branchCreateWorktree: string
+      branchesLoading: string
+      noBranches: string
+      removeWorktree: string
+      removeWorktreeFailed: string
+      removeWorktreeConfirm: string
+      removeWorktreeDirty: string
+      forceRemove: string
+      enter: (label: string) => string
+      reorder: (label: string) => string
+      toggle: (label: string) => string
+      back: string
+    }
     newSessionIn: (label: string) => string
-    reorderWorkspace: (label: string) => string
     showMoreIn: (count: number, label: string) => string
     loading: string
     loadMore: string
@@ -1023,6 +1107,7 @@ export interface Translations {
       unpin: string
       copyId: string
       export: string
+      branchFrom: string
       rename: string
       archive: string
       newWindow: string
@@ -1135,6 +1220,50 @@ export interface Translations {
     stop: string
     dismiss: string
     exit: (code: number) => string
+    coding: {
+      title: string
+      noBranch: string
+      detached: string
+      clean: string
+      changed: (count: number) => string
+      ahead: (count: number) => string
+      behind: (count: number) => string
+      review: string
+      close: string
+      openChanges: string
+      openFile: string
+      stage: string
+      unstage: string
+      stageAll: string
+      viewAsTree: string
+      viewAsList: string
+      revert: string
+      revertAll: string
+      revertConfirm: string
+      revertAllConfirm: string
+      staged: string
+      noChanges: string
+      notRepo: string
+      noDiff: string
+      scopeUncommitted: string
+      scopeBranch: string
+      scopeLastTurn: string
+      commit: string
+      commitAndPush: string
+      commitPlaceholder: string
+      generateCommitMessage: string
+      stopGenerating: string
+      createPr: string
+      openPr: string
+      ghMissing: string
+      agentShip: string
+      agentShipPrompt: string
+      newBranch: string
+      branchOffFrom: (base: string) => string
+      switchTo: (branch: string) => string
+      switchFailed: (branch: string) => string
+      worktrees: string
+    }
   }
 
   updates: {
@@ -1396,6 +1525,8 @@ export interface Translations {
     couldNotPreview: (path: string) => string
     noProjectTitle: string
     noProjectBody: string
+    noProjectOpen: string
+    noDiffs: string
     unreadableTitle: string
     unreadableBody: (error: string) => string
     emptyTitle: string
@@ -1412,6 +1543,9 @@ export interface Translations {
   preview: {
     tab: string
     closeTab: (label: string) => string
+    closeOthers: string
+    closeToRight: string
+    closeAll: string
     closePane: string
     loading: string
     unavailable: string
@@ -1419,9 +1553,11 @@ export interface Translations {
     hide: string
     openPreview: string
     openInBrowser: string
+    linkHint: string
     sourceLineTitle: string
     source: string
     renderedPreview: string
+    diff: string
     unknownSize: string
     binaryTitle: string
     binaryBody: (label: string) => string
@@ -1431,6 +1567,14 @@ export interface Translations {
     truncated: string
     noInlineTitle: string
     noInlineBody: (mimeType: string) => string
+    edit: string
+    editing: string
+    unsavedChanges: string
+    saveFailed: (message: string) => string
+    diskChangedTitle: string
+    diskChangedBody: string
+    overwrite: string
+    discardReload: string
     console: {
       deselect: string
       select: string
@@ -1492,6 +1636,7 @@ export interface Translations {
       loadingSession: string
       showEarlier: string
       loadingResponse: string
+      resumeWhenBackgroundDone: (count: number) => string
       thinking: string
       today: (time: string) => string
       yesterday: (time: string) => string
@@ -1539,10 +1684,8 @@ export interface Translations {
       loadingQuestion: string
       other: string
       placeholder: string
-      shortcutSuffix: string
-      back: string
       skip: string
-      send: string
+      continueLabel: string
     }
     tool: {
       code: string
@@ -1640,7 +1783,7 @@ export interface Translations {
     sessionBusy: string
     branchStopCurrent: string
     branchNoText: string
-    branchTitle: string
+    branchTitle: (n: number) => string
     branchFailed: string
     deleteFailed: string
     archived: string

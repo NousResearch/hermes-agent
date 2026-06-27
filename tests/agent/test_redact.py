@@ -189,6 +189,84 @@ class TestApiKeyHeaders:
         result = redact_sensitive_text(text)
         assert "anotherOpaqueSecret" not in result
 
+    def test_x_api_key_json_form_masked(self):
+        # JSON-serialized header (request dumps): the closing quote sits between
+        # the name and the colon, so the bare header regex can't see it, and the
+        # value has no vendor prefix for _PREFIX_RE to catch.
+        text = '{"x-api-key": "opaque-local-backend-key-1234567890"}'
+        result = redact_sensitive_text(text)
+        assert "opaque-local-backend-key" not in result
+        assert '"x-api-key":' in result
+
+    def test_x_api_key_json_form_skipped_for_code_file(self):
+        # Code fixtures must pass through unchanged, like _JSON_FIELD_RE.
+        text = '{"x-api-key": "test-fixture-value-1234567890"}'
+        assert redact_sensitive_text(text, code_file=True) == text
+
+
+class TestCookieHeaders:
+    def test_cookie_header_masked(self):
+        text = "Cookie: session=opaque-session-secret-1234567890"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert "Cookie:" in result
+
+    def test_set_cookie_header_masked(self):
+        text = "Set-Cookie: sessionid=opaque-session-secret-123456; HttpOnly; Path=/"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert "Set-Cookie:" in result
+
+    def test_cookie_case_insensitive(self):
+        text = "set-cookie: csrftoken=opaque-csrf-secret-1234567890; SameSite=Lax"
+        result = redact_sensitive_text(text)
+        assert "opaque-csrf-secret" not in result
+
+    def test_cookie_mixed_case_not_bypassed(self):
+        # Mixed-case headers must not bypass the redactor (no casing substring gate).
+        text = "CoOkie: sid=opaque-mixedcase-secret-1234567890"
+        result = redact_sensitive_text(text)
+        assert "opaque-mixedcase-secret" not in result
+
+    def test_set_cookie_mixed_case_not_bypassed(self):
+        text = "sEt-CoOkie: sessionid=opaque-mixedcase-secret-123456; HttpOnly"
+        result = redact_sensitive_text(text)
+        assert "opaque-mixedcase-secret" not in result
+
+    def test_cookie_prose_unchanged(self):
+        # "cookie:" with no name=value pair is plain prose, not a header.
+        text = "the cookie: chocolate chip is the best recipe"
+        assert redact_sensitive_text(text) == text
+
+    def test_cookie_json_form_masked(self):
+        text = '{"Cookie": "sessionid=opaque-session-secret-1234567890; HttpOnly"}'
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert '"Cookie":' in result
+
+    def test_request_dump_headers_block_masked(self):
+        # The real serialize-then-redact sink (agent_runtime_helpers request
+        # dump): both the opaque api key and the cookie must be masked.
+        text = (
+            '{"headers": {"x-api-key": "opaqueCustomBackendKey99887766", '
+            '"Cookie": "sid=opaqueSession5544332211; Path=/"}}'
+        )
+        result = redact_sensitive_text(text, force=True)
+        assert "opaqueCustomBackendKey" not in result
+        assert "opaqueSession5544332211" not in result
+
+    def test_cookie_json_form_with_escaped_quote_masked(self):
+        # A JSON cookie value containing an escaped quote must be masked whole,
+        # not truncated at the embedded quote (which would leak the suffix).
+        text = '{"Cookie": "sid=abc\\"def; csrftoken=opaqueCsrfSecret998877"}'
+        result = redact_sensitive_text(text, force=True)
+        assert "opaqueCsrfSecret" not in result
+
+    def test_secret_header_json_form_with_escaped_quote_masked(self):
+        text = '{"x-api-key": "ab\\"opaqueKeyTail1234567890"}'
+        result = redact_sensitive_text(text, force=True)
+        assert "opaqueKeyTail" not in result
+
 
 class TestTelegramTokens:
     def test_bot_token(self):

@@ -1644,6 +1644,8 @@ export const zhHant = defineLocale({
     windowPickerEmpty: '找不到開啟的視窗。',
     windowPickerError: '無法列出開啟的視窗。',
     windowPickerLoading: '正在列出開啟的視窗…',
+    windowPreviewLive: '即時',
+    windowPreviewUnavailable: '無法預覽 — 視窗可能已最小化或關閉。',
     promptSnippets: '提示詞片段…',
     tipPre: '提示：輸入 ',
     tipPost: ' 以行內參照檔案。',

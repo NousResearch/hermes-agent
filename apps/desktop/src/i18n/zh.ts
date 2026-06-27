@@ -1930,6 +1930,8 @@ export const zh: Translations = {
     windowPickerEmpty: '未找到打开的窗口。',
     windowPickerError: '无法列出打开的窗口。',
     windowPickerLoading: '正在列出打开的窗口…',
+    windowPreviewLive: '实时',
+    windowPreviewUnavailable: '无法预览 — 窗口可能已最小化或关闭。',
     promptSnippets: '提示词片段…',
     tipPre: '提示：输入 ',
     tipPost: ' 以内联引用文件。',

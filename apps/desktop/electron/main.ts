@@ -8109,6 +8109,42 @@ ipcMain.handle('hermes:listWindows', async () => {
   return Array.isArray(parsed?.windows) ? parsed.windows : []
 })
 
+ipcMain.handle('hermes:captureWindow', async (_event, title) => {
+  const target = String(title || '').trim()
+  if (!target) return null
+
+  const python = getNoConsoleVenvPython(VENV_ROOT)
+  if (!fileExists(python) || !directoryExists(SIDECAR_DIR)) {
+    return null
+  }
+
+  const { execFile } = require('node:child_process')
+  const env = {
+    ...process.env,
+    ...buildDesktopBackendEnv({
+      hermesHome: HERMES_HOME,
+      pythonPathEntries: [SIDECAR_DIR, ...getVenvSitePackagesEntries(VENV_ROOT)],
+      venvRoot: VENV_ROOT
+    })
+  }
+
+  try {
+    const stdout = await new Promise((resolve, reject) => {
+      execFile(
+        python,
+        ['-m', 'sidecar.service', '--target', target, '--capture', '--json'],
+        { cwd: SIDECAR_DIR, env, timeout: 15000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+        (err, out) => (err ? reject(err) : resolve(String(out || '')))
+      )
+    })
+    const parsed = JSON.parse(stdout)
+    return typeof parsed?.image === 'string' ? parsed.image : null
+  } catch {
+    // Window closed / not found / capture failed — preview shows a placeholder.
+    return null
+  }
+})
+
 ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   clipboard.writeText(String(text || ''))
 

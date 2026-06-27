@@ -1755,6 +1755,8 @@ export const en: Translations = {
     windowPickerEmpty: 'No open windows found.',
     windowPickerError: 'Could not list open windows.',
     windowPickerLoading: 'Listing open windows…',
+    windowPreviewLive: 'live',
+    windowPreviewUnavailable: 'Preview unavailable — the window may be minimized or closed.',
     promptSnippets: 'Prompt snippets…',
     tipPre: 'Tip: type ',
     tipPost: ' to reference files inline.',

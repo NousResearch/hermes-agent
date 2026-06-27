@@ -80,6 +80,9 @@ declare global {
       // List open top-level windows on the desktop (via the hermes-eats-world
       // sidecar). Powers the composer's "attach app/window" picker.
       listWindows: () => Promise<HermesWindowInfo[]>
+      // Capture a window (by title) as a base64 PNG data URL, or null if it
+      // can't be captured. Powers the live preview panel.
+      captureWindow: (title: string) => Promise<string | null>
       writeClipboard: (text: string) => Promise<boolean>
       saveImageFromUrl: (url: string) => Promise<boolean>
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>

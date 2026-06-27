@@ -1694,6 +1694,8 @@ export const ja = defineLocale({
     windowPickerEmpty: '開いているウィンドウが見つかりません。',
     windowPickerError: '開いているウィンドウを取得できませんでした。',
     windowPickerLoading: '開いているウィンドウを取得中…',
+    windowPreviewLive: 'ライブ',
+    windowPreviewUnavailable: 'プレビューを表示できません — ウィンドウが最小化または閉じられている可能性があります。',
     promptSnippets: 'プロンプトスニペット…',
     tipPre: 'ヒント: ',
     tipPost: ' と入力してファイルをインラインで参照。',

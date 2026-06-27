@@ -1646,6 +1646,34 @@ def get_model_context_length(
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
 
+    # 0a. MoA virtual provider — ``model`` is a preset name, not a real model,
+    # and ``base_url`` is the local virtual endpoint, so every probe below would
+    # miss and fall through to the 256K default. The aggregator is the acting
+    # model, so resolve the context window from the aggregator slot's real
+    # provider+model instead. References are advisory-only and never bound the
+    # acting context, so they're ignored here.
+    if (provider or "").strip().lower() == "moa":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import resolve_moa_preset
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            preset = resolve_moa_preset(load_config().get("moa") or {}, model)
+            agg = preset.get("aggregator") or {}
+            agg_provider = str(agg.get("provider") or "").strip()
+            agg_model = str(agg.get("model") or "").strip()
+            if agg_model and agg_provider and agg_provider.lower() != "moa":
+                rt = resolve_runtime_provider(requested=agg_provider, target_model=agg_model)
+                return get_model_context_length(
+                    agg_model,
+                    base_url=rt.get("base_url", "") or "",
+                    api_key=rt.get("api_key", "") or "",
+                    provider=agg_provider,
+                )
+        except Exception:
+            logger.debug("MoA aggregator context-length resolution failed", exc_info=True)
+        # Fall through to the generic default if aggregator resolution failed.
+
     # 0b. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.

@@ -1524,3 +1524,51 @@ class TestGrok43StaleCacheGuard:
                 slug, base_url=base, api_key="", provider="xai"
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
+
+
+class TestMoAContextLength:
+    """MoA virtual provider resolves context from the aggregator slot, not 256K default."""
+
+    def _write_moa_config(self, home, aggregator):
+        import os
+        os.makedirs(home, exist_ok=True)
+        with open(os.path.join(home, "config.yaml"), "w") as f:
+            yaml.safe_dump(
+                {
+                    "moa": {
+                        "default_preset": "p",
+                        "presets": {
+                            "p": {
+                                "enabled": True,
+                                "reference_models": [
+                                    {"provider": "openrouter", "model": "openai/gpt-5.5"}
+                                ],
+                                "aggregator": aggregator,
+                            }
+                        },
+                    }
+                },
+                f,
+            )
+
+    def test_moa_resolves_from_aggregator(self, tmp_path, monkeypatch):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(home, {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"})
+
+        # The MoA preset name + virtual base_url would otherwise fall through to
+        # the 256K default; instead it mirrors the aggregator's real window.
+        agg_ctx = get_model_context_length(
+            "anthropic/claude-opus-4.8", base_url="https://openrouter.ai/api/v1", provider="openrouter"
+        )
+        moa_ctx = get_model_context_length("p", base_url="http://127.0.0.1/v1", provider="moa")
+        assert moa_ctx == agg_ctx
+
+    def test_moa_config_override_still_wins(self, tmp_path, monkeypatch):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(home, {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"})
+        ctx = get_model_context_length(
+            "p", base_url="http://127.0.0.1/v1", provider="moa", config_context_length=500_000
+        )
+        assert ctx == 500_000

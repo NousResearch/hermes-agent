@@ -14,6 +14,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 import yaml
 
+from hermes_cli import profiles as profiles_mod
 from hermes_cli.profiles import (
     normalize_profile_name,
     validate_profile_name,
@@ -57,6 +58,61 @@ def profile_env(tmp_path, monkeypatch):
     default_home.mkdir(exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(default_home))
     return tmp_path
+
+
+class TestCountSkills:
+    """Tests for profile skill-count caching."""
+
+    def setup_method(self):
+        profiles_mod._skill_count_cache.clear()
+
+    def teardown_method(self):
+        profiles_mod._skill_count_cache.clear()
+
+    def test_count_skills_uses_ttl_cache(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / "profile"
+        skill_one = profile_dir / "skills" / "one"
+        skill_one.mkdir(parents=True)
+        (skill_one / "SKILL.md").write_text("one", encoding="utf-8")
+
+        now = [10.0]
+        calls = 0
+        real_rglob = Path.rglob
+
+        def counting_rglob(self, pattern):
+            nonlocal calls
+            if self == profile_dir / "skills" and pattern == "SKILL.md":
+                calls += 1
+            return real_rglob(self, pattern)
+
+        monkeypatch.setattr(profiles_mod.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(Path, "rglob", counting_rglob)
+
+        assert profiles_mod._count_skills(profile_dir) == 1
+        assert calls == 1
+
+        skill_two = profile_dir / "skills" / "two"
+        skill_two.mkdir()
+        (skill_two / "SKILL.md").write_text("two", encoding="utf-8")
+
+        assert profiles_mod._count_skills(profile_dir) == 1
+        assert calls == 1
+
+        now[0] += profiles_mod._SKILL_COUNT_CACHE_TTL_SECONDS + 1
+
+        assert profiles_mod._count_skills(profile_dir) == 2
+        assert calls == 2
+
+    def test_count_skills_does_not_cache_missing_skills_dir(self, tmp_path):
+        profile_dir = tmp_path / "profile"
+
+        assert profiles_mod._count_skills(profile_dir) == 0
+
+        skill_dir = profile_dir / "skills" / "later"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("later", encoding="utf-8")
+
+        assert profiles_mod._count_skills(profile_dir) == 1
 
 
 # ===================================================================

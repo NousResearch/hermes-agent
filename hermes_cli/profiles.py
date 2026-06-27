@@ -27,6 +27,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional, Tuple
@@ -235,6 +236,9 @@ _HERMES_SUBCOMMANDS = frozenset({
     "mcp", "sessions", "insights", "version", "update", "uninstall",
     "profile", "plugins", "honcho", "acp",
 })
+
+_SKILL_COUNT_CACHE_TTL_SECONDS = 300.0
+_skill_count_cache: dict[Path, tuple[float, int]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -649,11 +653,20 @@ def _count_skills(profile_dir: Path) -> int:
     skills_dir = profile_dir / "skills"
     if not skills_dir.is_dir():
         return 0
+
+    now = time.monotonic()
+    cached = _skill_count_cache.get(skills_dir)
+    if cached is not None:
+        cached_at, cached_count = cached
+        if now - cached_at < _SKILL_COUNT_CACHE_TTL_SECONDS:
+            return cached_count
+
     count = 0
     for md in skills_dir.rglob("SKILL.md"):
         if is_excluded_skill_path(md):
             continue
         count += 1
+    _skill_count_cache[skills_dir] = (now, count)
     return count
 
 

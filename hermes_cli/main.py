@@ -7455,10 +7455,11 @@ def _install_python_dependencies_with_optional_fallback(
     ``_quarantine_running_hermes_exe`` for the rationale.
     """
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
+    install_env = _augment_install_env_for_windows_py314(env)
 
     def _install(args: list[str]) -> None:
         _run_quarantined_install(
-            install_cmd_prefix + args, env=env, scripts_dir=scripts_dir
+            install_cmd_prefix + args, env=install_env, scripts_dir=scripts_dir
         )
 
     try:
@@ -7499,7 +7500,33 @@ def _install_python_dependencies_with_optional_fallback(
     # stage. Reinstall with --reinstall to force resolution if anything is
     # missing, then re-verify so the failure surfaces here instead of
     # downstream.
-    _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
+    _verify_core_dependencies_installed(install_cmd_prefix, env=install_env, group=group)
+
+
+def _augment_install_env_for_windows_py314(
+    env: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Add Windows/Python 3.14 install workarounds for native Rust deps.
+
+    `pywinpty` 2.x still falls back to a source build on CPython 3.14 because
+    upstream does not publish cp314 wheels. PyO3 rejects 3.14 by default even
+    though the stable ABI build path works on this machine, so `hermes update`
+    can fail during `pip install -e .` after an otherwise-successful code pull.
+
+    Setting `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` suppresses that guard and
+    lets maturin build against the stable ABI. We scope it narrowly to Windows
+    on Python 3.14+ so normal installs stay unchanged elsewhere.
+    """
+    if not _is_windows():
+        return env
+    if sys.version_info < (3, 14):
+        return env
+
+    merged = dict(os.environ)
+    if env:
+        merged.update(env)
+    merged.setdefault("PYO3_USE_ABI3_FORWARD_COMPATIBILITY", "1")
+    return merged
 
 
 def _verify_core_dependencies_installed(

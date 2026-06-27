@@ -534,6 +534,11 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "(only for tests that genuinely need real os.kill / subprocess "
         "behaviour — e.g. PTY tests that signal their own child).",
     )
+    # pytest-timeout's SIGALRM mode is POSIX-only. The project-wide addopts use
+    # `--timeout-method=signal`; normalize that to `thread` on Windows so the
+    # suite can run under native CPython without per-invocation overrides.
+    if sys.platform == "win32" and getattr(config.option, "timeout_method", None) == "signal":
+        config.option.timeout_method = "thread"
 
     # The pyproject addopts pin ``--timeout-method=signal`` relies on
     # ``signal.SIGALRM``, which does not exist on Windows — pytest-timeout

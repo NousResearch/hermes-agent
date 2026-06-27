@@ -505,6 +505,56 @@ def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
     ]
 
 
+def test_install_with_optional_fallback_enables_pyo3_abi3_on_windows_py314(monkeypatch):
+    calls = []
+    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(hermes_main.sys, "version_info", (3, 14, 4))
+    monkeypatch.setattr(
+        hermes_main,
+        "_load_installable_optional_extras",
+        lambda group="all": [],
+    )
+    monkeypatch.setattr(hermes_main, "_verify_core_dependencies_installed", lambda *args, **kwargs: None)
+
+    def fake_run_quarantined_install(cmd, **kwargs):
+        calls.append((cmd, kwargs.get("env")))
+
+    monkeypatch.setattr(hermes_main, "_run_quarantined_install", fake_run_quarantined_install)
+
+    hermes_main._install_python_dependencies_with_optional_fallback(
+        ["uv", "pip"],
+        env={"VIRTUAL_ENV": "C:\\venv"},
+    )
+
+    assert calls, "expected at least one install attempt"
+    assert calls[0][1]["PYO3_USE_ABI3_FORWARD_COMPATIBILITY"] == "1"
+    assert calls[0][1]["VIRTUAL_ENV"] == "C:\\venv"
+
+
+def test_install_with_optional_fallback_leaves_env_unchanged_off_windows(monkeypatch):
+    calls = []
+    monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
+    monkeypatch.setattr(
+        hermes_main,
+        "_load_installable_optional_extras",
+        lambda group="all": [],
+    )
+    monkeypatch.setattr(hermes_main, "_verify_core_dependencies_installed", lambda *args, **kwargs: None)
+
+    def fake_run_quarantined_install(cmd, **kwargs):
+        calls.append(kwargs.get("env"))
+
+    monkeypatch.setattr(hermes_main, "_run_quarantined_install", fake_run_quarantined_install)
+
+    base_env = {"VIRTUAL_ENV": "/tmp/venv"}
+    hermes_main._install_python_dependencies_with_optional_fallback(
+        ["uv", "pip"],
+        env=base_env,
+    )
+
+    assert calls == [base_env]
+
+
 def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch, capsys):
     """Long quiet installs should emit periodic heartbeat lines."""
 

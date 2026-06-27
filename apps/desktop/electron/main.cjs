@@ -697,7 +697,7 @@ app.setAboutPanelOptions({
 
 // Custom scheme for streaming local media (video/audio) into the renderer.
 // Reading large media through `readFileDataUrl` failed: it base64-loads the
-// whole file into memory and is hard-capped at DATA_URL_READ_MAX_BYTES (16 MB),
+// whole file into memory and is hard-capped at DATA_URL_READ_MAX_BYTES (25 MB),
 // so any non-trivial video silently refused to load. Streaming via a protocol
 // handler removes the size cap and gives the <video> element seekable,
 // range-aware playback. Must be registered before the app is ready.

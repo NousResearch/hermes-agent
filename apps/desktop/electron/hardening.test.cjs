@@ -6,6 +6,7 @@ const test = require('node:test')
 const { pathToFileURL } = require('node:url')
 
 const {
+  DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
   resolveDirectoryForIpc,
@@ -27,6 +28,10 @@ test('resolveTimeoutMs falls back to defaults and accepts overrides', () => {
   assert.equal(resolveTimeoutMs(0), DEFAULT_FETCH_TIMEOUT_MS)
   assert.equal(resolveTimeoutMs(-25), DEFAULT_FETCH_TIMEOUT_MS)
   assert.equal(resolveTimeoutMs('2750'), 2750)
+})
+
+test('data URL reads allow desktop images up to the gateway image cap', () => {
+  assert.equal(DATA_URL_READ_MAX_BYTES, 25 * 1024 * 1024)
 })
 
 test('encryptDesktopSecret requires available secure storage', () => {

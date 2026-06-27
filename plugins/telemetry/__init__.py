@@ -296,9 +296,15 @@ def _as_float(v: Any) -> Optional[float]:
 
 
 # ── subagent lineage (reserved) ─────────────────────────────────────────────
+# A delegated subagent runs its own ``run_conversation`` with its own session id, so
+# its model/tool calls are already captured as a separate tel_runs row via the normal
+# hooks — no subagent activity is lost. These hooks fire with the parent<->child bridge
+# (parent_session_id, child_session_id, child_role, child_goal); they are reserved for
+# recording parent->child *lineage* (linking a child run back to its parent), which
+# needs a tel_runs.parent_run_id column. Deferred until a consumer needs the delegation
+# tree; left registered as the attachment point.
 @_safe
 def _on_subagent_start(**kw: Any) -> None:
-    # Subagents inherit the run context via contextvars; no explicit handling needed.
     return None
 
 

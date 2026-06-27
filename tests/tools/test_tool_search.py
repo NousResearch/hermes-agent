@@ -113,6 +113,30 @@ class TestClassification:
         from tools.tool_search import is_deferrable_tool_name
         assert not is_deferrable_tool_name("xx_definitely_not_a_tool_xx")
 
+
+    def test_opt_in_builtin_toolset_can_defer_core_tools(self):
+        """Suitcase MVP: core tools still do not defer by default, but a
+        named built-in toolset can opt into bridge deferral via config.
+        """
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+
+        assert not is_deferrable_tool_name("browser_navigate")
+        cfg = ToolSearchConfig.from_raw({"defer_builtin_toolsets": ["browser"]})
+        assert is_deferrable_tool_name("browser_navigate", config=cfg)
+        assert is_deferrable_tool_name("browser_click", config=cfg)
+        # Other core tools are untouched.
+        assert not is_deferrable_tool_name("terminal", config=cfg)
+
+    def test_never_defer_overrides_builtin_toolset_suitcase(self):
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+
+        cfg = ToolSearchConfig.from_raw({
+            "defer_builtin_toolsets": ["browser"],
+            "never_defer_tools": ["browser_navigate"],
+        })
+        assert not is_deferrable_tool_name("browser_navigate", config=cfg)
+        assert is_deferrable_tool_name("browser_click", config=cfg)
+
     def test_classify_keeps_unknown_in_visible(self):
         """A tool we can't classify stays visible — never silently dropped.
 
@@ -265,6 +289,30 @@ class TestAssembly:
         names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
         assert "tool_search" not in names
 
+
+    def test_builtin_suitcase_activates_bridge_and_hides_selected_core_tools(self):
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+
+        defs = [
+            _td("browser_navigate", "Navigate browser"),
+            _td("browser_click", "Click browser"),
+            _td("terminal", "Run shell"),
+        ]
+        result = assemble_tool_defs(
+            defs,
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({
+                "enabled": "on",
+                "defer_builtin_toolsets": ["browser"],
+            }),
+        )
+        assert result.activated
+        names = {t["function"]["name"] for t in result.tool_defs}
+        assert "terminal" in names
+        assert "browser_navigate" not in names
+        assert "browser_click" not in names
+        assert BRIDGE_TOOL_NAMES.issubset(names)
+
     def test_idempotent_when_bridge_already_present(self):
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
         defs = [_td("terminal", "Run shell"), _td("tool_search", "old")]
@@ -285,6 +333,49 @@ class TestAssembly:
 
 
 class TestBridgeDispatch:
+
+    def test_builtin_suitcase_search_describe_and_resolve(self):
+        from tools.tool_search import (
+            ToolSearchConfig, dispatch_tool_search, dispatch_tool_describe,
+            resolve_underlying_call, scoped_deferrable_names,
+        )
+
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "defer_builtin_toolsets": ["browser"],
+        })
+        defs = [
+            _td("browser_navigate", "Navigate browser to URL", {"url": {"type": "string"}}),
+            _td("terminal", "Run shell"),
+        ]
+        search = json.loads(dispatch_tool_search(
+            {"query": "navigate", "limit": 5},
+            current_tool_defs=defs,
+            config=cfg,
+        ))
+        assert search["total_available"] == 1
+        assert search["matches"][0]["name"] == "browser_navigate"
+
+        described = json.loads(dispatch_tool_describe(
+            {"name": "browser_navigate"},
+            current_tool_defs=defs,
+            config=cfg,
+        ))
+        assert described["name"] == "browser_navigate"
+        assert "url" in described["parameters"].get("properties", {})
+
+        names = scoped_deferrable_names(defs, config=cfg)
+        assert "browser_navigate" in names
+        assert "terminal" not in names
+
+        name, args, err = resolve_underlying_call(
+            {"name": "browser_navigate", "arguments": {"url": "https://example.com"}},
+            config=cfg,
+        )
+        assert err is None
+        assert name == "browser_navigate"
+        assert args["url"] == "https://example.com"
+
     def test_tool_search_requires_query(self):
         from tools.tool_search import dispatch_tool_search
         result = dispatch_tool_search({}, current_tool_defs=[])
@@ -352,6 +443,46 @@ class TestBridgeDispatch:
 
 
 class TestHandleFunctionCallIntegration:
+
+    def test_model_tools_bridge_can_reach_opted_in_builtin_tool(self, monkeypatch):
+        """Integration smoke: model_tools uses the same loaded config for
+        tool_search/tool_describe/tool_call, so opted-in built-ins are not
+        searchable-but-uninvocable.
+        """
+        import model_tools
+        from tools import tool_search as ts
+
+        cfg = ts.ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "defer_builtin_toolsets": ["browser"],
+        })
+        monkeypatch.setattr(ts, "load_config", lambda: cfg)
+
+        search = json.loads(model_tools.handle_function_call(
+            function_name="tool_search",
+            function_args={"query": "browser navigate", "limit": 10},
+            enabled_toolsets=["browser"],
+        ))
+        assert search["total_available"] >= 1
+        assert any(m["name"] == "browser_navigate" for m in search["matches"])
+
+        described = json.loads(model_tools.handle_function_call(
+            function_name="tool_describe",
+            function_args={"name": "browser_navigate"},
+            enabled_toolsets=["browser"],
+        ))
+        assert described["name"] == "browser_navigate"
+
+        # Don't actually launch browser navigation in this integration test;
+        # this asserts the scoping gate recognizes browser_navigate as
+        # bridge-reachable under the suitcase config.
+        defs = model_tools.get_tool_definitions(
+            enabled_toolsets=["browser"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        assert "browser_navigate" in ts.scoped_deferrable_names(defs, config=cfg)
+
     def test_tool_search_dispatch_through_handle_function_call(self):
         """The dispatcher recognizes the bridge tool by name."""
         import model_tools

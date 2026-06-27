@@ -15,13 +15,18 @@ problem. When activated, MCP and plugin tools are replaced in the
 model-visible tools array by three bridge tools, and the model loads each
 specific tool's schema on demand.
 
-:::info Built-in Hermes tools never defer
-The tools that make up Hermes' core capability set (`terminal`,
-`read_file`, `write_file`, `patch`, `search_files`, `todo`, `memory`,
-`browser_*`, `web_search`, `web_extract`, `clarify`, `execute_code`,
-`delegate_task`, `session_search`, `send_message`, and the rest of
-`_HERMES_CORE_TOOLS`) are *always* loaded directly. Only MCP tools and
-non-core plugin tools are eligible for deferral.
+:::info Built-in Hermes tools defer only when explicitly opted in
+By default, the tools that make up Hermes' core capability set
+(`terminal`, `read_file`, `write_file`, `patch`, `search_files`, `todo`,
+`memory`, `browser_*`, `web_search`, `web_extract`, `clarify`,
+`execute_code`, `delegate_task`, `session_search`, `send_message`, and
+the rest of `_HERMES_CORE_TOOLS`) are loaded directly, just like older
+Hermes releases.
+
+Advanced users can opt selected built-in **toolsets** into the bridge with
+`defer_builtin_toolsets`. This is useful for long-running gateway sessions
+where rarely used capability bundles would otherwise consume context on
+every turn. Core deferral is never enabled implicitly.
 :::
 
 ## How it works
@@ -78,6 +83,8 @@ tools:
     threshold_pct: 10   # percentage of context — only used in auto mode
     search_default_limit: 5
     max_search_limit: 20
+    defer_builtin_toolsets: []  # opt-in: browser, image_gen, tts, file, ...
+    never_defer_tools: []       # escape hatch for individual tools
 ```
 
 | Key | Default | Meaning |
@@ -86,6 +93,33 @@ tools:
 | `threshold_pct` | `10` | Percentage of context length at which `auto` mode kicks in. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
+| `defer_builtin_toolsets` | `[]` | Optional list of built-in toolsets whose tools may be hidden behind `tool_search` / `tool_describe` / `tool_call`. Empty preserves historical behavior. |
+| `never_defer_tools` | `[]` | Optional list of individual tool names that must stay directly visible even when their toolset is listed in `defer_builtin_toolsets`. |
+
+Example: keep common conversation tools visible, but pack browser, image,
+and TTS capabilities behind the bridge until the model asks for them:
+
+```yaml
+tools:
+  tool_search:
+    enabled: on
+    defer_builtin_toolsets:
+      - browser
+      - image_gen
+      - tts
+```
+
+Example: defer most browser tools but keep navigation directly visible:
+
+```yaml
+tools:
+  tool_search:
+    enabled: on
+    defer_builtin_toolsets:
+      - browser
+    never_defer_tools:
+      - browser_navigate
+```
 
 You can also flip the legacy boolean shape:
 
@@ -146,6 +180,10 @@ to any progressive-disclosure design, not specific to this implementation:
   discover or call a tool outside that subset — the deferred catalog is
   the deferrable slice of the session's own enabled/disabled toolsets,
   not the whole process registry.
+- **Built-in toolset deferral is explicit.** Core tools remain directly
+  visible unless their owning toolset is named in `defer_builtin_toolsets`.
+  Use `never_defer_tools` for high-frequency tools you want directly
+  visible even when their larger toolset is packed behind the bridge.
 - **No JS sandbox.** Hermes uses the simpler "structured tools" mode
   (search / describe / call as plain functions). The JS-sandbox "code
   mode" some other implementations offer is a large surface area; we

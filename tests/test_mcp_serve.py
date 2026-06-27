@@ -1058,8 +1058,8 @@ class TestEdgeCases:
 class TestEventBridgePollE2E:
     """End-to-end tests for the EventBridge polling loop with real files."""
 
-    def test_poll_detects_new_messages(self, tmp_path, monkeypatch):
-        """Write to SQLite + sessions.json, verify EventBridge picks it up."""
+    def test_initial_poll_baselines_existing_messages(self, tmp_path, monkeypatch):
+        """Existing transcript rows must not be replayed as live events."""
         import mcp_serve
         sessions_dir = tmp_path / "sessions"
         sessions_dir.mkdir()
@@ -1109,12 +1109,12 @@ class TestEventBridgePollE2E:
         # Run one poll cycle manually
         bridge._poll_once(TestDB())
 
-        # Should have found the messages
+        # Startup should establish the last-seen timestamp without replaying
+        # old conversation history as new MCP events.
         result = bridge.poll_events(after_cursor=0)
-        assert len(result["events"]) == 2
-        assert result["events"][0]["role"] == "user"
-        assert result["events"][0]["content"] == "First message"
-        assert result["events"][1]["role"] == "assistant"
+        assert result["events"] == []
+        assert result["next_cursor"] == 0
+        assert bridge._last_poll_timestamps["agent:main:telegram:dm:poll_test"] > 0
 
     def test_poll_skips_when_unchanged(self, tmp_path, monkeypatch):
         """Second poll with no file changes should be a no-op."""
@@ -1206,10 +1206,11 @@ class TestEventBridgePollE2E:
         db = TestDB()
         bridge = mcp_serve.EventBridge()
 
-        # First poll
+        # First poll establishes the baseline and should not replay history.
         bridge._poll_once(db)
         r1 = bridge.poll_events(after_cursor=0)
-        assert len(r1["events"]) == 1
+        assert r1["events"] == []
+        assert r1["next_cursor"] == 0
 
         # Add a new message to the DB
         conn = sqlite3.connect(str(db_path))

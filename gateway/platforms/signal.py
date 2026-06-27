@@ -1021,6 +1021,15 @@ class SignalAdapter(BasePlatformAdapter):
         """Validate signal-cli send response results.
 
         Returns (success, error_message).
+
+        NOTE: signal-cli (since v0.14.3) sometimes returns RATE_LIMIT_FAILURE
+        in the results array even when the message was successfully delivered.
+        This is a known daemon quirk — it reports a rate-limit advisory on
+        every send during periods of elevated traffic, but the message still
+        lands in the recipient's inbox. Treating RATE_LIMIT_FAILURE as a hard
+        failure causes base.py to retry with a plain-text fallback, producing
+        a duplicate message with the ugly "(Response formatting failed,
+        plain text:)" prefix. So we treat it as success.
         """
         if not result or not isinstance(result, dict):
             return True, None
@@ -1031,7 +1040,9 @@ class SignalAdapter(BasePlatformAdapter):
                 if not isinstance(r, dict):
                     continue
                 rtype = r.get("type")
-                if rtype and rtype != "SUCCESS":
+                # signal-cli reports RATE_LIMIT_FAILURE as an advisory, not a
+                # true failure — the message was delivered. Skip it.
+                if rtype and rtype != "SUCCESS" and rtype != "RATE_LIMIT_FAILURE":
                     return False, str(rtype)
                 if "success" in r and not r.get("success"):
                     fail = r.get("failure")

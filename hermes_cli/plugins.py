@@ -1709,8 +1709,10 @@ class PluginManager:
         )
 
         from tools.registry import registry as _registry
-        _registry._active_plugin_override = (
-            manifest.key or manifest.name,
+        _plugin_id = manifest.key or manifest.name
+        _slug = _plugin_id.replace("/", "__").replace("-", "_")
+        _registry.register_plugin_override_policy(
+            f"{_NS_PARENT}.{_slug}",
             PluginContext(manifest, self)._tool_override_allowed(""),
         )
         try:
@@ -1780,9 +1782,6 @@ class PluginManager:
                 "Failed to load plugin '%s': %s",
                 manifest.name, exc, exc_info=_PLUGINS_DEBUG,
             )
-        finally:
-            _registry._active_plugin_override = None
-
         self._plugins[manifest.key or manifest.name] = loaded
 
     def _load_directory_module(self, manifest: PluginManifest) -> types.ModuleType:

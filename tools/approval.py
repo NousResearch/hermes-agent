@@ -325,7 +325,7 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     """
     if "SUDO_PASSWORD" in os.environ:
         return (False, None)
-    normalized = _normalize_command_for_detection(command).lower()
+    normalized = _lower_except_flags(_normalize_command_for_detection(command))
     if _SUDO_STDIN_RE.search(normalized):
         return (True, "sudo password guessing via stdin (sudo -S)")
     return (False, None)
@@ -337,7 +337,7 @@ def detect_hardline_command(command: str) -> tuple:
     Returns:
         (is_hardline, description) or (False, None)
     """
-    normalized = _normalize_command_for_detection(command).lower()
+    normalized = _lower_except_flags(_normalize_command_for_detection(command))
     for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
         if pattern_re.search(normalized):
             return (True, description)
@@ -503,7 +503,10 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
-    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # Scoped (?-i:-D) overrides the module-wide re.IGNORECASE so the safe
+    # merged-only `-d` delete does not match the force-delete `-D`. Relies on
+    # _lower_except_flags() preserving flag case at the detection call sites.
+    (r'\bgit\s+branch\s+(?-i:-D)\b', "git branch force delete"),
     # Script execution after chmod +x — catches the two-step pattern where
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
@@ -563,6 +566,21 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # =========================================================================
 # Detection
 # =========================================================================
+
+def _lower_except_flags(s: str) -> str:
+    """Lowercase command words but preserve flag case (-D stays -D, not -d).
+
+    This is important because patterns like ``git branch -D`` (force delete)
+    are intentionally case-sensitive: ``-D`` is destructive while ``-d`` is a
+    safe merged-branch-only delete.  Calling ``.lower()`` on the full command
+    string before pattern matching collapses that distinction.
+    """
+    return re.sub(
+        r'\S+',
+        lambda m: m.group(0) if m.group(0).startswith('-') else m.group(0).lower(),
+        s,
+    )
+
 
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
@@ -717,7 +735,7 @@ def detect_dangerous_command(command: str) -> tuple:
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
+    command_lower = _lower_except_flags(_normalize_command_for_detection(command))
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
         if pattern_re.search(command_lower):
             pattern_key = description

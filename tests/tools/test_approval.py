@@ -130,6 +130,20 @@ class TestSafeCommand:
         assert desc is None
 
 
+class TestGitBranchForceDelete:
+    def test_force_delete_uppercase_gated(self):
+        is_dangerous, key, desc = detect_dangerous_command("git branch -D feature")
+        assert is_dangerous is True
+        assert key is not None
+        assert "force delete" in desc.lower()
+
+    def test_safe_delete_lowercase_not_gated(self):
+        is_dangerous, key, desc = detect_dangerous_command("git branch -d feature")
+        assert is_dangerous is False
+        assert key is None
+        assert desc is None
+
+
 def _clear_session(key):
     """Replace for removed clear_session() — directly clear internal state."""
     approval_module._session_approved.pop(key, None)

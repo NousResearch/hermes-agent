@@ -819,31 +819,6 @@ that touches the OS, assume *any* platform can hit your code path.
     _quote_cmd_script_arg` and `_quote_schtasks_arg` for the reference
     pair.
 
-17. **Every `subprocess` call that spawns a console program needs a
-    no-window flag on Windows — and CI now enforces it.** A bare
-    `subprocess.run(["git", ...])` / `Popen(...)` of a console app flashes a
-    cmd window on Windows unless the child either inherits the parent's stdio
-    (output is captured/redirected) or is spawned with a no-window
-    creationflag. This was the single biggest source of "terminal popups"
-    bug reports. Use the helpers in `hermes_cli/_subprocess_compat.py` (both
-    no-op on POSIX):
-    ```python
-    from hermes_cli._subprocess_compat import (
-        windows_hide_flags, windows_detach_popen_kwargs,
-    )
-    # short-lived / captured spawn:
-    subprocess.run(cmd, creationflags=windows_hide_flags())
-    # detached background daemon:
-    subprocess.Popen(cmd, **windows_detach_popen_kwargs())
-    ```
-    `scripts/check-windows-footguns.py` flags any subprocess call that can
-    create a new console (AST-based, output-redirection-aware). Calls that
-    capture/redirect output, use `check_output`, or run a POSIX-only program
-    (`launchctl`, `systemctl`, `brew`, …) are exempt automatically — no
-    annotation needed. If a visible window is genuinely intended (interactive
-    editor/terminal launch, foreground re-exec), add `# windows-footgun: ok`
-    on the call line.
-
 ### Testing cross-platform
 
 Tests that use POSIX-only syscalls need a skip marker. Common ones:

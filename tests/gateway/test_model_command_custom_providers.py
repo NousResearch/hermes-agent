@@ -1,7 +1,5 @@
 """Regression tests for gateway /model support of config.yaml custom_providers."""
 
-from types import SimpleNamespace
-
 import yaml
 import pytest
 
@@ -16,10 +14,6 @@ def _make_runner():
     runner.adapters = {}
     runner._voice_mode = {}
     runner._session_model_overrides = {}
-    runner._pending_one_turn_model_restores = {}
-    runner._pending_model_notes = {}
-    runner._agent_cache = {}
-    runner._agent_cache_lock = None
     return runner
 
 
@@ -70,18 +64,19 @@ async def test_handle_model_command_lists_saved_custom_provider(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_handle_model_command_once_records_restore(tmp_path, monkeypatch):
+async def test_direct_model_switch_offloads_to_thread(tmp_path, monkeypatch):
+    """A direct `/model <name>` switch must route switch_model() through
+    asyncio.to_thread so the blocking models.dev HTTP fetch can't freeze the
+    gateway event loop (#20525)."""
+    import asyncio
+
+    from hermes_cli.model_switch import ModelSwitchResult
+
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
         yaml.safe_dump(
-            {
-                "model": {
-                    "default": "old/model",
-                    "provider": "openrouter",
-                    "base_url": "https://openrouter.ai/api/v1",
-                }
-            }
+            {"model": {"default": "gpt-5.4", "provider": "openrouter"}}
         ),
         encoding="utf-8",
     )
@@ -89,34 +84,25 @@ async def test_handle_model_command_once_records_restore(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model",
-        lambda **_kwargs: SimpleNamespace(
-            success=True,
-            new_model="claude-sonnet-4.6",
-            target_provider="anthropic",
-            api_key="sk-ant",
-            base_url="https://api.anthropic.com",
-            api_mode="anthropic_messages",
-            provider_label="Anthropic",
-            model_info=None,
-            warning_message="",
-        ),
-    )
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.resolve_display_context_length",
-        lambda *args, **kwargs: None,
-    )
 
-    runner = _make_runner()
-    event = _make_event("/model claude-sonnet-4.6 --provider anthropic --once")
+    # Fail the switch so the handler returns before _finish_switch (which needs
+    # full runner state) — we only care that the offload happened.
+    def _fake_switch(**kwargs):
+        return ModelSwitchResult(success=False, error_message="nope")
 
-    result = await runner._handle_model_command(event)
-    session_key = runner._session_key_for_source(event.source)
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _fake_switch)
 
-    assert "next turn only" in result
-    assert runner._session_model_overrides[session_key]["model"] == "claude-sonnet-4.6"
-    assert runner._pending_one_turn_model_restores[session_key] == {
-        "had_override": False,
-        "override": None,
-    }
+    offloaded = []
+    real_to_thread = asyncio.to_thread
+
+    async def _spy_to_thread(func, /, *args, **kwargs):
+        offloaded.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _spy_to_thread)
+
+    result = await _make_runner()._handle_model_command(_make_event("/model gpt-5.4"))
+
+    # switch_model was offloaded to a worker thread, not run on the event loop.
+    assert "_fake_switch" in offloaded
+    assert result is not None and "nope" in result

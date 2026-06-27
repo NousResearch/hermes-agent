@@ -107,6 +107,34 @@ async def test_list_cron_jobs_specific_profile_filters_results(isolated_profiles
 
 
 @pytest.mark.asyncio
+async def test_create_cron_job_normalizes_representative_core_fields(
+    isolated_profiles, tmp_path
+):
+    from hermes_cli import web_server
+
+    scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "collect-status.py").write_text("print('ok')\n", encoding="utf-8")
+
+    job = await web_server.create_cron_job(
+        web_server.CronJobCreate(
+            prompt="summarize upstream status",
+            schedule="every 1h",
+            name="full-core-mapping",
+            base_url="https://example.invalid/v1/",
+            script=str(scripts_dir / "collect-status.py"),
+            no_agent=True,
+        ),
+        profile="worker_alpha",
+    )
+
+    assert job["name"] == "full-core-mapping"
+    assert job["base_url"] == "https://example.invalid/v1"
+    assert job["script"] == "collect-status.py"
+    assert job["no_agent"] is True
+
+
+@pytest.mark.asyncio
 async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_profiles):
     from hermes_cli import web_server
 
@@ -129,6 +157,346 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
     assert len(worker_jobs) == 1
     assert worker_jobs[0]["id"] == worker_job["id"]
     assert worker_jobs[0]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_normalizes_dashboard_core_fields(isolated_profiles, tmp_path):
+    from hermes_cli import web_server
+
+    scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "collect.py").write_text("print('ok')\n", encoding="utf-8")
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="normalizes-dashboard-fields",
+    )
+
+    updated = await web_server.update_cron_job(
+        job["id"],
+        web_server.CronJobUpdate(
+            updates={
+                "base_url": "https://example.invalid/v1/",
+                "script": str(scripts_dir / "collect.py"),
+                "context_from": "",
+                "no_agent": True,
+            }
+        ),
+        profile="worker_alpha",
+    )
+
+    assert updated["base_url"] == "https://example.invalid/v1"
+    assert updated["script"] == "collect.py"
+    assert updated["context_from"] is None
+    assert updated["no_agent"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_cron_job_rejects_script_outside_profile_scripts(
+    isolated_profiles, tmp_path
+):
+    from hermes_cli import web_server
+
+    outside = tmp_path / "outside.py"
+    outside.write_text("print('nope')\n", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as exc:
+        await web_server.create_cron_job(
+            web_server.CronJobCreate(
+                schedule="every 1h",
+                script=str(outside),
+                no_agent=True,
+            ),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "inside" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_cron_job_rejects_empty_agent_job(isolated_profiles):
+    from hermes_cli import web_server
+
+    with pytest.raises(HTTPException) as exc:
+        await web_server.create_cron_job(
+            web_server.CronJobCreate(schedule="every 1h"),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "prompt, skill, or script" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_no_agent_reuses_existing_script(isolated_profiles):
+    from hermes_cli import web_server
+
+    scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "collect.py").write_text("print('ok')\n", encoding="utf-8")
+
+    job = await web_server.create_cron_job(
+        web_server.CronJobCreate(
+            schedule="every 1h",
+            script=str(scripts_dir / "collect.py"),
+        ),
+        profile="worker_alpha",
+    )
+
+    updated = await web_server.update_cron_job(
+        job["id"],
+        web_server.CronJobUpdate(updates={"no_agent": True}),
+        profile="worker_alpha",
+    )
+
+    assert updated["no_agent"] is True
+    assert updated["script"] == "collect.py"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_cron_rejects_missing_context_from(isolated_profiles):
+    from hermes_cli import web_server
+
+    with pytest.raises(HTTPException) as create_exc:
+        await web_server.create_cron_job(
+            web_server.CronJobCreate(
+                prompt="process missing upstream",
+                schedule="every 1h",
+                context_from=["missing-job-id"],
+            ),
+            profile="worker_alpha",
+        )
+
+    assert create_exc.value.status_code == 400
+    assert "missing-job-id" in create_exc.value.detail
+
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="context-update-target",
+    )
+
+    with pytest.raises(HTTPException) as update_exc:
+        await web_server.update_cron_job(
+            job["id"],
+            web_server.CronJobUpdate(
+                updates={
+                    "context_from": ["missing-job-id"],
+                }
+            ),
+            profile="worker_alpha",
+        )
+
+    assert update_exc.value.status_code == 400
+    assert "missing-job-id" in update_exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_dashboard_cron_context_from_is_profile_scoped(isolated_profiles):
+    from hermes_cli import web_server
+
+    default_job = web_server._call_cron_for_profile(
+        "default",
+        "create_job",
+        prompt="default upstream",
+        schedule="every 1h",
+        name="default-upstream",
+    )
+    worker_upstream = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="worker upstream",
+        schedule="every 1h",
+        name="worker-upstream",
+    )
+
+    with pytest.raises(HTTPException):
+        await web_server.create_cron_job(
+            web_server.CronJobCreate(
+                prompt="worker downstream",
+                schedule="every 1h",
+                context_from=[default_job["id"]],
+            ),
+            profile="worker_alpha",
+        )
+
+    job = await web_server.create_cron_job(
+        web_server.CronJobCreate(
+            prompt="worker downstream",
+            schedule="every 1h",
+            context_from=[worker_upstream["id"]],
+        ),
+        profile="worker_alpha",
+    )
+
+    assert job["context_from"] == [worker_upstream["id"]]
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_refreshes_snapshots_when_unpinning(
+    isolated_profiles,
+    monkeypatch,
+):
+    from hermes_cli import runtime_provider, web_server
+
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda **kwargs: {"provider": "worker-provider"},
+    )
+
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="pinned-job",
+        provider="fixed-provider",
+        model="fixed-model",
+    )
+
+    assert job["provider_snapshot"] is None
+    assert job["model_snapshot"] is None
+
+    updated = await web_server.update_cron_job(
+        job["id"],
+        web_server.CronJobUpdate(
+            updates={
+                "provider": None,
+                "model": None,
+            }
+        ),
+        profile="worker_alpha",
+    )
+
+    assert updated["provider"] is None
+    assert updated["model"] is None
+    assert updated["provider_snapshot"] == "worker-provider"
+    assert updated["model_snapshot"] == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_cron_noop_inference_fields_keep_existing_snapshots(
+    isolated_profiles,
+    monkeypatch,
+):
+    from hermes_cli import runtime_provider, web_server
+
+    current_provider = {"name": "initial-provider"}
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda **kwargs: {"provider": current_provider["name"]},
+    )
+
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="dashboard-edit-job",
+    )
+
+    assert job["provider_snapshot"] == "initial-provider"
+    assert job["model_snapshot"] == "test-model"
+
+    current_provider["name"] = "changed-provider"
+    (isolated_profiles["worker_alpha"] / "config.yaml").write_text(
+        "model: changed-model\n",
+        encoding="utf-8",
+    )
+
+    updated = await web_server.update_cron_job(
+        job["id"],
+        web_server.CronJobUpdate(
+            updates={
+                "name": "dashboard-edit-job-renamed",
+                "provider": None,
+                "model": None,
+                "base_url": None,
+                "no_agent": False,
+            }
+        ),
+        profile="worker_alpha",
+    )
+
+    assert updated["name"] == "dashboard-edit-job-renamed"
+    assert updated["provider_snapshot"] == "initial-provider"
+    assert updated["model_snapshot"] == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_clears_snapshots_for_no_agent(
+    isolated_profiles,
+    monkeypatch,
+):
+    from hermes_cli import runtime_provider, web_server
+
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda **kwargs: {"provider": "worker-provider"},
+    )
+    scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "collect.py").write_text("print('ok')\n", encoding="utf-8")
+
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="agent-to-script-job",
+    )
+
+    assert job["provider_snapshot"] == "worker-provider"
+    assert job["model_snapshot"] == "test-model"
+
+    updated = await web_server.update_cron_job(
+        job["id"],
+        web_server.CronJobUpdate(
+            updates={
+                "script": str(scripts_dir / "collect.py"),
+                "no_agent": True,
+            }
+        ),
+        profile="worker_alpha",
+    )
+
+    assert updated["provider_snapshot"] is None
+    assert updated["model_snapshot"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_rejects_id_mutation(isolated_profiles):
+    """Dashboard surfaces a 400 (not a 500 or silent rename) when an
+    id-mutation attempt is rejected by cron/jobs.update_job."""
+    from hermes_cli import web_server
+
+    worker_job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="immutable-id-job",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await web_server.update_cron_job(
+            worker_job["id"],
+            web_server.CronJobUpdate(updates={"id": "../escape"}),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "id" in exc.value.detail
+    worker_jobs = await web_server.list_cron_jobs(profile="worker_alpha")
+    assert [job["id"] for job in worker_jobs] == [worker_job["id"]]
 
 
 @pytest.mark.asyncio

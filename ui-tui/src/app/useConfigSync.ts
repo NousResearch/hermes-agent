@@ -3,16 +3,8 @@ import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type {
-  ConfigFullResponse,
-  ConfigMtimeResponse,
-  ReloadMcpResponse
-} from '../gatewayTypes.js'
-import {
-  DEFAULT_VOICE_RECORD_KEY,
-  type ParsedVoiceRecordKey,
-  parseVoiceRecordKey
-} from '../lib/platform.js'
+import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
+import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
 import {
@@ -142,6 +134,50 @@ const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceR
   return raw ? parseVoiceRecordKey(raw) : DEFAULT_VOICE_RECORD_KEY
 }
 
+const _pasteCollapseLinesFromConfig = (cfg: ConfigFullResponse | null): number => {
+  if (!cfg?.config) {
+    return 5
+  }
+
+  const raw = cfg.config.paste_collapse_threshold
+
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+    return Math.round(raw)
+  }
+
+  if (typeof raw === 'string') {
+    const n = parseInt(raw, 10)
+
+    if (Number.isFinite(n) && n >= 0) {
+      return n
+    }
+  }
+
+  return 5
+}
+
+const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number => {
+  if (!cfg?.config) {
+    return 2000
+  }
+
+  const raw = cfg.config.paste_collapse_char_threshold
+
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+    return Math.round(raw)
+  }
+
+  if (typeof raw === 'string') {
+    const n = parseInt(raw, 10)
+
+    if (Number.isFinite(n) && n >= 0) {
+      return n
+    }
+  }
+
+  return 2000
+}
+
 /** Fetch ``config.get full`` and fan the result through ``applyDisplay``.
  *
  * Extracted so the mtime-reload path can be exercised by the test
@@ -188,8 +224,9 @@ export const applyDisplay = (
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: normalizeMouseTracking(d),
+    pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
+    pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
     sections: resolveSections(d.sections),
-    showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
     streaming: d.streaming !== false

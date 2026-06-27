@@ -23,12 +23,20 @@ class _CapturingAgent:
         type(self).last_init = dict(kwargs)
         self.tools = []
 
-    def run_conversation(self, user_message, conversation_history=None, task_id=None, persist_user_message=None):
+    def run_conversation(
+        self,
+        user_message,
+        conversation_history=None,
+        task_id=None,
+        persist_user_message=None,
+        persist_user_timestamp=None,
+    ):
         type(self).last_run = {
             "user_message": user_message,
             "conversation_history": conversation_history,
             "task_id": task_id,
             "persist_user_message": persist_user_message,
+            "persist_user_timestamp": persist_user_timestamp,
         }
         return {
             "final_response": "ok",
@@ -148,6 +156,15 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
     monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
     monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    # ``_load_service_tier`` was refactored to call ``_load_gateway_runtime_config``
+    # (which wraps ``_load_gateway_config`` plus env-expansion).  Since the test
+    # stubs ``_load_gateway_config`` to ``{}``, also stub the runtime wrapper
+    # directly so the priority routing assertions still exercise the live tier.
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {"agent": {"service_tier": "fast"}},
+    )
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     monkeypatch.setattr(
         gateway_run,

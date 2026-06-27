@@ -30,6 +30,9 @@ class _StubCLI:
     _pending_model_switch_note = None
     _pending_one_turn_model_restore = None
 
+    def _confirm_expensive_model_switch(self, result):
+        return True
+
 
 def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
     import cli as cli_mod

@@ -54,7 +54,6 @@ def _make_runner():
     runner._background_tasks = set()
     runner._session_db = None
     runner._session_model_overrides = {}
-    runner._pending_one_turn_model_restores = {}
     runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
     runner._pending_approvals = {}
@@ -125,56 +124,6 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     assert _CapturingAgent.last_init["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert _CapturingAgent.last_init["api_key"] == "***"
     assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
-
-
-def test_run_agent_restores_one_turn_override_after_turn(monkeypatch):
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", _explode_runtime_resolution)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = _CapturingAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-
-    _CapturingAgent.last_init = None
-    runner = _make_runner()
-
-    source = SessionSource(
-        platform=Platform.LOCAL,
-        chat_id="cli",
-        chat_name="CLI",
-        chat_type="dm",
-        user_id="user-1",
-    )
-    session_key = "agent:main:local:dm"
-    previous_override = _codex_override()
-    runner._session_model_overrides[session_key] = {
-        "model": "claude-sonnet-4.6",
-        "provider": "anthropic",
-        "api_key": "sk-ant",
-        "base_url": "https://api.anthropic.com",
-        "api_mode": "anthropic_messages",
-    }
-    runner._pending_one_turn_model_restores[session_key] = {
-        "had_override": True,
-        "override": previous_override,
-    }
-
-    result = asyncio.run(
-        runner._run_agent(
-            message="ping",
-            context_prompt="",
-            history=[],
-            source=source,
-            session_id="session-1",
-            session_key=session_key,
-        )
-    )
-
-    assert result["final_response"] == "ok"
-    assert _CapturingAgent.last_init["model"] == "claude-sonnet-4.6"
-    assert runner._session_model_overrides[session_key] == previous_override
-    assert session_key not in runner._pending_one_turn_model_restores
 
 
 @pytest.mark.asyncio
@@ -268,3 +217,46 @@ fallback_providers:
     assert model == "minimax/minimax-m2.7"
     assert runtime_kwargs["provider"] == "openrouter"
     assert runtime_kwargs["api_key"] == "sk-openrouter"
+
+
+def test_gateway_auth_fallback_resolves_key_env_for_custom_provider(tmp_path, monkeypatch):
+    """Auth-failure fallback should honor key_env/api_key_env custom-endpoint hints."""
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+fallback_providers:
+  - provider: custom
+    model: fallback-model
+    base_url: https://fallback.example/v1
+    key_env: MY_FALLBACK_KEY
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("MY_FALLBACK_KEY", "env-secret")
+
+    def fake_resolve_runtime_provider(*, requested=None, explicit_base_url=None, explicit_api_key=None):
+        assert requested == "custom"
+        assert explicit_base_url == "https://fallback.example/v1"
+        assert explicit_api_key == "env-secret"
+        return {
+            "api_key": explicit_api_key,
+            "base_url": explicit_base_url,
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        }
+
+    import hermes_cli.runtime_provider as runtime_provider
+
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fake_resolve_runtime_provider)
+
+    runtime_kwargs = gateway_run._try_resolve_fallback_provider()
+
+    assert runtime_kwargs is not None
+    assert runtime_kwargs["provider"] == "custom"
+    assert runtime_kwargs["api_key"] == "env-secret"
+    assert runtime_kwargs["base_url"] == "https://fallback.example/v1"
+    assert runtime_kwargs["model"] == "fallback-model"

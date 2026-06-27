@@ -5,9 +5,7 @@ accepted as base_url, and unknown keys go unreported.
 """
 
 import logging
-from unittest.mock import patch
 
-import pytest
 
 from hermes_cli.config import _normalize_custom_provider_entry
 
@@ -193,3 +191,49 @@ class TestNormalizeCustomProviderEntry:
         result = _normalize_custom_provider_entry(entry)
         assert result is not None
         assert "models" not in result
+
+    def test_env_var_placeholder_in_base_url_not_rejected(self):
+        """A base_url that is an un-expanded ${ENV_VAR} placeholder must not be
+        rejected as an invalid URL — it is expanded at runtime, so a caller
+        reaching this normalizer with raw config would otherwise see the
+        provider silently dropped. Regression test for #14457."""
+        entry = {
+            "name": "PROVIDER_A",
+            "base_url": "${PROVIDER_A_BASE_URL}",
+            "key_env": "PROVIDER_A_API_KEY",
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="PROVIDER_A")
+        assert result is not None
+        assert result["base_url"] == "${PROVIDER_A_BASE_URL}"
+
+    def test_multiple_env_vars_in_base_url(self):
+        """base_url with multiple ${VAR} placeholders is accepted verbatim."""
+        entry = {
+            "name": "multi-var-provider",
+            "base_url": "${SCHEME}://${HOST}:${PORT}/v1",
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["base_url"] == "${SCHEME}://${HOST}:${PORT}/v1"
+
+    def test_bare_brace_region_placeholder_accepted(self):
+        """A bare {region}-style template token (not an env-ref) is also
+        accepted without validation, supporting region-substitution URLs."""
+        entry = {
+            "name": "regional",
+            "base_url": "https://{region}.api.example.com/v1",
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="regional")
+        assert result is not None
+        assert result["base_url"] == "https://{region}.api.example.com/v1"
+
+    def test_invalid_url_without_placeholder_still_rejected(self):
+        """A malformed URL with no scheme/host AND no placeholder token is
+        still rejected — the placeholder bypass must not weaken validation of
+        ordinary literal URLs."""
+        entry = {
+            "name": "bad",
+            "base_url": "not-a-url",
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="bad")
+        assert result is None

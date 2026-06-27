@@ -1,6 +1,23 @@
+import base64
+import json
+import time
+
 import pytest
 
 from hermes_cli import runtime_provider as rp
+
+
+def _fake_invoke_jwt(ttl_seconds=3600):
+    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "scope": "inference:invoke",
+                "exp": int(time.time() + ttl_seconds),
+            }
+        ).encode()
+    ).decode().rstrip("=")
+    return f"{header}.{payload}.sig"
 
 
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
@@ -226,20 +243,6 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     assert resolved["provider"] != "qwen-oauth"
 
 
-def test_resolve_runtime_provider_ai_gateway(monkeypatch):
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-    monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-ai-gw-key")
-
-    resolved = rp.resolve_runtime_provider(requested="ai-gateway")
-
-    assert resolved["provider"] == "ai-gateway"
-    assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "https://ai-gateway.vercel.sh/v1"
-    assert resolved["api_key"] == "test-ai-gw-key"
-    assert resolved["requested_provider"] == "ai-gateway"
-
-
 def test_resolve_runtime_provider_lmstudio_uses_token_when_present(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
     monkeypatch.setattr(
@@ -349,36 +352,6 @@ def test_resolve_runtime_provider_lmstudio_saved_base_url_wins_over_env(monkeypa
     # Saved config base_url wins over env var (standard contract).
     assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
     assert resolved["api_key"] == "dummy-lm-api-key"
-
-
-def test_resolve_runtime_provider_ai_gateway_explicit_override_skips_pool(monkeypatch):
-    def _unexpected_pool(provider):
-        raise AssertionError(f"load_pool should not be called for {provider}")
-
-    def _unexpected_provider_resolution(provider):
-        raise AssertionError(f"resolve_api_key_provider_credentials should not be called for {provider}")
-
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-    monkeypatch.setattr(rp, "load_pool", _unexpected_pool)
-    monkeypatch.setattr(
-        rp,
-        "resolve_api_key_provider_credentials",
-        _unexpected_provider_resolution,
-    )
-
-    resolved = rp.resolve_runtime_provider(
-        requested="ai-gateway",
-        explicit_api_key="ai-gateway-explicit-token",
-        explicit_base_url="https://proxy.example.com/v1/",
-    )
-
-    assert resolved["provider"] == "ai-gateway"
-    assert resolved["api_mode"] == "chat_completions"
-    assert resolved["api_key"] == "ai-gateway-explicit-token"
-    assert resolved["base_url"] == "https://proxy.example.com/v1"
-    assert resolved["source"] == "explicit"
-    assert resolved.get("credential_pool") is None
 
 
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
@@ -756,6 +729,76 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["source"] == "custom_provider:Local"
 
 
+def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
+    """A request for bare ``provider="custom"`` must resolve a literal
+    ``providers.custom`` entry (e.g. a cliproxy endpoint) instead of falling
+    through to the global default. Regression for cron jobs stored with
+    ``provider: "custom"`` failing with ``auth_unavailable: providers=codex``.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "custom": {
+                    "api": "https://cliproxy.example.com/v1",
+                    "api_key": "cliproxy-key",
+                    "default_model": "gpt-5.4",
+                    "name": "CLIProxy",
+                }
+            }
+        },
+    )
+    # Reaching resolve_provider for bare custom with a matching entry means the
+    # named-custom path was bypassed — that is the bug we are fixing.
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider must not be called; providers.custom should match"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://cliproxy.example.com/v1"
+    assert resolved["api_key"] == "cliproxy-key"
+    assert resolved["requested_provider"] == "custom"
+
+
+def test_bare_custom_without_named_entry_still_falls_through(monkeypatch):
+    """No literal providers.custom entry → bare custom keeps the legacy
+    model.base_url trust-path behavior, unchanged by the fix."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "http://127.0.0.1:8082/v1",
+            "default": "my-local-model",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {"providers": {"some-other-proxy": {"api": "https://x.example/v1"}}},
+    )
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://127.0.0.1:8082/v1"
+
+
 def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch):
     """After v11→v12 migration deletes custom_providers, resolution should
     still find entries in the providers dict via get_compatible_custom_providers."""
@@ -837,6 +880,54 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["model"] == "acme-large"
 
 
+def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
+    """Named custom providers on one gateway must keep their own credentials and protocol."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("GPT_KEY", "gpt-secret")
+    monkeypatch.setenv("CLAUDE_KEY", "claude-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "gpt",
+                    "base_url": "https://gateway.example.com",
+                    "key_env": "GPT_KEY",
+                    "api_mode": "codex_responses",
+                    "model": "gpt-5.5",
+                },
+                {
+                    "name": "claude",
+                    "base_url": "https://gateway.example.com",
+                    "key_env": "CLAUDE_KEY",
+                    "api_mode": "anthropic_messages",
+                    "model": "claude-opus-4-8",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:claude")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://gateway.example.com"
+    assert resolved["api_key"] == "claude-secret"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["requested_provider"] == "custom:claude"
+    assert resolved["model"] == "claude-opus-4-8"
+
+
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -901,6 +992,49 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     assert resolved["base_url"] == "https://inference-api.nousresearch.com/v1"
     assert resolved["api_key"] == "nous-runtime-key"
     assert resolved["requested_provider"] == "nous"
+
+
+def test_nous_pool_entry_refreshes_expired_agent_key(monkeypatch):
+    stale_token = _fake_invoke_jwt(ttl_seconds=-60)
+    fresh_token = _fake_invoke_jwt(ttl_seconds=3600)
+
+    class _Entry:
+        def __init__(self, token):
+            self.access_token = "pool-access-token"
+            self.agent_key = token
+            self.agent_key_expires_at = "2099-01-01T00:00:00+00:00"
+            self.scope = "inference:invoke"
+            self.base_url = "https://inference.pool.example/v1"
+            self.source = "manual:nous"
+
+        @property
+        def runtime_api_key(self):
+            return self.agent_key
+
+    class _Pool:
+        refreshed = False
+
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry(stale_token)
+
+        def try_refresh_current(self):
+            self.refreshed = True
+            return _Entry(fresh_token)
+
+    pool = _Pool()
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: pool)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "nous"})
+
+    resolved = rp.resolve_runtime_provider(requested="nous")
+
+    assert pool.refreshed is True
+    assert resolved["provider"] == "nous"
+    assert resolved["api_key"] == fresh_token
+    assert resolved["base_url"] == "https://inference.pool.example/v1"
 
 
 def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):
@@ -2701,3 +2835,61 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+def _patch_bedrock(monkeypatch, config_default=""):
+    """Stub the bedrock_adapter helpers resolve_runtime_provider imports.
+
+    Leaves the real ``is_anthropic_bedrock_model`` in place so the dual-path
+    routing decision is exercised for real. ``config_default`` is the persisted
+    ``model.default`` — kept non-Claude here to prove ``target_model`` (not the
+    stale config default) drives the api_mode decision.
+    """
+    import agent.bedrock_adapter as ba
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "bedrock")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": config_default})
+    monkeypatch.setattr(rp, "load_config", lambda: {"bedrock": {}})
+    monkeypatch.setattr(ba, "has_aws_credentials", lambda: True)
+    monkeypatch.setattr(ba, "resolve_aws_auth_env_var", lambda: "AWS_PROFILE")
+    monkeypatch.setattr(ba, "resolve_bedrock_region", lambda: "eu-north-1")
+
+
+def test_resolve_runtime_provider_bedrock_claude_target_model_uses_anthropic_messages(monkeypatch):
+    """Claude-on-Bedrock delegation must route through the AnthropicBedrock SDK.
+
+    Regression for #49095: the bedrock branch derived api_mode from the stale
+    persisted ``model.default`` instead of ``target_model``. When delegation
+    targets a Claude model but the parent's default is non-Claude, the wrong
+    branch (Converse) was picked, and the child silently fell back to
+    openrouter/free. ``target_model`` must win so Claude keeps the
+    anthropic_messages path (prompt caching, thinking budgets).
+    """
+    _patch_bedrock(monkeypatch, config_default="amazon.nova-pro-v1:0")
+
+    resolved = rp.resolve_runtime_provider(
+        requested="bedrock",
+        target_model="global.anthropic.claude-sonnet-4-6",
+    )
+
+    assert resolved["provider"] == "bedrock"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved.get("bedrock_anthropic") is True
+
+
+def test_resolve_runtime_provider_bedrock_nonclaude_target_model_uses_converse(monkeypatch):
+    """Non-Claude Bedrock target stays on the Converse API path.
+
+    Confirms the target_model fix doesn't over-correct: a Nova target must NOT
+    be forced onto anthropic_messages even when the persisted default is Claude.
+    """
+    _patch_bedrock(monkeypatch, config_default="global.anthropic.claude-sonnet-4-6")
+
+    resolved = rp.resolve_runtime_provider(
+        requested="bedrock",
+        target_model="amazon.nova-pro-v1:0",
+    )
+
+    assert resolved["provider"] == "bedrock"
+    assert resolved["api_mode"] == "bedrock_converse"
+    assert resolved.get("bedrock_anthropic") is not True

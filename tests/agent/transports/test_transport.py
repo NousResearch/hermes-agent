@@ -2,10 +2,9 @@
 
 import pytest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from agent.transports.types import NormalizedResponse
 from agent.transports import get_transport, register_transport, _REGISTRY
 
 
@@ -128,6 +127,15 @@ class TestAnthropicTransport:
     def test_validate_response_empty_content_with_tool_use_is_invalid(self, transport):
         r = SimpleNamespace(content=[], stop_reason="tool_use")
         assert transport.validate_response(r) is False
+
+    def test_validate_response_empty_content_with_refusal_is_valid(self, transport):
+        # Claude 4.5+ returns an empty content list with stop_reason="refusal"
+        # when it declines to respond. It must validate so the response flows
+        # through to normalize_response (which maps refusal → content_filter)
+        # and the loop's refusal handler — instead of being rejected as an
+        # "invalid response" and retried as a deterministic refusal.
+        r = SimpleNamespace(content=[], stop_reason="refusal")
+        assert transport.validate_response(r) is True
 
     def test_validate_response_valid(self, transport):
         r = SimpleNamespace(content=[SimpleNamespace(type="text", text="hello")])

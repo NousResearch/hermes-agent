@@ -6,7 +6,13 @@ description: "Install and deploy Hermes Agent with Nix — from quick `nix run` 
 
 # Nix & NixOS Setup
 
-Hermes Agent ships a Nix flake with three levels of integration:
+:::warning Tier 2 platform
+Nix and NixOS are [Tier 2 platforms](./platform-support.md#tier-2). The flake and NixOS module documented here are maintained on a best-effort basis only. Commits to `main` may break these packages at any point in time.
+
+For a supported setup, use one of the standard [installation](./installation.md) paths - either Docker or an FHS environment.
+:::
+
+Hermes Agent ships a Nix flake & a NixOS module.
 
 | Level | Who it's for | What you get |
 |-------|-------------|--------------|
@@ -34,26 +40,39 @@ The `curl | bash` installer manages Python, Node, and dependencies itself. The N
 No clone needed. Nix fetches, builds, and runs everything:
 
 ```bash
-# Run directly (builds on first use, cached after)
-nix run github:NousResearch/hermes-agent -- setup
-nix run github:NousResearch/hermes-agent -- chat
+# Run the desktop app
+nix run github:NousResearch/hermes-agent#desktop
 
 # Or install persistently
+nix profile install github:NousResearch/hermes-agent#desktop
+
+# run the tui
+nix run github:NousResearch/hermes-agent -- setup
+nix run github:NousResearch/hermes-agent -- --tui
+
+# or install it in your profile
 nix profile install github:NousResearch/hermes-agent
 hermes setup
-hermes chat
+hermes --tui
 ```
 
 After `nix profile install`, `hermes`, `hermes-agent`, and `hermes-acp` are on your PATH. From here, the workflow is identical to the [standard installation](./installation.md) — `hermes setup` walks you through provider selection, `hermes gateway install` sets up a launchd (macOS) or systemd user service, and config lives in `~/.hermes/`.
 
+:::warning Messaging platforms (Discord, Telegram, Slack)
+The default package includes ALL libraries hermes-agent might need. if you want a smaller variant, check the other flake outputs. 
+
+The `default` package adds ~700 MB to the closure. If you only need messaging platforms, `#messaging` adds just ~33 MB.
+
+:::
+
 <details>
-<summary><strong>Building from a local clone</strong></summary>
+<summary><strong>Running from a local clone</strong></summary>
 
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-nix build
-./result/bin/hermes setup
+nix develop
+hermes setup
 ```
 
 </details>
@@ -319,6 +338,7 @@ Quick reference for the most common things Nix users want to customize:
 | Add API keys | `environmentFiles` | `[ config.sops.secrets."hermes-env".path ]` |
 | Give the agent a personality | `${services.hermes-agent.stateDir}/.hermes/SOUL.md` | manage the file directly |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
+| Enable Discord/Telegram/Slack | `extraDependencyGroups` | `[ "messaging" ]` |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
 | Pass GPU access to container | `container.extraOptions` | `[ "--gpus" "all" ]` |
 | Use Podman instead of Docker | `container.backend` | `"podman"` |
@@ -566,7 +586,7 @@ Host                                    Container
   │   ├── state.db, sessions/, memories/   (runtime state)
   │   └── mcp-tokens/                      (OAuth tokens for MCP servers)
   ├── home/                                ──►  /home/hermes    (rw)
-  └── workspace/                           (MESSAGING_CWD)
+  └── workspace/                           (agent working directory)
       ├── SOUL.md                          (from documents option)
       └── (agent-created files)
 
@@ -647,16 +667,44 @@ The package's `site-packages` is added to PYTHONPATH in the hermes wrapper. `imp
 
 ### Optional Dependency Groups (`extraDependencyGroups`)
 
-For optional extras already declared in hermes-agent's `pyproject.toml` (e.g., memory providers like `hindsight` or `honcho`), use `extraDependencyGroups` to include them in the sealed venv at build time:
+For optional extras declared in hermes-agent's `pyproject.toml`, use `extraDependencyGroups` to include them in the sealed venv at build time. This is required for any extra not in the default `[all]` set — on Nix, runtime installation into the read-only store is not possible.
 
 ```nix
+# Enable Discord, Telegram, Slack
+services.hermes-agent.extraDependencyGroups = [ "messaging" ];
+```
+
+```nix
+# Enable a memory provider
 services.hermes-agent = {
   extraDependencyGroups = [ "hindsight" ];
   settings.memory.provider = "hindsight";
 };
 ```
 
-This is resolved by uv alongside core dependencies in a single pass — no PYTHONPATH patching, no collision risk. Available groups match the `[project.optional-dependencies]` keys in `pyproject.toml` (e.g., `"hindsight"`, `"honcho"`, `"voice"`, `"matrix"`, `"mistral"`, `"bedrock"`).
+This is resolved by uv alongside core dependencies — no PYTHONPATH patching, no collision risk. Available groups:
+
+| Group | What it enables |
+|-------|-----------------|
+| `messaging` | Discord, Telegram, Slack |
+| `matrix` | Matrix/Element (mautrix with encryption; Linux only) |
+| `dingtalk` | DingTalk |
+| `feishu` | Feishu/Lark |
+| `voice` | Local speech-to-text (faster-whisper) |
+| `edge-tts` | Edge TTS provider |
+| `tts-premium` | ElevenLabs TTS |
+| `anthropic` | Native Anthropic SDK (not needed via OpenRouter) |
+| `bedrock` | AWS Bedrock (boto3) |
+| `azure-identity` | Azure Entra ID auth |
+| `honcho` | Honcho memory provider |
+| `hindsight` | Hindsight memory provider |
+| `modal` | Modal terminal backend |
+| `daytona` | Daytona terminal backend |
+| `exa` | Exa web search |
+| `firecrawl` | Firecrawl web search |
+| `fal` | FAL image generation |
+
+Or use the pre-built `#messaging` or `#full` flake packages instead of per-extra configuration (see [Quick Start](#quick-start-any-nix-user)).
 
 **When to use which:**
 
@@ -786,7 +834,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `group` | `str` | `"hermes"` | System group |
 | `createUser` | `bool` | `true` | Auto-create user/group |
 | `stateDir` | `str` | `"/var/lib/hermes"` | State directory (`HERMES_HOME` parent) |
-| `workingDirectory` | `str` | `"${stateDir}/workspace"` | Agent working directory (`MESSAGING_CWD`) |
+| `workingDirectory` | `str` | `"${stateDir}/workspace"` | Agent working directory |
 | `addToSystemPackages` | `bool` | `false` | Add `hermes` CLI to system PATH and set `HERMES_HOME` system-wide |
 
 ### Configuration
@@ -873,7 +921,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 │   ├── cron/
 │   └── logs/
 ├── home/                            # Agent HOME
-└── workspace/                       # MESSAGING_CWD
+└── workspace/                       # Agent working directory
     ├── SOUL.md                      # From documents option
     └── (agent-created files)
 ```
@@ -966,6 +1014,7 @@ nix-store --query --roots $(docker exec hermes-agent readlink /data/current-pack
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Cannot save configuration: managed by NixOS` | CLI guards active | Edit `configuration.nix` and `nixos-rebuild switch` |
+| `No adapter available for discord` (or telegram/slack) | Messaging deps missing from the sealed Nix venv | Install `#messaging` variant: `nix profile install ...#messaging`. For NixOS module: `extraDependencyGroups = [ "messaging" ]`. Check `journalctl -u hermes-agent` for `FeatureUnavailable` or `requirements not met` for the underlying error. |
 | Container recreated unexpectedly | `extraVolumes`, `extraOptions`, or `image` changed | Expected — writable layer resets. Reinstall packages or use a custom image |
 | `hermes version` shows old version | Container not restarted | `systemctl restart hermes-agent` |
 | Permission denied on `/var/lib/hermes` | State dir is `0750 hermes:hermes` | Use `docker exec` or `sudo -u hermes` |

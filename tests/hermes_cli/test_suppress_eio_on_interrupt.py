@@ -13,7 +13,6 @@ to prevent a hard crash.
 from __future__ import annotations
 
 import errno
-import os
 from unittest.mock import MagicMock
 
 import pytest

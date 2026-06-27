@@ -1,7 +1,7 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
 import os
 import subprocess
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 from rich.text import Text
 import pytest
 
@@ -184,8 +184,7 @@ class TestGatewayQuickCommands:
         from gateway.run import GatewayRunner
 
         # Ensure redaction is active regardless of host HERMES_REDACT_SECRETS state
-        # or test ordering (the module snapshots env at import time, so other
-        # tests in the same xdist worker can flip the flag).
+        # or test ordering
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
         runner = GatewayRunner.__new__(GatewayRunner)

@@ -104,12 +104,61 @@ _PREFIX_PATTERNS = [
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
+    r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
 ]
 
-# ENV assignment patterns: KEY=value where KEY contains a secret-like name
+# ENV assignment patterns: KEY=value where KEY contains a secret-like name.
+# Uppercase keys tolerate spaces around "=" (e.g. ``FOO_SECRET = bar``) because
+# an all-caps key is almost never prose/code.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
+)
+
+# Lowercase / dotted / hyphenated config keys from config files
+# (application.properties, .env, YAML-ish dumps): ``spring.datasource.password=secret``,
+# ``app.api.key=xyz``, ``password=secret``. The uppercase _ENV_ASSIGN_RE above
+# never matched these, so config-file passwords leaked verbatim (issue #16413).
+#
+# These run only in a config-file context, NOT in prose, code, or URLs — three
+# carve-outs preserved from the original design (#4367 + the documented
+# web-URL passthrough below):
+#   1. The value is bounded by ``[^\s&]`` (stops at whitespace AND ``&``) so
+#      form-urlencoded bodies are handled pair-by-pair (by _redact_form_body),
+#      not greedily swallowed.
+#   2. _CFG_DOTTED_RE only matches when the key is NAMESPACED (contains a dot),
+#      which is unambiguously a config key — never a prose word.
+#   3. _CFG_ANCHORED_RE matches a bare secret-word key only at line start
+#      (optionally after ``export``), so conversational ``I have password=foo``
+#      mid-sentence is left alone.
+# The colon-form URL guard (skip when ``://`` present) lives at the call site.
+_SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
+_CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
+# Namespaced (dotted) key: the secret word may sit anywhere in a dotted path.
+_CFG_DOTTED_RE = re.compile(
+    rf"((?:[A-Za-z0-9_\-]+\.)+[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*"
+    rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]+)"
+    rf"={_CFG_VALUE}",
+    re.IGNORECASE,
+)
+# Line-anchored bare key: ``password=…`` / ``export api_key=…`` at start of line.
+_CFG_ANCHORED_RE = re.compile(
+    rf"(^[ \t]*(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Unquoted YAML / colon config (e.g. ``password: secret``,
+# ``spring.datasource.password: hunter2``). The secret keyword must be part of
+# the KEY (anchored to the start of the line/indent), and the value is a single
+# whitespace-free token — so prose like ``note: secret meeting`` (keyword in the
+# value) and ``error: token expired`` are left alone. Bare ``auth`` is excluded
+# from the key set so ``Authorization:`` / ``author:`` don't match (the former
+# is masked by _AUTH_HEADER_RE); ``auth_token``/``auth-token`` still match via
+# the ``token`` keyword. Quoted values defer to _JSON_FIELD_RE via the lookahead.
+_YAML_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential)"
+_YAML_ASSIGN_RE = re.compile(
+    rf"(^[ \t]*[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*)(:[ \t]*)(?!['\"])([^\s&]+)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
@@ -119,9 +168,25 @@ _JSON_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Authorization headers
+# Authorization headers — any scheme (Bearer, Basic, Token, Digest, …) plus the
+# bare-credential form, and Proxy-Authorization. The credential token is masked
+# while the header name and scheme word are preserved for debuggability. The
+# previous rule only matched ``Bearer``, so ``Basic <base64 user:pass>`` and
+# ``token <pat>`` leaked verbatim into logs/transcripts.
 _AUTH_HEADER_RE = re.compile(
-    r"(Authorization:\s*Bearer\s+)(\S+)",
+    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?(\S+)",
+    re.IGNORECASE,
+)
+
+# API-key style auth headers carrying a single opaque value (no scheme word).
+# Anthropic and many providers authenticate with ``x-api-key``; values without
+# a known vendor prefix (custom/local backends) would otherwise leak when a
+# request or curl command is logged or echoed into tool output / transcripts.
+_SECRET_HEADER_NAMES = (
+    r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
+)
+_SECRET_HEADER_RE = re.compile(
+    rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)",
     re.IGNORECASE,
 )
 
@@ -150,10 +215,6 @@ _JWT_RE = re.compile(
     r"(?:\.[A-Za-z0-9_=-]{4,}){0,2}"   # Optional payload and/or signature
 )
 
-# Discord user/role mentions: <@123456789012345678> or <@!123456789012345678>
-# Snowflake IDs are 17-20 digit integers that resolve to specific Discord accounts.
-_DISCORD_MENTION_RE = re.compile(r"<@!?(\d{17,20})>")
-
 # E.164 phone numbers: +<country><number>, 7-15 digits
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
@@ -174,6 +235,15 @@ _URL_WITH_QUERY_RE = re.compile(
 # Catches things like `https://user:token@api.example.com/v1/foo`.
 _URL_USERINFO_RE = re.compile(
     r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@",
+)
+
+# HTTP access logs often use a relative request target rather than a full URL:
+# `"POST /webhook?password=... HTTP/1.1"`. The full-URL redactor above only
+# sees strings containing `://`, so handle request-target query strings too.
+_HTTP_REQUEST_TARGET_QUERY_RE = re.compile(
+    r"\b((?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)\s+[^ \t\r\n\"']*?)"
+    r"\?([^ \t\r\n\"']+)",
+    re.IGNORECASE,
 )
 
 # Form-urlencoded body detection: conservative — only applies when the entire
@@ -293,6 +363,15 @@ def _redact_url_userinfo(text: str) -> str:
     )
 
 
+def _redact_http_request_target_query_params(text: str) -> str:
+    """Redact sensitive query params in HTTP access-log request targets."""
+    def _sub(m: re.Match) -> str:
+        prefix = m.group(1)
+        query = _redact_query_string(m.group(2))
+        return f"{prefix}?{query}"
+    return _HTTP_REQUEST_TARGET_QUERY_RE.sub(_sub, text)
+
+
 def _redact_form_body(text: str) -> str:
     """Redact sensitive values in a form-urlencoded body.
 
@@ -313,7 +392,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
-    Disabled by default — enable via security.redact_secrets: true in config.yaml.
+    Enabled by default. Disable via security.redact_secrets: false in config.yaml.
     Set force=True for safety boundaries that must never return raw secrets
     regardless of the user's global logging redaction preference.
 
@@ -351,6 +430,13 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
                 name, quote, value = m.group(1), m.group(2), m.group(3)
                 return f"{name}={quote}{_mask_token(value)}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+            # Lowercase/dotted config keys (issue #16413). Skip URLs entirely —
+            # web-URL query params are intentionally passed through (see note
+            # near the bottom of this function); _DB_CONNSTR_RE still guards
+            # connection-string passwords.
+            if "://" not in text:
+                text = _CFG_DOTTED_RE.sub(_redact_env, text)
+                text = _CFG_ANCHORED_RE.sub(_redact_env, text)
 
         # JSON fields: "apiKey": "***"  (skip for code files — false positives)
         if ":" in text and '"' in text:
@@ -359,11 +445,28 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
-    # Authorization headers — _AUTH_HEADER_RE is "Authorization: Bearer ..."
-    # case-insensitive, so "uthorization" is the cheapest substring gate that
-    # covers both "Authorization" and "authorization" without a casefold().
+        # Unquoted YAML / colon config: password: ***  (after JSON so quoted
+        # values are handled there; the lookahead in _YAML_ASSIGN_RE skips
+        # quotes). Skip URLs — web-URL query params pass through by design.
+        if ":" in text and "://" not in text:
+            def _redact_yaml(m):
+                key, sep, value = m.group(1), m.group(2), m.group(3)
+                return f"{key}{sep}{_mask_token(value)}"
+            text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
+
+    # Authorization headers — _AUTH_HEADER_RE matches any scheme after
+    # "[Proxy-]Authorization:" case-insensitively, so "uthorization" is the
+    # cheapest substring gate that covers every casing without a casefold().
     if "uthorization" in text or "UTHORIZATION" in text:
         text = _AUTH_HEADER_RE.sub(
+            lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)),
+            text,
+        )
+
+    # API-key style headers (x-api-key, api-key, …). Header values are
+    # colon-separated, so gate on ":" — the regex itself is the precise filter.
+    if ":" in text:
+        text = _SECRET_HEADER_RE.sub(
             lambda m: m.group(1) + _mask_token(m.group(2)),
             text,
         )
@@ -388,22 +491,18 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
 
-    # URL userinfo (http(s)://user:pass@host) — redact for non-DB schemes.
-    # DB schemes are handled above by _DB_CONNSTR_RE.
-    if "://" in text:
-        text = _redact_url_userinfo(text)
-
-        # URL query params containing opaque tokens (?access_token=…&code=…)
-        if "?" in text:
-            text = _redact_url_query_params(text)
+    # NOTE: Web-URL redaction (query params + userinfo + HTTP access-log
+    # request targets) is intentionally OFF. Many legitimate workflows pass
+    # opaque tokens through query strings — magic-link checkouts, OAuth
+    # callbacks the agent is meant to follow, pre-signed share URLs — and
+    # blanket-redacting param values by name breaks those skills mid-flow.
+    # Known credential shapes (sk-, ghp_, JWTs, etc.) inside URLs are still
+    # caught by _PREFIX_RE and _JWT_RE above. DB connection-string passwords
+    # are still caught by _DB_CONNSTR_RE.
 
     # Form-urlencoded bodies (only triggers on clean k=v&k=v inputs).
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
-
-    # Discord user/role mentions (<@snowflake_id>)
-    if "<@" in text:
-        text = _DISCORD_MENTION_RE.sub(lambda m: f"<@{'!' if '!' in m.group(0) else ''}***>", text)
 
     # E.164 phone numbers (Signal, WhatsApp)
     if "+" in text:
@@ -454,6 +553,25 @@ def _has_known_prefix_substring(text: str) -> bool:
     Used as a cheap pre-check before invoking the expensive ``_PREFIX_RE``.
     """
     return any(p in text for p in _PREFIX_SUBSTRINGS)
+
+
+_HTTP_METHOD_SUBSTRINGS = (
+    "GET ",
+    "POST ",
+    "PUT ",
+    "PATCH ",
+    "DELETE ",
+    "HEAD ",
+    "OPTIONS ",
+    "TRACE ",
+    "CONNECT ",
+)
+
+
+def _has_http_method_substring(text: str) -> bool:
+    """Cheap pre-check before scanning for access-log request targets."""
+    upper = text.upper()
+    return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
 
 
 class RedactingFormatter(logging.Formatter):

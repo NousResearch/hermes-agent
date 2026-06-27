@@ -1,7 +1,10 @@
 """Tests for the delivery routing module."""
 
-from gateway.config import Platform
-from gateway.delivery import DeliveryTarget
+import pytest
+
+from gateway.config import GatewayConfig, Platform
+from gateway.delivery import DeliveryRouter, DeliveryTarget
+from gateway.platforms.base import SendResult
 from gateway.session import SessionSource
 
 
@@ -122,5 +125,299 @@ class TestPlatformNameCaseInsensitivity:
         assert target.platform == Platform.TELEGRAM
         assert target.chat_id == "12345"
 
+class RecordingAdapter:
+    def __init__(self):
+        self.calls = []
+        self.ensure_dm_topic_calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return {"success": True}
+
+    async def ensure_dm_topic(self, chat_id, topic_name, force_create=False):
+        self.ensure_dm_topic_calls.append(
+            {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
+        )
+        return "38049"
+
+
+class StaleTopicAdapter:
+    def __init__(self):
+        self.calls = []
+        self.ensure_dm_topic_calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": dict(metadata or {})})
+        if len(self.calls) == 1:
+            return SendResult(success=False, error="Bad Request: message thread not found")
+        return SendResult(success=True, message_id="fresh-message")
+
+    async def ensure_dm_topic(self, chat_id, topic_name, force_create=False):
+        self.ensure_dm_topic_calls.append(
+            {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
+        )
+        return "38064" if force_create else "32343"
+
+
+@pytest.mark.asyncio
+async def test_explicit_telegram_private_thread_requires_reply_anchor(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:32344")
+
+    with pytest.raises(RuntimeError, match="requires telegram_reply_to_message_id"):
+        await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert adapter.calls == []
+
+
+@pytest.mark.asyncio
+async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:Hermes API Test")
+
+    await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert adapter.ensure_dm_topic_calls == [
+        {"chat_id": "722341991", "topic_name": "Hermes API Test", "force_create": False}
+    ]
+    assert adapter.calls == [
+        {
+            "chat_id": "722341991",
+            "content": "hello",
+            "metadata": {
+                "thread_id": "38049",
+                "telegram_dm_topic_created_for_send": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_named_telegram_private_topic_refreshes_stale_thread_id(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = StaleTopicAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:Personal")
+
+    result = await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert getattr(result, "message_id", None) == "fresh-message"
+    assert adapter.ensure_dm_topic_calls == [
+        {"chat_id": "722341991", "topic_name": "Personal", "force_create": False},
+        {"chat_id": "722341991", "topic_name": "Personal", "force_create": True},
+    ]
+    assert [call["metadata"]["thread_id"] for call in adapter.calls] == ["32343", "38064"]
+    assert all(call["metadata"]["telegram_dm_topic_created_for_send"] is True for call in adapter.calls)
+
+
+@pytest.mark.asyncio
+async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:32344")
+
+    await router._deliver_to_platform(
+        target,
+        "hello",
+        metadata={"telegram_reply_to_message_id": "9001"},
+    )
+
+    assert adapter.calls == [
+        {
+            "chat_id": "722341991",
+            "content": "hello",
+            "metadata": {
+                "telegram_reply_to_message_id": "9001",
+                "thread_id": "32344",
+                "telegram_dm_topic_reply_fallback": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_telegram_direct_messages_topic_metadata_is_respected(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:32344")
+
+    await router._deliver_to_platform(
+        target,
+        "hello",
+        metadata={"telegram_direct_messages_topic_id": "32344"},
+    )
+
+    assert adapter.calls[0]["metadata"] == {"telegram_direct_messages_topic_id": "32344"}
+
+
+@pytest.mark.asyncio
+async def test_explicit_telegram_group_thread_does_not_mark_dm_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:-100123:42")
+
+    await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
+
+
+class FailingAdapter:
+    async def send(self, chat_id, content, metadata=None):
+        return SendResult(success=False, error="route failed", retryable=False)
+
+
+@pytest.mark.asyncio
+async def test_platform_send_failure_raises_for_delivery_result(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: FailingAdapter()})
+    target = DeliveryTarget.parse("telegram:722341991:32344")
+
+    with pytest.raises(RuntimeError, match="route failed"):
+        await router._deliver_to_platform(target, "hello", metadata={"telegram_reply_to_message_id": "9001"})
+
+
+# ---------------------------------------------------------------------------
+# Cron output truncation / adapter-aware chunking (issue #50126)
+# ---------------------------------------------------------------------------
+
+class ChunkingAdapter:
+    """Adapter that declares splits_long_messages=True (like Discord/Telegram)."""
+    splits_long_messages = True
+
+    def __init__(self):
+        self.calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return {"success": True}
+
+
+class NonChunkingAdapter:
+    """Adapter without splits_long_messages (default False — legacy behavior)."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return {"success": True}
+
+
+@pytest.mark.asyncio
+async def test_long_output_truncated_for_non_chunking_adapter(tmp_path, monkeypatch):
+    """Non-chunking adapters receive truncated content with a footer + file save."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = NonChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    long_content = "x" * 5000
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "job1"})
+
+    delivered = adapter.calls[0]["content"]
+    assert len(delivered) < 5000  # was truncated
+    assert "truncated" in delivered.lower()
+    assert "full output saved to" in delivered
+    # Full output was saved to disk
+    saved_files = list(tmp_path.glob("cron/output/job1_*.txt"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text() == long_content
+
+
+@pytest.mark.asyncio
+async def test_long_output_preserved_for_chunking_adapter(tmp_path, monkeypatch):
+    """Chunking adapters (splits_long_messages=True) receive the FULL content."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = ChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    long_content = "x" * 5000
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "job2"})
+
+    delivered = adapter.calls[0]["content"]
+    assert delivered == long_content  # NOT truncated — adapter handles chunking
+    assert "truncated" not in delivered.lower()
+    # Full output still saved to disk as audit trail
+    saved_files = list(tmp_path.glob("cron/output/job2_*.txt"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text() == long_content
+
+
+@pytest.mark.asyncio
+async def test_short_output_never_truncated(tmp_path, monkeypatch):
+    """Output under the limit passes through untouched for any adapter."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = NonChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    short_content = "x" * 100
+    await router._deliver_to_platform(target, short_content, metadata={"job_id": "job3"})
+
+    assert adapter.calls[0]["content"] == short_content
+    # Nothing saved to disk
+    assert not list(tmp_path.glob("cron/output/*.txt"))
+
+
+@pytest.mark.asyncio
+async def test_audit_save_failure_does_not_break_chunking_delivery(tmp_path, monkeypatch):
+    """If the audit save fails (disk full, permissions), chunking adapters
+    still receive the full content — the save is best-effort."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+
+    adapter = ChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    long_content = "x" * 5000
+
+    call_count = {"n": 0}
+
+    def failing_save(content, job_id):
+        call_count["n"] += 1
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(router, "_save_full_output", failing_save)
+
+    # Should NOT raise — audit failure is caught for chunking adapters
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "job6"})
+
+    # Adapter still got the full content
+    assert adapter.calls[0]["content"] == long_content
+    # Save was attempted (best-effort, swallowed)
+    assert call_count["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_save_failure_during_truncation_raises_for_non_chunking_adapter(tmp_path, monkeypatch):
+    """For a non-chunking adapter, the truncation footer needs a valid saved
+    path. If the save fails there, that is a real delivery problem and the
+    error propagates (not swallowed like the chunking best-effort save)."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+
+    adapter = NonChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    long_content = "x" * 5000
+
+    def failing_save(content, job_id):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(router, "_save_full_output", failing_save)
+
+    # Non-chunking adapter must truncate → needs a valid saved path → the
+    # Step 1 best-effort catch swallows the first attempt, but the Step 2
+    # retry (footer needs the path) re-raises.
+    with pytest.raises(OSError, match="No space left on device"):
+        await router._deliver_to_platform(target, long_content, metadata={"job_id": "job7"})
 
 

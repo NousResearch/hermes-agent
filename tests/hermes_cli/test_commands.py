@@ -14,6 +14,7 @@ from hermes_cli.commands import (
     SlashCommandCompleter,
     _CMD_NAME_LIMIT,
     _SLACK_RESERVED_COMMANDS,
+    _SLACK_VIA_HERMES_ONLY,
     _TG_NAME_LIMIT,
     _clamp_command_names,
     _clamp_telegram_names,
@@ -26,6 +27,7 @@ from hermes_cli.commands import (
     slack_subcommand_map,
     telegram_bot_commands,
     telegram_menu_commands,
+    telegram_menu_max_commands,
 )
 
 
@@ -336,13 +338,25 @@ class TestSlackNativeSlashes:
             )
 
     def test_includes_aliases_as_first_class_slashes(self):
-        """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
-        slashes — this is the whole point of native-slashes parity."""
-        names = {n for n, _d, _h in slack_native_slashes()}
+        """Aliases (/btw, /bg, …) must be registered as standalone
+        slashes — this is the whole point of native-slashes parity.
+
+        Asserts the contract (aliases are surfaced as first-class slashes),
+        not a specific alias's survival of Slack's 50-slash clamp — which alias
+        lands last shifts whenever a canonical command is added. Only the
+        explicitly pinned ``_SLACK_PRIORITY_ALIASES`` are guaranteed slots;
+        every other alias (e.g. ``reset``) may be clamped once the registry
+        fills the cap — canonical commands win the contest, and clamped
+        aliases stay reachable via ``/hermes <alias>``.
+        """
+        slashes = slack_native_slashes()
+        names = {n for n, _d, _h in slashes}
+        # The pinned priority aliases are guaranteed to survive the clamp.
         assert "btw" in names
         assert "bg" in names
-        assert "reset" in names
-        assert "q" in names
+        # And at least one alias is surfaced as an alias entry (description
+        # carries the "Alias for /…" marker), proving the alias pass ran.
+        assert any(d.startswith("Alias for /") for _n, d, _h in slashes)
 
     def test_telegram_parity(self):
         """Every Telegram bot command must be registerable on Slack too.
@@ -366,7 +380,10 @@ class TestSlackNativeSlashes:
         slack_norm = {_norm(n) for n in slack_names}
         tg_norm = {_norm(n) for n in tg_names}
         reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
-        missing = (tg_norm - slack_norm) - reserved_norm
+        # Commands deliberately routed through /hermes <command> on Slack only
+        # (Slack's 50-slash cap) are expected to be absent from native slashes.
+        via_hermes_norm = {_norm(n) for n in _SLACK_VIA_HERMES_ONLY}
+        missing = (tg_norm - slack_norm) - reserved_norm - via_hermes_norm
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )
@@ -681,6 +698,169 @@ class TestSubcommandCompletion:
         completions = _completions(SlashCommandCompleter(), "/help ")
         assert completions == []
 
+    def test_tools_subcommand_completion(self):
+        """`/tools ` should suggest list, disable, enable."""
+        completions = _completions(SlashCommandCompleter(), "/tools ")
+        texts = {c.text for c in completions}
+        assert texts == {"list", "disable", "enable"}
+
+    def test_tools_subcommand_prefix_filters(self):
+        completions = _completions(SlashCommandCompleter(), "/tools en")
+        texts = {c.text for c in completions}
+        assert texts == {"enable"}
+
+    def test_tools_enable_completes_toolset_names(self, monkeypatch):
+        """`/tools enable ` should suggest currently-disabled toolsets."""
+        from hermes_cli import commands as commands_mod
+
+        # `web` is enabled, `spotify` is disabled — enabling should only offer
+        # the disabled ones.
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: {"web", "file"},
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/tools enable ")
+        texts = {c.text for c in completions}
+        # Should include disabled toolsets, exclude already-enabled ones.
+        assert "web" not in texts
+        assert "file" not in texts
+        assert "spotify" in texts
+
+    def test_tools_disable_completes_enabled_toolsets_only(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: {"web", "file"},
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/tools disable ")
+        texts = {c.text for c in completions}
+        # Should include enabled toolsets, exclude disabled ones.
+        assert texts == {"web", "file"}
+
+    def test_tools_enable_partial_filters(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: set(),
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/tools enable sp")
+        texts = {c.text for c in completions}
+        assert texts == {"spotify"}
+
+    def test_tools_enable_skips_already_listed(self, monkeypatch):
+        """If the user already typed a name, don't suggest it again."""
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: set(),
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/tools enable spotify ")
+        texts = {c.text for c in completions}
+        assert "spotify" not in texts
+
+    def test_tools_suggests_mcp_server_prefixes(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: set(),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"mcp_servers": {"github": {}, "linear": {}}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/tools enable git")
+        texts = {c.text for c in completions}
+        assert "github:" in texts
+
+    def _fake_gateway(self, monkeypatch, platforms):
+        """Patch load_gateway_config with a fake whose connected platforms are
+        the keys of `platforms` (name -> home as None or a (chat_id, name) tuple).
+        """
+        from types import SimpleNamespace
+
+        enums = {name: SimpleNamespace(value=name) for name in platforms}
+        homes = {
+            name: (None if home is None else SimpleNamespace(chat_id=home[0], name=home[1]))
+            for name, home in platforms.items()
+        }
+        fake = SimpleNamespace(
+            get_connected_platforms=lambda: list(enums.values()),
+            get_home_channel=lambda p: homes[p.value],
+        )
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
+
+    def test_handoff_completes_connected_platforms(self, monkeypatch):
+        """`/handoff ` offers connected platforms, with or without a home channel."""
+        self._fake_gateway(
+            monkeypatch,
+            {
+                "telegram": ("123", "Me"),
+                "discord": None,  # no home channel yet -> still listed
+            },
+        )
+
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff ")}
+        assert texts == {"telegram", "discord"}
+
+    def test_handoff_filters_by_prefix(self, monkeypatch):
+        self._fake_gateway(
+            monkeypatch,
+            {
+                "telegram": ("1", "H"),
+                "signal": ("2", "H"),
+            },
+        )
+
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff te")}
+        assert texts == {"telegram"}
+
+    def test_handoff_no_completion_after_platform_chosen(self, monkeypatch):
+        self._fake_gateway(monkeypatch, {"telegram": ("1", "H")})
+        assert _completions(SlashCommandCompleter(), "/handoff telegram ") == []
+
+    def test_handoff_completion_swallows_config_errors(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("no gateway config")
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", _boom)
+        assert _completions(SlashCommandCompleter(), "/handoff ") == []
+
+    def test_personality_completes_configured_personalities(self):
+        """`/personality ` lists real personalities, not just `none`.
+
+        Regression: the completer read load_config().agent.personalities, a path
+        that never exists, so it always came back empty. It must resolve from the
+        CLI config the runtime actually applies (which ships built-ins).
+        """
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/personality ")}
+        assert "none" in texts
+        assert len(texts) > 1
+
 
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────
 
@@ -975,6 +1155,149 @@ class TestTelegramMenuCommands:
         ):
             assert name in names
 
+    def test_configured_priority_prepends_plugin_commands(self, tmp_path, monkeypatch):
+        """Configured Telegram priorities keep local/plugin commands visible."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+
+        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - cmd-plugin\n"
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority_mode: prepend\n"
+            "        priority:\n"
+            "          - lcm\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            menu, _hidden = telegram_menu_commands(max_commands=30)
+
+        names = [name for name, _desc in menu]
+        assert names[0] == "lcm"
+        assert "help" in names[1:]
+
+    def test_configured_priority_append_keeps_defaults_before_user_priority(self, tmp_path, monkeypatch):
+        """append mode preserves built-in defaults ahead of configured names."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+
+        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - cmd-plugin\n"
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority_mode: append\n"
+            "        priority:\n"
+            "          - lcm\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            menu, _hidden = telegram_menu_commands(max_commands=30)
+
+        names = [name for name, _desc in menu]
+        assert names.index("help") < names.index("lcm")
+
+    def test_configured_priority_replace_ignores_builtin_priority_order(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority_mode: replace\n"
+            "        priority:\n"
+            "          - status\n"
+            "          - help\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu, _hidden = telegram_menu_commands(max_commands=5)
+        names = [name for name, _desc in menu]
+
+        assert names[:2] == ["status", "help"]
+
+    def test_telegram_menu_max_commands_uses_config_with_safe_bounds(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert telegram_menu_max_commands() == 60
+
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        max_commands: 12\n"
+        )
+        assert telegram_menu_max_commands() == 12
+
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        max_commands: 250\n"
+        )
+        assert telegram_menu_max_commands() == 100
+
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        max_commands: 0\n"
+        )
+        assert telegram_menu_max_commands() == 1
+
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        max_commands: nope\n"
+        )
+        assert telegram_menu_max_commands() == 60
+
+    def test_telegram_menu_ignores_undocumented_command_menu_paths(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "telegram:\n"
+            "  command_menu:\n"
+            "    max_commands: 12\n"
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      command_menu:\n"
+            "        max_commands: 9\n"
+        )
+
+        assert telegram_menu_max_commands() == 60
+
     def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
         """Telegram menu generation should discover plugin slash commands on first access."""
         from unittest.mock import patch
@@ -1003,7 +1326,7 @@ class TestTelegramMenuCommands:
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
 
         # Set up a config with a telegram-specific disabled list
         config_file = tmp_path / "config.yaml"

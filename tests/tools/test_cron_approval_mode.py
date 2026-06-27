@@ -1,6 +1,5 @@
 """Tests for approvals.cron_mode — configurable approval behavior for cron jobs."""
 
-import os
 import pytest
 
 import tools.approval as approval_module
@@ -240,8 +239,18 @@ class TestCronModeInteractions:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
 
+        # _YOLO_MODE_FROZEN is frozen at module import time (security: prevents
+        # prompt injection from runtime-setting HERMES_YOLO_MODE). When the
+        # test process imports tools.approval BEFORE this test sets the env,
+        # the frozen value is False and yolo-bypass paths don't activate.
+        # Patch the module attribute directly to simulate process-startup
+        # with HERMES_YOLO_MODE=1.
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
+        import tools.approval
+        with (
+            mock_patch.object(tools.approval, "_YOLO_MODE_FROZEN", True),
+            mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
+        ):
             # Use a dangerous-but-not-hardline command — `rm -rf /` is now
             # hardline-blocked regardless of yolo (see test_hardline_blocklist.py).
             result = check_dangerous_command("rm -rf /tmp/stuff", "local")

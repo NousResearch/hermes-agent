@@ -18,7 +18,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from agent.codex_responses_adapter import _normalize_codex_response
+from agent.codex_responses_adapter import (
+    _chat_messages_to_responses_input,
+    _normalize_codex_response,
+    _preflight_codex_input_items,
+)
+from agent.conversation_loop import _format_user_message_with_runtime_context
 
 import run_agent
 from run_agent import AIAgent
@@ -53,6 +58,31 @@ def test_is_destructive_command_treats_cp_as_mutating():
 
 def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
+
+
+def test_runtime_context_precedes_user_request_in_api_only_message():
+    formatted = _format_user_message_with_runtime_context(
+        "Please update the docs.",
+        ["Memory context", "Plugin context"],
+    )
+
+    assert formatted == (
+        "Runtime context:\n"
+        "Memory context\n\n"
+        "Plugin context\n\n"
+        "---\n"
+        "User request:\n"
+        "Please update the docs."
+    )
+    assert formatted.index("Memory context") < formatted.index("User request:")
+    assert formatted.index("Plugin context") < formatted.index("Please update")
+
+
+def test_runtime_context_formatter_leaves_user_request_unchanged_without_context():
+    assert (
+        _format_user_message_with_runtime_context("Please update the docs.", [])
+        == "Please update the docs."
+    )
 
 
 @pytest.fixture()

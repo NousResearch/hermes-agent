@@ -155,6 +155,23 @@ def _ra():
     return run_agent
 
 
+def _format_user_message_with_runtime_context(
+    user_content: str,
+    runtime_context_parts: list[str],
+) -> str:
+    """Return the API-only user message with runtime context before the request.
+
+    The persisted transcript keeps the user's original text.  This formatter is
+    only used for the provider request, where plugin/memory context should read
+    as context framing the request rather than as extra user-authored text after
+    it.
+    """
+    context = "\n\n".join(part for part in runtime_context_parts if part)
+    if not context:
+        return user_content
+    return f"Runtime context:\n{context}\n\n---\nUser request:\n{user_content}"
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -771,7 +788,10 @@ def run_conversation(
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):
-                        api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                        api_msg["content"] = _format_user_message_with_runtime_context(
+                            _base,
+                            _injections,
+                        )
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved

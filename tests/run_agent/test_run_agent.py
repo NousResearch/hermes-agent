@@ -3588,6 +3588,38 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_sidecar_context_is_injected_into_current_user_message(self, agent):
+        self._setup_agent(agent)
+        agent.session_id = "sess-123"
+        session_db = MagicMock()
+        session_db.build_memory_sidecar_context_block.return_value = (
+            "Memory sidecar context:\n- prior deploy fix"
+        )
+        agent._get_session_db_for_recall = MagicMock(return_value=session_db)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("deploy smoke failing")
+
+        assert result["final_response"] == "Final answer"
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        user_message = next(msg for msg in sent_messages if msg.get("role") == "user")
+        assert "deploy smoke failing" in user_message["content"]
+        assert "Memory sidecar context:" in user_message["content"]
+        assert "prior deploy fix" in user_message["content"]
+        session_db.build_memory_sidecar_context_block.assert_called_once_with(
+            session_id="sess-123",
+            query="deploy smoke failing",
+            limit=3,
+            max_observations=3,
+        )
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"
@@ -4723,6 +4755,36 @@ class TestRunConversation:
         # (up to 3), not immediately fire thinking-exhaustion.
         assert result["api_calls"] == 3
         assert result["completed"] is False
+
+    def test_ollama_false_length_context_error_skips_continuation(self, agent):
+        """Tiny Ollama completions at the 4096-token ceiling should stop with
+        a context diagnostic instead of injecting bogus continuation prompts."""
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "gemma4:e2b"
+        agent._ollama_num_ctx = 131072
+
+        resp = _mock_response(content="כן", finish_reason="length")
+        resp.usage = SimpleNamespace(
+            prompt_tokens=4095,
+            completion_tokens=1,
+            total_tokens=4096,
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["api_calls"] == 1
+        assert result["completed"] is False
+        assert "runtime context too small" in result["final_response"].lower()
+        assert "4,096-token" in result["final_response"]
+        assert "finish_reason='length'" in result["error"]
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
         self._setup_agent(agent)

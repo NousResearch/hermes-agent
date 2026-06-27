@@ -19,6 +19,18 @@ class TestRegistry:
         assert get_provider_profile("qwen").name == "qwen-oauth"
         assert get_provider_profile("qwen-portal").name == "qwen-oauth"
 
+    def test_composite_provider_id_resolves_family_profile(self):
+        local = get_provider_profile("custom:local")
+        named = get_provider_profile("custom:my-proxy")
+        ollama = get_provider_profile("ollama:lab")
+
+        assert local is not None
+        assert named is not None
+        assert ollama is not None
+        assert local.name == "custom"
+        assert named.name == "custom"
+        assert ollama.name == "custom"
+
     def test_unknown_provider_returns_none(self):
         assert get_provider_profile("nonexistent-provider") is None
 

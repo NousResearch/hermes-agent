@@ -146,6 +146,78 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     )
 
 
+def _ollama_false_length_context_error(agent: Any, response: Any, assistant_message: Any) -> Optional[tuple[str, str]]:
+    """Detect Ollama's false ``finish_reason='length'`` on tiny local completions.
+
+    Some Ollama chat-completions routes report ``finish_reason='length'`` after
+    emitting only 1-2 visible tokens when the request silently hit the default
+    4K runtime context ceiling. Hermes previously treated that as a genuine
+    output truncation and injected continuation prompts, which produced junk like
+    ``כןII`` / ``Please`` instead of surfacing the real context problem.
+
+    Returns ``(final_response, error)`` when the turn should stop immediately,
+    else ``None``.
+    """
+    base_url = str(
+        getattr(agent, "base_url", None)
+        or getattr(agent, "_base_url_lower", None)
+        or ""
+    ).lower()
+    if not (
+        "localhost:11434" in base_url
+        or "127.0.0.1:11434" in base_url
+        or "ollama" in base_url
+        or ":11434" in base_url
+    ):
+        return None
+
+    if getattr(assistant_message, "tool_calls", None):
+        return None
+
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
+    if not isinstance(prompt_tokens, int):
+        return None
+    if not isinstance(completion_tokens, int):
+        return None
+    if not isinstance(total_tokens, int):
+        return None
+
+    if prompt_tokens < 4094 or total_tokens != 4096 or completion_tokens > 2:
+        return None
+
+    visible = (getattr(assistant_message, "content", None) or "").strip()
+    model = getattr(agent, "model", "") or "the selected model"
+    configured_ctx = getattr(agent, "_ollama_num_ctx", None)
+    configured_ctx_note = (
+        f" Hermes is configured for ollama_num_ctx={configured_ctx:,}, so the live Ollama runtime likely ignored or failed to apply that setting."
+        if isinstance(configured_ctx, int) and configured_ctx > 4096
+        else ""
+    )
+    response_text = (
+        "⚠️ **Ollama Runtime Context Too Small**\n\n"
+        f"Hermes sent a large system prompt to `{model}`, but the Ollama "
+        "chat-completions runtime responded as if it still had only a 4,096-token "
+        "context window (`prompt_tokens≈4095`, `completion_tokens≤2`, `finish_reason=length`).\n\n"
+        "This is not a real output truncation, so Hermes stopped instead of "
+        "sending misleading continuation prompts."
+        f"{configured_ctx_note}\n\n"
+        "Try reloading the Ollama model with a larger runtime context (for example 65,536 tokens) and then retry."
+    )
+    error_text = (
+        "Ollama chat-completions route hit a 4096-token runtime context ceiling; "
+        f"provider returned finish_reason='length' after only {completion_tokens} completion token(s)."
+    )
+    if visible:
+        response_text += f"\n\nPartial visible output before stop: `{visible}`"
+    return response_text, error_text
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.handle_function_call`` / ``run_agent._set_interrupt`` /
@@ -1688,6 +1760,22 @@ def run_conversation(
                             "completed": False,
                             "partial": True,
                             "error": _exhaust_error,
+                        }
+
+                    _ollama_false_length = _ollama_false_length_context_error(
+                        agent, response, _trunc_msg
+                    )
+                    if _ollama_false_length:
+                        _ollama_response, _ollama_error = _ollama_false_length
+                        agent._cleanup_task_resources(effective_task_id)
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": _ollama_response,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "error": _ollama_error,
                         }
 
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:

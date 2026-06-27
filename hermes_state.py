@@ -776,6 +776,8 @@ class SessionDB:
         self._fts_enabled = False
         self._trigram_available = False
         self._fts_unavailable_warned = False
+        self._memory_sidecar_store = None
+        self._memory_sidecar_disabled = False
         self._conn = None
         try:
             if read_only:
@@ -1095,6 +1097,12 @@ class SessionDB:
         help shrink the WAL file.
         """
         with self._lock:
+            if self._memory_sidecar_store is not None:
+                try:
+                    self._memory_sidecar_store.close()
+                except Exception:
+                    pass
+                self._memory_sidecar_store = None
             if self._conn:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -1102,6 +1110,147 @@ class SessionDB:
                     pass
                 self._conn.close()
                 self._conn = None
+
+    def _get_memory_sidecar_store(self, *, for_write: bool = False):
+        if self._memory_sidecar_disabled:
+            return None
+        if for_write and self.read_only:
+            return None
+        if self._memory_sidecar_store is not None:
+            return self._memory_sidecar_store
+        try:
+            from agent.memory_sidecar import MemorySidecarStore
+
+            self._memory_sidecar_store = MemorySidecarStore()
+            return self._memory_sidecar_store
+        except Exception as exc:
+            self._memory_sidecar_disabled = True
+            logger.warning("Memory sidecar disabled for %s: %s", self.db_path, exc)
+            return None
+
+    def _maybe_ingest_sidecar_message(
+        self,
+        *,
+        session_id: str,
+        message_id: int,
+        role: str,
+        content: Any,
+    ) -> None:
+        store = self._get_memory_sidecar_store(for_write=True)
+        if store is None:
+            return
+        try:
+            from agent.memory_sidecar.runtime import ingest_message
+
+            ingest_message(
+                store,
+                session_id=session_id,
+                message_id=message_id,
+                role=role,
+                content=content,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Memory sidecar ingest failed for session %s message %s: %s",
+                session_id,
+                message_id,
+                exc,
+            )
+
+    @staticmethod
+    def _normalize_memory_sidecar_query(query: str | None) -> str | None:
+        if not query:
+            return query
+        tokens = []
+        for raw_token in str(query).split():
+            token = raw_token.strip()
+            if not token:
+                continue
+            if re.search(r"[^\w]", token):
+                token = '"' + token.replace('"', '""') + '"'
+            tokens.append(token)
+        normalized = " ".join(tokens).strip()
+        return normalized or None
+
+    def query_memory_sidecar_context(
+        self,
+        *,
+        session_id: str,
+        query: str | None = None,
+        types: tuple[str, ...] = (),
+        concepts: tuple[str, ...] = (),
+        file_path: str | None = None,
+        limit: int = 8,
+        time_bias: str = "recent",
+    ):
+        """Query structured sidecar context for a session.
+
+        This is the low-level retrieval surface for live conversation use.
+        It is read-safe even when the SessionDB itself was opened read-only.
+        Returns ``None`` if the sidecar is unavailable/disabled.
+        """
+        store = self._get_memory_sidecar_store()
+        if store is None:
+            return None
+        from agent.memory_sidecar import ContextQuery
+
+        normalized_query = self._normalize_memory_sidecar_query(query)
+        return store.query_context(
+            ContextQuery(
+                query=normalized_query,
+                session_id=session_id,
+                types=types,
+                concepts=concepts,
+                file_path=file_path,
+                limit=limit,
+                time_bias=time_bias,
+            )
+        )
+
+    def build_memory_sidecar_context_block(
+        self,
+        *,
+        session_id: str,
+        query: str | None = None,
+        types: tuple[str, ...] = (),
+        concepts: tuple[str, ...] = (),
+        file_path: str | None = None,
+        limit: int = 8,
+        time_bias: str = "recent",
+        max_observations: int = 4,
+    ) -> str:
+        """Return a concise prompt-ready context block from the sidecar."""
+        result = self.query_memory_sidecar_context(
+            session_id=session_id,
+            query=query,
+            types=types,
+            concepts=concepts,
+            file_path=file_path,
+            limit=limit,
+            time_bias=time_bias,
+        )
+        if result is None:
+            return ""
+        if query:
+            fallback = self.query_memory_sidecar_context(
+                session_id=session_id,
+                types=types,
+                concepts=concepts,
+                file_path=file_path,
+                limit=limit,
+                time_bias="recent",
+            )
+            if fallback is not None:
+                from agent.memory_sidecar.retrieval import (
+                    format_context_result,
+                    merge_context_results,
+                )
+
+                result = merge_context_results(result, fallback, limit=limit)
+                return format_context_result(result, max_observations=max_observations)
+        from agent.memory_sidecar.retrieval import format_context_result
+
+        return format_context_result(result, max_observations=max_observations)
 
     @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
@@ -2812,7 +2961,14 @@ class SessionDB:
                 )
             return msg_id
 
-        return self._execute_write(_do)
+        msg_id = self._execute_write(_do)
+        self._maybe_ingest_sidecar_message(
+            session_id=session_id,
+            message_id=msg_id,
+            role=role,
+            content=content,
+        )
+        return msg_id
 
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.

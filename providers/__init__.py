@@ -65,12 +65,32 @@ def register_provider(profile: ProviderProfile) -> None:
 def get_provider_profile(name: str) -> ProviderProfile | None:
     """Look up a provider profile by name or alias.
 
+    Composite runtime provider IDs such as ``custom:local`` should resolve to
+    the canonical profile for their provider family (``custom`` here), while
+    still preferring an exact registry hit if one exists.
+
     Returns None if the provider has no profile (falls back to generic).
     """
     if not _discovered:
         _discover_providers()
-    canonical = _ALIASES.get(name, name)
-    return _REGISTRY.get(canonical)
+
+    raw_name = str(name or "").strip()
+    if not raw_name:
+        return None
+
+    canonical = _ALIASES.get(raw_name, raw_name)
+    profile = _REGISTRY.get(canonical)
+    if profile is not None:
+        return profile
+
+    if ":" in raw_name:
+        family, _suffix = raw_name.split(":", 1)
+        family = family.strip()
+        if family:
+            canonical = _ALIASES.get(family, family)
+            return _REGISTRY.get(canonical)
+
+    return None
 
 
 def list_providers() -> list[ProviderProfile]:

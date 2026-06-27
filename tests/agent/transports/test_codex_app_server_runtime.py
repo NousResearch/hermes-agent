@@ -134,6 +134,96 @@ class TestCodexAppServerModule:
         assert ok is False
         assert "not found" in msg.lower() or "no such" in msg.lower()
 
+    def test_resolve_codex_bin_uses_which_for_bare_name(self, monkeypatch) -> None:
+        from agent.transports.codex_app_server import _resolve_codex_bin
+
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server.shutil.which",
+            lambda name: r"C:\Users\alice\AppData\Roaming\npm\codex.CMD"
+            if name == "codex"
+            else None,
+        )
+        assert (
+            _resolve_codex_bin("codex")
+            == r"C:\Users\alice\AppData\Roaming\npm\codex.CMD"
+        )
+
+    def test_resolve_codex_bin_keeps_existing_absolute_path(self, tmp_path) -> None:
+        from agent.transports.codex_app_server import _resolve_codex_bin
+
+        codex_path = tmp_path / "codex.CMD"
+        codex_path.write_text("@echo off\n", encoding="utf-8")
+        assert _resolve_codex_bin(str(codex_path)) == str(codex_path)
+
+    def test_check_codex_binary_spawns_resolved_path(self, monkeypatch) -> None:
+        import subprocess
+
+        from agent.transports.codex_app_server import check_codex_binary
+
+        resolved = r"C:\Users\alice\AppData\Roaming\npm\codex.CMD"
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server.shutil.which",
+            lambda name: resolved if name == "codex" else None,
+        )
+
+        captured: dict[str, list[str]] = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+
+            class _Proc:
+                returncode = 0
+                stdout = "codex-cli 0.139.0"
+                stderr = ""
+
+            return _Proc()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        ok, msg = check_codex_binary(codex_bin="codex")
+        assert ok is True
+        assert captured["cmd"] == [resolved, "--version"]
+        assert msg == "0.139.0"
+
+    def test_client_spawn_uses_resolved_codex_path(self, monkeypatch) -> None:
+        import subprocess
+
+        from agent.transports import codex_app_server as cas
+
+        resolved = r"C:\Users\alice\AppData\Roaming\npm\codex.CMD"
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server.shutil.which",
+            lambda name: resolved if name == "codex" else None,
+        )
+
+        captured: dict[str, list[str]] = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        assert captured["cmd"][:2] == [resolved, "app-server"]
+
     def test_codex_error_class_is_runtimeerror(self) -> None:
         from agent.transports.codex_app_server import CodexAppServerError
 

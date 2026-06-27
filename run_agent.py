@@ -206,6 +206,7 @@ from agent.tool_dispatch_helpers import (
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,  # noqa: F401  # re-exported for tests that `from run_agent import _append_subdir_hint_to_multimodal`
     _extract_file_mutation_targets,
+    _extract_landed_file_mutation_paths,
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
@@ -1137,6 +1138,19 @@ class AIAgent:
         if env_timeout is not None:
             return float(env_timeout), False
 
+        # Reasoning-model floor: auto-mitigation for known reasoning models
+        # (Nemotron 3 Ultra, OpenAI o1/o3, Anthropic Opus 4.x thinking,
+        # DeepSeek R1, Qwen QwQ, xAI Grok reasoning, etc.) whose cloud
+        # gateways idle-kill before the model's thinking phase ends.
+        # uses_implicit_default is False here so the local-endpoint
+        # short-circuit in _compute_non_stream_stale_timeout does not
+        # disable stale detection for users running reasoning models on a
+        # local NIM endpoint.
+        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        reasoning_floor = get_reasoning_stale_timeout_floor(self.model)
+        if reasoning_floor is not None:
+            return reasoning_floor, False
+
         return 90.0, True
 
     def _compute_non_stream_stale_timeout(self, api_payload: Any) -> float:
@@ -1353,14 +1367,26 @@ class AIAgent:
         return False
 
     def _is_ollama_glm_backend(self) -> bool:
-        """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
+        """Detect Ollama-hosted GLM models affected by stop misreports.
+
+        Ollama can misreport truncated output as finish_reason='stop'.
+        Detection relies on explicit Ollama signatures:
+        - Port 11434 (Ollama default)
+        - "ollama" in the base URL (e.g. ollama.local, /ollama/ path)
+        - provider explicitly set to "ollama"
+
+        Crucially it does NOT match arbitrary local/private endpoints
+        (LiteLLM/sglang/vLLM/LM Studio proxies, Tailscale boxes), which
+        report finish_reason correctly and were the source of #13971's
+        false-positive truncation continuations.
+        """
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
         if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
             return True
-        return bool(self.base_url and is_local_endpoint(self.base_url))
+        return provider_lower == "ollama"
 
     def _should_treat_stop_as_truncated(
         self,
@@ -2550,6 +2576,10 @@ class AIAgent:
         if not targets:
             return
         landed = file_mutation_result_landed(tool_name, result)
+        if landed:
+            changed = getattr(self, "_turn_file_mutation_paths", None)
+            if changed is not None:
+                changed.update(_extract_landed_file_mutation_paths(tool_name, args, result))
         if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:
@@ -3704,6 +3734,8 @@ class AIAgent:
         from unittest.mock import Mock
 
         primary_client = self._ensure_primary_openai_client(reason=reason)
+        if self.provider == "moa":
+            return primary_client
         if isinstance(primary_client, Mock):
             return primary_client
         with self._openai_client_lock():
@@ -5308,6 +5340,7 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
@@ -5319,7 +5352,8 @@ class AIAgent:
             task_id,
             stream_callback,
             persist_user_message,
-            persist_user_timestamp,
+            persist_user_timestamp=persist_user_timestamp,
+            moa_config=moa_config,
         )
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:

@@ -258,6 +258,58 @@ restore_dirty_lockfiles() {
     done
 }
 
+# npm rewrites tracked package-lock.json files non-deterministically during
+# local builds. On a managed install those diffs are usually runtime churn, not
+# intentional user edits, so discard them before the repository-stage stash.
+# If package.json in the same directory is also dirty we keep both changes.
+discard_update_lockfile_churn() {
+    local repo="${1:-$INSTALL_DIR}"
+    [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
+    command -v git >/dev/null 2>&1 || return 0
+
+    local dirty_diff
+    dirty_diff=$(git -C "$repo" diff --name-only 2>/dev/null) || return 0
+    [ -n "$dirty_diff" ] || return 0
+
+    local dirty_package_dirs=""
+    while IFS= read -r path; do
+        case "$path" in
+            *package.json)
+                dirty_package_dirs="${dirty_package_dirs}$(dirname "$path")"$'\n'
+                ;;
+        esac
+    done <<EOF
+$dirty_diff
+EOF
+
+    local dirty_locks=""
+    local dirty_count=0
+    while IFS= read -r path; do
+        case "$path" in
+            *package-lock.json)
+                local lock_dir
+                lock_dir=$(dirname "$path")
+                case $'\n'"$dirty_package_dirs" in
+                    *$'\n'"$lock_dir"$'\n'*) continue ;;
+                esac
+                dirty_locks="${dirty_locks}${path}"$'\n'
+                dirty_count=$((dirty_count + 1))
+                ;;
+        esac
+    done <<EOF
+$dirty_diff
+EOF
+
+    [ "$dirty_count" -gt 0 ] || return 0
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        git -C "$repo" checkout -- "$path" 2>/dev/null || true
+    done <<EOF
+$dirty_locks
+EOF
+    log_info "Discarded npm lockfile churn (${dirty_count} file(s))"
+}
+
 emit_manifest() {
     # Stage-Desktop is included only with --include-desktop, mirroring
     # install.ps1: the signed bootstrap installer (Hermes-Setup) passes it so
@@ -1136,6 +1188,7 @@ clone_repo() {
             cd "$INSTALL_DIR"
 
             local autostash_ref=""
+            discard_update_lockfile_churn "$INSTALL_DIR"
             if [ -n "$(git status --porcelain)" ]; then
                 # A previously interrupted update can leave the index with
                 # unmerged entries. In that state `git stash` aborts with
@@ -1727,24 +1780,14 @@ copy_config_templates() {
         log_info "~/.hermes/config.yaml already exists, keeping it"
     fi
 
-    # Create SOUL.md if it doesn't exist (global persona file)
+    # Create SOUL.md if it doesn't exist (global persona file).
+    # This MUST match DEFAULT_SOUL_MD in hermes_cli/default_soul.py — the
+    # runtime (_ensure_default_soul_md) treats the old comment-only scaffold as
+    # "never customized" and upgrades it to this text on next run, so any drift
+    # here is self-healing, but keep them in sync to avoid a churn on first run.
     if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
         cat > "$HERMES_HOME/SOUL.md" << 'SOUL_EOF'
-# Hermes Agent Persona
-
-<!--
-This file defines the agent's personality and tone.
-The agent will embody whatever you write here.
-Edit this to customize how Hermes communicates with you.
-
-Examples:
-  - "You are a warm, playful assistant who uses kaomoji occasionally."
-  - "You are a concise technical expert. No fluff, just facts."
-  - "You speak like a friendly coworker who happens to know everything."
-
-This file is loaded fresh each message -- no restart needed.
-Delete the contents (or this file) to use the default personality.
--->
+You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.
 SOUL_EOF
         log_success "Created ~/.hermes/SOUL.md (edit to customize personality)"
     fi
@@ -1777,40 +1820,64 @@ SOUL_EOF
 }
 
 find_system_browser() {
-    # Prefer a user-specified browser path, then common Linux/macOS Chrome and
-    # Chromium command names.  Arch-family distributions commonly ship plain
-    # `chromium`, while Debian-family systems often use `chromium-browser`.
-    if [ -n "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ]; then
-        if [ -x "$AGENT_BROWSER_EXECUTABLE_PATH" ]; then
-            echo "$AGENT_BROWSER_EXECUTABLE_PATH"
-            return 0
-        fi
-        if command -v "$AGENT_BROWSER_EXECUTABLE_PATH" >/dev/null 2>&1; then
-            command -v "$AGENT_BROWSER_EXECUTABLE_PATH"
-            return 0
-        fi
+    # Honor ONLY an explicit, user-set AGENT_BROWSER_EXECUTABLE_PATH override.
+    #
+    # We deliberately do NOT scan PATH or well-known app locations any more.
+    # Auto-detection silently bound the install to whatever `command -v chromium`
+    # resolved to — most damagingly a Snap Chromium (/snap/bin/chromium), whose
+    # sandbox blocks agent-browser's control socket under /tmp, so every
+    # browser_navigate hung until the 60s timeout fired ("opening web page
+    # failed"). Every install now uses the bundled Playwright Chromium unless the
+    # user explicitly points elsewhere.
+    local override="${AGENT_BROWSER_EXECUTABLE_PATH:-}"
+
+    if [ -z "$override" ]; then
+        return 1
     fi
 
-    local candidate
-    for candidate in google-chrome google-chrome-stable chromium chromium-browser chrome; do
-        if command -v "$candidate" >/dev/null 2>&1; then
-            command -v "$candidate"
-            return 0
-        fi
-    done
+    # A Snap binary is never a valid target — its confinement is the very bug we
+    # are fixing — so reject it even when set explicitly.
+    case "$override" in
+        /snap/*) return 1 ;;
+    esac
 
-    if [ "$(uname)" = "Darwin" ]; then
-        for app in \
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-            "/Applications/Chromium.app/Contents/MacOS/Chromium"; do
-            if [ -x "$app" ]; then
-                echo "$app"
-                return 0
-            fi
-        done
+    if [ -x "$override" ]; then
+        echo "$override"
+        return 0
+    fi
+    if command -v "$override" >/dev/null 2>&1; then
+        command -v "$override"
+        return 0
     fi
 
     return 1
+}
+
+strip_snap_browser_override() {
+    # Existing installs created before the system-browser fallback was dropped
+    # may carry an auto-written AGENT_BROWSER_EXECUTABLE_PATH pointing at a Snap
+    # Chromium (/snap/bin/chromium). That path is the root cause of the "opening
+    # web page failed" hang, and the runtime reads it straight from .env — so
+    # removing the fallback in the installer is not enough on its own. Strip any
+    # snap-pointing override here (and its auto-written comment) so the bundled
+    # Chromium download runs and the agent stops using the broken binary. A
+    # deliberately-set non-snap override is left untouched.
+    local env_file="$HERMES_HOME/.env"
+
+    [ -f "$env_file" ] || return 0
+    grep -Eq '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/' "$env_file" 2>/dev/null || return 0
+
+    local tmp
+    tmp="$(mktemp)" || return 0
+    if grep -Ev '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/|^# Hermes Agent browser tools' "$env_file" > "$tmp"; then
+        mv "$tmp" "$env_file"
+        log_warn "Removed stale Snap browser override (AGENT_BROWSER_EXECUTABLE_PATH=/snap/...) from $env_file"
+        log_info "Hermes will use the bundled Chromium instead."
+        # Drop it from this process too so the rest of the run doesn't re-detect it.
+        unset AGENT_BROWSER_EXECUTABLE_PATH
+    else
+        rm -f "$tmp"
+    fi
 }
 
 run_browser_install_with_timeout() {
@@ -1848,7 +1915,7 @@ configure_browser_env_from_system_browser() {
 
     {
         echo ""
-        echo "# Hermes Agent browser tools — use the system Chrome/Chromium binary."
+        echo "# Hermes Agent browser tools — explicit browser override."
         echo "AGENT_BROWSER_EXECUTABLE_PATH=$browser_path"
     } >> "$env_file"
     log_success "Configured browser tools to use $browser_path"
@@ -1887,10 +1954,11 @@ install_node_deps() {
             log_info "  sudo npx playwright install-deps chromium"
         else
         log_info "Installing browser engine (Playwright Chromium)..."
+        strip_snap_browser_override
         DETECTED_BROWSER_EXECUTABLE="$(find_system_browser 2>/dev/null || true)"
         if [ -n "$DETECTED_BROWSER_EXECUTABLE" ]; then
-            log_success "Found system Chrome/Chromium at $DETECTED_BROWSER_EXECUTABLE"
-            log_info "Skipping Playwright browser download; Hermes will use the system browser."
+            log_success "Using explicit browser override: $DETECTED_BROWSER_EXECUTABLE"
+            log_info "Skipping bundled Chromium download (AGENT_BROWSER_EXECUTABLE_PATH is set)."
         else
             case "$DISTRO" in
                 ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
@@ -2225,11 +2293,12 @@ ensure_browser() {
     rm -f "$log_file"
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
+    strip_snap_browser_override
     local sys_browser
     sys_browser="$(find_system_browser 2>/dev/null || true)"
     if [ -n "$sys_browser" ]; then
         configure_browser_env_from_system_browser "$sys_browser"
-        log_info "System browser detected -- skipping Chromium download"
+        log_info "Explicit browser override set -- skipping bundled Chromium download"
         return 0
     fi
 

@@ -636,6 +636,66 @@ def test_invalid_regex_patterns_are_ignored():
     assert adapter._should_process_message(_group_message("hello everyone")) is False
 
 
+def test_bot_self_messages_are_ignored_in_dm_and_group():
+    """Bot-authored messages must not re-enter as fresh user turns (issue #11905).
+
+    Telegram echoes the bot's own outbound messages back through getUpdates.
+    Without a self-author guard, those echoes — including
+    ``[SYSTEM: Background process ...]`` watcher notifications — get ingested
+    as new inbound turns, producing the "haunted topic" loop. The guard keys
+    on ``from_user.id == self._bot.id`` (bot id is 999 in ``_make_adapter``).
+    """
+    adapter = _make_adapter(require_mention=False)
+
+    # Control: a real user in the same group IS processed.
+    assert adapter._should_process_message(_group_message("hi", chat_id=-100)) is True
+
+    # The exact reported symptom: a bot-authored DM-topic watcher echo.
+    self_dm = _group_message(
+        "[SYSTEM: Background process matched watch pattern ...]",
+        chat_id=555,
+        from_user_id=999,
+    )
+    self_dm.chat.type = "private"
+    assert adapter._should_process_message(self_dm) is False
+
+    # Same guard applies in groups/supergroups.
+    self_group = _group_message("status tick", chat_id=-100, from_user_id=999)
+    assert adapter._should_process_message(self_group) is False
+
+
+def test_other_bots_are_still_processed():
+    """A different bot's message must not be over-filtered.
+
+    Distinguishes the self-id guard from a blanket ``from_user.is_bot`` check,
+    which would incorrectly drop unrelated bots (weather, music, etc.) sharing
+    the same chat.
+    """
+    adapter = _make_adapter(require_mention=False)
+    other_bot = _group_message("weather update", chat_id=-100, from_user_id=555)
+    other_bot.from_user = SimpleNamespace(id=555, is_bot=True)
+    assert adapter._should_process_message(other_bot) is True
+
+
+def test_self_message_guard_skips_observe_path():
+    """Bot-authored messages are not stored via the observe-unmentioned path.
+
+    When ``_should_process_message`` rejects a message, dispatch falls through
+    to ``_should_observe_unmentioned_group_message``; the self-guard must also
+    sit there so a self-echo is neither dispatched nor stored.
+    """
+    adapter = _make_adapter(require_mention=True, observe_unmentioned_group_messages=True)
+    self_group = _group_message("status tick", chat_id=-100, from_user_id=999)
+    assert adapter._should_observe_unmentioned_group_message(self_group) is False
+
+
+def test_missing_from_user_does_not_crash():
+    adapter = _make_adapter(require_mention=False)
+    anon = _group_message("channel post", chat_id=-100)
+    anon.from_user = None
+    assert adapter._should_process_message(anon) is True
+
+
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -1180,7 +1240,7 @@ def test_unmentioned_large_document_observed_without_download(monkeypatch):
     asyncio.run(_run())
 
 
-def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
+def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
     async def _run():
         adapter = _make_adapter(
             require_mention=True, allowed_chats=["-100"],
@@ -1188,14 +1248,14 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
         )
         store = _FakeSessionStore()
         adapter._session_store = store
-        cache_doc = Mock(return_value="/tmp/malware.exe")
+        cache_doc = Mock(return_value="/tmp/program.exe")
         monkeypatch.setattr("gateway.platforms.base.cache_document_from_bytes", cache_doc)
         file_obj = SimpleNamespace(
-            file_path="documents/malware.exe",
+            file_path="documents/program.exe",
             download_as_bytearray=AsyncMock(return_value=bytearray(b"MZ")),
         )
         document = SimpleNamespace(
-            file_name="malware.exe", mime_type="application/x-msdownload",
+            file_name="program.exe", mime_type="application/x-msdownload",
             file_size=2, get_file=AsyncMock(return_value=file_obj),
         )
         update = SimpleNamespace(
@@ -1204,8 +1264,10 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
 
         await adapter._handle_media_message(update, SimpleNamespace())
 
-        cache_doc.assert_not_called()
+        # Any file type is now cached — authorization is the gate, not the
+        # extension. The observed message records a path-pointing note.
+        cache_doc.assert_called_once()
         _, message, _ = store.messages[0]
-        assert "unsupported" in message["content"].lower()
+        assert "program.exe" in message["content"]
 
     asyncio.run(_run())

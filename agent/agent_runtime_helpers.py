@@ -1697,6 +1697,27 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         old_model, old_provider, new_model, new_provider,
     )
 
+    # ── Persist billing route to session DB ──
+    # The agent's _session_db / session_id may not be set in all contexts
+    # (tests, bare agents without a session DB, etc.).  This ensures the
+    # dashboard Model cards show the actual provider after a mid-session
+    # /model switch instead of the stale session-creation provider.
+    # See #48248 for the full bug description.
+    _session_db = getattr(agent, "_session_db", None)
+    _session_id = getattr(agent, "session_id", None)
+    if _session_db is not None and _session_id:
+        try:
+            _session_db.update_session_billing_route(
+                _session_id,
+                provider=agent.provider,
+                base_url=agent.base_url,
+                billing_mode=getattr(agent, "api_mode", None),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist billing route after model switch",
+                exc_info=True,
+            )
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
@@ -1838,32 +1859,18 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 operations=operations,
                 store=agent._memory_store,
             )
-            # Bridge: notify external memory provider of built-in memory writes.
-            # Covers both the single-op shape and each add/replace inside a batch.
+            # Mirror successful built-in memory writes to external providers.
+            # All gating/op-expansion lives behind the manager interface
+            # (MemoryManager.notify_memory_tool_write).
             if agent._memory_manager:
-                if operations:
-                    _mem_ops = [
-                        op for op in operations
-                        if isinstance(op, dict) and op.get("action") in {"add", "replace"}
-                    ]
-                else:
-                    _mem_ops = (
-                        [{"action": next_args.get("action"), "content": next_args.get("content")}]
-                        if next_args.get("action") in {"add", "replace"} else []
-                    )
-                for _op in _mem_ops:
-                    try:
-                        agent._memory_manager.on_memory_write(
-                            _op.get("action", ""),
-                            target,
-                            _op.get("content", "") or "",
-                            metadata=agent._build_memory_write_metadata(
-                                task_id=effective_task_id,
-                                tool_call_id=tool_call_id,
-                            ),
-                        )
-                    except Exception:
-                        pass
+                agent._memory_manager.notify_memory_tool_write(
+                    result,
+                    next_args,
+                    build_metadata=lambda: agent._build_memory_write_metadata(
+                        task_id=effective_task_id,
+                        tool_call_id=tool_call_id,
+                    ),
+                )
             return _finish_agent_tool(result, next_args)
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         def _execute(next_args: dict) -> Any:

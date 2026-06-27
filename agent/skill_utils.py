@@ -507,6 +507,34 @@ def get_all_skills_dirs() -> List[Path]:
     return dirs
 
 
+def _resolve_for_skill_ownership(path) -> Path:
+    path_obj = path if isinstance(path, Path) else Path(str(path))
+    try:
+        return path_obj.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return path_obj.expanduser().absolute()
+
+
+def is_external_skill_path(path) -> bool:
+    """Return True when ``path`` lives under a configured external skills dir.
+
+    ``skills.external_dirs`` are externally owned: Hermes can discover and view
+    their skills, and foreground user-directed tool calls may still edit them,
+    but autonomous lifecycle maintenance must treat them as read-only. This
+    helper centralizes the ownership boundary so curator/reporting/tool paths do
+    not each need to re-interpret the config.
+    """
+    candidate = _resolve_for_skill_ownership(path)
+    for root in get_external_skills_dirs():
+        resolved_root = _resolve_for_skill_ownership(root)
+        try:
+            candidate.relative_to(resolved_root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 # ── Condition extraction ──────────────────────────────────────────────────
 
 

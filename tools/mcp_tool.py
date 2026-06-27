@@ -101,6 +101,16 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+# Upper bound for the OSV malware preflight during stdio MCP startup. The
+# check makes a blocking urllib HTTPS call whose own timeout can fail to
+# interrupt a stalled SSL handshake, which froze the asyncio event loop and
+# blew past the gateway's 15s startup budget (#29184). We run it off the loop
+# AND bound it here; the check is fail-open, so a timeout lets startup proceed.
+# Set just ABOVE osv_check._TIMEOUT (10s) so the inner socket timeout fires
+# first in the normal case; this outer bound only bites when a stalled SSL
+# handshake defeats the inner timeout (the #29184 failure mode).
+_OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
+
 
 # ---------------------------------------------------------------------------
 # Stdio subprocess stderr redirection
@@ -1772,9 +1782,24 @@ class MCPServerTask:
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
 
-        # Check package against OSV malware database before spawning
+        # Check package against OSV malware database before spawning.
+        # Run off the event loop (the urllib HTTPS call is blocking) and bound
+        # it with a wall-clock timeout so a stalled SSL handshake can't freeze
+        # MCP discovery / gateway startup (#29184). The check is fail-open, so
+        # on timeout we log and proceed rather than blocking indefinitely.
         from tools.osv_check import check_package_for_malware
-        malware_error = check_package_for_malware(command, args)
+        try:
+            malware_error = await asyncio.wait_for(
+                asyncio.to_thread(check_package_for_malware, command, args),
+                timeout=_OSV_MALWARE_CHECK_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "MCP server '%s': OSV malware preflight timed out after %.0fs "
+                "(network slow/unreachable) — proceeding without the check.",
+                self.name, _OSV_MALWARE_CHECK_TIMEOUT_S,
+            )
+            malware_error = None
         if malware_error:
             raise ValueError(
                 f"MCP server '{self.name}': {malware_error}"
@@ -4643,21 +4668,42 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     if not pids:
         return
 
+    # Pre-compute the gateway's own pgid so _send_signal can avoid killing it.
+    try:
+        _my_pgid = os.getpgrp()
+    except (AttributeError, OSError):
+        _my_pgid = None  # Windows or restricted environment
+
     def _send_signal(pid: int, sig: int, server_name: str) -> None:
         """SIGTERM/SIGKILL via pgroup on POSIX, fall back to pid signal."""
         pgid = pgids.get(pid)
         killpg = getattr(os, "killpg", None)
         if pgid is not None and killpg is not None:
-            try:
-                killpg(pgid, sig)
-                return
-            except (ProcessLookupError, PermissionError, OSError) as exc:
-                # Pgroup gone (all members exited) or refused — fall back to
-                # the per-pid path so we still try the direct child if alive.
-                logger.debug(
-                    "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
-                    pgid, sig, server_name, exc,
+            if _my_pgid is not None and pgid == _my_pgid:
+                # The MCP child shares the gateway's own process group.
+                # Using killpg would deliver the signal to the gateway as
+                # well, crashing it (see #47134).  Fall through to the
+                # per-pid kill() path instead. Warn because per-pid kill
+                # cannot reach grandchildren in this shared group — if the
+                # direct child has already exited, they may leak (inherent:
+                # group-killing them would also kill the gateway).
+                logger.warning(
+                    "MCP server '%s' pgid %d matches gateway pgid; skipping "
+                    "killpg to avoid self-kill and using per-pid kill — any "
+                    "grandchildren in this group may not be reaped",
+                    server_name, pgid,
                 )
+            else:
+                try:
+                    killpg(pgid, sig)
+                    return
+                except (ProcessLookupError, PermissionError, OSError) as exc:
+                    # Pgroup gone (all members exited) or refused — fall back to
+                    # the per-pid path so we still try the direct child if alive.
+                    logger.debug(
+                        "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
+                        pgid, sig, server_name, exc,
+                    )
         try:
             os.kill(pid, sig)
         except (ProcessLookupError, PermissionError, OSError):

@@ -1,217 +1,117 @@
-// Window-state persistence for the Hermes Desktop app.
-//
-// Saves and restores window position, size, and maximized state so the
-// app reopens in the same geometry the user left it. Follows the same
-// persistence pattern as native-theme.json and translucency.json — a
-// small JSON file in Electron's userData directory (%APPDATA%/Hermes/)
-// written synchronously on close and on significant geometry changes.
-//
-// Multi-monitor safety: if the saved position falls on a display that
-// is no longer connected, the window gets its default position/size
-// instead of being stranded off-screen.
+/**
+ * Pure geometry helpers for window-state.json — restoring the main window's
+ * size, position, and maximized flag across launches. Side-effect-free so the
+ * part that actually matters (rejecting garbage + off-screen bounds) is
+ * unit-testable without booting Electron; main.cjs owns the file I/O and the
+ * live `screen` displays.
+ */
 
-const fs = require('node:fs')
-const path = require('node:path')
-const { screen } = require('electron')
+// Defaults mirror the historical hardcoded BrowserWindow size; MIN_* mirror its
+// minWidth/minHeight so a restored size never undershoots what the live window
+// allows. A fresh install (no saved state) is byte-identical to before.
+const DEFAULT_WIDTH = 1220
+const DEFAULT_HEIGHT = 800
+const MIN_WIDTH = 400
+const MIN_HEIGHT = 620
 
-const WINDOW_STATE_FILE = 'window-state.json'
-const SAVE_DEBOUNCE_MS = 400
+// Keep at least this much of the window over a display work area before we trust
+// a saved position, so the title bar stays grabbable after a monitor unplugs.
+const MIN_VISIBLE = 48
 
-// --- State shape ---
-//
-// {
-//   x: number | null,        // screen-space left
-//   y: number | null,        // screen-space top
-//   width: number,           // normal (non-maximized) width
-//   height: number,          // normal (non-maximized) height
-//   isMaximized: boolean     // whether the window was maximized on close
-// }
-//
-// Width and height are always the NORMAL size (the size the window snaps
-// back to when un-maximized). isMaximized means "start already maximized".
+const finite = v => typeof v === 'number' && Number.isFinite(v)
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi))
 
-function stateFilePath(userDataPath) {
-  return path.join(userDataPath, WINDOW_STATE_FILE)
-}
+// Parse raw JSON → clean state, or null if garbage. width/height are required
+// and floored; x/y survive only as a finite pair; isMaximized is strict.
+function sanitizeWindowState(raw) {
+  if (!raw || typeof raw !== 'object' || !finite(raw.width) || !finite(raw.height)) return null
 
-function defaultState() {
-  return { x: null, y: null, width: 1220, height: 800, isMaximized: false }
-}
-
-function loadState(userDataPath) {
-  try {
-    const raw = fs.readFileSync(stateFilePath(userDataPath), 'utf8')
-    const parsed = JSON.parse(raw)
-    // Validate that all expected keys exist and have the right types.
-    // Partial / corrupted files fall back to defaults for the missing keys.
-    const state = { ...defaultState(), ...parsed }
-    state.width = Math.max(400, Math.min(state.width, 9999))
-    state.height = Math.max(620, Math.min(state.height, 9999))
-    return state
-  } catch {
-    return defaultState()
+  const state = {
+    width: Math.max(MIN_WIDTH, Math.round(raw.width)),
+    height: Math.max(MIN_HEIGHT, Math.round(raw.height)),
+    isMaximized: raw.isMaximized === true
   }
+  if (finite(raw.x) && finite(raw.y)) {
+    state.x = Math.round(raw.x)
+    state.y = Math.round(raw.y)
+  }
+  return state
 }
 
-// Check whether the saved (x, y) position falls within a connected display.
-// Returns true if at least one display contains the point.
-function isPositionOnAnyDisplay(x, y) {
-  if (x == null || y == null) return false
-  try {
-    const displays = screen.getAllDisplays()
-    return displays.some(d => {
-      const { x: dx, y: dy, width: dw, height: dh } = d.bounds
-      return x >= dx && x < dx + dw && y >= dy && y < dy + dh
-    })
-  } catch {
-    return false
-  }
-}
-
-// Apply a previously saved state to a BrowserWindow.
-// Returns the state that was applied (callers can inspect `isMaximized`).
-function applyWindowState(win, userDataPath) {
-  const saved = loadState(userDataPath)
-
-  if (saved.x != null && saved.y != null && isPositionOnAnyDisplay(saved.x, saved.y)) {
-    win.setPosition(saved.x, saved.y)
-  }
-  // Always set the normal size — it's used when the window is restored
-  // from maximized state and when the window is not maximized.
-  win.setSize(saved.width, saved.height)
-
-  // Defer maximize until after the window is shown; on some platforms
-  // (Windows) maximizing before first paint can glitch the title bar.
-  win.once('ready-to-show', () => {
-    if (saved.isMaximized && !win.isDestroyed() && typeof win.maximize === 'function') {
-      win.maximize()
-    }
+// True when `bounds` overlaps some display's work area by ≥ MIN_VISIBLE on both
+// axes. `displays` is Electron's screen.getAllDisplays() shape.
+function onScreen(bounds, displays) {
+  if (!Array.isArray(displays)) return false
+  return displays.some(({ workArea: a } = {}) => {
+    if (!a) return false
+    const x = Math.min(bounds.x + bounds.width, a.x + a.width) - Math.max(bounds.x, a.x)
+    const y = Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y)
+    return x >= MIN_VISIBLE && y >= MIN_VISIBLE
   })
-
-  return saved
 }
 
-// Start tracking a window and persist its state on geometry changes.
-// Returns a cleanup function that tears down the listeners.
-//
-// `winKey` distinguishes state files when the desktop creates multiple
-// windows — the primary window uses `'main'`, secondary session windows
-// use their session id. Each gets its own persisted state file.
-function trackWindowState(win, userDataPath, winKey) {
-  const statePath = (winKey && winKey !== 'main')
-    ? path.join(userDataPath, `window-state-${sanitizeKey(winKey)}.json`)
-    : stateFilePath(userDataPath)
-
-  let debounceTimer = null
-
-  // Save the current geometry to disk.
-  function persist() {
-    if (!win || win.isDestroyed()) return
-
-    const isMaximized = typeof win.isMaximized === 'function' && win.isMaximized()
-    let width, height
-
-    if (isMaximized && typeof win.getNormalBounds === 'function') {
-      // getNormalBounds() returns the pre-maximize geometry even while
-      // the window is full-screen — that's the size we want for restore.
-      const normalBounds = win.getNormalBounds()
-      width = normalBounds.width
-      height = normalBounds.height
-    } else {
-      const size = win.getSize()
-      width = size[0]
-      height = size[1]
-    }
-
-    let x = null
-    let y = null
-    if (!isMaximized) {
-      const pos = win.getPosition()
-      x = pos[0]
-      y = pos[1]
-    }
-
-    const state = { x, y, width, height, isMaximized }
-
-    try {
-      fs.mkdirSync(path.dirname(statePath), { recursive: true })
-      fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8')
-    } catch (error) {
-      console.error(`[window-state] persist failed: ${error.message}`)
-    }
+// Sanitized state (or null) → BrowserWindow size/position options. Always sets
+// width/height, capped to the largest current display so a size saved on a
+// since-disconnected bigger monitor can't exceed any screen the user now has.
+// Sets x/y only when still on-screen; otherwise Electron centers the window.
+function computeWindowOptions(state, displays) {
+  const opts = {
+    width: finite(state?.width) ? state.width : DEFAULT_WIDTH,
+    height: finite(state?.height) ? state.height : DEFAULT_HEIGHT
   }
 
-  function schedulePersist() {
-    if (debounceTimer) clearTimeout(debounceTimer)
-    debounceTimer = setTimeout(() => {
-      debounceTimer = null
-      persist()
-    }, SAVE_DEBOUNCE_MS)
-    // Unref so the timer doesn't keep the process alive on quit.
-    if (debounceTimer && typeof debounceTimer.unref === 'function') {
-      debounceTimer.unref()
-    }
+  const cap = (Array.isArray(displays) ? displays : []).reduce(
+    (m, { workArea: a } = {}) =>
+      a && finite(a.width) && finite(a.height)
+        ? { width: Math.max(m.width, a.width), height: Math.max(m.height, a.height) }
+        : m,
+    { width: 0, height: 0 }
+  )
+  if (cap.width && cap.height) {
+    opts.width = clamp(opts.width, MIN_WIDTH, cap.width)
+    opts.height = clamp(opts.height, MIN_HEIGHT, cap.height)
   }
 
-  function onMaximize() {
-    // getNormalBounds() inside persist() handles capturing the normal size.
-    persist()
+  if (
+    state &&
+    finite(state.x) &&
+    finite(state.y) &&
+    onScreen({ x: state.x, y: state.y, width: opts.width, height: opts.height }, displays)
+  ) {
+    opts.x = state.x
+    opts.y = state.y
   }
-
-  function onUnmaximize() {
-    persist()
-  }
-
-  function onResizeOrMove() {
-    // When maximized, resizes/moves are OS-driven; we only care about the
-    // normal geometry. Debounce to avoid hammering the disk during drag.
-    if (!win.isDestroyed() && typeof win.isMaximized === 'function' && !win.isMaximized()) {
-      schedulePersist()
-    }
-  }
-
-  function onClose() {
-    // Flush any pending debounced write.
-    if (debounceTimer) {
-      clearTimeout(debounceTimer)
-      debounceTimer = null
-    }
-    persist()
-  }
-
-  win.on('maximize', onMaximize)
-  win.on('unmaximize', onUnmaximize)
-  win.on('resize', onResizeOrMove)
-  win.on('move', onResizeOrMove)
-  // Use 'close' (not 'closed') so the window is still alive when we save.
-  win.on('close', onClose)
-
-  return function cleanup() {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer)
-      debounceTimer = null
-    }
-    try {
-      if (win && !win.isDestroyed()) {
-        win.removeListener('maximize', onMaximize)
-        win.removeListener('unmaximize', onUnmaximize)
-        win.removeListener('resize', onResizeOrMove)
-        win.removeListener('move', onResizeOrMove)
-        win.removeListener('close', onClose)
-      }
-    } catch {
-      // Best-effort cleanup.
-    }
-  }
+  return opts
 }
 
-function sanitizeKey(key) {
-  return String(key).replace(/[^a-zA-Z0-9_-]/g, '_')
+// Trailing debounce: collapse a burst of resize/move events (Linux fires many
+// mid-drag) into a single run `delayMs` after the last. `.flush()` runs now and
+// cancels the pending timer — used on close, before the window is gone.
+function debounce(fn, delayMs) {
+  let timer = null
+  const debounced = () => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      timer = null
+      fn()
+    }, delayMs)
+  }
+  debounced.flush = () => {
+    clearTimeout(timer)
+    timer = null
+    fn()
+  }
+  return debounced
 }
 
 module.exports = {
-  applyWindowState,
-  defaultState,
-  loadState,
-  trackWindowState
+  DEFAULT_WIDTH,
+  DEFAULT_HEIGHT,
+  MIN_WIDTH,
+  MIN_HEIGHT,
+  MIN_VISIBLE,
+  sanitizeWindowState,
+  onScreen,
+  computeWindowOptions,
+  debounce
 }

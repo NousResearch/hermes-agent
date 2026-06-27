@@ -750,7 +750,7 @@ class ProcessRegistry:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            start_new_session=True,
             **_popen_kwargs,
         )
 
@@ -1054,6 +1054,42 @@ class ProcessRegistry:
     def is_completion_consumed(self, session_id: str) -> bool:
         """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
+
+    def is_session_waiting(self, session_id: str) -> bool:
+        """Whether a goal loop parked on this session should still be parked.
+
+        Used by the goal-loop wait barrier (``hermes_cli.goals``) to support
+        waiting on a process's OWN trigger, not just its exit. A session is
+        "still waiting" when:
+          - it is still running, AND
+          - if it has ``watch_patterns``, none has matched yet (so a
+            long-lived watcher that fires a trigger mid-run — and may never
+            exit — unblocks the moment its pattern hits, not on exit).
+
+        Returns False (don't wait) when the session has exited, its watch
+        pattern has already fired, or the session is unknown — so a stale or
+        already-triggered barrier can never wedge the loop.
+        """
+        if not session_id:
+            return False
+        with self._lock:
+            session = self._running.get(session_id) or self._finished.get(session_id)
+        if session is None:
+            return False
+        # Refresh detached/remote state so .exited is current.
+        try:
+            self._refresh_detached_session(session)
+        except Exception:
+            pass
+        if session.exited:
+            return False
+        # Watch-pattern process: the trigger is a pattern match, not exit.
+        # Once any match has been delivered, the wait is satisfied even though
+        # the process keeps running (server/daemon/watcher case).
+        if session.watch_patterns and not session._watch_disabled:
+            if session._watch_hits > 0:
+                return False
+        return True
 
     def _drain_should_skip(self, session_id: str) -> bool:
         """Whether the CLI drain should skip a completion event for this session.
@@ -1500,6 +1536,14 @@ class ProcessRegistry:
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
             }
+            # Trigger metadata so a goal-loop judge can decide to wait on this
+            # process's OWN signal (a watch-pattern match or completion), not
+            # just its exit. A watcher with watch_patterns may never exit.
+            if s.watch_patterns and not s._watch_disabled:
+                entry["watch_patterns"] = list(s.watch_patterns)
+                entry["watch_hit"] = s._watch_hits > 0
+            if s.notify_on_complete:
+                entry["notify_on_complete"] = True
             if s.exited:
                 entry["exit_code"] = s.exit_code
             if s.detached:
@@ -1536,6 +1580,23 @@ class ProcessRegistry:
                 s.session_key == session_key and not s.exited
                 for s in self._running.values()
             )
+
+    def has_any_active(self) -> bool:
+        """Whether ANY background process is still running (across all sessions).
+
+        Used by scale-to-zero idle detection (gateway/scale_to_zero): a gateway
+        with a live background process (terminal background=true) is NOT idle and
+        must not be suspended, or the process is lost. Refreshes detached
+        sessions first so a finished-but-unreaped process reads as inactive.
+        """
+        with self._lock:
+            sessions = list(self._running.values())
+
+        for session in sessions:
+            self._refresh_detached_session(session)
+
+        with self._lock:
+            return any(not s.exited for s in self._running.values())
 
     def kill_all(self, task_id: str = None) -> int:
         """Kill all running processes, optionally filtered by task_id. Returns count killed."""

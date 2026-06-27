@@ -478,6 +478,13 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+        from plugins.platforms.telegram.telegram_ids import (
+            parse_telegram_username_target,
+        )
+
+        username = parse_telegram_username_target(target_ref)
+        if username:
+            return username, None, True
     if platform_name == "feishu":
         match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -1034,7 +1041,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 bot = Bot(token=token)
         else:
             bot = Bot(token=token)
-        int_chat_id = int(chat_id)
+        from plugins.platforms.telegram.telegram_ids import (
+            normalize_telegram_chat_id,
+        )
+
+        # Telegram accepts a numeric chat_id OR an @username string; normalize
+        # rather than force-int so username home channels don't crash (#13206).
+        int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = {}
         if thread_id is not None:

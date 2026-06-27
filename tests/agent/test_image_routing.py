@@ -410,6 +410,21 @@ class TestBuildNativeContentParts:
             f"Expected MIME sniffing to detect PNG bytes regardless of .webp suffix, got: {url[:60]}"
         )
 
+    def test_non_image_bytes_are_skipped_even_with_image_extension(self, tmp_path: Path):
+        """Regression guard for Telegram mixed media bursts.
+
+        A voice note can accidentally reach the native-image path list.  If we
+        trust the ``.jpg`` suffix fallback, the model API receives an Ogg/Opus
+        payload mislabeled as ``data:image/jpeg`` and rejects the whole turn.
+        """
+        voice = tmp_path / "voice.jpg"
+        voice.write_bytes(b"OggS\x00\x02" + b"\x00" * 64)
+
+        parts, skipped = build_native_content_parts("hi", [str(voice)])
+
+        assert skipped == [str(voice)]
+        assert parts == [{"type": "text", "text": "hi"}]
+
 
 # ─── Oversize handling ───────────────────────────────────────────────────────
 

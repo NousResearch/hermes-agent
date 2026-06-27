@@ -422,6 +422,9 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
     }.get(suffix, "image/jpeg")
 
 
+_NATIVE_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+
 def _file_to_data_url(path: Path) -> Optional[str]:
     """Encode a local image as a base64 data URL at its native size.
 
@@ -431,15 +434,27 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
     quality tax just because one other provider is stricter.
 
-    Returns None only if the file can't be read (missing, permission
-    denied, etc.); the caller reports those paths in ``skipped``.
+    Returns None if the file can't be read or if its bytes are not one of
+    the natively supported image formats.  This deliberately treats magic
+    bytes as authoritative: platform adapters can occasionally pass the
+    wrong path into the image list (for example a Telegram Ogg/Opus voice
+    note from a mixed media burst).  Falling back to a ``.jpg`` suffix for
+    those bytes produces ``data:image/jpeg`` payloads that providers reject
+    with HTTP 400 ``invalid_image`` errors.
     """
     try:
         raw = path.read_bytes()
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
-    mime = _guess_mime(path, raw=raw)
+    mime = _sniff_mime_from_bytes(raw)
+    if mime not in _NATIVE_IMAGE_MIME_TYPES:
+        logger.warning(
+            "image_routing: skipped non-native-image file %s (detected=%s)",
+            path,
+            mime or "unknown",
+        )
+        return None
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

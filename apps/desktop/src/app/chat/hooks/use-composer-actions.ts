@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
+import type { HermesWindowInfo } from '@/global'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
@@ -597,6 +598,24 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles]
   )
 
+  // Attach an open desktop window as a live target. Unlike file/image
+  // attachments (static bytes/paths), this is a handle the agent re-resolves
+  // and drives via the hermes-eats-world sidecar. The @window: ref carries the
+  // title into the prompt; pid disambiguates same-titled windows.
+  const attachWindow = useCallback((win: HermesWindowInfo) => {
+    const title = (win.name || '').trim() || `PID ${win.pid}`
+    const refText = `@window:${formatRefValue(title)}`
+
+    attachToMain({
+      id: attachmentId('window', `${refText}#${win.pid}`),
+      kind: 'window',
+      label: title,
+      detail: win.class_name ? `${win.class_name} · PID ${win.pid}` : `PID ${win.pid}`,
+      refText,
+      pid: win.pid
+    })
+  }, [])
+
   const removeAttachment = useCallback(
     async (id: string) => {
       const removed = removeComposerAttachment(id)
@@ -626,6 +645,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     attachDroppedItems,
     attachImageBlob,
     attachImagePath,
+    attachWindow,
     insertContextPathInlineRef,
     pasteClipboardImage,
     pickContextPaths,

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 
+import type { HermesWindowInfo } from '@/global'
 import type { HermesGateway } from '@/hermes'
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -50,6 +51,7 @@ export interface ChatBarProps {
   onPickFiles?: () => void
   onPickFolders?: () => void
   onPickImages?: () => void
+  onPickWindow?: (win: HermesWindowInfo) => void
   onRemoveAttachment?: (id: string) => void
   onSteer?: (text: string) => Promise<boolean> | boolean
   onSubmit: (

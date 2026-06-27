@@ -4,12 +4,15 @@ import { triggerHaptic } from '@/lib/haptics'
 
 export interface ComposerAttachment {
   id: string
-  kind: 'image' | 'file' | 'folder' | 'terminal' | 'url'
+  kind: 'image' | 'file' | 'folder' | 'terminal' | 'url' | 'window'
   label: string
   detail?: string
   refText?: string
   previewUrl?: string
   path?: string
+  /** For 'window' attachments: the target window's owning process id, so the
+   * backend can disambiguate when several windows share a title. */
+  pid?: number
   attachedSessionId?: string
   /** Set while the file/image bytes are being staged into the session
    * workspace (remote upload or local stage), and 'error' if that failed.

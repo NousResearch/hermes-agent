@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, Terminal } from '@/lib/icons'
+import { AlertCircle, AppWindow, FileText, FolderOpen, ImageIcon, Link, Loader2, Terminal } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
@@ -30,11 +30,20 @@ export function AttachmentList({
 function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove?: (id: string) => void }) {
   const { t } = useI18n()
   const c = t.composer
-  const Icon = { folder: FolderOpen, url: Link, image: ImageIcon, file: FileText, terminal: Terminal }[attachment.kind]
+
+  const Icon = { folder: FolderOpen, url: Link, image: ImageIcon, file: FileText, terminal: Terminal, window: AppWindow }[
+    attachment.kind
+  ]
+
   const cwd = useStore($currentCwd)
   const isUploading = attachment.uploadState === 'uploading'
   const hasUploadError = attachment.uploadState === 'error'
-  const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal' && !isUploading
+
+  // 'window' is a live target (not a file/url), so there's nothing to open in
+  // the preview pane — exclude it alongside folder/terminal.
+  const canPreview =
+    attachment.kind !== 'folder' && attachment.kind !== 'terminal' && attachment.kind !== 'window' && !isUploading
+
   const detail = attachment.detail && attachment.detail !== attachment.label ? attachment.detail : undefined
 
   async function openPreview() {

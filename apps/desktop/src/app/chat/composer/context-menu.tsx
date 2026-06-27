@@ -14,12 +14,23 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Kbd } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
+import type { HermesWindowInfo } from '@/global'
 import { useI18n } from '@/i18n'
-import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
+import {
+  AppWindow,
+  Clipboard,
+  FileText,
+  FolderOpen,
+  type IconComponent,
+  ImageIcon,
+  Link,
+  MessageSquareText
+} from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { GHOST_ICON_BTN } from './controls'
 import type { ChatBarState } from './types'
+import { WindowPickerDialog } from './window-picker'
 
 const SNIPPET_KEYS = ['codeReview', 'implementationPlan', 'explainThis']
 
@@ -30,7 +41,8 @@ export function ContextMenu({
   onPasteClipboardImage,
   onPickFiles,
   onPickFolders,
-  onPickImages
+  onPickImages,
+  onPickWindow
 }: ContextMenuProps) {
   const { t } = useI18n()
   const c = t.composer
@@ -39,6 +51,8 @@ export function ContextMenu({
   // window (composer "+" anchor), so we promoted it to a real Dialog —
   // easier to grow with search / descriptions, and no positioning math.
   const [snippetsOpen, setSnippetsOpen] = useState(false)
+  // Same rationale for the window picker: it's a Dialog opened from the menu.
+  const [windowsOpen, setWindowsOpen] = useState(false)
 
   return (
     <>
@@ -83,6 +97,13 @@ export function ContextMenu({
           <ContextMenuItem icon={Link} onSelect={onOpenUrlDialog}>
             {c.url}
           </ContextMenuItem>
+          <ContextMenuItem
+            disabled={!onPickWindow}
+            icon={AppWindow}
+            onSelect={onPickWindow ? () => setWindowsOpen(true) : undefined}
+          >
+            {c.attachApp}
+          </ContextMenuItem>
 
           <DropdownMenuSeparator />
 
@@ -101,6 +122,10 @@ export function ContextMenu({
       </DropdownMenu>
 
       <PromptSnippetsDialog onInsertText={onInsertText} onOpenChange={setSnippetsOpen} open={snippetsOpen} />
+
+      {onPickWindow && (
+        <WindowPickerDialog onOpenChange={setWindowsOpen} onSelect={onPickWindow} open={windowsOpen} />
+      )}
     </>
   )
 }
@@ -175,6 +200,7 @@ interface ContextMenuProps {
   onPickFiles?: () => void
   onPickFolders?: () => void
   onPickImages?: () => void
+  onPickWindow?: (win: HermesWindowInfo) => void
   state: ChatBarState
 }
 

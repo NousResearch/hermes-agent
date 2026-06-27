@@ -14,6 +14,7 @@ Key design decisions:
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
 
+import glob
 import json
 import logging
 import random
@@ -4227,22 +4228,40 @@ class SessionDB:
         ``request_dump_{session_id}_*.json`` files left by the gateway.
         Silently skips files that don't exist and swallows OSError so a
         filesystem hiccup never blocks a DB operation.
+
+        ``session_id`` is not constrained to a safe charset (gateway/platform
+        code derives it from external input), so it is treated as untrusted
+        here: glob metacharacters are escaped so they can't match files
+        belonging to *other* sessions, and every candidate is confirmed to
+        resolve directly inside *sessions_dir* before unlinking so a
+        separator/``..`` in the id can't delete files outside it.
         """
         if sessions_dir is None:
             return
-        for suffix in (".json", ".jsonl"):
-            p = sessions_dir / f"{session_id}{suffix}"
+
+        try:
+            resolved_dir = sessions_dir.resolve()
+        except OSError:
+            return
+
+        def _safe_unlink(p: Path) -> None:
             try:
+                # Only delete files that live directly in sessions_dir — this
+                # rejects ids containing path separators or ``..``.
+                if p.resolve().parent != resolved_dir:
+                    return
                 p.unlink(missing_ok=True)
             except OSError:
                 pass
-        # request_dump files use session_id as a prefix component
+
+        for suffix in (".json", ".jsonl"):
+            _safe_unlink(sessions_dir / f"{session_id}{suffix}")
+        # request_dump files use session_id as a prefix component. Escape it so
+        # glob wildcards in the id are matched literally rather than expanding.
         try:
-            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
-                try:
-                    p.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            pattern = f"request_dump_{glob.escape(session_id)}_*.json"
+            for p in sessions_dir.glob(pattern):
+                _safe_unlink(p)
         except OSError:
             pass
 

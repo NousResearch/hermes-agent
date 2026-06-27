@@ -4539,3 +4539,46 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+class TestRemoveSessionFiles:
+    """_remove_session_files must treat session_id as untrusted."""
+
+    def test_removes_own_files(self, tmp_path):
+        """The normal happy path still deletes the session's own files."""
+        sid = "abc123"
+        own = tmp_path / f"{sid}.json"
+        own_jsonl = tmp_path / f"{sid}.jsonl"
+        dump = tmp_path / f"request_dump_{sid}_001.json"
+        for f in (own, own_jsonl, dump):
+            f.write_text("{}", encoding="utf-8")
+
+        SessionDB._remove_session_files(tmp_path, sid)
+
+        assert not own.exists()
+        assert not own_jsonl.exists()
+        assert not dump.exists()
+
+    def test_glob_metacharacters_do_not_match_other_sessions(self, tmp_path):
+        """A '*' in session_id must not expand and delete other sessions' dumps."""
+        victim = tmp_path / "request_dump_other_001.json"
+        victim.write_text("{}", encoding="utf-8")
+        # An id whose glob would otherwise match request_dump_other_001.json.
+        own = tmp_path / "request_dump_*_001.json"
+        own.write_text("{}", encoding="utf-8")
+
+        SessionDB._remove_session_files(tmp_path, "*")
+
+        assert victim.exists(), "wildcard id wrongly deleted another session's dump"
+
+    def test_path_traversal_stays_inside_sessions_dir(self, tmp_path):
+        """Separators / '..' in session_id must not escape sessions_dir."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        outside = tmp_path / "secret.json"
+        outside.write_text("{}", encoding="utf-8")
+
+        # sessions_dir / "../secret.json" resolves to tmp_path/secret.json.
+        SessionDB._remove_session_files(sessions_dir, "../secret")
+
+        assert outside.exists(), "path-traversal id escaped sessions_dir"

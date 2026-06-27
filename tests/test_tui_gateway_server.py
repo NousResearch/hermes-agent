@@ -3664,13 +3664,17 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
             "Model: anthropic/claude-sonnet-4.6\nProvider: anthropic"
         )
         assert agent._cached_system_prompt == db.system_prompt
-        assert session["history"][-1]["role"] == "system"
-        assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
-        assert db.messages[-1] == {
-            "session_id": "session-key",
-            "role": "system",
-            "content": session["history"][-1]["content"],
-        }
+        # The model-switch note is staged for the NEXT user turn instead of being
+        # injected as a mid-conversation system message (strict OpenAI-compatible
+        # backends like vLLM/Qwen reject "system message not at the beginning").
+        note = session.get("pending_model_note")
+        assert note and "changed to anthropic/claude-sonnet-4.6" in note
+        # It is neither appended to history nor persisted as a system message.
+        assert all(m.get("role") != "system" for m in session["history"])
+        assert all(
+            not (m.get("role") == "system" and "changed to" in m.get("content", ""))
+            for m in db.messages
+        )
         # ...and the shared process env was NOT touched.
         assert os.environ["HERMES_TUI_PROVIDER"] == "openai-codex"
         assert "HERMES_MODEL" not in os.environ

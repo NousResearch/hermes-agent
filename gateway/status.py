@@ -608,11 +608,45 @@ def _release_file_lock(handle) -> None:
         pass
 
 
+def _cleanup_stale_gateway_lock(lock_path: Path) -> None:
+    """Remove ``gateway.lock`` if it belongs to a dead process.
+
+    Reads the PID from the lock file's JSON record.  If that PID is no longer
+    alive the lock file is stale — *the file lock itself was already released
+    by the OS when the old process died*, but the on-disk artifact can confuse
+    out-of-process supervisors (e.g. Watchdog loops) that do not check PID
+    liveness before restarting the gateway.
+
+    Safe to call at any time: only touches the lock file when the owning PID
+    is confirmed dead.
+    """
+    if not lock_path.exists():
+        return
+    record = _read_pid_record(lock_path)
+    pid = _pid_from_record(record)
+    if pid is None:
+        # Can't determine owner — conservative cleanup.
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    if not _pid_exists(pid):
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def acquire_gateway_runtime_lock() -> bool:
     """Claim the cross-process runtime lock for the gateway.
 
     Unlike the PID file, the lock is owned by the live process itself. If the
     process dies abruptly, the OS releases the lock automatically.
+
+    Before attempting to acquire the lock, stale lock files left by crashed
+    processes are removed so that out-of-process supervisors (e.g. the Slate
+    Pod Watchdog) do not see a phantom lock and restart-loop.
     """
     global _gateway_lock_handle
     if _gateway_lock_handle is not None:
@@ -620,6 +654,7 @@ def acquire_gateway_runtime_lock() -> bool:
 
     path = _get_gateway_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    _cleanup_stale_gateway_lock(path)
     handle = open(path, "a+", encoding="utf-8")
     if not _try_acquire_file_lock(handle):
         handle.close()

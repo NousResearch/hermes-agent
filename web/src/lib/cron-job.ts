@@ -16,34 +16,36 @@ export interface CronJobFormState {
   workdir: string;
 }
 
+/** Split a comma/newline list (or array) into trimmed, non-empty items. */
 export function splitCronList(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item).trim()).filter(Boolean);
-  }
-  if (typeof value !== "string") return [];
-  return value
-    .split(/[\n,]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const items = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[\n,]/)
+      : [];
+  return items.map((item) => String(item).trim()).filter(Boolean);
 }
 
-function optionalText(value: string): string | null {
-  const text = value.trim();
+/** Trim to a non-empty string, or null. Optionally strip trailing slashes
+ * (base URLs). Mirrors the backend's `_cron_optional_text`. */
+function optionalText(value: string, stripTrailingSlash = false): string | null {
+  const text = stripTrailingSlash ? value.trim().replace(/\/+$/, "") : value.trim();
   return text || null;
 }
 
-function optionalBaseUrl(value: string): string | null {
-  const text = optionalText(value);
-  return text ? text.replace(/\/+$/, "") : null;
-}
-
-function listToText(value: unknown, separator: string): string {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item).trim()).filter(Boolean).join(separator);
-  }
+/** Coerce a stored list/string field back into the textarea's newline form. */
+function listToText(value: unknown): string {
+  if (Array.isArray(value)) return splitCronList(value).join("\n");
   return typeof value === "string" ? value : "";
 }
 
+/** Read a stored string field as a plain string ("" when absent). */
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** Build the create/update payload. Optional fields collapse to null so an
+ * update explicitly clears them rather than leaving stale values. */
 export function buildCronJobPayload(form: CronJobFormState): CronJobMutation {
   const contextFrom = splitCronList(form.context_from);
   const enabledToolsets = form.enabled_toolsets.filter(Boolean);
@@ -55,7 +57,7 @@ export function buildCronJobPayload(form: CronJobFormState): CronJobMutation {
     skills: form.skills.filter(Boolean),
     provider: optionalText(form.provider),
     model: optionalText(form.model),
-    base_url: optionalBaseUrl(form.base_url),
+    base_url: optionalText(form.base_url, true),
     script: optionalText(form.script),
     no_agent: Boolean(form.no_agent),
     context_from: contextFrom.length > 0 ? contextFrom : null,
@@ -67,33 +69,27 @@ export function buildCronJobPayload(form: CronJobFormState): CronJobMutation {
 export function cronJobHasExecutionContent(
   job: Pick<CronJobMutation, "prompt" | "skills" | "script">,
 ): boolean {
-  const prompt = typeof job.prompt === "string" ? job.prompt.trim() : "";
-  const script = typeof job.script === "string" ? job.script.trim() : "";
-  const skills = Array.isArray(job.skills)
-    ? job.skills.map((skill) => String(skill).trim()).filter(Boolean)
-    : [];
-  return Boolean(prompt || script || skills.length > 0);
+  const skills = Array.isArray(job.skills) ? job.skills.filter(Boolean) : [];
+  return Boolean(asString(job.prompt).trim() || asString(job.script).trim() || skills.length);
 }
 
 export function cronJobFormFromJob(job: CronJob): CronJobFormState {
   return {
-    name: typeof job.name === "string" ? job.name : "",
-    prompt: typeof job.prompt === "string" ? job.prompt : "",
+    name: asString(job.name),
+    prompt: asString(job.prompt),
     schedule:
-      (typeof job.schedule?.expr === "string" && job.schedule.expr) ||
-      (typeof job.schedule?.run_at === "string" && job.schedule.run_at) ||
-      (typeof job.schedule_display === "string" ? job.schedule_display : ""),
-    deliver: typeof job.deliver === "string" && job.deliver ? job.deliver : "local",
+      asString(job.schedule?.expr) ||
+      asString(job.schedule?.run_at) ||
+      asString(job.schedule_display),
+    deliver: asString(job.deliver) || "local",
     skills: Array.isArray(job.skills) ? job.skills.filter(Boolean) : [],
-    provider: typeof job.provider === "string" ? job.provider : "",
-    model: typeof job.model === "string" ? job.model : "",
-    base_url: typeof job.base_url === "string" ? job.base_url : "",
-    script: typeof job.script === "string" ? job.script : "",
+    provider: asString(job.provider),
+    model: asString(job.model),
+    base_url: asString(job.base_url),
+    script: asString(job.script),
     no_agent: Boolean(job.no_agent),
-    context_from: listToText(job.context_from, "\n"),
-    enabled_toolsets: Array.isArray(job.enabled_toolsets)
-      ? job.enabled_toolsets.filter(Boolean)
-      : splitCronList(job.enabled_toolsets),
-    workdir: typeof job.workdir === "string" ? job.workdir : "",
+    context_from: listToText(job.context_from),
+    enabled_toolsets: splitCronList(job.enabled_toolsets),
+    workdir: asString(job.workdir),
   };
 }

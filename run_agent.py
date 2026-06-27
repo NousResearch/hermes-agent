@@ -1429,6 +1429,16 @@ class AIAgent:
         from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
         return looks_like_codex_intermediate_ack(self, user_message, assistant_content, messages)
 
+    def _looks_like_intermediate_tool_ack(
+        self,
+        user_message: str,
+        assistant_content: str,
+        messages: List[Dict[str, Any]],
+    ) -> bool:
+        """Forwarder — see ``agent.agent_runtime_helpers.looks_like_intermediate_tool_ack``."""
+        from agent.agent_runtime_helpers import looks_like_intermediate_tool_ack
+        return looks_like_intermediate_tool_ack(self, user_message, assistant_content, messages)
+
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_reasoning``."""
         from agent.agent_runtime_helpers import extract_reasoning

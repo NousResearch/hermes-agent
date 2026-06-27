@@ -2124,76 +2124,165 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 
+# Future-tense acknowledgement phrases — "I'll look into it", "let me check".
+# A message that promises a future action but produces no tool call is the
+# signature of a model that "announced" work and then stopped.
+_INTERMEDIATE_ACK_FUTURE_RE = re.compile(
+    r"\b(i['’]ll|i will|i need to|let me|let['’]s|i['’]m going to|i am going to|"
+    r"i can do that|i can help with that)\b"
+)
+_INTERMEDIATE_ACK_ACTION_MARKERS = (
+    "look into",
+    "look at",
+    "inspect",
+    "scan",
+    "check",
+    "analyz",
+    "review",
+    "explore",
+    "read",
+    "open",
+    "run",
+    "test",
+    "fix",
+    "debug",
+    "search",
+    "find",
+    "walkthrough",
+    "report back",
+    "summarize",
+)
+
+# Action intent for the GENERAL (chat_completions) path. A word-boundary regex
+# rather than substring membership: substrings like "try" would match
+# "country"/"poetry" and "run" already risks false hits, so anchor on \b. This
+# is intentionally broader than the Codex marker tuple above because live local
+# models drift their stall vocabulary as a conversation degrades — the reported
+# chat stalled first with "let me check / dig / pull" and, once its history was
+# poisoned with preamble-only turns, regressed to "let me try again ...". Both
+# must be caught, or the recovery only works until the model changes phrasing.
+_GENERAL_ACK_ACTION_RE = re.compile(
+    r"\b("
+    r"try(?:ing)?\s+(?:again|that|this|once\s+more)|retry|rerun|re-run|"
+    r"look(?:ing)?\s+(?:into|at|up)|check|inspect|scan|analyz|review|explore|"
+    r"read|open|run|execute|test|debug|search|find|fetch|pull|gather|query|"
+    r"retrieve|grab|dig|do\s+(?:that|this|these|it|so)|"
+    r"go\s+(?:further|ahead|back|deeper)|compile|generate|rank|"
+    r"list\s+(?:out|them|these|those)|show\s+you|report\s+back|summariz"
+    r")\b"
+)
+_INTERMEDIATE_ACK_WORKSPACE_MARKERS = (
+    "directory",
+    "current directory",
+    "current dir",
+    "cwd",
+    "repo",
+    "repository",
+    "codebase",
+    "project",
+    "folder",
+    "filesystem",
+    "file tree",
+    "files",
+    "path",
+)
+
+# A general-agent stall (memory graph / RAG / email — not a coding workspace)
+# is a single trailing "let me go do that" sentence. The discriminator against
+# a genuine final answer is brevity: real answers are substantive.
+_GENERAL_ACK_MAX_CHARS = 400
+
+
+def _intermediate_ack_preamble(
+    agent,
+    assistant_content: str,
+    messages: List[Dict[str, Any]],
+    *,
+    max_chars: int,
+) -> Optional[str]:
+    """Shared gate for both intermediate-ack detectors.
+
+    Returns the normalized (think-stripped, lowercased) assistant text when it
+    is a short, tool-less, future-tense "I'll go do X" preamble — and no tool
+    has run yet this conversation. Returns ``None`` otherwise. The caller is
+    responsible for the action-intent check (the Codex and general paths use
+    different vocabularies). The "no tool yet" guard scopes this to a fresh
+    turn; the api server / Open WebUI path replays history with tool structure
+    stripped, so a stalled turn there has no ``role == "tool"`` messages at all.
+    """
+    if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
+        return None
+    assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
+    if not assistant_text:
+        return None
+    if len(assistant_text) > max_chars:
+        return None
+    if not _INTERMEDIATE_ACK_FUTURE_RE.search(assistant_text):
+        return None
+    return assistant_text
+
+
 def looks_like_codex_intermediate_ack(
     agent,
     user_message: str,
     assistant_content: str,
     messages: List[Dict[str, Any]],
 ) -> bool:
-    """Detect a planning/ack message that should continue instead of ending the turn."""
-    if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
-        return False
+    """Detect a workspace-targeted planning/ack message (Codex path).
 
-    assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
-    if not assistant_text:
-        return False
-    if len(assistant_text) > 1200:
-        return False
-
-    has_future_ack = bool(
-        re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
+    Codex-style coding agents announce work against the filesystem ("I'll
+    inspect ~/foo and report back"). This requires the action to target a
+    workspace — preserved verbatim from the original heuristic so the
+    ``codex_responses`` path is behaviourally unchanged.
+    """
+    assistant_text = _intermediate_ack_preamble(
+        agent, assistant_content, messages, max_chars=1200
     )
-    if not has_future_ack:
+    if assistant_text is None:
         return False
-
-    action_markers = (
-        "look into",
-        "look at",
-        "inspect",
-        "scan",
-        "check",
-        "analyz",
-        "review",
-        "explore",
-        "read",
-        "open",
-        "run",
-        "test",
-        "fix",
-        "debug",
-        "search",
-        "find",
-        "walkthrough",
-        "report back",
-        "summarize",
-    )
-    workspace_markers = (
-        "directory",
-        "current directory",
-        "current dir",
-        "cwd",
-        "repo",
-        "repository",
-        "codebase",
-        "project",
-        "folder",
-        "filesystem",
-        "file tree",
-        "files",
-        "path",
-    )
-
+    if not any(marker in assistant_text for marker in _INTERMEDIATE_ACK_ACTION_MARKERS):
+        return False
     user_text = (user_message or "").strip().lower()
     user_targets_workspace = (
-        any(marker in user_text for marker in workspace_markers)
+        any(marker in user_text for marker in _INTERMEDIATE_ACK_WORKSPACE_MARKERS)
         or "~/" in user_text
         or "/" in user_text
     )
-    assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
     assistant_targets_workspace = any(
-        marker in assistant_text for marker in workspace_markers
+        marker in assistant_text for marker in _INTERMEDIATE_ACK_WORKSPACE_MARKERS
     )
-    return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
+    return user_targets_workspace or assistant_targets_workspace
+
+
+def looks_like_intermediate_tool_ack(
+    agent,
+    user_message: str,
+    assistant_content: str,
+    messages: List[Dict[str, Any]],
+) -> bool:
+    """Detect a general-agent action preamble that stalled (chat_completions).
+
+    Unlike the Codex variant this does NOT require the action to target a
+    filesystem workspace: a general tool-using agent acts on services (memory
+    graph, RAG, email, calendar), not files — so requiring a workspace marker
+    would miss the very stalls we're trying to recover. The discriminator
+    against a real final answer is brevity (``_GENERAL_ACK_MAX_CHARS``) plus a
+    future-tense ack (shared gate) and a broad action-intent match
+    (``_GENERAL_ACK_ACTION_RE``). A trailing clarifying question is the model
+    handing control back to the user, not a stall, so it is excluded.
+    ``user_message`` is accepted for signature parity with the Codex variant
+    but is intentionally unused.
+    """
+    assistant_text = _intermediate_ack_preamble(
+        agent, assistant_content, messages, max_chars=_GENERAL_ACK_MAX_CHARS
+    )
+    if assistant_text is None:
+        return False
+    if assistant_text.rstrip().endswith("?"):
+        return False
+    if not _GENERAL_ACK_ACTION_RE.search(assistant_text):
+        return False
+    return True
 
 
 
@@ -2666,6 +2755,7 @@ __all__ = [
     "repair_tool_call",
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
+    "looks_like_intermediate_tool_ack",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",

@@ -581,7 +581,7 @@ def run_conversation(
     final_response = None
     interrupted = False
     failed = False
-    codex_ack_continuations = 0
+    ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
@@ -4602,17 +4602,31 @@ def run_conversation(
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
 
-                if (
-                    agent.api_mode == "codex_responses"
-                    and agent.valid_tool_names
-                    and codex_ack_continuations < 2
-                    and agent._looks_like_codex_intermediate_ack(
-                        user_message=user_message,
-                        assistant_content=final_response,
-                        messages=messages,
-                    )
-                ):
-                    codex_ack_continuations += 1
+                # Some models emit a short "I'll go do that" preamble and then
+                # stop with finish_reason=stop and NO tool call — the turn ends
+                # with an empty promise and the action never happens. Detect that
+                # and re-prompt the model to actually execute. Codex models do
+                # this against the filesystem (workspace-targeted heuristic);
+                # chat_completions models (local/OpenAI-compatible) do it against
+                # any tool (memory graph, RAG, email), so the general detector
+                # keys on a short future-tense ack instead of a workspace target.
+                _is_intermediate_ack = False
+                if agent.valid_tool_names and ack_continuations < 2:
+                    if agent.api_mode == "codex_responses":
+                        _is_intermediate_ack = agent._looks_like_codex_intermediate_ack(
+                            user_message=user_message,
+                            assistant_content=final_response,
+                            messages=messages,
+                        )
+                    elif agent.api_mode == "chat_completions":
+                        _is_intermediate_ack = agent._looks_like_intermediate_tool_ack(
+                            user_message=user_message,
+                            assistant_content=final_response,
+                            messages=messages,
+                        )
+
+                if _is_intermediate_ack:
+                    ack_continuations += 1
                     interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
                     messages.append(interim_msg)
                     agent._emit_interim_assistant_message(interim_msg)
@@ -4628,7 +4642,7 @@ def run_conversation(
                     agent._session_messages = messages
                     continue
 
-                codex_ack_continuations = 0
+                ack_continuations = 0
 
                 if truncated_response_parts:
                     final_response = "".join(truncated_response_parts) + final_response

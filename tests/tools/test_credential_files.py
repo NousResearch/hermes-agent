@@ -173,6 +173,65 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["host_path"] == str(skills_dir)
 
+    def test_sanitized_mount_lifecycle_is_stable(self, tmp_path):
+        """Repeated calls to get_skills_directory_mount() with symlinks must:
+        - Return the same stable host path (no path identity changes).
+        - Correctly synchronize added/modified files in-place.
+        - Delete files that are removed from the source.
+        - Skip symlinks entirely.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        
+        # 1. Setup initial files with a dummy file that we mock as a symlink
+        (skills_dir / "file1.txt").write_text("content1")
+        (skills_dir / "link.txt").write_text("mocked-symlink")
+
+        # Mock Path.is_symlink to treat link.txt as a symlink
+        original_is_symlink = Path.is_symlink
+        def mock_is_symlink(self_path):
+            if self_path.name == "link.txt":
+                return True
+            return original_is_symlink(self_path)
+
+        # Mock os.readlink to return a dummy target for link.txt
+        original_readlink = os.readlink
+        def mock_readlink(path):
+            if Path(path).name == "link.txt":
+                return "mocked-target"
+            return original_readlink(path)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "is_symlink", mock_is_symlink), \
+             patch("os.readlink", mock_readlink):
+            mounts1 = get_skills_directory_mount()
+            assert len(mounts1) >= 1
+            host_path1 = mounts1[0]["host_path"]
+            
+            # Verify file1 exists but mocked symlink is skipped
+            assert (Path(host_path1) / "file1.txt").exists()
+            assert (Path(host_path1) / "file1.txt").read_text() == "content1"
+            assert not (Path(host_path1) / "link.txt").exists()
+
+            # 2. Modify files (add file2.txt, delete file1.txt)
+            (skills_dir / "file2.txt").write_text("content2")
+            (skills_dir / "file1.txt").unlink()
+
+            mounts2 = get_skills_directory_mount()
+            assert len(mounts2) >= 1
+            host_path2 = mounts2[0]["host_path"]
+
+            # 3. Assertions
+            # Path must remain stable
+            assert host_path1 == host_path2
+            
+            # Synchronization updates
+            assert (Path(host_path2) / "file2.txt").exists()
+            assert (Path(host_path2) / "file2.txt").read_text() == "content2"
+            assert not (Path(host_path2) / "file1.txt").exists()
+            assert not (Path(host_path2) / "link.txt").exists()
+
 
 class TestIterSkillsFiles:
     def test_returns_files_skipping_symlinks(self, tmp_path):

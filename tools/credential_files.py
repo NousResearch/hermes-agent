@@ -211,9 +211,11 @@ def get_skills_directory_mount(
     **Security:** Bind mounts follow symlinks, so a malicious symlink inside
     the skills tree could expose arbitrary host files to the container.  When
     symlinks are detected, this function creates a sanitized copy (regular
-    files only) in a temp directory and returns that path instead.  When no
-    symlinks are present (the common case), the original directory is returned
-    directly with zero overhead.
+    files only) in a stable cache directory under ``{HERMES_HOME}/cache/skills_sanitized/``
+    and returns that path instead. The stable directory is reused across calls and only
+    the contents are refreshed in-place, preserving Docker bind-mount validity for persistent
+    containers. When no symlinks are present (the common case), the original directory is
+    returned directly with zero overhead.
 
     Returns a list of dicts with ``host_path`` and ``container_path`` keys.
     The local skills dir mounts at ``<container_base>/skills``, external dirs
@@ -223,7 +225,7 @@ def get_skills_directory_mount(
     hermes_home = _resolve_hermes_home()
     skills_dir = hermes_home / "skills"
     if skills_dir.is_dir():
-        host_path = _safe_skills_path(skills_dir)
+        host_path = _safe_skills_path(skills_dir, "local")
         mounts.append({
             "host_path": host_path,
             "container_path": f"{container_base.rstrip('/')}/skills",
@@ -234,7 +236,7 @@ def get_skills_directory_mount(
         from agent.skill_utils import get_external_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
             if ext_dir.is_dir():
-                host_path = _safe_skills_path(ext_dir)
+                host_path = _safe_skills_path(ext_dir, f"ext_{idx}")
                 mounts.append({
                     "host_path": host_path,
                     "container_path": f"{container_base.rstrip('/')}/external_skills/{idx}",
@@ -245,13 +247,57 @@ def get_skills_directory_mount(
     return mounts
 
 
-_safe_skills_tempdir: Path | None = None
+def _sync_dir(src: Path, dst: Path) -> None:
+    """Synchronize source directory to destination directory in-place.
+
+    Skips symlinks on the source. Removes files/dirs from destination if
+    they are missing or are symlinks in the source.
+    """
+    import shutil
+    dst.mkdir(parents=True, exist_ok=True)
+
+    # 1. Copy new or modified files
+    for item in src.rglob("*"):
+        if item.is_symlink():
+            continue
+        rel = item.relative_to(src)
+        target = dst / rel
+        if item.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        elif item.is_file():
+            try:
+                src_stat = item.stat()
+                if not target.exists():
+                    should_copy = True
+                else:
+                    tgt_stat = target.stat()
+                    should_copy = (src_stat.st_mtime != tgt_stat.st_mtime or 
+                                   src_stat.st_size != tgt_stat.st_size)
+            except OSError:
+                should_copy = True
+
+            if should_copy:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(item), str(target))
+
+    # 2. Clean up removed or symlinked files in destination
+    for item in list(dst.rglob("*")):
+        if not item.exists():
+            continue
+        rel = item.relative_to(dst)
+        src_item = src / rel
+        if not src_item.exists() or src_item.is_symlink():
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                try:
+                    item.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
-def _safe_skills_path(skills_dir: Path) -> str:
-    """Return *skills_dir* if symlink-free, else a sanitized temp copy."""
-    global _safe_skills_tempdir
-
+def _safe_skills_path(skills_dir: Path, suffix: str = "local") -> str:
+    """Return *skills_dir* if symlink-free, else a sanitized stable cache copy."""
     symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
     if not symlinks:
         return str(skills_dir)
@@ -260,34 +306,12 @@ def _safe_skills_path(skills_dir: Path) -> str:
         logger.warning("credential_files: skipping symlink in skills dir: %s -> %s",
                        link, os.readlink(link))
 
-    import atexit
-    import shutil
-    import tempfile
+    cache_root = _resolve_hermes_home() / "cache" / "skills_sanitized"
+    safe_dir = cache_root / suffix
 
-    # Reuse the same temp dir across calls to avoid accumulation.
-    if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
-        shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
+    _sync_dir(skills_dir, safe_dir)
 
-    safe_dir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
-    _safe_skills_tempdir = safe_dir
-
-    for item in skills_dir.rglob("*"):
-        if item.is_symlink():
-            continue
-        rel = item.relative_to(skills_dir)
-        target = safe_dir / rel
-        if item.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-        elif item.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(item), str(target))
-
-    def _cleanup():
-        if safe_dir.is_dir():
-            shutil.rmtree(safe_dir, ignore_errors=True)
-
-    atexit.register(_cleanup)
-    logger.info("credential_files: created symlink-safe skills copy at %s", safe_dir)
+    logger.info("credential_files: updated symlink-safe skills copy at %s", safe_dir)
     return str(safe_dir)
 
 

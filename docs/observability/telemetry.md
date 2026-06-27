@@ -36,11 +36,24 @@ Local telemetry is implemented as a bundled `telemetry` plugin that listens to H
 lifecycle hooks (model calls, tool calls, session start/finalize) and writes events to:
 
 - an append-only JSONL log at `~/.hermes/telemetry/events.jsonl` (the source of truth)
-- indexed `tel_*` tables in `state.db` (for fast queries and rollups)
+- indexed `tel_*` tables in `state.db` (a rebuildable index for fast queries):
+  `tel_runs`, `tel_spans`, `tel_model_calls`, `tel_tool_calls`, `tel_error_events`
 
 Writes are fire-and-forget on a background thread: telemetry can never block, slow, or
 fail a model call or tool call. If local telemetry is disabled (`telemetry.local: false`)
 the plugin does not load at all.
+
+### Traces and spans
+
+A **run** is one session (from `on_session_start` to `on_session_finalize`). Each run gets
+a root span in `tel_spans`, and every model and tool call within it is recorded as a child
+span (timing + `parent_span_id` = the run's root) keyed by the same `span_id` as its
+detail row in `tel_model_calls` / `tel_tool_calls`. So a run reconstructs as a connected
+`run -> calls` tree, ordered by `start_ns` and joinable to the per-call detail — the shape
+a trace viewer or any OpenTelemetry backend can render.
+
+Call spans are timed from the measured latency/duration the hooks report; cross-run
+subagent lineage (linking a delegated child run to its parent) is not yet recorded.
 
 ### Seeing your local data
 
@@ -50,7 +63,7 @@ hermes telemetry status    # settings, consent, export posture, local data volum
 ```
 
 The `insights` Observability section shows workflow counts and success rate, duration
-p50/p95, tool failure rates by category, provider/model mix, and cache hit rate —
+p50/p95, tool failure rates by tool, provider/model mix, and cache hit rate —
 all computed locally with exact values.
 
 ## `hermes telemetry` commands
@@ -146,10 +159,14 @@ Set the referenced environment variable, then run the export:
 hermes telemetry export --otlp     # drain current telemetry to your collector
 ```
 
-The token value lives only in the environment variable named by `headers_env`. Span
-attributes are structural by default. The config holds the *name* of an environment
-variable rather than the secret itself; the value is read at export time and is never
-written to config or logged.
+The token value lives only in the environment variable named by `headers_env`. The
+config holds the *name* of an environment variable rather than the secret itself; the
+value is read at export time and is never written to config or logged.
+
+Each telemetry event is exported as an OTel span carrying its recorded attributes
+(provider, model, tokens, duration, etc.). The `tel_spans` timing/parent linkage is not
+yet reconstructed into connected OTel `SpanContext`s, so spans currently arrive as
+independent records rather than a connected trace tree; that projection is planned.
 
 ## Redaction
 

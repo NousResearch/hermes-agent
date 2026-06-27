@@ -38,7 +38,6 @@ from tools.skills_guard import (
 )
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
-from hermes_cli import _subprocess_compat
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +298,7 @@ class GitHubAuth:
     def _try_gh_cli(self) -> Optional[str]:
         """Try to get a token from the gh CLI."""
         try:
-            result = _subprocess_compat.run(
+            result = subprocess.run(
                 ["gh", "auth", "token"],
                 capture_output=True, text=True, timeout=5,
                 stdin=subprocess.DEVNULL,

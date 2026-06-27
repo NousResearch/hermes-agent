@@ -198,9 +198,7 @@ _POWERSHELL_EXTRACT_IMAGE_SCRIPTS = (
 
 
 def _run_powershell(exe: str, script: str, timeout: int) -> subprocess.CompletedProcess:
-    from hermes_cli import _subprocess_compat
-
-    return _subprocess_compat.run(
+    return subprocess.run(
         [exe, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True, text=True, timeout=timeout,
     )
@@ -256,11 +254,9 @@ def _powershell_save_image(exe: str, dest: Path, *, timeout: int, label: str) ->
 
 def _find_powershell() -> str | None:
     """Return the first available PowerShell executable, or None."""
-    from hermes_cli import _subprocess_compat
-
     for name in ("powershell", "pwsh"):
         try:
-            r = _subprocess_compat.run(
+            r = subprocess.run(
                 [name, "-NoProfile", "-NonInteractive", "-Command", "echo ok"],
                 capture_output=True, text=True, timeout=5,
             )

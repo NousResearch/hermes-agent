@@ -387,7 +387,6 @@ def _install_sidecar() -> int:
         [npm, "ci"],
         cwd=str(_SIDECAR_DIR),
         check=False,
-        creationflags=windows_hide_flags(),
     )
     if proc.returncode != 0:
         print(f"  npm ci failed — falling back to:  {npm} install")
@@ -395,7 +394,6 @@ def _install_sidecar() -> int:
             [npm, "install"],
             cwd=str(_SIDECAR_DIR),
             check=False,
-            creationflags=windows_hide_flags(),
         )
     if proc.returncode != 0:
         print("npm install failed", file=sys.stderr)

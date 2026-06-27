@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
+from agent.credential_pool import CredentialPool, PooledCredential, _resolve_env_ref, get_custom_provider_pool_key, load_pool
 from agent.secret_scope import get_secret as _get_secret
 from hermes_cli.auth import (
     AuthError,
@@ -541,7 +541,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 return None
 
     config = load_config()
-    
+
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
     if isinstance(providers, dict):
@@ -555,7 +555,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
-                resolved_api_key = str(entry.get("api_key", "") or "").strip()
+                resolved_api_key = _resolve_env_ref(str(entry.get("api_key", "") or ""))
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
@@ -636,7 +636,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
-            "api_key": str(entry.get("api_key", "") or "").strip(),
+            "api_key": _resolve_env_ref(str(entry.get("api_key", "") or "")),
         }
         key_env = str(entry.get("key_env", "") or "").strip()
         if key_env:
@@ -797,6 +797,38 @@ def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[
     return {"extra_body": dict(extra_body)}
 
 
+def _expand_config_api_key(value: str) -> str:
+    """Expand $VAR or ${VAR} syntax in a config api_key value from environment.
+
+    Custom providers may store ``api_key: $MY_VAR`` in config.yaml (same
+    pattern as built-in providers).  Without expansion the literal ``$MY_VAR``
+    string would be sent as the API key.  Try to resolve it from the
+    environment first; fall back to the literal if the env var is missing.
+    Prefers ~/.hermes/.env over os.environ (same priority as built-in
+    provider resolution).
+    """
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    cleaned = value.strip()
+    # ${VAR} syntax
+    if cleaned.startswith("${") and cleaned.endswith("}"):
+        env_name = cleaned[2:-1].strip()
+    # $VAR syntax
+    elif cleaned.startswith("$") and not cleaned.startswith("$$"):
+        env_name = cleaned[1:].strip()
+    else:
+        return cleaned
+    if not env_name:
+        return cleaned
+    try:
+        from hermes_cli.config import load_env as _le
+        env_file = _le()
+    except Exception:
+        env_file = {}
+    resolved = (env_file.get(env_name) or os.getenv(env_name) or "").strip()
+    return resolved or cleaned
+
+
 def _resolve_named_custom_runtime(
     *,
     requested_provider: str,
@@ -887,7 +919,7 @@ def _resolve_named_custom_runtime(
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
     api_key_candidates = [
         (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
+        _expand_config_api_key(str(custom_provider.get("api_key", "") or "").strip()),
         _getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         # Gate provider env keys on their authoritative hosts — sending
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).

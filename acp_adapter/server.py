@@ -505,13 +505,30 @@ class HermesACPAgent(acp.Agent):
     _MODE_DEFAULT = "default"
     _MODE_ACCEPT_EDITS = "accept_edits"
     _MODE_DONT_ASK = "dont_ask"
+    _MODE_PLAN = "plan"
+    _MODE_OBSERVE = "observe"
     _MODE_TO_EDIT_APPROVAL_POLICY = {
         _MODE_DEFAULT: "ask",
         _MODE_ACCEPT_EDITS: "workspace_session",
         _MODE_DONT_ASK: "session",
+        # Plan mode gates *all* mutating tools (not just edits) via the
+        # thread tool-whitelist in prompt(); its edit-approval fallback stays
+        # "ask" for the edge case of a tool that slips past the whitelist.
+        _MODE_PLAN: "ask",
+        # Observe mode (proactive background turns) gates ONLY command execution
+        # via the whitelist; edits stay "ask" so the client receives the
+        # request_permission and captures the proposed diff into its changeset.
+        _MODE_OBSERVE: "ask",
     }
+    # Reverse map: restore a mode from a persisted edit-approval policy config
+    # (the Zed config-option path). Mapped explicitly to each policy's canonical
+    # user-selectable mode — plan and observe are behavioral modes that share a
+    # policy, so they must NOT win this lookup (a comprehension over the forward
+    # map would non-deterministically map "ask" to plan/observe).
     _EDIT_APPROVAL_POLICY_TO_MODE = {
-        value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
+        "ask": _MODE_DEFAULT,
+        "workspace_session": _MODE_ACCEPT_EDITS,
+        "session": _MODE_DONT_ASK,
     }
 
     def __init__(self, session_manager: SessionManager | None = None):
@@ -557,6 +574,18 @@ class HermesACPAgent(acp.Agent):
                     name="Don't Ask",
                     description="Auto-allow file edits for this session except sensitive paths.",
                 ),
+                SessionMode(
+                    id=self._MODE_PLAN,
+                    name="Plan",
+                    description="Propose a plan and run read-only tools only; wait for "
+                    "your approval (switch out of Plan mode) before editing or running commands.",
+                ),
+                SessionMode(
+                    id=self._MODE_OBSERVE,
+                    name="Observe",
+                    description="Read and propose file edits (for review) but never run "
+                    "commands. Used for proactive background turns.",
+                ),
             ],
         )
 
@@ -564,6 +593,49 @@ class HermesACPAgent(acp.Agent):
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
         return policy, state.cwd
+
+    def _install_plan_gate(self, state: SessionState) -> bool:
+        """Install the executor-thread tool whitelist for a gated mode, so the
+        agent is restricted at the source. Returns True if a gate was installed.
+        MUST be called on the executor thread.
+
+          - Plan mode (FR-19): withhold ALL mutating tools (edit + execute) — the
+            agent plans but cannot act until the user switches out of plan mode.
+          - Observe mode: withhold ONLY command execution — the agent may read
+            and propose edits (the client captures them for review) but can
+            never run a command (proactive background turns).
+        """
+        mode = str(getattr(state, "mode", ""))
+        if mode not in (self._MODE_PLAN, self._MODE_OBSERVE):
+            return False
+        try:
+            from hermes_cli.plugins import set_thread_tool_whitelist
+            from acp_adapter.tools import _POLISHED_TOOLS
+
+            if mode == self._MODE_PLAN:
+                from acp_adapter.plan_gate import plan_mode_allowed_tools, PLAN_BLOCK_FMT
+
+                set_thread_tool_whitelist(plan_mode_allowed_tools(_POLISHED_TOOLS), PLAN_BLOCK_FMT)
+            else:  # observe
+                from acp_adapter.plan_gate import observe_mode_allowed_tools, OBSERVE_BLOCK_FMT
+
+                set_thread_tool_whitelist(observe_mode_allowed_tools(_POLISHED_TOOLS), OBSERVE_BLOCK_FMT)
+            return True
+        except Exception:
+            logger.debug("Could not install %s-mode tool whitelist", mode, exc_info=True)
+            return False
+
+    @staticmethod
+    def _clear_plan_gate(installed: bool) -> None:
+        """Clear the plan-mode tool whitelist set by :meth:`_install_plan_gate`."""
+        if not installed:
+            return
+        try:
+            from hermes_cli.plugins import clear_thread_tool_whitelist
+
+            clear_thread_tool_whitelist()
+        except Exception:
+            logger.debug("Could not clear plan-mode tool whitelist", exc_info=True)
 
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:
@@ -1390,6 +1462,9 @@ class HermesACPAgent(acp.Agent):
 
         tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
         tool_call_meta: dict[str, dict[str, Any]] = {}
+        # Live delegate_task progress polls, keyed by the batch tool_call_id.
+        # Shared between the progress (start) and step (stop) callbacks.
+        delegate_polls: dict[str, Any] = {}
         previous_approval_cb = None
         edit_approval_requester = None
 
@@ -1403,9 +1478,13 @@ class HermesACPAgent(acp.Agent):
                 tool_call_ids,
                 tool_call_meta,
                 edit_approval_policy_getter=lambda: self._edit_approval_policy_for_state(state),
+                delegate_polls=delegate_polls,
             )
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
-            step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            step_cb = make_step_cb(
+                conn, session_id, loop, tool_call_ids, tool_call_meta,
+                delegate_polls=delegate_polls,
+            )
             message_cb = make_message_cb(conn, session_id, loop)
 
             def stream_delta_cb(text: str) -> None:
@@ -1501,6 +1580,10 @@ class HermesACPAgent(acp.Agent):
             # never leaks one session's id into the next session's tools.
             previous_session_id = os.environ.get("HERMES_SESSION_ID")
             os.environ["HERMES_SESSION_ID"] = session_id
+            # Plan mode: gate mutating tools on THIS executor thread (the
+            # thread-local whitelist must be set where run_conversation runs)
+            # until the user approves by switching out of plan mode (FR-19).
+            plan_gate_installed = self._install_plan_gate(state)
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -1513,6 +1596,7 @@ class HermesACPAgent(acp.Agent):
                 logger.exception("Agent error in session %s", session_id)
                 return {"final_response": f"Error: {e}", "messages": state.history}
             finally:
+                self._clear_plan_gate(plan_gate_installed)
                 # Restore HERMES_INTERACTIVE.
                 if previous_interactive is None:
                     os.environ.pop("HERMES_INTERACTIVE", None)

@@ -10,6 +10,8 @@ thread while the event loop lives on the main thread).
 import asyncio
 import json
 import logging
+import re
+import threading
 from collections import deque
 from typing import Any, Callable, Deque, Dict
 
@@ -23,6 +25,114 @@ from .tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------
+# Live subagent (delegate_task) progress
+# ------------------------------------------------------------------
+# delegate_task runs SYNCHRONOUSLY, so the parent emits one tool_call (start)
+# and one tool_call_update (results) with nothing in between — the VS Code
+# Fleet view only learns per-subagent status at the very end. We close that gap
+# by polling the thread-safe live registry (tools.delegate_tool.
+# list_active_subagents) on a daemon thread while the batch runs and emitting
+# intermediate tool_call_update frames the FleetModel parses. No core-loop
+# change; reuses the thread-safe _send_update.
+
+_DELEGATE_TOOL_NAMES = {"delegate_task"}
+# subagent_id is "sa-<task_index>-<uuid>"; the FleetModel keys children by
+# K = task_index + 1, so the index here drives the "Task K" line it parses.
+_SA_INDEX_RE = re.compile(r"^sa-(\d+)-")
+_POLL_INTERVAL_S = 1.0
+_POLL_MAX_S = 1800.0  # backstop: a poll thread can never leak past this
+
+
+def build_subagent_progress_update(tool_call_id: str, active_subagents: Any) -> Any:
+    """Encode a live subagent-registry snapshot into a delegate-batch
+    ``tool_call_update`` the VS Code FleetModel parses.
+
+    Pure (no I/O). ``active_subagents`` is the ``list_active_subagents()``
+    snapshot. Emits one ``Task K`` line per subagent whose id encodes a task
+    index, with its status + tool_count. Returns an ACP ``tool_call_update`` or
+    ``None`` when nothing maps (so callers skip emitting an empty frame).
+    """
+    rows = []
+    for sa in active_subagents or []:
+        if not isinstance(sa, dict):
+            continue
+        m = _SA_INDEX_RE.match(sa.get("subagent_id") or "")
+        if not m:
+            continue
+        k = int(m.group(1)) + 1
+        status = (sa.get("status") or "running").strip().lower()
+        glyph = "✅" if status in {"done", "completed"} else "❌" if status in {"error", "failed"} else "🔄"
+        tools = sa.get("tool_count")
+        suffix = f" ({tools} tools)" if isinstance(tools, int) else ""
+        rows.append((k, f"{glyph} Task {k}: {status}{suffix}"))
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r[0])
+    text = "Delegation progress:\n" + "\n".join(line for _, line in rows)
+    return acp.update_tool_call(
+        tool_call_id,
+        kind="execute",
+        status="in_progress",
+        content=[acp.tool_content(acp.text_block(text))],
+    )
+
+
+def _start_delegate_poll(
+    conn: "acp.Client",
+    session_id: str,
+    loop: asyncio.AbstractEventLoop,
+    tool_call_id: str,
+    delegate_polls: Dict[str, threading.Event] | None,
+) -> None:
+    """Start a daemon thread emitting live subagent progress for a running
+    delegate_task batch, until stopped (on completion) or a hard backstop."""
+    if delegate_polls is None or tool_call_id in delegate_polls:
+        return
+    stop = threading.Event()
+
+    def _run() -> None:
+        try:
+            from tools.delegate_tool import list_active_subagents
+        except Exception:
+            return
+        elapsed = 0.0
+        last_key = None
+        while not stop.wait(_POLL_INTERVAL_S):
+            elapsed += _POLL_INTERVAL_S
+            if elapsed > _POLL_MAX_S:
+                return
+            try:
+                snapshot = list_active_subagents()
+            except Exception:
+                continue
+            update = build_subagent_progress_update(tool_call_id, snapshot)
+            if update is None:
+                continue
+            key = str(getattr(update, "content", None))
+            if key == last_key:  # don't spam identical frames
+                continue
+            last_key = key
+            try:
+                _send_update(conn, session_id, loop, update)
+            except Exception:
+                logger.debug("subagent progress emit failed", exc_info=True)
+
+    delegate_polls[tool_call_id] = stop
+    threading.Thread(
+        target=_run, name=f"acp-subagent-poll-{tool_call_id[:8]}", daemon=True
+    ).start()
+
+
+def _stop_delegate_poll(
+    tool_call_id: str, delegate_polls: Dict[str, threading.Event] | None
+) -> None:
+    if not delegate_polls:
+        return
+    stop = delegate_polls.pop(tool_call_id, None)
+    if stop is not None:
+        stop.set()
 
 
 def _json_loads_maybe_prefix(value: str) -> Any:
@@ -118,6 +228,7 @@ def make_tool_progress_cb(
     tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]],
     edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
+    delegate_polls: Dict[str, threading.Event] | None = None,
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
 
@@ -179,6 +290,10 @@ def make_tool_progress_cb(
         update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
         _send_update(conn, session_id, loop, update)
 
+        # Live subagent progress: poll the registry until this batch completes.
+        if name in _DELEGATE_TOOL_NAMES:
+            _start_delegate_poll(conn, session_id, loop, tc_id, delegate_polls)
+
     return _tool_progress
 
 
@@ -212,6 +327,7 @@ def make_step_cb(
     loop: asyncio.AbstractEventLoop,
     tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]],
+    delegate_polls: Dict[str, threading.Event] | None = None,
 ) -> Callable:
     """Create a ``step_callback`` for AIAgent.
 
@@ -249,6 +365,8 @@ def make_step_cb(
                         snapshot=meta.get("snapshot"),
                     )
                     _send_update(conn, session_id, loop, update)
+                    if tool_name in _DELEGATE_TOOL_NAMES:
+                        _stop_delegate_poll(tc_id, delegate_polls)
                     if tool_name == "todo":
                         plan_update = _build_plan_update_from_todo_result(result)
                         if plan_update is not None:

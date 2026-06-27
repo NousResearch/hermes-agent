@@ -47,6 +47,7 @@ from agent.message_sanitization import (
     _strip_images_from_messages,
     _strip_non_ascii,
 )
+from agent.tool_call_recovery import recover_tool_calls_from_text
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     estimate_messages_tokens_rough,
@@ -3957,6 +3958,36 @@ def run_conversation(
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
             
+            # ── Recover tool calls the model emitted as TEXT ──────────────
+            # Some local models (notably qwen3-coder via Ollama) emit a tool
+            # call inside the assistant content — <function=NAME><parameter=K>
+            # V</parameter></function> or <tool_call>{json}</tool_call> —
+            # instead of via the structured tool_calls field. When the
+            # provider's chat template fails to parse it, tool_calls is empty
+            # and the turn silently ends as text, dropping the intended
+            # edit/command (and strip_think_blocks then deletes the
+            # <tool_call> variant outright). Parse it back into structured
+            # calls — gated on known tool names so prose/examples are never
+            # executed — so the normal dispatch path below runs.
+            if not assistant_message.tool_calls:
+                _recovered, _cleaned = recover_tool_calls_from_text(
+                    assistant_message.content or "", agent.valid_tool_names
+                )
+                if _recovered:
+                    assistant_message.tool_calls = _recovered
+                    assistant_message.content = _cleaned
+                    finish_reason = "tool_calls"
+                    logger.info(
+                        "%sRecovered %d tool call(s) emitted as text: %s",
+                        agent.log_prefix,
+                        len(_recovered),
+                        ", ".join(tc.function.name for tc in _recovered),
+                    )
+                    agent._buffer_vprint(
+                        f"🔧 Recovered {len(_recovered)} tool call(s) the model "
+                        f"emitted as text ({', '.join(tc.function.name for tc in _recovered)})"
+                    )
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:

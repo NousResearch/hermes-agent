@@ -35,6 +35,7 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
+    QWEN_CODER_TOOLCALL_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
@@ -256,6 +257,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # existing tools, replies with plans instead of executing).
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+
+    # Qwen-coder tool-call wrapper reminder (QwenLM/Qwen3-Coder#475). Independent
+    # of tool-use enforcement: these models omit the opening <tool_call> tag and
+    # leak the call as text regardless. Gated on the model name so it never
+    # pollutes cloud models that use native structured tool_calls.
+    if agent.valid_tool_names:
+        _qwen_ml = (agent.model or "").lower()
+        if "qwen" in _qwen_ml and "coder" in _qwen_ml:
+            stable_parts.append(QWEN_CODER_TOOLCALL_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:

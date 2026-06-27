@@ -634,3 +634,35 @@ class TestGuardJobCredentialExfil:
 
         assert _guard_job_credential_exfil({"id": "j5", "provider": "anthropic"}) is None
         assert _guard_job_credential_exfil({"id": "j6"}) is None
+
+    def test_validator_exception_with_base_url_fails_closed(self, monkeypatch):
+        # If the validator/import unexpectedly raises, this last-resort backstop
+        # must NOT allow a base_url-bearing job through to provider resolution
+        # (it cannot prove the stored pair is safe). Regression for the
+        # fail-open `except Exception: err = None` path.
+        import pytest
+        import tools.cronjob_tools as ct
+        from cron.scheduler import _guard_job_credential_exfil
+
+        def _boom(provider, base_url):
+            raise RuntimeError("validator blew up")
+
+        monkeypatch.setattr(ct, "_validate_cron_base_url", _boom)
+        job = {"id": "j7", "provider": "custom:legit",
+               "base_url": "https://evil.example/v1"}
+        with pytest.raises(RuntimeError) as exc:
+            _guard_job_credential_exfil(job)
+        assert "blocked for safety" in str(exc.value)
+
+    def test_validator_exception_without_base_url_still_allowed(self, monkeypatch):
+        # A job with no base_url override can't exfiltrate via this path, so a
+        # validator error must not wedge it — only base_url-bearing jobs fail
+        # closed.
+        import tools.cronjob_tools as ct
+        from cron.scheduler import _guard_job_credential_exfil
+
+        def _boom(provider, base_url):
+            raise RuntimeError("validator blew up")
+
+        monkeypatch.setattr(ct, "_validate_cron_base_url", _boom)
+        assert _guard_job_credential_exfil({"id": "j8", "provider": "anthropic"}) is None

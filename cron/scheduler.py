@@ -1986,12 +1986,24 @@ def _guard_job_credential_exfil(job: dict) -> None:
     try:
         from tools.cronjob_tools import _validate_cron_base_url
         err = _validate_cron_base_url(job.get("provider"), job.get("base_url"))
-    except Exception:
-        # The validator is defensively coded to RETURN (not raise) its own
-        # fail-closed string when provider metadata can't be resolved; only a
-        # truly unexpected error lands here. Don't wedge every cron job on such
-        # an error — the create/update-time guard remains the primary control.
-        err = None
+    except Exception as exc:
+        # Fail CLOSED: this is the last guard before provider resolution, so an
+        # unexpected validator/import error must not silently allow an unvetted
+        # pair through. A job that carries no base_url override cannot exfiltrate
+        # a stored credential via this path (there is nothing to validate, and
+        # the validator would return None), so it still runs — that keeps the
+        # overwhelmingly-common no-override jobs from wedging on an unrelated
+        # error. But any job that DID set a base_url is refused until the
+        # validator can actually vet the pair. Operator fallback providers come
+        # from config, not the job, so they are unaffected.
+        if job.get("base_url"):
+            err = (
+                f"could not validate provider/base_url pair "
+                f"({exc.__class__.__name__}: {exc}); refusing to run a job with "
+                "an unverified base_url override"
+            )
+        else:
+            err = None
     if err:
         job_id = job.get("id")
         logger.error(

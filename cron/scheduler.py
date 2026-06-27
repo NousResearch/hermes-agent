@@ -2861,7 +2861,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         elif msvcrt:
             msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
     except (OSError, IOError):
-        logger.debug("Tick skipped — another instance holds the lock")
+        logger.info("Tick skipped — another instance holds the lock")
         if lock_fd is not None:
             lock_fd.close()
         return 0

@@ -75,7 +75,9 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
-      ...(previewTarget ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab] : []),
+      ...(previewTarget
+        ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab]
+        : []),
       ...filePreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab)
     ],
     [filePreviewTabs, previewTarget, t.preview.tab]
@@ -101,6 +103,12 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
         'relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-tertiary) bg-(--ui-editor-surface-background) text-(--ui-text-tertiary)',
         panesFlipped ? 'border-r' : 'border-l'
       )}
+      // Windows/WSLg paint Electron's Window Controls Overlay across our
+      // titlebar band, so the editor-style tab strip (which normally sits IN that
+      // band) would land under the fixed titlebar tools. --right-rail-top-inset
+      // (set by AppShell only when the overlay is present) drops the rail one
+      // titlebar-height so it opens below the band. 0px elsewhere → unchanged.
+      style={{ paddingTop: 'var(--right-rail-top-inset, 0px)' }}
     >
       <div className="group/rail-tabs flex h-(--titlebar-height) shrink-0 border-b border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background)">
         <div

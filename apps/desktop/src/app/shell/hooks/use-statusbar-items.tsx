@@ -7,17 +7,7 @@ import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
-import {
-  Activity,
-  AlertCircle,
-  Clock,
-  Command,
-  Hash,
-  Loader2,
-  Terminal,
-  Zap,
-  ZapFilled
-} from '@/lib/icons'
+import { Activity, AlertCircle, Clock, Command, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -241,10 +231,12 @@ export function useStatusbarItems({
 
     const backendVersion = statusSnapshot?.version
     const behind = backendUpdateStatus?.behind ?? 0
+    const updateAvailable = backendUpdateStatus?.updateAvailable || behind > 0
     const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
 
     const base = copy.backendLabel(backendVersion ?? copy.unknown)
-    const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
+    const behindHint =
+      !applying && behind > 0 ? ` (+${behind})` : !applying && updateAvailable ? ` (${copy.update})` : ''
 
     const label = applying
       ? `${base} · ${backendUpdateApply.stage === 'restart' ? copy.restart : copy.update}`
@@ -253,13 +245,14 @@ export function useStatusbarItems({
     const tooltip = [
       applying ? backendUpdateApply.message || copy.updateInProgress : null,
       !applying && behind > 0 && copy.commitsBehind(behind, 'main'),
+      !applying && behind <= 0 && updateAvailable && copy.update,
       backendVersion && copy.backendVersion(backendVersion)
     ]
       .filter(Boolean)
       .join(' · ')
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
+      className: !applying && updateAvailable ? 'text-primary hover:text-primary' : undefined,
       hidden: !backendVersion,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-backend',
@@ -272,6 +265,7 @@ export function useStatusbarItems({
     connection?.mode,
     statusSnapshot?.version,
     backendUpdateStatus?.behind,
+    backendUpdateStatus?.updateAvailable,
     backendUpdateApply.applying,
     backendUpdateApply.message,
     backendUpdateApply.stage,

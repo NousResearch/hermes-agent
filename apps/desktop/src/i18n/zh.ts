@@ -369,6 +369,12 @@ export const zh: Translations = {
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
+      embedsTitle: '内嵌预览',
+      embedsDesc: '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',
+      embedsAsk: '询问',
+      embedsAlways: '总是',
+      embedsOff: '关闭',
+      embedsReset: (count: number) => `重置 ${count} 个已允许的服务`,
       product: '产品',
       productDesc: '易读的工具活动与简洁摘要。',
       technical: '技术',
@@ -1516,7 +1522,8 @@ export const zh: Translations = {
       noBranches: '未找到分支',
       removeWorktree: '移除工作树',
       removeWorktreeFailed: '无法移除工作树（存在未提交更改？）',
-      removeWorktreeConfirm: '从 git 中移除（删除工作树目录，但保留分支），或仅从侧边栏隐藏该泳道并将工作树保留在磁盘上。',
+      removeWorktreeConfirm:
+        '从 git 中移除（删除工作树目录，但保留分支），或仅从侧边栏隐藏该泳道并将工作树保留在磁盘上。',
       removeWorktreeDirty: '此工作树有未提交的更改。强制移除（丢弃这些更改），或仅隐藏泳道并保留在磁盘上。',
       forceRemove: '强制移除',
       enter: label => `打开 ${label}`,
@@ -2197,10 +2204,8 @@ export const zh: Translations = {
       loadingQuestion: '正在加载问题…',
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
-      shortcutSuffix: ' 发送',
-      back: '返回',
       skip: '跳过',
-      send: '发送'
+      continueLabel: '继续'
     },
     tool: {
       code: '代码',

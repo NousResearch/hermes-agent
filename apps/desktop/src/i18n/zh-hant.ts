@@ -278,6 +278,12 @@ export const zhHant = defineLocale({
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
+      embedsTitle: '內嵌預覽',
+      embedsDesc: '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',
+      embedsAsk: '詢問',
+      embedsAlways: '一律',
+      embedsOff: '關閉',
+      embedsReset: (count: number) => `重設 ${count} 個已允許的服務`,
       product: '產品',
       productDesc: '易讀的工具活動與精簡摘要。',
       technical: '技術',
@@ -1409,7 +1415,8 @@ export const zhHant = defineLocale({
       noBranches: '找不到分支',
       removeWorktree: '移除工作樹',
       removeWorktreeFailed: '無法移除工作樹（有未提交的變更？）',
-      removeWorktreeConfirm: '從 git 中移除（刪除工作樹目錄，但保留分支），或僅從側邊欄隱藏該軌道並將工作樹保留在磁碟上。',
+      removeWorktreeConfirm:
+        '從 git 中移除（刪除工作樹目錄，但保留分支），或僅從側邊欄隱藏該軌道並將工作樹保留在磁碟上。',
       removeWorktreeDirty: '此工作樹有未提交的變更。強制移除（捨棄這些變更），或僅隱藏軌道並保留在磁碟上。',
       forceRemove: '強制移除',
       enter: label => `開啟 ${label}`
@@ -2084,10 +2091,8 @@ export const zhHant = defineLocale({
       loadingQuestion: '正在載入問題…',
       other: '其他（輸入您的答案）',
       placeholder: '輸入您的答案…',
-      shortcutSuffix: ' 傳送',
-      back: '返回',
       skip: '略過',
-      send: '傳送'
+      continueLabel: '繼續'
     },
     tool: {
       code: '程式碼',

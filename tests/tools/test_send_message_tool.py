@@ -871,7 +871,7 @@ class TestSendToPlatformChunking:
             def __init__(self, _config):
                 self.connected = False
 
-            async def connect(self):
+            async def connect(self, *, is_reconnect: bool = False):
                 self.connected = True
                 calls.append(("connect",))
                 return True

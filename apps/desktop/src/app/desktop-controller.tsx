@@ -43,10 +43,15 @@ import {
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
-import { $paneOpen } from '../store/panes'
 import { respondToApprovalAction } from '../store/native-notifications'
+import { $paneOpen } from '../store/panes'
 import { setPetActivity } from '../store/pet'
-import { setPetOverlayOpenAppHandler, setPetOverlaySubmitHandler } from '../store/pet-overlay'
+import { setPetScale } from '../store/pet-gallery'
+import {
+  setPetOverlayOpenAppHandler,
+  setPetOverlayScaleHandler,
+  setPetOverlaySubmitHandler
+} from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -939,6 +944,8 @@ export function DesktopController() {
   submitTextRef.current = submitText
   const resumeSessionRef = useRef(resumeSession)
   resumeSessionRef.current = resumeSession
+  const requestGatewayRef = useRef(requestGateway)
+  requestGatewayRef.current = requestGateway
 
   useEffect(() => {
     if (isSecondaryWindow()) {
@@ -946,6 +953,9 @@ export function DesktopController() {
     }
 
     setPetOverlaySubmitHandler(text => void submitTextRef.current(text))
+    // Alt+wheel resize from the popped-out pet — persist it through this
+    // window's gateway (the overlay has none) so it survives restart.
+    setPetOverlayScaleHandler(scale => setPetScale(requestGatewayRef.current, scale))
     // Mail icon: $sessions is ordered most-recent-first; the pet is global (not
     // per session) so "most recent" is the right target. main.cjs already raised
     // the window before forwarding this.
@@ -960,6 +970,7 @@ export function DesktopController() {
     return () => {
       setPetOverlaySubmitHandler(null)
       setPetOverlayOpenAppHandler(null)
+      setPetOverlayScaleHandler(null)
     }
   }, [])
 
@@ -1191,7 +1202,7 @@ export function DesktopController() {
       }}
       onDismissError={dismissError}
       onEdit={editMessage}
-      onPasteClipboardImage={() => void composer.pasteClipboardImage()}
+      onPasteClipboardImage={opts => composer.pasteClipboardImage(opts)}
       onPickFiles={() => void composer.pickContextPaths('file')}
       onPickFolders={() => void composer.pickContextPaths('folder')}
       onPickImages={() => void composer.pickImages()}
@@ -1218,6 +1229,7 @@ export function DesktopController() {
     (chatOpen && Boolean(previewTarget || filePreviewTarget) && previewPaneOpen) ||
     (chatOpen && !narrowViewport && fileBrowserOpen) ||
     (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
+
   // Once the terminal would share its rail with another sidebar, drop it to a
   // full-width row beneath them rather than cramming in one more skinny column.
   const terminalAsRow = terminalSidebarOpen && railColumnOpen

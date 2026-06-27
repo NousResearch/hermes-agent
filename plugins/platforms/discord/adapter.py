@@ -102,7 +102,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -859,7 +859,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         asyncio.create_task(_notify())
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
@@ -3411,13 +3411,14 @@ class DiscordAdapter(BasePlatformAdapter):
             print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
 
     def format_message(self, content: str) -> str:
-        """
-        Format message for Discord.
+        """Format message for Discord.
 
-        Discord uses its own markdown variant.
+        Converts GFM markdown tables to bullet-list groups since Discord
+        does not render pipe tables natively.
         """
-        # Discord markdown is fairly standard, no special escaping needed
-        return content
+        if not content:
+            return content
+        return convert_table_to_bullets(content)
 
     async def _run_simple_slash(
         self,

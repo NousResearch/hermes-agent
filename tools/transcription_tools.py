@@ -29,6 +29,7 @@ Usage::
 
 import logging
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -1085,6 +1086,42 @@ def _looks_like_cuda_lib_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CUDA_LIB_ERROR_MARKERS)
 
 
+def _sysctl_value(name: str) -> str:
+    """Return a sysctl value, or an empty string when unavailable."""
+    try:
+        return subprocess.check_output(
+            ["/usr/sbin/sysctl", "-n", name],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _should_force_faster_whisper_cpu() -> bool:
+    """Avoid faster-whisper device autodetection paths known to hard-abort.
+
+    On Apple Silicon, especially when Python is running as x86_64 under
+    Rosetta, ctranslate2's ``device=\"auto\"`` path can abort inside native
+    code before Python can catch an exception.  Force CPU so local STT remains
+    reliable for gateway voice messages.
+    """
+    if platform.system() != "Darwin":
+        return False
+
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        return True
+
+    # Under Rosetta, platform.machine() reports x86_64.  sysctl.proc_translated
+    # tells us this process is translated, while hw.optional.arm64 distinguishes
+    # Apple Silicon hosts from Intel Macs.
+    if _sysctl_value("sysctl.proc_translated") == "1":
+        return True
+    return _sysctl_value("hw.optional.arm64") == "1"
+
+
 def _load_local_whisper_model(model_name: str):
     """Load faster-whisper with graceful CUDA → CPU fallback.
 
@@ -1098,7 +1135,22 @@ def _load_local_whisper_model(model_name: str):
     We try ``auto`` first (fast CUDA path when it works), and on any CUDA
     library load failure fall back to CPU + int8.
     """
+    force_cpu = _should_force_faster_whisper_cpu()
+    if force_cpu:
+        # Importing ctranslate2/faster-whisper itself can abort on some
+        # Apple Silicon/Rosetta installs because multiple Intel OpenMP runtimes
+        # are already loaded.  Set this before importing faster_whisper so the
+        # gateway survives, then keep inference on CPU to avoid device probing.
+        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
     from faster_whisper import WhisperModel
+    if force_cpu:
+        logger.info(
+            "Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
+            "(int8) to avoid native device autodetection crashes"
+        )
+        return WhisperModel(model_name, device="cpu", compute_type="int8")
+
     try:
         return WhisperModel(model_name, device="auto", compute_type="auto")
     except Exception as exc:

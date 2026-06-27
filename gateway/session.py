@@ -997,6 +997,52 @@ class SessionStore:
         
         return None
     
+    def _find_recent_session_to_reattach(
+        self,
+        source: SessionSource,
+        window_hours: int,
+    ) -> Optional[str]:
+        """Search the SQLite DB for a recently-ended session from the same source.
+
+        Returns the session_id of the most recent matching ended session,
+        or None if no suitable session is found.
+
+        Matching criteria:
+        - Same platform (source column)
+        - Same user_id (when available)
+        - Session has ended (ended_at IS NOT NULL)
+        - Ended within ``window_hours`` of now
+        - Ordered by most recent ended_at
+        - Limit 1
+        """
+        if not self._db:
+            return None
+
+        import time
+
+        cutoff_timestamp = time.time() - (window_hours * 3600)
+
+        # Query for recently-ended sessions from the same source.
+        # We match on platform and user_id.  The session_key itself is
+        # not stored in the DB, so we use the origin metadata that IS
+        # stored (source = platform.value, user_id).
+        with self._db._lock:
+            cursor = self._db._conn.execute(
+                """
+                SELECT id FROM sessions
+                WHERE source = ?
+                  AND user_id = ?
+                  AND ended_at IS NOT NULL
+                  AND ended_at >= ?
+                ORDER BY ended_at DESC
+                LIMIT 1
+                """,
+                (source.platform.value, source.user_id, cutoff_timestamp),
+            )
+            row = cursor.fetchone()
+
+        return row["id"] if row else None
+
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
 
@@ -1079,6 +1125,54 @@ class SessionStore:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
+
+            # -----------------------------------------------------------------
+            # Reattach to recent session: if the policy says we should reset,
+            # but ``reattach_window_hours`` is configured, try to find a
+            # recently-ended session in the DB from the same source and
+            # resume it instead of creating a brand-new session.
+            # -----------------------------------------------------------------
+            reattached_session_id = None
+            if was_auto_reset and self._db:
+                policy = self.config.get_reset_policy(
+                    platform=source.platform,
+                    session_type=source.chat_type
+                )
+                if policy.reattach_window_hours > 0:
+                    try:
+                        reattached_session_id = self._find_recent_session_to_reattach(
+                            source, policy.reattach_window_hours
+                        )
+                    except Exception as e:
+                        logger.debug("Session reattach lookup failed: %s", e)
+
+            if reattached_session_id:
+                # Re-open the ended session and wire the session_key to it.
+                # This is similar to switch_session() but for auto-reset
+                # recovery rather than explicit /resume.
+                entry = SessionEntry(
+                    session_key=session_key,
+                    session_id=reattached_session_id,
+                    created_at=now,
+                    updated_at=now,
+                    origin=source,
+                    display_name=source.chat_name,
+                    platform=source.platform,
+                    chat_type=source.chat_type,
+                    was_auto_reset=True,
+                    auto_reset_reason=auto_reset_reason,
+                    reset_had_activity=reset_had_activity,
+                )
+                self._entries[session_key] = entry
+                self._save()
+
+                # Re-open the session in SQLite so it accepts new messages
+                try:
+                    self._db.reopen_session(reattached_session_id)
+                except Exception as e:
+                    logger.debug("Session DB reopen_session failed: %s", e)
+
+                return entry
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"

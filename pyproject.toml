@@ -172,7 +172,7 @@ voice = [
   # so keep it out of the base install for source-build packagers like Homebrew.
   "faster-whisper==1.2.1",
   "sounddevice==0.5.5",
-  "numpy==2.4.3",
+  "numpy<2",
 ]
 pty = [
   # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now

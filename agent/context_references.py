@@ -7,6 +7,7 @@ import mimetypes
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -16,7 +17,7 @@ from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
-    rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
+    rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url|window):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
 )
 TRAILING_PUNCTUATION = ",.;!?"
 _SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
@@ -239,6 +240,8 @@ async def _expand_reference(
             if not content:
                 return f"{ref.raw}: no content extracted", None
             return None, f"🌐 {ref.raw} ({estimate_tokens_rough(content)} tokens)\n{content}"
+        if ref.kind == "window":
+            return _expand_window_reference(ref)
     except Exception as exc:
         return f"{ref.raw}: {exc}", None
 
@@ -322,6 +325,70 @@ def _expand_git_reference(
     if not content:
         content = "(no output)"
     return None, f"🧾 {label} ({estimate_tokens_rough(content)} tokens)\n```diff\n{content}\n```"
+
+
+def _sidecar_dir() -> Path:
+    """Locate the hermes-eats-world sidecar (override via HERMES_SIDECAR_DIR)."""
+    override = os.environ.get("HERMES_SIDECAR_DIR")
+    return Path(override) if override else Path.home() / "hermes-eats-world"
+
+
+def _expand_window_reference(ref: ContextReference) -> tuple[str | None, str | None]:
+    """Expand @window:Title into a live, actionable block for the agent.
+
+    A window is a *live target*, not static text: the model drives it with its
+    own exec/shell tool via the hermes-eats-world sidecar. We confirm the window
+    exists (reusing the sidecar's `--list --json` contract) and hand the model
+    the exact perceive/control commands. Best-effort — if the sidecar can't run
+    we still emit the commands so the model can try.
+    """
+    title = (ref.target or "").strip()
+    if not title:
+        return f"{ref.raw}: no window title", None
+
+    sidecar = _sidecar_dir()
+    py = sys.executable or "python"
+    perceive_cmd = f'{py} -m sidecar.service --target "{title}" --json'
+    control_cmd = f'{py} -m sidecar.service --target "{title}" --run-goal "<your goal>"'
+    how = (
+        f"To inspect it, run (in `{sidecar}`):\n```bash\n{perceive_cmd}\n```\n"
+        f"To control it, run:\n```bash\n{control_cmd}\n```\n"
+        "Use your exec/shell tool. Perceive first to see elements, then issue goals."
+    )
+
+    matched = None
+    try:
+        result = subprocess.run(
+            [py, "-m", "sidecar.service", "--list", "--json"],
+            cwd=str(sidecar),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            windows = (json.loads(result.stdout) or {}).get("windows", [])
+            lowered = title.lower()
+            matched = next(
+                (w for w in windows if lowered in str(w.get("name", "")).lower()),
+                None,
+            )
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        matched = None
+
+    if matched:
+        detail = (
+            f"name={matched.get('name')!r}, class={matched.get('class_name')!r}, "
+            f"pid={matched.get('pid')}"
+        )
+        body = f"🪟 {ref.raw} — attached desktop window ({detail}).\n{how}"
+    else:
+        body = (
+            f"🪟 {ref.raw} — attached desktop window (could not confirm it is open; "
+            f"the sidecar may not be running, or the title may have changed).\n{how}"
+        )
+
+    return None, f"{body}"
 
 
 async def _fetch_url_content(

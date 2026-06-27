@@ -513,9 +513,34 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         cmd = args.get("command", "")
         if len(cmd) > 80:
             cmd = cmd[:77] + "..."
-        exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
-        exit_code = exit_match.group(1) if exit_match else "?"
-        return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+        # Parse content as JSON once, falling back to regex if it fails.
+        exit_code = "?"
+        stderr = ""
+        try:
+            parsed_content = json.loads(content)
+            if isinstance(parsed_content, dict):
+                exit_code = parsed_content.get("exit_code", "?")
+                stderr = parsed_content.get("stderr", "") or ""
+        except (json.JSONDecodeError, TypeError):
+            # Fallback: extract exit_code via regex for non-JSON output.
+            exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
+            if exit_match:
+                exit_code = exit_match.group(1)
+        # Build base stub
+        base = f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+        # Preserve error indicators for failed commands so the summarizer
+        # and downstream context know something went wrong.
+        try:
+            exit_int = int(exit_code) if exit_code != "?" else 0
+        except (ValueError, TypeError):
+            exit_int = 0
+        if exit_int != 0:
+            tag = "FAILED"
+            if stderr:
+                preview = stderr.replace("\n", " ").strip()[:120]
+                tag = f"FAILED: {preview}"
+            base = f"[terminal] {tag}: ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+        return base
 
     if tool_name == "read_file":
         path = args.get("path", "?")

@@ -2693,3 +2693,88 @@ class TestPreflightSentinelGuard:
         compressor.last_prompt_tokens = 50_000
         result = self._seed(compressor.last_prompt_tokens, 10_000)
         assert result == 50_000
+
+class TestSummarizeToolResultErrorIndicators:
+    """Error indicator preservation in _summarize_tool_result.
+
+    The prune pass replaces old tool results with 1-line stubs.  Without
+    error indicators, a FAILED command that produced important diagnostics
+    looks identical to a successful one — the summarizer and downstream
+    context lose the signal that something went wrong.
+    """
+
+    # --- terminal: nonzero exit code ---
+
+    def test_terminal_nonzero_exit_flags_failed(self):
+        """exit code != 0 must produce a 'FAILED' marker in the stub."""
+        from agent.context_compressor import _summarize_tool_result
+        stub = _summarize_tool_result(
+            "terminal",
+            '{"command": "npm test"}',
+            '{"exit_code": 1, "output": "FAIL src/app.test.js"}',
+        )
+        assert "FAILED" in stub, f"Expected FAILED marker, got: {stub!r}"
+        assert "exit 1" in stub
+
+    def test_terminal_nonzero_exit_includes_stderr_preview(self):
+        """Nonzero exit with stderr must surface a preview of stderr."""
+        from agent.context_compressor import _summarize_tool_result
+        stub = _summarize_tool_result(
+            "terminal",
+            '{"command": "cargo build"}',
+            '{"exit_code": 101, "stderr": "error[E0425]: cannot find value `x` in this scope\\n  --> src/main.rs:4:5"}',
+        )
+        assert "FAILED" in stub
+        assert "exit 101" in stub
+        # Must include at least a preview of stderr
+        assert "cannot find" in stub or "error" in stub
+
+    def test_terminal_signal_exit_negative_code(self):
+        """Signal-killed processes return negative exit codes (-9, -15, etc)."""
+        from agent.context_compressor import _summarize_tool_result
+        stub = _summarize_tool_result(
+            "terminal",
+            '{"command": "sleep 999"}',
+            '{"exit_code": -9, "stderr": "Killed"}',
+        )
+        assert "FAILED" in stub
+        assert "exit -9" in stub
+
+    # --- terminal: normal exit (regression guard) ---
+
+    def test_terminal_zero_exit_no_failed_marker(self):
+        """exit code 0 must NOT produce a FAILED marker (regression guard)."""
+        from agent.context_compressor import _summarize_tool_result
+        stub = _summarize_tool_result(
+            "terminal",
+            '{"command": "npm test"}',
+            '{"exit_code": 0, "output": "PASS 47 tests"}',
+        )
+        assert "FAILED" not in stub
+        assert "exit 0" in stub
+
+    # --- terminal: extraction edge cases ---
+
+    def test_terminal_exit_from_json_output(self):
+        """Extract exit code from JSON output with nested structure."""
+        from agent.context_compressor import _summarize_tool_result
+        stub = _summarize_tool_result(
+            "terminal",
+            '{"command": "pytest"}',
+            '{"exit_code": 2, "output": "2 failed, 48 passed"}',
+        )
+        assert "FAILED" in stub
+        assert "exit 2" in stub
+
+    def test_terminal_missing_exit_code_still_works(self):
+        """When exit_code is absent from output, stub still generates."""
+        from agent.context_compressor import _summarize_tool_result
+        stub = _summarize_tool_result(
+            "terminal",
+            '{"command": "ls"}',
+            "total 42\ndrwxr-xr-x 5 user user 4096 Jun  8 .",
+        )
+        # Must not crash; must return something
+        assert isinstance(stub, str)
+        assert "terminal" in stub
+        assert "ls" in stub

@@ -4277,6 +4277,25 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    def _discord_thread_history_recall(self) -> bool:
+        """Return whether Discord threads may recall context before our last turn.
+
+        The normal channel backfill stops at Hermes' last response so the model
+        transcript is not duplicated every turn.  Discord threads are different:
+        humans often summon Hermes after discussing a task, then continue with
+        short follow-ups like "add this" or "fix it".  If Hermes has already
+        answered once, the strict self-message partition hides the earlier
+        thread discussion and the agent cannot recover the assignment.  Keep
+        this scoped to threads and skip Hermes-authored messages so the agent
+        sees the missing human context without replaying its own prior output.
+        """
+        configured = self.config.extra.get("thread_history_recall")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("DISCORD_THREAD_HISTORY_RECALL", "true").lower() in {"true", "1", "yes", "on"}
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -4369,7 +4388,20 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # ── Primary window: recent channel activity since the last bot turn ──
             collected: List[Tuple[str, str]] = []  # (message_id, line)
+            # For Discord threads, optionally continue past the most recent
+            # Hermes response and collect earlier human context too.  This is
+            # what lets a user say "add this" / "fix it" after a prior Hermes
+            # answer without past thread context disappearing behind our own
+            # partition point.
+            earlier_collected: List[Tuple[str, str]] = []
             seen_ids: set = set()
+            recall_thread_history = (
+                self._discord_thread_history_recall()
+                and DISCORD_AVAILABLE
+                and discord is not None
+                and isinstance(channel, discord.Thread)
+            )
+            saw_self_partition = False
             # IMPORTANT: pass oldest_first=False explicitly.  discord.py 2.x
             # silently flips the default to True when `after=` is supplied,
             # which would select the *earliest* N messages after our last
@@ -4399,12 +4431,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 # session transcript.  (Redundant when _after_obj is set, but
                 # needed for cold start.)
                 if msg.author == self._client.user:
+                    if recall_thread_history:
+                        saw_self_partition = True
+                        continue
                     break
                 line = _keep(msg)
                 if line is None:
                     continue
                 mid = str(getattr(msg, "id", ""))
-                collected.append((mid, line))
+                target = earlier_collected if saw_self_partition else collected
+                target.append((mid, line))
                 if mid:
                     seen_ids.add(mid)
 
@@ -4445,16 +4481,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     if mid:
                         seen_ids.add(mid)
 
-            if not collected and not reply_collected:
+            if not collected and not reply_collected and not earlier_collected:
                 return ""
 
             # channel.history returns newest-first; reverse each window for
-            # chronological order, then present reply context first (it is
-            # older) followed by the recent activity.
+            # chronological order, then present older context first followed by
+            # recent activity.
             collected.reverse()
             reply_collected.reverse()
+            earlier_collected.reverse()
 
             blocks: List[str] = []
+            if earlier_collected:
+                blocks.append(
+                    "[Earlier thread messages before Hermes' last reply]\n"
+                    + "\n".join(line for _id, line in earlier_collected)
+                )
             if reply_collected:
                 blocks.append(
                     "[Context around the replied-to message]\n"

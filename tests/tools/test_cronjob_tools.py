@@ -453,6 +453,65 @@ class TestUnifiedCronjobTool:
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
 
+    def test_bulk_update_sets_delivery_for_all_jobs_including_paused(self):
+        from cron.jobs import get_job
+
+        first = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily briefing",
+                schedule="every 1h",
+                deliver="local",
+            )
+        )
+        second = json.loads(
+            cronjob(
+                action="create",
+                prompt="Nightly summary",
+                schedule="every 1d",
+                deliver="origin",
+            )
+        )
+        cronjob(action="pause", job_id=second["job_id"])
+
+        updated = json.loads(cronjob(action="bulk_update", deliver="telegram"))
+
+        assert updated["success"] is True
+        assert updated["updated_count"] == 2
+        assert updated["deliver"] == "telegram"
+        assert get_job(first["job_id"])["deliver"] == "telegram"
+        assert get_job(second["job_id"])["deliver"] == "telegram"
+
+    def test_bulk_update_can_target_specific_jobs(self):
+        from cron.jobs import get_job
+
+        first = json.loads(
+            cronjob(action="create", prompt="A", schedule="every 1h", deliver="local")
+        )
+        second = json.loads(
+            cronjob(action="create", prompt="B", schedule="every 1h", deliver="local")
+        )
+
+        updated = json.loads(
+            cronjob(
+                action="bulk_update",
+                job_ids=[first["job_id"]],
+                deliver=["telegram", "all"],
+            )
+        )
+
+        assert updated["success"] is True
+        assert updated["updated_count"] == 1
+        assert updated["deliver"] == "telegram,all"
+        assert get_job(first["job_id"])["deliver"] == "telegram,all"
+        assert get_job(second["job_id"])["deliver"] == "local"
+
+    def test_bulk_update_requires_supported_update(self):
+        result = json.loads(cronjob(action="bulk_update"))
+
+        assert result["success"] is False
+        assert "bulk_update requires" in result["error"]
+
 
 # =========================================================================
 # Per-job model/provider override resolution

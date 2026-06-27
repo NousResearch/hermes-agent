@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import hermes_state
 from hermes_cli import kanban_db as kb
 
 
@@ -3062,6 +3063,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
 
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
+    hermes_state._wal_fallback_warned_paths.clear()
 
     real_connect = _sqlite3.connect
 
@@ -3077,16 +3079,17 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
         )
 
     with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
-        with caplog.at_level("WARNING", logger="hermes_state"):
+        with caplog.at_level("ERROR", logger="hermes_state"):
             conn = kb.connect()
 
-    # One fallback warning, naming kanban.db
-    warnings = [
-        r for r in caplog.records
-        if r.levelname == "WARNING" and "kanban.db" in r.getMessage()
+    # One fallback error, naming kanban.db
+    errors = [
+        r
+        for r in caplog.records
+        if r.levelname == "ERROR" and "kanban.db" in r.getMessage()
     ]
-    assert len(warnings) >= 1, (
-        f"Expected a kanban.db WARNING, got: {[r.getMessage() for r in caplog.records]}"
+    assert len(errors) >= 1, (
+        f"Expected a kanban.db ERROR, got: {[r.getMessage() for r in caplog.records]}"
     )
 
     # DB still usable end-to-end — create + list a task
@@ -3094,6 +3097,55 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     tasks = kb.list_tasks(conn)
     assert any(row.id == t for row in tasks)
     conn.close()
+
+
+def test_connect_works_when_wal_is_silently_refused(tmp_path, monkeypatch, caplog):
+    """kanban_db.connect() must stay usable when WAL silently no-ops to DELETE."""
+    import sqlite3 as _sqlite3
+    from unittest.mock import patch as _patch
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    hermes_state._wal_fallback_warned_paths.clear()
+
+    real_connect = _sqlite3.connect
+
+    class _WalSilentNoOpConnection(_sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                return super().execute("PRAGMA journal_mode=delete", *args, **kwargs)
+            return super().execute(sql, *args, **kwargs)
+
+    def wal_silent_noop_connect(*args, **kwargs):
+        return real_connect(
+            *args, factory=_WalSilentNoOpConnection, **kwargs
+        )
+
+    with _patch(
+        "hermes_cli.kanban_db.sqlite3.connect",
+        side_effect=wal_silent_noop_connect,
+    ):
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            conn = kb.connect()
+
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+    t = kb.create_task(conn, title="post-silent-fallback task")
+    tasks = kb.list_tasks(conn)
+    assert any(row.id == t for row in tasks)
+    conn.close()
+
+    errors = [
+        r
+        for r in caplog.records
+        if r.levelname == "ERROR" and "kanban.db" in r.getMessage()
+    ]
+    assert len(errors) >= 1, (
+        f"Expected a kanban.db ERROR, got: {[r.getMessage() for r in caplog.records]}"
+    )
 
 
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):

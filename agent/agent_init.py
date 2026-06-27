@@ -344,10 +344,12 @@ def init_agent(
     elif agent.provider == "anthropic" or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"):
         agent.api_mode = "anthropic_messages"
         agent.provider = "anthropic"
-    elif agent._base_url_lower.rstrip("/").endswith("/anthropic"):
+    elif agent._base_url_lower.rstrip("/").endswith("/anthropic") or (
+        agent._base_url_hostname == "api.kimi.com" and "/coding" in agent._base_url_lower
+    ):
         # Third-party Anthropic-compatible endpoints (e.g. MiniMax, DashScope)
-        # use a URL convention ending in /anthropic. Auto-detect these so the
-        # Anthropic Messages API adapter is used instead of chat completions.
+        # use a URL convention ending in /anthropic. Kimi Coding also speaks
+        # Anthropic Messages on /coding without using the /anthropic suffix.
         agent.api_mode = "anthropic_messages"
     elif agent.provider == "bedrock" or (
         agent._base_url_hostname.startswith("bedrock-runtime.")

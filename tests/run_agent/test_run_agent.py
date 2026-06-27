@@ -780,6 +780,24 @@ class TestInit:
             assert agent.api_mode == "anthropic_messages"
             mock_anthropic.Anthropic.assert_called_once()
 
+    def test_kimi_coding_base_url_uses_anthropic_messages_mode(self):
+        """Kimi Coding endpoints speak the Anthropic Messages wire format."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter._anthropic_sdk") as mock_anthropic,
+        ):
+            agent = AIAgent(
+                api_key="sk-kimi-test",
+                base_url="https://api.kimi.com/coding/v1",
+                provider="kimi-coding",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert agent.api_mode == "anthropic_messages"
+            mock_anthropic.Anthropic.assert_called_once()
+
     def test_prompt_caching_claude_openrouter(self):
         """Claude model via OpenRouter should enable prompt caching."""
         with (
@@ -5800,6 +5818,36 @@ class TestFallbackAnthropicProvider:
             agent._try_activate_fallback()
 
         assert agent._use_prompt_caching is True
+
+    def test_fallback_to_kimi_coding_sets_anthropic_messages_mode(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {
+            "provider": "kimi-coding",
+            "model": "kimi-k2.6",
+            "base_url": "https://api.kimi.com/coding/v1",
+        }
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.kimi.com/coding"
+        mock_client.api_key = "sk-kimi-test"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
+        ):
+            mock_build.return_value = MagicMock()
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.api_mode == "anthropic_messages"
+        assert agent.provider == "kimi-coding"
+        assert agent.model == "kimi-k2.6"
+        assert agent._anthropic_client is not None
+        assert agent.client is None
+        assert agent._client_kwargs == {}
 
     def test_fallback_to_openrouter_uses_openai_client(self, agent):
         agent._fallback_activated = False

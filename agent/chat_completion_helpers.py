@@ -1174,7 +1174,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
-        elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
+        elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic") or (
+            base_url_hostname(fb_base_url) == "api.kimi.com" and "/coding" in fb_base_url.lower()
+        ):
             fb_api_mode = "anthropic_messages"
         elif _fb_is_azure:
             # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT

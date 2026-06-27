@@ -356,8 +356,18 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         receipt_key: Optional[str],
     ) -> MessageEvent:
         message_id = receipt_key or f"sha1:{sha1(json.dumps(notification, sort_keys=True).encode('utf-8')).hexdigest()}"
+        subscription_id = str(notification.get("subscriptionId", "unknown")).strip() or "unknown"
+        resource_data = notification.get("resourceData") if isinstance(notification.get("resourceData"), dict) else {}
+        resource_id = str(resource_data.get("id") or "").strip()
+        normalized_resource = self._normalize_resource_value(str(notification.get("resource") or ""))
+        if resource_id:
+            resource_scope = resource_id
+        elif normalized_resource:
+            resource_scope = f"resource_{sha1(normalized_resource.encode('utf-8')).hexdigest()[:12]}"
+        else:
+            resource_scope = "unknown"
         source = self.build_source(
-            chat_id=f"msgraph:{notification.get('subscriptionId', 'unknown')}",
+            chat_id=f"msgraph:{subscription_id}:{resource_scope}",
             chat_name="msgraph/webhook",
             chat_type="webhook",
             user_id="msgraph",

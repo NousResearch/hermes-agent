@@ -2985,6 +2985,12 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+                # Index this message so reaction updates can look it up.
+                try:
+                    from gateway import rich_sent_store as _rss
+                    _rss.record(str(chat_id), str(msg.message_id), content)
+                except Exception:
+                    pass
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,

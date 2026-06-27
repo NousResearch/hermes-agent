@@ -887,23 +887,20 @@ def test_reap_unsupervised_orphans_returns_false_when_none_found(monkeypatch):
 
 
 def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch):
+    # Windows scan now goes through psutil first (no console spawn). A
+    # uppercase ``Hermes.EXE gateway run`` must still match case-insensitively.
+    import psutil
+
     monkeypatch.setattr(gateway, "is_windows", lambda: True)
     monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
-    monkeypatch.setattr(gateway.shutil, "which", lambda name: "wmic.exe" if name == "wmic" else None)
 
-    def fake_run(cmd, **kwargs):
-        if cmd[:4] == ["wmic.exe", "process", "get", "ProcessId,CommandLine"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout=(
-                    "CommandLine=C:\\Program Files\\Hermes\\Hermes.EXE gateway run --replace\n"
-                    "ProcessId=2468\n\n"
-                ),
-                stderr="",
-            )
-        raise AssertionError(f"Unexpected command: {cmd}")
-
-    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    proc = SimpleNamespace(
+        info={
+            "pid": 2468,
+            "cmdline": ["C:\\Program Files\\Hermes\\Hermes.EXE", "gateway", "run", "--replace"],
+        }
+    )
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: [proc])
 
     assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
 

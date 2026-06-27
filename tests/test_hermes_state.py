@@ -1662,6 +1662,14 @@ class TestCounts:
 # Delete and export
 # =========================================================================
 
+def _make_compression_lineage(db):
+    db.create_session(session_id="root", source="cli")
+    db.append_message("root", role="user", content="before compression")
+    db.end_session("root", end_reason="compression")
+    db.create_session(session_id="tip", source="cli", parent_session_id="root")
+    db.append_message("tip", role="user", content="after compression")
+
+
 class TestDeleteAndExport:
     def test_delete_session(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -1673,6 +1681,37 @@ class TestDeleteAndExport:
 
     def test_delete_nonexistent(self, db):
         assert db.delete_session("nope") is False
+
+    def test_delete_compression_tip_removes_projected_root(self, db):
+        _make_compression_lineage(db)
+        assert [
+            (s["id"], s.get("_lineage_root_id"))
+            for s in db.list_sessions_rich(min_message_count=1, order_by_last_active=True)
+        ] == [("tip", "root")]
+
+        assert db.delete_session("tip") is True
+
+        assert db.get_session("root") is None
+        assert db.get_session("tip") is None
+        assert db.list_sessions_rich(min_message_count=1, order_by_last_active=True) == []
+
+    def test_delete_compression_lineage_preserves_explicit_branch(self, db):
+        _make_compression_lineage(db)
+        db.create_session(
+            session_id="branch",
+            source="cli",
+            parent_session_id="root",
+            model_config={"_branched_from": "root"},
+        )
+        db.append_message("branch", role="user", content="branched work")
+
+        assert db.delete_session("tip") is True
+
+        assert db.get_session("root") is None
+        assert db.get_session("tip") is None
+        branch = db.get_session("branch")
+        assert branch is not None
+        assert branch["parent_session_id"] is None
 
     def test_resolve_session_id_exact(self, db):
         db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
@@ -1974,6 +2013,20 @@ class TestBulkDeleteSessions:
         assert deleted == 2
         assert not (tmp_path / "s1.jsonl").exists()
         assert not (tmp_path / "s2.json").exists()
+
+    def test_deleting_compression_tip_removes_projected_root(self, db):
+        _make_compression_lineage(db)
+        assert [
+            (s["id"], s.get("_lineage_root_id"))
+            for s in db.list_sessions_rich(min_message_count=1, order_by_last_active=True)
+        ] == [("tip", "root")]
+
+        deleted = db.delete_sessions(["tip"])
+
+        assert deleted == 1
+        assert db.get_session("root") is None
+        assert db.get_session("tip") is None
+        assert db.list_sessions_rich(min_message_count=1, order_by_last_active=True) == []
 
 
 class TestDeleteEmptySessions:

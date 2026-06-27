@@ -269,6 +269,14 @@ def _find_bash() -> str:
             if os.path.isfile(candidate):
                 return candidate
 
+    # Scoop-managed Git for Windows — checked before shutil.which to avoid
+    # WSL bash (linux ELF) being picked up from PATH on mixed installs.
+    _userprofile = os.environ.get("USERPROFILE", "")
+    if _userprofile:
+        _scoop_git = os.path.join(_userprofile, "scoop", "apps", "git", "current", "bin", "bash.exe")
+        if os.path.isfile(_scoop_git):
+            return _scoop_git
+
     found = shutil.which("bash")
     if found:
         return found

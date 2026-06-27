@@ -1337,6 +1337,70 @@ class ShellFileOperations(FileOperations):
         if _is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
+        # ── Windows absolute path shortcut ─────────────────────────────
+        # On Windows, bash subprocesses inherit a cwd that may not be able to
+        # resolve paths like C:/Users/... (MSYS/bash cwd mismatch).  For
+        # absolute Windows paths, use Python's native open() directly to
+        # bypass the bash cwd problem entirely.  This also means we can skip
+        # the mkdir/wc steps that would also fail without a valid bash cwd.
+        import platform as _platform
+        _IS_WINDOWS = _platform.system() == "Windows"
+        _WINDOWS_DRIVE_LETTER = re.match(r'^[A-Za-z]:[/\\]', path) is not None
+
+        if _IS_WINDOWS and _WINDOWS_DRIVE_LETTER:
+            # Use Python native I/O — bypasses bash cwd entirely
+            parent = os.path.dirname(path)
+            dirs_created = False
+            if parent and not os.path.isdir(parent):
+                try:
+                    os.makedirs(parent, exist_ok=True)
+                    dirs_created = True
+                except OSError as e:
+                    return WriteResult(error=f"Failed to create directory: {e}")
+
+            # Line-ending preservation (same logic as bash path)
+            ext = os.path.splitext(path)[1].lower()
+            pre_content: Optional[str] = None
+            want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
+            if want_pre and os.path.isfile(path):
+                try:
+                    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                        pre_content = f.read()
+                except OSError:
+                    pass
+
+            original_ending = self._detect_file_line_ending(path, pre_content)
+            if original_ending == "\r\n":
+                content = _normalize_line_endings(content, "\r\n")
+
+            self._snapshot_lsp_baseline(path)
+
+            try:
+                mode = 'w'
+                encoding_kw = {'encoding': 'utf-8', 'errors': 'replace'}
+                with open(path, mode, **encoding_kw) as fh:
+                    fh.write(content)
+            except OSError as e:
+                return WriteResult(error=f"Failed to write file: {e}")
+
+            bytes_written = len(content.encode('utf-8'))
+
+            # Post-write lint
+            lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
+            lsp_diagnostics: Optional[str] = None
+            if lint_result.success or lint_result.skipped:
+                block = self._maybe_lsp_diagnostics(path, pre_content=pre_content, post_content=content)
+                if block:
+                    lsp_diagnostics = block
+
+            return WriteResult(
+                bytes_written=bytes_written,
+                dirs_created=dirs_created,
+                lint=lint_result.to_dict() if lint_result else None,
+                lsp_diagnostics=lsp_diagnostics,
+            )
+        # ── End Windows absolute path shortcut ─────────────────────────
+
         # Capture pre-write content.  Two consumers want it:
         #
         #   1. The lint-delta layer (for in-process linters like ast.parse
@@ -1457,11 +1521,7 @@ class ShellFileOperations(FileOperations):
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
         )
-    
-    # =========================================================================
-    # PATCH Implementation (Replace Mode)
-    # =========================================================================
-    
+
     def patch_replace(self, path: str, old_string: str, new_string: str,
                       replace_all: bool = False) -> PatchResult:
         """

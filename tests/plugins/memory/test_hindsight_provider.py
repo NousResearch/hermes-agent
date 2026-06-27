@@ -443,6 +443,59 @@ class TestConfig:
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
 
+    def test_get_client_passes_daemonIdleTimeout_to_hindsight_embedded(self, monkeypatch):
+        """daemonIdleTimeout config key is wired through to HindsightEmbedded."""
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_api_key": "test-key",
+            "llm_model": "test-model",
+            "daemonIdleTimeout": 120,
+        }
+        p._llm_base_url = "http://localhost:8060/v1"
+
+        p._get_client()
+
+        assert captured["idle_timeout"] == 120
+
+    def test_get_client_idle_timeout_takes_precedence_over_daemonIdleTimeout(self, monkeypatch):
+        """When both idle_timeout and daemonIdleTimeout are set, idle_timeout wins."""
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_api_key": "test-key",
+            "llm_model": "test-model",
+            "idle_timeout": 0,
+            "daemonIdleTimeout": 120,
+        }
+        p._llm_base_url = "http://localhost:8060/v1"
+
+        p._get_client()
+
+        assert captured["idle_timeout"] == 0
+
 
 class TestPostSetup:
     def test_setup_cancel_at_mode_picker_writes_nothing(self, tmp_path, monkeypatch):

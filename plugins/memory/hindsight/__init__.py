@@ -1044,6 +1044,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 idle_timeout = _parse_int_setting(
                     self._config.get("idle_timeout")
                     if self._config.get("idle_timeout") is not None
+                    else self._config.get("daemonIdleTimeout")
+                    if self._config.get("daemonIdleTimeout") is not None
                     else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
                     _DEFAULT_IDLE_TIMEOUT,
                 )

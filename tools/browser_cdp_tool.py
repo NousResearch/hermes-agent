@@ -525,9 +525,9 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
 def _browser_cdp_check() -> bool:
     """Availability check for browser_cdp.
 
-    The tool is only offered when the Python side can actually reach a CDP
-    endpoint right now — meaning a static URL is set via ``/browser connect``
-    (``BROWSER_CDP_URL``) or ``browser.cdp_url`` in ``config.yaml``.
+    The tool is only offered when a static CDP override is configured via
+    ``/browser connect`` (``BROWSER_CDP_URL``) or ``browser.cdp_url`` in
+    ``config.yaml``.
 
     Backends that do *not* currently expose CDP to us — Camofox (REST-only),
     the default local agent-browser mode (Playwright hides its internal CDP
@@ -541,7 +541,7 @@ def _browser_cdp_check() -> bool:
     """
     try:
         from tools.browser_tool import (  # type: ignore[import-not-found]
-            _get_cdp_override,
+            _get_raw_cdp_override,
             check_browser_requirements,
         )
     except ImportError as exc:  # pragma: no cover — defensive
@@ -549,7 +549,7 @@ def _browser_cdp_check() -> bool:
         return False
     if not check_browser_requirements():
         return False
-    return bool(_get_cdp_override())
+    return bool(_get_raw_cdp_override())
 
 
 registry.register(

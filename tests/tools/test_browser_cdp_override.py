@@ -116,3 +116,23 @@ class TestGetCdpOverride:
 
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+
+
+class TestCdpAvailabilityChecks:
+    def test_check_browser_requirements_uses_raw_cdp_override_without_network_probe(self, monkeypatch):
+        import tools.browser_tool as browser_tool
+
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+
+        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"cdp_url": HTTP_URL}}), \
+             patch("tools.browser_tool.requests.get", side_effect=AssertionError("unexpected CDP probe")):
+            assert browser_tool.check_browser_requirements() is True
+
+    def test_browser_cdp_check_uses_raw_cdp_override_without_network_probe(self, monkeypatch):
+        from tools import browser_cdp_tool
+
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+
+        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"cdp_url": HTTP_URL}}), \
+             patch("tools.browser_tool.requests.get", side_effect=AssertionError("unexpected CDP probe")):
+            assert browser_cdp_tool._browser_cdp_check() is True

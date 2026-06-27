@@ -282,6 +282,31 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
+def _get_raw_cdp_override() -> str:
+    """Return the configured CDP override without network I/O.
+
+    Mirrors the env/config precedence of ``_get_cdp_override`` but leaves
+    discovery-style URLs untouched. Availability checks must stay side-effect
+    free so an unreachable or stale ``browser.cdp_url`` does not trigger CDP
+    probing during ordinary Hermes startup/tool selection.
+    """
+    env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
+    if env_override:
+        return env_override
+
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            return str(browser_cfg.get("cdp_url", "") or "").strip()
+    except Exception as e:
+        logger.debug("Could not read browser.cdp_url from config: %s", e)
+
+    return ""
+
+
 def _get_cdp_override() -> str:
     """Return a normalized CDP URL override, or empty string.
 
@@ -293,21 +318,10 @@ def _get_cdp_override() -> str:
     launcher and connect directly to the supplied Chrome DevTools Protocol
     endpoint.
     """
-    env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
-    if env_override:
-        return _resolve_cdp_override(env_override)
-
-    try:
-        from hermes_cli.config import read_raw_config
-
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {})
-        if isinstance(browser_cfg, dict):
-            return _resolve_cdp_override(str(browser_cfg.get("cdp_url", "") or ""))
-    except Exception as e:
-        logger.debug("Could not read browser.cdp_url from config: %s", e)
-
-    return ""
+    raw_override = _get_raw_cdp_override()
+    if not raw_override:
+        return ""
+    return _resolve_cdp_override(raw_override)
 
 
 def _get_dialog_policy_config() -> Tuple[str, float]:
@@ -3816,9 +3830,11 @@ def check_browser_requirements() -> bool:
     if _is_camofox_mode():
         return True
 
-    # CDP override mode can connect to an existing remote/local browser endpoint
-    # without requiring the local agent-browser binary on PATH.
-    if _get_cdp_override():
+    # A configured CDP override is enough to advertise the browser toolset.
+    # Do not resolve discovery endpoints here: tool availability checks run
+    # during ordinary startup/tool selection and must not trigger network I/O
+    # against stale browser.cdp_url values.
+    if _get_raw_cdp_override():
         return True
 
     # The agent-browser CLI is required for local launch and cloud-provider flows.

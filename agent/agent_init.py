@@ -765,7 +765,7 @@ def init_agent(
         )
         agent._client_kwargs = {}
         agent.api_key = api_key or "moa-virtual-provider"
-        agent.base_url = base_url or "moa://local"
+        agent.base_url = "moa://local"
         if not agent.quiet_mode:
             print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
     elif agent.api_mode == "bedrock_converse":

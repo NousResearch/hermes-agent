@@ -9982,7 +9982,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # fresh.
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
                                     if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
-                                        _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
+                                        _err = _redact_gateway_user_facing_secrets(
+                                            str(getattr(_comp, "_last_summary_error", None) or "unknown error")
+                                        )
+                                        if _looks_like_gateway_provider_error(_err):
+                                            _err = "provider error (see gateway logs)"
                                         _warn_msg = (
                                             "⚠️ Context compression aborted "
                                             f"({_err}). No messages were dropped — "
@@ -10008,7 +10012,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # silent recovery would hide it.
                                     elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
                                         _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
-                                        _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
+                                        _aux_err = _redact_gateway_user_facing_secrets(
+                                            str(getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error")
+                                        )
+                                        if _looks_like_gateway_provider_error(_aux_err):
+                                            _aux_err = "provider error (see gateway logs)"
                                         _aux_msg = (
                                             f"ℹ️ Configured compression model `{_aux_model}` "
                                             f"failed ({_aux_err}). Recovered using your main "
@@ -12001,9 +12009,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
             try:
+                _bg_err = _redact_gateway_user_facing_secrets(str(e))[:300]
+                if _looks_like_gateway_provider_error(_bg_err):
+                    _bg_err = "provider error (see gateway logs)"
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f"❌ Background task {task_id} failed: {e}",
+                    content=f"❌ Background task failed: {_bg_err}",
                     metadata=_thread_metadata,
                 )
             except Exception:

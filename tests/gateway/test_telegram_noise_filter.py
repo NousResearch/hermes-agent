@@ -4,7 +4,9 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run import (
+    _looks_like_gateway_provider_error,
     _prepare_gateway_status_message,
+    _redact_gateway_user_facing_secrets,
     _sanitize_gateway_final_response,
 )
 
@@ -190,3 +192,86 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+# -------------------------------------------------------------------
+# Compression / background-task error sanitization
+# -------------------------------------------------------------------
+# These tests verify that the error strings surfaced by the
+# compression-failure and background-task notification paths are
+# sanitized with the same redaction + provider-error rewrite used by
+# _sanitize_gateway_final_response — the sibling paths fixed alongside
+# PR #53316's chat-surface widening.
+# -------------------------------------------------------------------
+
+
+class TestCompressionErrorSanitization:
+    """Error strings interpolated into compression-failure chat messages
+    must be redacted and, when they look like provider errors, replaced
+    with a generic pointer to gateway logs."""
+
+    def test_redact_api_key_in_summary_error(self):
+        raw = (
+            "Error code: 401 - Incorrect API key provided: "
+            "sk-or-v1-abc123def456ghijklmnopqrst"
+        )
+        redacted = _redact_gateway_user_facing_secrets(raw)
+        assert "sk-or-v1-abc123def456ghijklmnopqrst" not in redacted
+        assert "[REDACTED]" in redacted
+
+    def test_redact_bearer_token_in_aux_error(self):
+        raw = "Authorization: Bearer sk-ABCDEF0123456789abcdef0123 failed"
+        redacted = _redact_gateway_user_facing_secrets(raw)
+        assert "sk-ABCDEF0123456789abcdef0123" not in redacted
+
+    def test_provider_error_replaced_with_generic(self):
+        raw = "API call failed after 3 retries: HTTP 401 Unauthorized"
+        redacted = _redact_gateway_user_facing_secrets(raw)
+        assert _looks_like_gateway_provider_error(redacted)
+
+    def test_benign_error_passes_through(self):
+        raw = "connection timed out after 30s"
+        redacted = _redact_gateway_user_facing_secrets(raw)
+        assert not _looks_like_gateway_provider_error(redacted)
+        assert redacted == raw
+
+    def test_redact_slack_token_in_error(self):
+        raw = "xoxb-1234567890-abcdefghij-ABCDEFGHIJKLMNOP failed"
+        redacted = _redact_gateway_user_facing_secrets(raw)
+        assert "xoxb-" not in redacted
+
+    def test_redact_github_token_in_error(self):
+        raw = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZab failed"
+        redacted = _redact_gateway_user_facing_secrets(raw)
+        assert "ghp_ABCDEF" not in redacted
+
+
+class TestBackgroundTaskErrorSanitization:
+    """The background-task failure path must redact secrets and replace
+    provider errors before sending to chat."""
+
+    def test_redact_api_key_in_bg_task_error(self):
+        raw = (
+            "Error code: 401 - {'error': {'message': "
+            "'Incorrect API key provided: sk-live_secret1234567890abcdef'}}"
+        )
+        redacted = _redact_gateway_user_facing_secrets(str(raw))[:300]
+        assert "sk-live_secret1234567890abcdef" not in redacted
+
+    def test_provider_error_body_replaced(self):
+        raw = "API call failed: HTTP 429 rate limited"
+        redacted = _redact_gateway_user_facing_secrets(str(raw))[:300]
+        assert _looks_like_gateway_provider_error(redacted)
+
+    def test_non_provider_error_preserved(self):
+        raw = "FileNotFoundError: /tmp/missing.txt"
+        redacted = _redact_gateway_user_facing_secrets(str(raw))[:300]
+        assert not _looks_like_gateway_provider_error(redacted)
+        assert redacted == raw
+
+    def test_redacts_before_truncating_boundary_split_secret(self):
+        secret = "sk-" + "A" * 20
+        raw = ("x" * 294) + " " + secret + " failed"
+        redacted = _redact_gateway_user_facing_secrets(str(raw))[:300]
+        assert "sk-" not in redacted
+        assert secret not in redacted

@@ -58,7 +58,7 @@ STANDARD_TIER_ID = "standard-tier"
 
 # Default HTTP headers matching gemini-cli's fingerprint.
 # Google may reject unrecognized User-Agents on these internal endpoints.
-_GEMINI_CLI_USER_AGENT = "grpc-go-connect/1.16.1"
+_GEMINI_CLI_USER_AGENT = "hermes-agent"  # honest client id (spoof proven unnecessary 2026-06-25)
 _USER_AGENT_GCLOUD = "gcloud-python/3.0.0"
 _DEFAULT_REQUEST_TIMEOUT = 30.0
 _ONBOARDING_POLL_ATTEMPTS = 12
@@ -133,8 +133,8 @@ def _build_headers(access_token: str, *, user_agent_model: str = "") -> Dict[str
 def _client_metadata() -> Dict[str, str]:
     """Match Google's gemini-cli exactly — unrecognized metadata may be rejected."""
     return {
-        "ideType": "ANTIGRAVITY",
-        "platform": "PLATFORM_MAC",
+        "ideType": "IDE_UNSPECIFIED",
+        "platform": "PLATFORM_UNSPECIFIED",
         "pluginType": "GEMINI",
         "clientVersion": "1.0.12",
     }

@@ -130,6 +130,27 @@ def _dm_message(text="hello", *, from_user_id=111):
     )
 
 
+def _channel_message(text="hello", *, chat_id=-1002, thread_id=None):
+    """A Telegram broadcast-channel post.
+
+    Channel posts arrive via ``update.channel_post`` and carry no
+    ``from_user`` — they are authored by the channel itself.
+    """
+    return SimpleNamespace(
+        message_id=44,
+        text=text,
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=thread_id,
+        is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="channel", title="Broadcast Channel", is_forum=False),
+        from_user=None,
+        reply_to_message=None,
+        date=None,
+    )
+
+
 def _mention_entity(text, mention="@hermes_bot"):
     offset = text.index(mention)
     return SimpleNamespace(type="mention", offset=offset, length=len(mention))
@@ -694,6 +715,27 @@ def test_missing_from_user_does_not_crash():
     anon = _group_message("channel post", chat_id=-100)
     anon.from_user = None
     assert adapter._should_process_message(anon) is True
+
+
+def test_channel_posts_run_the_same_allowlist_gate_as_groups():
+    """Broadcast-channel posts must honour ``allowed_chats`` like groups do.
+
+    A bot that is admin in a Telegram channel receives posts via
+    ``update.channel_post``. Those must run the same routing gates as group
+    messages: dropped when the channel is outside ``allowed_chats``, allowed
+    when inside. Previously ``_is_group_chat`` excluded ``"channel"``, so a
+    channel post hit the DM early-return in ``_should_process_message`` and was
+    processed unconditionally — bypassing ``allowed_chats``, ``require_mention``
+    and ``free_response_chats`` — which let the agent auto-reply in a broadcast
+    channel it was never authorized to speak in.
+    """
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-100"])
+
+    # Channel outside the allowlist → dropped (was wrongly processed before).
+    assert adapter._should_process_message(_channel_message("post", chat_id=-1001724887056)) is False
+    # Channel inside the allowlist → processed: the gate runs, channels are not
+    # blanket-dropped, just subject to the same allowlist as groups.
+    assert adapter._should_process_message(_channel_message("hello", chat_id=-100)) is True
 
 
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):

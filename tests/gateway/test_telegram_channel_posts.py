@@ -90,7 +90,13 @@ def telegram_adapter_cls(monkeypatch):
 
 
 def _make_adapter(telegram_adapter_cls):
-    a = telegram_adapter_cls(PlatformConfig(enabled=True, token="***", extra={}))
+    # Explicit empty allowlist/topics keeps these routing tests isolated from an
+    # ambient TELEGRAM_ALLOWED_CHATS/TELEGRAM_ALLOWED_TOPICS. Channel posts now
+    # run the same routing gates as groups, so a chat/topic allowlist leaking in
+    # from the environment would gate the test channel out before routing.
+    a = telegram_adapter_cls(
+        PlatformConfig(enabled=True, token="***", extra={"allowed_chats": [], "allowed_topics": []})
+    )
     # Channel posts have from_user=None.  After PR #28494's fail-closed
     # auth, the empty-allowlist adapter rejects all messages including
     # channel posts.  These tests focus on routing, not auth gating.

@@ -5695,7 +5695,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if not chat:
             return False
         chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
-        return chat_type in {"group", "supergroup"}
+        # "channel" belongs here despite the method name: callers gate on this to
+        # take the group path instead of the unrestricted-DM path. Without it,
+        # channel posts hit _should_process_message's DM early-return and skip
+        # every gate (allowed_chats, require_mention, …) — do not "clean it up".
+        return chat_type in {"group", "supergroup", "channel"}
 
     def _is_reply_to_bot(self, message: Message) -> bool:
         if not self._bot or not getattr(message, "reply_to_message", None):

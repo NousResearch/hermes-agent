@@ -446,22 +446,34 @@ def _handle_send(args):
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
-        # Mirror the sent message into the target's gateway session
+        # Mirror the sent message into the target's gateway session.
+        # Always surface mirror state to the caller (true OR false): the
+        # agent's next turn needs to know when its outbound landed without
+        # continuity backing so it can compensate (self-include context in
+        # the next message, choose another channel, etc.).
         if isinstance(result, dict) and result.get("success") and mirror_text:
             try:
                 from gateway.mirror import mirror_to_session
                 from gateway.session_context import get_session_env
                 source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
                 user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-                if mirror_to_session(
+                mirrored = mirror_to_session(
                     platform_name,
                     chat_id,
                     mirror_text,
                     source_label=source_label,
                     thread_id=thread_id,
                     user_id=user_id,
-                ):
-                    result["mirrored"] = True
+                )
+                result["mirrored"] = bool(mirrored)
+                if not mirrored:
+                    result["mirror_warning"] = (
+                        "Message delivered but NOT mirrored into the "
+                        "destination session (no matching session exists "
+                        "for this platform + chat_id). The recipient's "
+                        "next reply will reach the agent without context "
+                        "of this message."
+                    )
             except Exception:
                 pass
 

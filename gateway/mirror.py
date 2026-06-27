@@ -59,8 +59,17 @@ def mirror_to_session(
             user_id=user_id,
         )
         if not session_id:
-            logger.debug(
-                "Mirror: no session found for %s:%s:%s:%s",
+            # Bumped from debug to warning: silent loss of cross-channel
+            # continuity is a confusing failure mode for operators and agents.
+            # The mirror mechanism intentionally avoids creating sessions on
+            # outbound (see _find_session_id docstring), but the operator
+            # should be able to see in normal logs when an outbound landed
+            # without continuity backing.
+            logger.warning(
+                "Mirror: no session found for %s:%s:%s:%s — outbound "
+                "delivered but will not be reflected in destination "
+                "transcript. The recipient's next reply will lack context "
+                "about this message.",
                 platform,
                 chat_id,
                 thread_id,

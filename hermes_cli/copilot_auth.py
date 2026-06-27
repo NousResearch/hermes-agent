@@ -64,14 +64,44 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _source_suppressed(source: str) -> bool:
+    """Return True when the user has suppressed a Copilot credential source.
+
+    Reads the persisted suppression marker set by ``hermes auth remove copilot``
+    (or ``hermes auth remove copilot <N>``).  When the marker is present we
+    must not invoke the underlying reader — otherwise dashboard / status
+    probes can silently re-enable a source the user explicitly opted out of
+    (e.g. spawning ``gh auth token`` on Windows causes short-lived
+    ``gh.exe`` / ``tzutil.exe`` console flashes and focus stealing).
+    """
+    try:
+        from hermes_cli.auth import is_source_suppressed
+    except Exception:
+        return False
+    try:
+        return is_source_suppressed("copilot", source)
+    except Exception:
+        return False
+
+
 def resolve_copilot_token() -> tuple[str, str]:
     """Resolve a GitHub token suitable for Copilot API use.
 
     Returns (token, source) where source describes where the token came from.
     Raises ValueError if only a classic PAT is available.
+
+    Each candidate source is gated against ``is_source_suppressed`` so an
+    explicit ``hermes auth remove copilot <N>`` actually sticks — without
+    the gate, dashboard / status probes can re-invoke ``gh auth token``
+    every time, which on Windows spawns short-lived helper processes that
+    flash the console and steal focus.
     """
-    # 1. Check env vars in priority order
+    # 1. Check env vars in priority order.  Respect explicit removals from
+    # `hermes auth remove copilot <N>` so dashboard/status probes do not
+    # silently re-enable a Copilot env source after the user opted out.
     for env_var in COPILOT_ENV_VARS:
+        if _source_suppressed(f"env:{env_var}"):
+            continue
         val = os.getenv(env_var, "").strip()
         if val:
             valid, msg = validate_copilot_token(val)
@@ -82,7 +112,13 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
+    # 2. Fall back to `gh auth token` unless the user suppressed the
+    # gh_cli source.  This avoids repeated short-lived gh.exe / tzutil.exe
+    # console flashes on Windows for users who do not use the Copilot
+    # provider but have `gh` installed and authenticated for other work.
+    if _source_suppressed("gh_cli"):
+        return "", ""
+
     token = _try_gh_cli_token()
     if token:
         valid, msg = validate_copilot_token(token)

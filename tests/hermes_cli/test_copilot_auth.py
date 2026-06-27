@@ -107,6 +107,123 @@ class TestResolveToken:
         assert source == ""
 
 
+class TestSourceSuppression:
+    """Suppressed Copilot sources must be respected so removals actually stick.
+
+    On Windows, repeated `gh auth token` invocations from dashboard / status
+    probes can spawn short-lived `gh.exe` / `tzutil.exe` console windows that
+    flash and steal focus.  The fix: gate `resolve_copilot_token()` on the
+    persisted suppression marker so an explicit `hermes auth remove copilot`
+    suppresses the underlying reader, not just the pool entry.
+    """
+
+    def test_suppressed_env_var_is_skipped(self, monkeypatch, tmp_path):
+        """A suppressed env:GH_TOKEN must not be returned, even when set."""
+        from hermes_cli import copilot_auth
+
+        # Hermetic HERMES_HOME so is_source_suppressed reads from tmp_path
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+        from hermes_cli.auth import suppress_credential_source
+        suppress_credential_source("copilot", "env:GH_TOKEN")
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_copilot_first")
+        monkeypatch.setenv("GH_TOKEN", "gho_gh_should_be_ignored")
+        monkeypatch.setenv("GITHUB_TOKEN", "gho_github_third")
+
+        token, source = copilot_auth.resolve_copilot_token()
+        # Suppressed GH_TOKEN is skipped; COPILOT_GITHUB_TOKEN still wins.
+        assert token == "gho_copilot_first"
+        assert source == "COPILOT_GITHUB_TOKEN"
+
+    def test_suppressed_copilot_github_token_falls_through_to_unset_gh_token(self, monkeypatch, tmp_path):
+        """Suppressing COPILOT_GITHUB_TOKEN must not return it; next env var wins."""
+        from hermes_cli import copilot_auth
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+        from hermes_cli.auth import suppress_credential_source
+        suppress_credential_source("copilot", "env:COPILOT_GITHUB_TOKEN")
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_should_be_ignored")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setenv("GITHUB_TOKEN", "gho_github_third")
+
+        token, source = copilot_auth.resolve_copilot_token()
+        assert token == "gho_github_third"
+        assert source == "GITHUB_TOKEN"
+
+    def test_suppressed_gh_cli_skips_subprocess_invocation(self, monkeypatch, tmp_path):
+        """When gh_cli is suppressed, _try_gh_cli_token must NOT be called.
+
+        This is the load-bearing assertion: if a future change re-introduces
+        the unconditional `gh auth token` call, the subprocess will fire
+        even though the user removed the source.  Mocking with a
+        RuntimeError makes a stray invocation loudly fail the test.
+        """
+        from hermes_cli import copilot_auth
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+        from hermes_cli.auth import suppress_credential_source
+        suppress_credential_source("copilot", "gh_cli")
+
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        def _must_not_run(*args, **kwargs):
+            raise AssertionError(
+                "_try_gh_cli_token must not be invoked when gh_cli is suppressed"
+            )
+
+        with patch.object(copilot_auth, "_try_gh_cli_token", side_effect=_must_not_run):
+            token, source = copilot_auth.resolve_copilot_token()
+
+        assert token == ""
+        assert source == ""
+
+    def test_unsuppressed_gh_cli_still_falls_back(self, monkeypatch, tmp_path):
+        """When gh_cli is NOT suppressed, the fallback still works."""
+        from hermes_cli import copilot_auth
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        with patch.object(copilot_auth, "_try_gh_cli_token", return_value="gho_from_cli"):
+            token, source = copilot_auth.resolve_copilot_token()
+
+        assert token == "gho_from_cli"
+        assert source == "gh auth token"
+
+    def test_all_sources_suppressed_returns_empty(self, monkeypatch, tmp_path):
+        """Suppressing every Copilot source returns empty, no errors."""
+        from hermes_cli import copilot_auth
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+        from hermes_cli.auth import suppress_credential_source
+        for env_var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            suppress_credential_source("copilot", f"env:{env_var}")
+        suppress_credential_source("copilot", "gh_cli")
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_should_be_ignored")
+        monkeypatch.setenv("GH_TOKEN", "gho_should_be_ignored")
+        monkeypatch.setenv("GITHUB_TOKEN", "gho_should_be_ignored")
+
+        def _must_not_run(*args, **kwargs):
+            raise AssertionError("_try_gh_cli_token must not be invoked when suppressed")
+
+        with patch.object(copilot_auth, "_try_gh_cli_token", side_effect=_must_not_run):
+            token, source = copilot_auth.resolve_copilot_token()
+
+        assert token == ""
+        assert source == ""
+
+
 class TestRequestHeaders:
     """Copilot API header generation."""
 

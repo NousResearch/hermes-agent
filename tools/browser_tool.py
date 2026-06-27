@@ -2141,6 +2141,10 @@ def _run_browser_command(
             idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
             browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
 
+        chromium_executable = _get_chromium_executable()
+        if chromium_executable and "AGENT_BROWSER_EXECUTABLE_PATH" not in browser_env:
+            browser_env["AGENT_BROWSER_EXECUTABLE_PATH"] = chromium_executable
+
         # Inject --no-sandbox when needed (issue #15765):
         # - Running as root: Chromium always refuses to start without it
         # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
@@ -3675,7 +3679,7 @@ def cleanup_all_browsers() -> None:
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
-    global _cached_chromium_installed
+    global _cached_chromium_installed, _cached_chromium_executable
     global _cached_browser_engine, _browser_engine_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
@@ -3683,6 +3687,7 @@ def cleanup_all_browsers() -> None:
     _cached_command_timeout = None
     _command_timeout_resolved = False
     _cached_chromium_installed = None
+    _cached_chromium_executable = None
     _cached_browser_engine = None
     _browser_engine_resolved = False
 
@@ -3693,6 +3698,7 @@ def cleanup_all_browsers() -> None:
 
 # Cache for Chromium discovery. Invalidated by _reset_browser_caches.
 _cached_chromium_installed: Optional[bool] = None
+_cached_chromium_executable: Optional[str] = None
 
 
 def _chromium_search_roots() -> List[str]:
@@ -3742,14 +3748,16 @@ def _chromium_installed() -> bool:
     the tool behind this check prevents advertising a capability that will
     fail at runtime.
     """
-    global _cached_chromium_installed
+    global _cached_chromium_installed, _cached_chromium_executable
     if _cached_chromium_installed is not None:
         return _cached_chromium_installed
 
     # 1. AGENT_BROWSER_EXECUTABLE_PATH — explicit user-configured browser
     ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
     if ab_path:
-        if os.path.isfile(ab_path) or shutil.which(ab_path):
+        resolved = ab_path if os.path.isfile(ab_path) else shutil.which(ab_path)
+        if resolved:
+            _cached_chromium_executable = resolved
             _cached_chromium_installed = True
             return True
 
@@ -3761,6 +3769,7 @@ def _chromium_installed() -> bool:
         or shutil.which("chrome")
     )
     if system_chrome:
+        _cached_chromium_executable = system_chrome
         _cached_chromium_installed = True
         return True
 
@@ -3778,11 +3787,30 @@ def _chromium_installed() -> bool:
             if entry.startswith("chromium-") or entry.startswith(
                 "chromium_headless_shell-"
             ):
+                entry_path = os.path.join(root, entry)
+                for rel in (
+                    os.path.join("chrome-linux", "chrome"),
+                    os.path.join("chrome-linux", "headless_shell"),
+                    os.path.join("chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"),
+                    os.path.join("chrome-win", "chrome.exe"),
+                ):
+                    candidate = os.path.join(entry_path, rel)
+                    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                        _cached_chromium_executable = candidate
+                        _cached_chromium_installed = True
+                        return True
                 _cached_chromium_installed = True
                 return True
 
     _cached_chromium_installed = False
     return False
+
+
+def _get_chromium_executable() -> Optional[str]:
+    """Return the concrete Chrome/Chromium executable discovered by _chromium_installed."""
+    if _cached_chromium_installed is None:
+        _chromium_installed()
+    return _cached_chromium_executable
 
 
 def _running_in_docker() -> bool:

@@ -13417,6 +13417,12 @@ def _voice_record_key() -> str:
 _wake_lock = threading.Lock()
 _wake_active = False
 _wake_event_sid = ""
+# Transport captured at wake.start time. The detector callback fires on a
+# background thread where the request-scoped transport ContextVar is unset, so
+# write_json would fall back to stdio and the event would never cross the
+# desktop's websocket (#wake-detected-not-delivered). We pin the arming
+# request's transport here and bind it for the emit.
+_wake_transport: "Optional[Transport]" = None
 
 
 def _wake_is_active() -> bool:
@@ -13438,13 +13444,23 @@ def _wake_on_detect() -> None:
     """Detector-thread callback: tell the client to open a fresh voice session."""
     with _wake_lock:
         sid = _wake_event_sid
+        transport = _wake_transport
     try:
         from tools.wake_word import wake_phrase
         phrase = wake_phrase()
     except Exception:
         phrase = ""
-    logger.info("wake.detected: emitting to sid=%r", sid)
-    _emit("wake.detected", sid, {"phrase": phrase})
+    logger.info("wake.detected: emitting to sid=%r (transport=%s)",
+                sid, type(transport).__name__ if transport else None)
+    # Bind the arming request's transport so write_json reaches the right peer
+    # (WS for desktop/dashboard) instead of falling back to stdio on this
+    # background thread.
+    token = bind_transport(transport) if transport is not None else None
+    try:
+        _emit("wake.detected", sid, {"phrase": phrase})
+    finally:
+        if token is not None:
+            reset_transport(token)
 
 
 @method("wake.start")
@@ -13454,7 +13470,7 @@ def _(rid, params: dict) -> dict:
     Idempotent and gated: returns ``{started: False, reason}`` when the wake
     word is disabled, scoped to another surface, or its deps/mic aren't ready.
     """
-    global _wake_active, _wake_event_sid
+    global _wake_active, _wake_event_sid, _wake_transport
     surface = str(params.get("surface") or "auto").strip().lower()
     try:
         from tools.wake_word import (
@@ -13478,6 +13494,9 @@ def _(rid, params: dict) -> dict:
 
     with _wake_lock:
         _wake_event_sid = params.get("session_id") or _wake_event_sid
+        # Capture the live transport (WS for desktop) so the background detector
+        # thread can route wake.detected back to this client, not stdio.
+        _wake_transport = current_transport() or _wake_transport
     try:
         start_listening(_wake_on_detect, config=cfg)
     except Exception as e:

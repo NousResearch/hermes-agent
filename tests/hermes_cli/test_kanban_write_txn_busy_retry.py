@@ -54,6 +54,18 @@ def _no_file_check(monkeypatch):
     monkeypatch.setattr(kb, "_check_file_length_invariant", lambda conn: None)
 
 
+def test_retry_sleep_respects_floor(monkeypatch):
+    # The jitter has a floor so a retry can't busy-spin back into the collision.
+    slept = []
+    monkeypatch.setattr(kb.time, "sleep", lambda s: slept.append(s))
+    conn = _FakeConn({"BEGIN": [_busy(), _busy(), None]})
+    with kb.write_txn(conn):
+        pass
+    assert slept
+    assert all(s >= kb._BUSY_RETRY_MIN_S for s in slept)
+    assert all(s <= kb._BUSY_RETRY_MAX_S for s in slept)
+
+
 def test_transient_busy_at_begin_is_absorbed():
     conn = _FakeConn({"BEGIN": [_busy(), None]})
     with kb.write_txn(conn):
@@ -99,4 +111,13 @@ def test_clean_path_commits_once():
     with kb.write_txn(conn):
         pass
     assert conn.count("BEGIN") == 1
-    assert conn.count("COMMIT") == 1
+
+
+def test_persistent_busy_at_commit_rolls_back():
+    # Exhausted COMMIT leaves the txn open; write_txn must ROLLBACK before
+    # re-raising so the connection isn't poisoned for the next transaction.
+    conn = _FakeConn({"COMMIT": [_busy()] * 50})
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        with kb.write_txn(conn):
+            pass
+    assert conn.count("ROLLBACK") == 1

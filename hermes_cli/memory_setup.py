@@ -51,8 +51,13 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
-def _install_dependencies(provider_name: str) -> None:
-    """Install pip dependencies declared in plugin.yaml."""
+def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
+    """Install pip dependencies declared in ``plugin.yaml``.
+
+    When ``force`` is true, reinstall every declared dependency even if the
+    import is currently available. This lets ``hermes update`` refresh the
+    active memory provider's pinned bridge packages after a venv rebuild.
+    """
     import subprocess
     from plugins.memory import find_provider_dir
 
@@ -82,19 +87,22 @@ def _install_dependencies(provider_name: str) -> None:
         "hindsight-all": "hindsight",
     }
 
-    # Check which packages are missing
-    missing = []
+    # Check which packages need installation.
+    packages_to_install = []
     for dep in pip_deps:
         import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
+        if force:
+            packages_to_install.append(dep)
+            continue
         try:
             __import__(import_name)
         except ImportError:
-            missing.append(dep)
+            packages_to_install.append(dep)
 
-    if not missing:
+    if not packages_to_install:
         return
 
-    print(f"\n  Installing dependencies: {', '.join(missing)}")
+    print(f"\n  Installing dependencies: {', '.join(packages_to_install)}")
 
     import shutil
     uv_path = shutil.which("uv")
@@ -106,20 +114,20 @@ def _install_dependencies(provider_name: str) -> None:
 
     try:
         subprocess.run(
-            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
+            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + packages_to_install,
             check=True, timeout=120,
             capture_output=True,
         )
-        print(f"  ✓ Installed {', '.join(missing)}")
+        print(f"  ✓ Installed {', '.join(packages_to_install)}")
     except subprocess.CalledProcessError as e:
-        print(f"  ⚠ Failed to install {', '.join(missing)}")
+        print(f"  ⚠ Failed to install {', '.join(packages_to_install)}")
         stderr = (e.stderr or b"").decode()[:200]
         if stderr:
             print(f"    {stderr}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(packages_to_install)}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(packages_to_install)}")
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])

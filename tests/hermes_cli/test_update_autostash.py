@@ -387,6 +387,42 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     assert ".[all]" in install_cmds[0]
 
 
+def test_refresh_active_memory_provider_dependencies_reinstalls_active_provider(monkeypatch):
+    recorded = []
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"provider": "mem0"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.memory_setup._install_dependencies",
+        lambda provider_name, force=False: recorded.append((provider_name, force)),
+    )
+
+    hermes_main._refresh_active_memory_provider_dependencies()
+
+    assert recorded == [("mem0", True)]
+
+
+def test_cmd_update_refreshes_active_memory_provider_dependencies(monkeypatch, tmp_path):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    refresh_calls = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_refresh_active_memory_provider_dependencies",
+        lambda: refresh_calls.append("mem0"),
+    )
+
+    side_effect, _ = _make_update_side_effect()
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert refresh_calls == ["mem0"]
+
+
 def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
     """Termux update path should target .[termux-all] when requested."""
     calls = []

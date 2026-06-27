@@ -27,6 +27,21 @@ def test_config_defaults_and_clamping():
     assert ww.wake_phrase({}) == "hey jarvis"
 
 
+def test_wake_surface_enabled_gate():
+    # Disabled → never, regardless of surface.
+    assert ww.wake_surface_enabled("cli", {"enabled": False, "surface": "cli"}) is False
+    # auto → every surface.
+    for s in ("cli", "tui", "gui"):
+        assert ww.wake_surface_enabled(s, {"enabled": True, "surface": "auto"}) is True
+    # Pinned surface → only that one.
+    cfg = {"enabled": True, "surface": "tui"}
+    assert ww.wake_surface_enabled("tui", cfg) is True
+    assert ww.wake_surface_enabled("cli", cfg) is False
+    assert ww.wake_surface_enabled("gui", cfg) is False
+    # Missing/blank surface defaults to auto.
+    assert ww.wake_surface_enabled("gui", {"enabled": True}) is True
+
+
 def test_looks_like_path():
     assert ww._looks_like_path("models/hey_hermes.onnx")
     assert ww._looks_like_path("custom.ppn")

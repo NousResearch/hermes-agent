@@ -1556,12 +1556,8 @@ class ProcessRegistry:
     def has_active_processes(self, task_id: str) -> bool:
         """Check if there are active (running) processes for a task_id."""
         with self._lock:
-            sessions = list(self._running.values())
-
-        for session in sessions:
-            self._refresh_detached_session(session)
-
-        with self._lock:
+            for session in self._running.values():
+                self._refresh_detached_session(session)
             return any(
                 s.task_id == task_id and not s.exited
                 for s in self._running.values()
@@ -1570,12 +1566,8 @@ class ProcessRegistry:
     def has_active_for_session(self, session_key: str) -> bool:
         """Check if there are active processes for a gateway session key."""
         with self._lock:
-            sessions = list(self._running.values())
-
-        for session in sessions:
-            self._refresh_detached_session(session)
-
-        with self._lock:
+            for session in self._running.values():
+                self._refresh_detached_session(session)
             return any(
                 s.session_key == session_key and not s.exited
                 for s in self._running.values()

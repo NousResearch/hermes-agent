@@ -728,7 +728,7 @@ def _run_review_in_thread(
             review_whitelist = {
                 t["function"]["name"]
                 for t in get_tool_definitions(
-                    enabled_toolsets=["memory", "skills"],
+                    enabled_toolsets=["memory", "skills", "file_read"],
                     quiet_mode=True,
                 )
             }
@@ -736,7 +736,7 @@ def _run_review_in_thread(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Only memory/skill/read-only tools are allowed."
                 ),
             )
             try:
@@ -750,9 +750,10 @@ def _run_review_in_thread(
                 review_agent.run_conversation(
                     user_message=(
                         prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
-                        "at runtime — do not attempt them."
+                        + "\n\nYou can only call memory, skill management, "
+                        "and read-only file tools (read_file, search_files). "
+                        "Other tools will be denied at runtime — do not "
+                        "attempt them."
                     ),
                     conversation_history=_review_history,
                 )

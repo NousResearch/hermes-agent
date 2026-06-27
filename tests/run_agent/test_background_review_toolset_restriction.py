@@ -86,12 +86,12 @@ def test_background_review_matches_parent_toolset_config():
 
 
 def test_background_review_installs_thread_local_whitelist():
-    """The review fork must install a memory/skills-only thread-local whitelist.
+    """The review fork must install a memory/skills/read-only-file whitelist.
 
     The schema-level toolset narrowing was lifted (for prefix-cache parity),
     so #15204's safety contract now relies on the runtime whitelist gate to
     deny terminal/send_message/delegate_task at dispatch time. Verify the
-    whitelist is set with exactly the memory+skills tool names.
+    whitelist is set with exactly the memory+skills+file_read tool names.
     """
     import run_agent
     from hermes_cli import plugins as _plugins
@@ -127,16 +127,22 @@ def test_background_review_installs_thread_local_whitelist():
     assert "skill_manage" in whitelist
     assert "skill_view" in whitelist
     assert "skills_list" in whitelist
+    # read-only file tools must be allowed
+    assert "read_file" in whitelist
+    assert "search_files" in whitelist
     # dangerous tools must NOT be in the whitelist
     assert "terminal" not in whitelist
     assert "send_message" not in whitelist
     assert "delegate_task" not in whitelist
     assert "web_search" not in whitelist
     assert "execute_code" not in whitelist
+    # write file tools must NOT be in the whitelist
+    assert "write_file" not in whitelist
+    assert "patch" not in whitelist
 
 
 def test_background_review_agent_tools_are_limited():
-    """Verify the resolved memory+skills toolsets only contain memory and skill tools.
+    """Verify the resolved memory+skills+file_read toolsets contain only safe tools.
 
     Sanity check on the source of truth for what the runtime whitelist is
     derived from — if a future PR adds e.g. `terminal` to the `memory`
@@ -144,15 +150,19 @@ def test_background_review_agent_tools_are_limited():
     """
     from toolsets import resolve_multiple_toolsets
 
-    expected_tools = set(resolve_multiple_toolsets(["memory", "skills"]))
+    expected_tools = set(resolve_multiple_toolsets(["memory", "skills", "file_read"]))
 
     assert "memory" in expected_tools
     assert "skill_manage" in expected_tools
     assert "skill_view" in expected_tools
     assert "skills_list" in expected_tools
+    assert "read_file" in expected_tools
+    assert "search_files" in expected_tools
 
     assert "terminal" not in expected_tools
     assert "send_message" not in expected_tools
     assert "delegate_task" not in expected_tools
     assert "web_search" not in expected_tools
     assert "execute_code" not in expected_tools
+    assert "write_file" not in expected_tools
+    assert "patch" not in expected_tools

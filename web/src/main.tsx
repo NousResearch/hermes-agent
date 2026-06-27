@@ -12,6 +12,14 @@ import { HERMES_BASE_PATH } from "./lib/api";
 // can access React, components, etc. immediately.
 exposePluginSDK();
 
+// Register the PWA service worker (installable app + home-screen launch).
+if ("serviceWorker" in navigator) {
+  const base = HERMES_BASE_PATH || "";
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register(`${base}/sw.js`, { scope: `${base}/` }).catch(() => {});
+  });
+}
+
 createRoot(document.getElementById("root")!).render(
   <BrowserRouter basename={HERMES_BASE_PATH || undefined}>
     <I18nProvider>

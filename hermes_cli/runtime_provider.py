@@ -1236,6 +1236,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    import_codex_cli_on_missing: bool = False,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -1272,7 +1273,7 @@ def _resolve_explicit_runtime(
         api_key = explicit_api_key
         last_refresh = None
         if not api_key:
-            creds = resolve_codex_runtime_credentials()
+            creds = resolve_codex_runtime_credentials(import_cli_on_missing=import_codex_cli_on_missing)
             api_key = creds.get("api_key", "")
             last_refresh = creds.get("last_refresh")
             if not explicit_base_url:
@@ -1387,6 +1388,7 @@ def resolve_runtime_provider(
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
     target_model: Optional[str] = None,
+    import_codex_cli_on_missing: bool = False,
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution.
 
@@ -1456,6 +1458,7 @@ def resolve_runtime_provider(
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        import_codex_cli_on_missing=import_codex_cli_on_missing,
     )
     if explicit_runtime:
         return explicit_runtime
@@ -1560,7 +1563,7 @@ def resolve_runtime_provider(
 
     if provider == "openai-codex":
         try:
-            creds = resolve_codex_runtime_credentials()
+            creds = resolve_codex_runtime_credentials(import_cli_on_missing=import_codex_cli_on_missing)
             return {
                 "provider": "openai-codex",
                 "api_mode": "codex_responses",

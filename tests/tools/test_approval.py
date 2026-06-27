@@ -14,6 +14,7 @@ from tools.approval import (
     _get_approval_mode,
     _smart_approve,
     approve_session,
+    check_all_command_guards,
     detect_dangerous_command,
     is_approved,
     load_permanent,
@@ -44,6 +45,33 @@ class TestSmartApproval:
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
         assert mock_call.call_args.kwargs["max_tokens"] == 16
+
+    def test_smart_denied_gateway_restart_escalates_to_user_approval(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="DENY"))]
+        )
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "smart"}}), \
+             mock_patch("agent.auxiliary_client.call_llm", return_value=response), \
+             mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1", "HERMES_SESSION_KEY": "test_gateway_restart", "HERMES_CRON_SESSION": ""}, clear=False):
+            result = check_all_command_guards("hermes gateway restart", "local")
+
+        assert result["approved"] is False
+        assert result.get("status") == "approval_required"
+        assert "stop/restart hermes gateway" in result["description"]
+        assert "smart_denied" not in result
+
+    def test_smart_denied_non_lifecycle_command_stays_blocked(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="DENY"))]
+        )
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "smart"}}), \
+             mock_patch("agent.auxiliary_client.call_llm", return_value=response), \
+             mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1", "HERMES_SESSION_KEY": "test_rm", "HERMES_CRON_SESSION": ""}, clear=False):
+            result = check_all_command_guards("rm -rf /tmp/something", "local")
+
+        assert result["approved"] is False
+        assert result.get("smart_denied") is True
+        assert "approval_required" not in result
 
 
 class TestDetectDangerousRm:

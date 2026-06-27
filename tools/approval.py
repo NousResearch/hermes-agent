@@ -1268,6 +1268,28 @@ def _smart_approve(command: str, description: str) -> str:
         return "escalate"
 
 
+_SMART_DENY_MUST_ESCALATE_DESCRIPTIONS = {
+    "stop/restart hermes gateway (kills running agents)",
+}
+
+
+def _smart_deny_must_escalate_to_user(command: str, warnings: list) -> bool:
+    """Return True for dangerous-but-user-approvable actions.
+
+    Smart approvals are a convenience layer, not the final authority for
+    operator-owned lifecycle actions. Restarting the Hermes gateway kills the
+    current agent turn, so it must never be auto-approved, but when Rob asks for
+    it the correct behavior is to surface the normal `/approve` prompt instead
+    of letting the auxiliary reviewer hard-deny the command before Rob can
+    respond.
+    """
+    del command  # Reserved for narrower command-specific exceptions later.
+    return any(
+        (not is_tirith) and desc in _SMART_DENY_MUST_ESCALATE_DESCRIPTIONS
+        for _key, desc, is_tirith in warnings
+    )
+
+
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None) -> dict:
     """Check if a command is dangerous and handle approval.
@@ -1649,14 +1671,22 @@ def check_all_command_guards(command: str, env_type: str,
                     "smart_approved": True,
                     "description": combined_desc_for_llm}
         elif verdict == "deny":
-            combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
-            return {
-                "approved": False,
-                "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
-                           "The command was assessed as genuinely dangerous. Do NOT retry.",
-                "smart_denied": True,
-            }
-        # verdict == "escalate" → fall through to manual prompt
+            if _smart_deny_must_escalate_to_user(command, warnings):
+                logger.info(
+                    "Smart approval denied user-approvable lifecycle command; "
+                    "escalating to explicit approval. command=%r warnings=%r",
+                    command[:200], combined_desc_for_llm,
+                )
+            else:
+                combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+                return {
+                    "approved": False,
+                    "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
+                               "The command was assessed as genuinely dangerous. Do NOT retry.",
+                    "smart_denied": True,
+                }
+        # verdict == "escalate", or a user-approvable lifecycle denial above,
+        # falls through to manual/gateway approval.
 
     # --- Phase 3: Approval ---
 

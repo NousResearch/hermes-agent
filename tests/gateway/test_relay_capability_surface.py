@@ -22,7 +22,7 @@ from gateway.platforms.base import BasePlatformAdapter
 class _MinAdapter(BasePlatformAdapter):
     """Smallest concrete adapter: implements exactly the abstract methods."""
 
-    async def connect(self):  # pragma: no cover - not called
+    async def connect(self, *, is_reconnect: bool = False):  # pragma: no cover - not called
         return True
 
     async def disconnect(self):  # pragma: no cover - not called

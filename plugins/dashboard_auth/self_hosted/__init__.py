@@ -419,10 +419,26 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
     def _fetch_discovery(self) -> Dict[str, Any]:
         url = self._discovery_url()
         try:
+            # follow_redirects=True: many IDPs answer the discovery GET with a
+            # 3xx rather than a direct 200 — Authentik canonicalises the
+            # ``.well-known`` path, and any IDP behind a reverse proxy doing an
+            # http→https upgrade redirects too. httpx (unlike curl -L or the
+            # requests library) defaults to follow_redirects=False, so without
+            # this the redirect comes back as a bare 3xx with an empty body and
+            # the ``status != 200`` check below raises "discovery returned 302"
+            # → provider_unreachable → 503. Following the redirect is safe: the
+            # issuer-pin check and _require_https_or_loopback below still
+            # validate the *resolved* document and every endpoint in it, so a
+            # redirect to a hostile location can't smuggle in a bad issuer or a
+            # cleartext endpoint. (The token/revocation POSTs deliberately do
+            # NOT follow redirects — see _exchange — because they carry an auth
+            # code / refresh token and the endpoint is already the canonical
+            # absolute URL resolved here.)
             response = httpx.get(
                 url,
                 headers={"Accept": "application/json"},
                 timeout=_DISCOVERY_TIMEOUT_SEC,
+                follow_redirects=True,
             )
         except httpx.RequestError as exc:
             raise ProviderError(f"OIDC discovery unreachable: {exc}") from exc

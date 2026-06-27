@@ -20,6 +20,9 @@ export interface PetInfo {
   displayName?: string
   mime?: string
   spritesheetBase64?: string
+  // Stable sheet revision (`mtime_ns:size`) from the gateway; lets the desktop
+  // skip full sprite payload refreshes when the active pet hasn't changed.
+  spritesheetRevision?: string
   frameW?: number
   frameH?: number
   framesPerState?: number
@@ -27,6 +30,9 @@ export interface PetInfo {
   // canvas step only frames that exist instead of a fixed framesPerState, which
   // would animate into the transparent padding of ragged sheets (blank flash).
   framesByState?: Record<string, number>
+  // Concrete Codex row counts (e.g. running-right may have 8 frames even though
+  // the Hermes "run" activity state uses the in-place running row).
+  framesByRow?: Record<string, number>
   loopMs?: number
   scale?: number
   stateRows?: string[]
@@ -108,8 +114,7 @@ export const markPetUnread = () => $petUnread.set(true)
 export const clearPetUnread = () => $petUnread.set(false)
 
 /** Steady activity flags (toolRunning / reasoning) set + cleared by the stream. */
-export const setPetActivity = (next: Partial<PetActivity>) =>
-  $petActivity.set({ ...$petActivity.get(), ...next })
+export const setPetActivity = (next: Partial<PetActivity>) => $petActivity.set({ ...$petActivity.get(), ...next })
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -123,10 +128,7 @@ let flashTimer: ReturnType<typeof setTimeout> | undefined
 export const flashPetActivity = (next: Partial<PetActivity>, ms = 1600) => {
   setPetActivity({ celebrate: false, error: false, justCompleted: false, ...next })
   clearTimeout(flashTimer)
-  flashTimer = setTimeout(
-    () => setPetActivity({ celebrate: false, error: false, justCompleted: false }),
-    ms
-  )
+  flashTimer = setTimeout(() => setPetActivity({ celebrate: false, error: false, justCompleted: false }), ms)
 }
 
 export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
@@ -140,21 +142,18 @@ export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
  * mirrored to the pop-out overlay through the same atom, so both surfaces agree
  * without the overlay needing the session list.
  */
-export const $petState = computed(
-  [$petActivity, $busy],
-  (activity, busy): PetState => {
-    const live = activity.busy ?? busy
+export const $petState = computed([$petActivity, $busy], (activity, busy): PetState => {
+  const live = activity.busy ?? busy
 
-    return derivePetState({
-      busy: live,
-      awaitingInput: activity.awaitingInput,
-      // Steady flags only count mid-turn — ignore stale ones once at rest so an
-      // interrupted turn can't pin the pet on `run`/`review`.
-      toolRunning: live && activity.toolRunning,
-      reasoning: live && activity.reasoning,
-      error: activity.error,
-      justCompleted: activity.justCompleted,
-      celebrate: activity.celebrate
-    })
-  }
-)
+  return derivePetState({
+    busy: live,
+    awaitingInput: activity.awaitingInput,
+    // Steady flags only count mid-turn — ignore stale ones once at rest so an
+    // interrupted turn can't pin the pet on `run`/`review`.
+    toolRunning: live && activity.toolRunning,
+    reasoning: live && activity.reasoning,
+    error: activity.error,
+    justCompleted: activity.justCompleted,
+    celebrate: activity.celebrate
+  })
+})

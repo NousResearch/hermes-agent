@@ -18,7 +18,9 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
   useLayoutEffect(() => {
     const el = innerRef.current
 
-    if (!el) {return}
+    if (!el) {
+      return
+    }
 
     const measure = () => setOverflowing(el.scrollHeight > 121)
     measure()
@@ -30,10 +32,7 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
 
   return (
     <div className="relative">
-      <div
-        className={cn('overflow-y-auto', expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]', className)}
-        ref={innerRef}
-      >
+      <div className={cn('overflow-y-auto', expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]', className)} ref={innerRef}>
         {children}
       </div>
       {overflowing && (

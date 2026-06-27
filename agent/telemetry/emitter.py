@@ -59,6 +59,11 @@ _TABLE_COLUMNS: Dict[str, tuple] = {
          "model_call_count", "tool_call_count", "error_count",
          "estimated_cost_usd", "cost_status"),
     ),
+    "span": (
+        "tel_spans",
+        ("span_id", "trace_id", "run_id", "parent_span_id", "name", "kind",
+         "start_ns", "end_ns", "status"),
+    ),
     "model_call": (
         "tel_model_calls",
         ("span_id", "run_id", "provider", "model", "base_url",

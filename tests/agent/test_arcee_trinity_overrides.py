@@ -19,6 +19,7 @@ from agent.auxiliary_client import (
     _is_arcee_trinity_thinking,
     _is_codex_gpt55,
 )
+from agent.agent_init import _should_show_codex_gpt55_autoraise_notice_once
 
 
 @pytest.mark.parametrize(
@@ -157,3 +158,15 @@ def test_compression_threshold_opt_out_does_not_disable_trinity() -> None:
         )
         == 0.75
     )
+
+
+def test_codex_gpt55_autoraise_notice_marker_is_profile_scoped_and_once(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("agent.agent_init.get_hermes_home", lambda: tmp_path)
+
+    assert _should_show_codex_gpt55_autoraise_notice_once() is True
+    assert _should_show_codex_gpt55_autoraise_notice_once() is False
+    assert (
+        tmp_path / "state" / "notices" / "codex_gpt55_autoraise_v1"
+    ).exists()

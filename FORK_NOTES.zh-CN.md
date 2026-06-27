@@ -8,6 +8,7 @@
 
 | ID | 目标文件 | 做了什么 | 为什么需要 | 上游状态 |
 |---|---|---|---|---|
+| **P-025** | `hermes_cli/web_server.py` | `/api/providers/oauth` 现在：(1) 命中 20s 的按 profile 进程内 TTL 缓存；(2) 用 `asyncio.to_thread` 并发跑各 provider 的状态检查（移出 FastAPI 事件循环），不再串行内联；(3) 在每次连接/断开时失效缓存（断开的两条清理路径、PKCE submit、设备码/loopback 轮询到 `approved`）。另加 `refresh=true` 逃生阀。 | 桌面端模型页每次打开、以及每次窗口重新聚焦都会串行枚举所有 OAuth provider 的状态；部分检查会联网/起子进程，而该 handler 是 `async`，于是阻塞了同时服务聊天网关 WebSocket 的事件循环——模型页要等好几秒，还会拖累实时会话。 | 建议上游（通用响应性修复） |
 | **P-001** | `tui_gateway/server.py` | provider 配置 dict/list 不一致修复 | 早期 fork 需要兼容用户配置形态 | 已由上游修复，本 fork 不再携带 |
 | **P-002** | `hermes_cli/web_server.py` | 增加 `POST /api/upload` 附件上传接口 | desktop / web composer 拖拽上传依赖它 | 未进入上游 |
 | **P-003** | `hermes_cli/web_server.py` | 去掉 `/api/ws` 的 `_DASHBOARD_EMBEDDED_CHAT_ENABLED` 门禁 | desktop 以 headless dashboard 方式运行，不带 `--tui` 时仍需要 gateway WS | **基本被上游解决** —— v0.16.0(#38591)默认把该标志设为 `True` 并移除了 `--tui`；fork 仍保留 `/api/ws` 上的显式去门禁作为纵深防御 |

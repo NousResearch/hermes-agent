@@ -6,6 +6,7 @@ This document explains the fork-specific changes on `main` that diverge from ups
 
 | ID | Target file | What it does | Why we need it | Upstream status |
 |---|---|---|---|---|
+| **P-025** | `hermes_cli/web_server.py` | `/api/providers/oauth` now (1) serves from a 20s per-profile in-process TTL cache, (2) runs each provider's status check concurrently via `asyncio.to_thread` (OFF the FastAPI event loop) instead of serially inline, and (3) busts the cache on every connect/disconnect (disconnect clear paths, PKCE submit, device-code/loopback poll→`approved`). Adds a `refresh=true` escape hatch. | The desktop Models page enumerated every OAuth provider's status serially on every open AND every window refocus; some checks touch the network/subprocess, and because the handler is `async` they blocked the event loop that also serves the chat gateway WebSocket — so 模型页 took seconds to open and could stutter live chat. | Should be upstreamed (generic responsiveness fix) |
 | **P-002** | `hermes_cli/web_server.py` | Adds `POST /api/upload` for dashboard attachment uploads | v2 web composer's drag-to-upload depends on it; upstream had it once (`e7c3cd772`) then reverted | Not in upstream |
 | **P-003** | `hermes_cli/web_server.py` | Drops the `_DASHBOARD_EMBEDDED_CHAT_ENABLED` gate on `/api/ws` | v2 runs `hermes dashboard` without `--tui`, the gate would close gateway WS | **Largely addressed upstream** — v0.16.0 (#38591) defaults the flag to `True` and removes the dashboard `--tui` flag; fork keeps the explicit gate removal on `/api/ws` as defense-in-depth |
 | **P-004** | `hermes_cli/web_server.py` | Adds `GET /api/fs/list` for the v2 web workspace picker | v2 `/new` task page browses directories instead of `window.prompt()` for path; restricted to user home subtree | Not in upstream |
@@ -561,6 +562,27 @@ opening an upstream PR.
 - If an upstream caller intentionally passes an empty assistant message for some protocol reason, it will now be dropped unless it carries one of the recognized payloads.
 
 **Should we upstream?** Yes. The filter is provider-agnostic, guards against a real class of gateway rejections, and is covered by extensive tests.
+
+---
+
+### P-025: OAuth provider-status caching + concurrency (Models page responsiveness)
+
+**Symptom**: Opening the desktop **模型页 (Models page)** was very slow (multiple seconds of spinner), re-focusing the app re-triggered the slowness, and while it ran live chat streaming could also stutter.
+
+**Root cause**: `GET /api/providers/oauth` built the Accounts-tab list by iterating every OAuth-capable provider and calling its auth-status helper **serially**. A few helpers do real I/O (`httpx` calls, credential-store endpoint detection, `subprocess`). Two compounding problems:
+1. The desktop fetched this on every Models-page open and, via TanStack Query's `refetchOnWindowFocus`, on every window refocus — with no server-side cache.
+2. The handler is `async def` but the per-provider work is blocking, so it ran on the FastAPI event loop — the same loop that serves the `/api/ws` gateway WebSocket streaming chat. A slow enumeration therefore stalled chat too.
+
+**What the patch does** (`hermes_cli/web_server.py`):
+- Adds a small per-profile TTL cache (`_OAUTH_STATUS_CACHE`, 20s, lock-guarded) around the assembled `{"providers": [...]}` payload. Repeat opens / refocus refetches within the window are instant.
+- On a cache miss, resolves the profile's home as a context-local `set_hermes_home_override` (deliberately NOT the full `_profile_scope`, whose lock-protected skills-globals swap is unneeded here and unsafe to hold across the fan-out) and runs all `_resolve_provider_status` calls concurrently with `asyncio.gather(asyncio.to_thread(...))`. `asyncio.to_thread` copies the contextvar, so each worker resolves its auth store against the right profile, and the blocking work no longer touches the event loop. Wall-clock drops from sum-of-providers to ~slowest-provider.
+- Busts the cache on every state change: `DELETE /api/providers/oauth/{id}` (both clear paths), `POST .../submit` (PKCE), and `GET .../poll/...` when the session reaches `approved` (device-code / loopback). A `refresh=true` query param force-bypasses the cache.
+
+**Side effects**:
+- A connect/disconnect performed outside these endpoints (e.g. `hermes auth` in a terminal, or setting an API key via `/api/env`) is reflected after at most the 20s TTL rather than instantly.
+- Per-provider checks now run in parallel threads; each provider reads its own store, so there is no new cross-provider contention.
+
+**Should we upstream?** Yes — provider-agnostic responsiveness fix that also removes event-loop blocking from a hot dashboard endpoint.
 
 ---
 

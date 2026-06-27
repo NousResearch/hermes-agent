@@ -6181,8 +6181,47 @@ def _build_oauth_catalog() -> list[Dict[str, Any]]:
     return rows
 
 
+# ---------------------------------------------------------------------------
+# OAuth status cache (P-025) — keep the Models page (and the chat WebSocket)
+# responsive. Assembling the Accounts-tab list calls each provider's auth-status
+# helper serially, and a few touch the network/subprocess. The desktop Models
+# page fetched this on every open AND on every window refocus; because the
+# handler is ``async`` those blocking calls ran on the FastAPI event loop,
+# stalling the gateway WebSocket that streams chat. Cache the assembled payload
+# briefly per profile (the GET handler also runs the per-provider checks
+# concurrently, off the loop). Busted on any connect/disconnect.
+# ---------------------------------------------------------------------------
+_OAUTH_STATUS_TTL_SECONDS = 20.0
+_OAUTH_STATUS_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_OAUTH_STATUS_CACHE_LOCK = threading.Lock()
+
+
+def _oauth_cache_key(profile: Optional[str]) -> str:
+    requested = (profile or "").strip().lower()
+    return requested or "current"
+
+
+def _oauth_status_cache_get(key: str) -> Optional[List[Dict[str, Any]]]:
+    with _OAUTH_STATUS_CACHE_LOCK:
+        hit = _OAUTH_STATUS_CACHE.get(key)
+        if hit is not None and (time.monotonic() - hit[0]) < _OAUTH_STATUS_TTL_SECONDS:
+            return hit[1]
+    return None
+
+
+def _oauth_status_cache_put(key: str, providers: List[Dict[str, Any]]) -> None:
+    with _OAUTH_STATUS_CACHE_LOCK:
+        _OAUTH_STATUS_CACHE[key] = (time.monotonic(), providers)
+
+
+def _invalidate_oauth_status_cache() -> None:
+    """Drop cached OAuth status so the next GET reflects a connect/disconnect."""
+    with _OAUTH_STATUS_CACHE_LOCK:
+        _OAUTH_STATUS_CACHE.clear()
+
+
 @app.get("/api/providers/oauth")
-async def list_oauth_providers(profile: Optional[str] = None):
+async def list_oauth_providers(profile: Optional[str] = None, refresh: bool = False):
     """Enumerate every OAuth-capable LLM provider with current status.
 
     Response shape (per provider):
@@ -6205,23 +6244,62 @@ async def list_oauth_providers(profile: Optional[str] = None):
     sync with the `hermes model` picker; _OAUTH_OVERRIDES supplies per-provider
     flow/status/cli metadata.
     """
-    with _profile_scope(profile):
-        providers = []
-        for p in _build_oauth_catalog():
-            status = _resolve_provider_status(p["id"], p.get("status_fn"))
-            disconnect_hint = _oauth_provider_disconnect_hint(p, status)
-            providers.append({
-                "id": p["id"],
-                "name": p["name"],
-                "flow": p["flow"],
-                "cli_command": p["cli_command"],
-                "docs_url": p["docs_url"],
-                "disconnect_hint": disconnect_hint,
-                "disconnect_command": _oauth_provider_disconnect_command(p),
-                "disconnectable": disconnect_hint is None,
-                "status": status,
-            })
-        return {"providers": providers}
+    # The module-level TestClient app is shared across tests in a file, and each
+    # test gets its own HERMES_HOME tmpdir under the same "current" cache key — a
+    # persistent cache would leak one test's provider status into the next. Skip
+    # the cache under pytest; the cache helpers are unit-tested directly.
+    cache_enabled = not os.environ.get("PYTEST_CURRENT_TEST")
+    cache_key = _oauth_cache_key(profile)
+    if cache_enabled and not refresh:
+        cached = _oauth_status_cache_get(cache_key)
+        if cached is not None:
+            return {"providers": cached}
+
+    # Resolve the profile's home as a context-local override for this request.
+    # Deliberately NOT _profile_scope: its lock-protected skills-globals swap is
+    # unneeded for auth-status reads and unsafe to hold while we fan the
+    # per-provider checks out across threads. asyncio.to_thread copies this
+    # contextvar into each worker, so every provider resolves its auth store
+    # against the right profile while running OFF the event loop (these calls
+    # block on file/network/subprocess I/O — inline they stalled the chat WS).
+    requested = (profile or "").strip()
+    token = None
+    if requested and requested.lower() != "current":
+        from hermes_constants import set_hermes_home_override
+        token = set_hermes_home_override(str(_resolve_profile_dir(requested)))
+    try:
+        catalog = _build_oauth_catalog()
+        results = await asyncio.gather(
+            *(
+                asyncio.to_thread(_resolve_provider_status, p["id"], p.get("status_fn"))
+                for p in catalog
+            ),
+            return_exceptions=True,
+        )
+    finally:
+        if token is not None:
+            from hermes_constants import reset_hermes_home_override
+            reset_hermes_home_override(token)
+
+    providers = []
+    for p, status in zip(catalog, results):
+        if isinstance(status, BaseException):
+            status = {"logged_in": False, "error": str(status)}
+        disconnect_hint = _oauth_provider_disconnect_hint(p, status)
+        providers.append({
+            "id": p["id"],
+            "name": p["name"],
+            "flow": p["flow"],
+            "cli_command": p["cli_command"],
+            "docs_url": p["docs_url"],
+            "disconnect_hint": disconnect_hint,
+            "disconnect_command": _oauth_provider_disconnect_command(p),
+            "disconnectable": disconnect_hint is None,
+            "status": status,
+        })
+    if cache_enabled:
+        _oauth_status_cache_put(cache_key, providers)
+    return {"providers": providers}
 
 
 @app.delete("/api/providers/oauth/{provider_id}")
@@ -6277,6 +6355,7 @@ async def disconnect_oauth_provider(
             except Exception:
                 pass
             _log.info("oauth/disconnect: %s", provider_id)
+            _invalidate_oauth_status_cache()
             return {"ok": bool(cleared), "provider": provider_id}
 
         try:
@@ -6285,6 +6364,7 @@ async def disconnect_oauth_provider(
             if provider_id == "nous":
                 invalidate_nous_auth_status_cache()
             _log.info("oauth/disconnect: %s (cleared=%s)", provider_id, cleared)
+            _invalidate_oauth_status_cache()
             return {"ok": bool(cleared), "provider": provider_id}
         except Exception as e:
             _log.exception("disconnect %s failed", provider_id)
@@ -7296,9 +7376,11 @@ async def submit_oauth_code(
     """Submit the auth code for PKCE flows. Token-protected."""
     _require_token(request)
     if provider_id == "anthropic":
-        return await asyncio.get_running_loop().run_in_executor(
+        result = await asyncio.get_running_loop().run_in_executor(
             None, _submit_anthropic_pkce, body.session_id, body.code, profile,
         )
+        _invalidate_oauth_status_cache()
+        return result
     raise HTTPException(status_code=400, detail=f"submit not supported for {provider_id}")
 
 
@@ -7321,6 +7403,10 @@ async def poll_oauth_session(
         raise HTTPException(status_code=404, detail="Session not found or expired")
     if sess["provider"] != provider_id:
         raise HTTPException(status_code=400, detail="Provider mismatch for session")
+    if sess.get("status") == "approved":
+        # A device-code / loopback sign-in just completed in the background; drop
+        # the cached status so the UI's follow-up refetch shows it as connected.
+        _invalidate_oauth_status_cache()
     return {
         "session_id": session_id,
         "status": sess["status"],

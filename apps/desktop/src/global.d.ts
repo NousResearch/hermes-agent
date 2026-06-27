@@ -80,12 +80,12 @@ declare global {
       // List open top-level windows on the desktop (via the hermes-eats-world
       // sidecar). Powers the composer's "attach app/window" picker.
       listWindows: () => Promise<HermesWindowInfo[]>
-      // Capture a window (by title) as a base64 PNG data URL, or null if it
+      // Capture a window (by exact hwnd) as a base64 PNG data URL, or null if it
       // can't be captured. Powers the live preview panel.
-      captureWindow: (title: string) => Promise<string | null>
-      // Dock mode: tile the named app on the left and snap Hermes to a narrow
-      // panel on the right. undockWindow restores Hermes's prior geometry.
-      dockToWindow: (title: string) => Promise<{ ok: boolean; error?: string }>
+      captureWindow: (hwnd: number) => Promise<string | null>
+      // Dock mode: tile the window (by exact hwnd) on the left and snap Hermes
+      // to a narrow panel on the right. undockWindow restores prior geometry.
+      dockToWindow: (hwnd: number) => Promise<{ ok: boolean; error?: string }>
       undockWindow: () => Promise<{ ok: boolean }>
 
       writeClipboard: (text: string) => Promise<boolean>
@@ -795,6 +795,9 @@ export interface HermesWindowInfo {
   class_name: string
   automation_id: string
   pid: number
+  /** Native window handle — the precise, unambiguous selector used for capture
+   *  and dock so we never act on a wrong same-titled window. */
+  hwnd: number | null
   bounding_box: { left: number; top: number; width: number; height: number } | null
   is_enabled: boolean
 }

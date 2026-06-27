@@ -34,6 +34,11 @@ import { WindowPickerDialog } from './window-picker'
 
 const SNIPPET_KEYS = ['codeReview', 'implementationPlan', 'explainThis']
 
+// The attach-app/window feature is backed by the Windows-only hermes-eats-world
+// sidecar (uiautomation / SetWindowPos). Hide it elsewhere so macOS/Linux users
+// don't get a menu item that always errors.
+const IS_WINDOWS = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '')
+
 export function ContextMenu({
   state,
   onInsertText,
@@ -97,13 +102,15 @@ export function ContextMenu({
           <ContextMenuItem icon={Link} onSelect={onOpenUrlDialog}>
             {c.url}
           </ContextMenuItem>
-          <ContextMenuItem
-            disabled={!onPickWindow}
-            icon={AppWindow}
-            onSelect={onPickWindow ? () => setWindowsOpen(true) : undefined}
-          >
-            {c.attachApp}
-          </ContextMenuItem>
+          {IS_WINDOWS && (
+            <ContextMenuItem
+              disabled={!onPickWindow}
+              icon={AppWindow}
+              onSelect={onPickWindow ? () => setWindowsOpen(true) : undefined}
+            >
+              {c.attachApp}
+            </ContextMenuItem>
+          )}
 
           <DropdownMenuSeparator />
 

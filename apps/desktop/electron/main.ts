@@ -8109,9 +8109,9 @@ ipcMain.handle('hermes:listWindows', async () => {
   return Array.isArray(parsed?.windows) ? parsed.windows : []
 })
 
-ipcMain.handle('hermes:captureWindow', async (_event, title) => {
-  const target = String(title || '').trim()
-  if (!target) return null
+ipcMain.handle('hermes:captureWindow', async (_event, hwnd) => {
+  const handle = Number(hwnd)
+  if (!Number.isInteger(handle) || handle <= 0) return null
 
   const python = getNoConsoleVenvPython(VENV_ROOT)
   if (!fileExists(python) || !directoryExists(SIDECAR_DIR)) {
@@ -8132,7 +8132,7 @@ ipcMain.handle('hermes:captureWindow', async (_event, title) => {
     const stdout = await new Promise((resolve, reject) => {
       execFile(
         python,
-        ['-m', 'sidecar.service', '--target', target, '--capture', '--json'],
+        ['-m', 'sidecar.service', '--hwnd', String(handle), '--capture', '--json'],
         { cwd: SIDECAR_DIR, env, timeout: 15000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
         (err, out) => (err ? reject(err) : resolve(String(out || '')))
       )
@@ -8150,9 +8150,9 @@ ipcMain.handle('hermes:captureWindow', async (_event, title) => {
 // undock can restore it.
 let dockPrevBounds = null
 
-ipcMain.handle('hermes:dockToWindow', async (_event, title) => {
-  const target = String(title || '').trim()
-  if (!target || !mainWindow) return { ok: false, error: 'no target' }
+ipcMain.handle('hermes:dockToWindow', async (_event, hwnd) => {
+  const handle = Number(hwnd)
+  if (!Number.isInteger(handle) || handle <= 0 || !mainWindow) return { ok: false, error: 'no target' }
 
   const python = getNoConsoleVenvPython(VENV_ROOT)
   if (!fileExists(python) || !directoryExists(SIDECAR_DIR)) {
@@ -8182,7 +8182,7 @@ ipcMain.handle('hermes:dockToWindow', async (_event, title) => {
     await new Promise((resolve, reject) => {
       execFile(
         python,
-        ['-m', 'sidecar.service', '--target', target, '--move', phys, '--json'],
+        ['-m', 'sidecar.service', '--hwnd', String(handle), '--move', phys, '--json'],
         { cwd: SIDECAR_DIR, env, timeout: 15000, windowsHide: true },
         (err, out) => (err ? reject(err) : resolve(String(out || '')))
       )

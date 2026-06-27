@@ -13,6 +13,9 @@ export interface ComposerAttachment {
   /** For 'window' attachments: the target window's owning process id, so the
    * backend can disambiguate when several windows share a title. */
   pid?: number
+  /** For 'window' attachments: the exact native window handle. The precise
+   * selector for capture/dock so we never act on a wrong same-titled window. */
+  hwnd?: number
   attachedSessionId?: string
   /** Set while the file/image bytes are being staged into the session
    * workspace (remote upload or local stage), and 'error' if that failed.

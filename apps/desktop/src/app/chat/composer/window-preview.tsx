@@ -9,17 +9,23 @@ import type { ComposerAttachment } from '@/store/composer'
 import { $dockedWindow } from '@/store/dock'
 
 const POLL_INTERVAL_MS = 1500
+const POLL_MAX_INTERVAL_MS = 15000
 
 /**
  * Live preview of an attached desktop window. Polls the sidecar
  * (hermesDesktop.captureWindow) on an interval and renders the latest frame, so
- * the user can watch the agent drive the window without leaving Hermes. Polling
- * chains via setTimeout (not setInterval) so a slow capture never overlaps.
+ * the user can watch the agent drive the window without leaving Hermes.
+ *
+ * Each poll spawns a sidecar capture, so cost matters: polling chains via
+ * setTimeout (a slow capture never overlaps), PAUSES while the document is
+ * hidden (no work for a backgrounded window), and BACKS OFF exponentially on
+ * failure so a closed/missing target isn't hammered every 1.5s.
  */
 export function WindowPreview({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove?: (id: string) => void }) {
   const { t } = useI18n()
   const c = t.composer
   const title = attachment.label
+  const hwnd = attachment.hwnd
   const [frame, setFrame] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const aliveRef = useRef(true)
@@ -28,17 +34,32 @@ export function WindowPreview({ attachment, onRemove }: { attachment: ComposerAt
     aliveRef.current = true
     const capture = window.hermesDesktop?.captureWindow
 
-    if (!capture) {
+    if (!capture || !hwnd) {
       setFailed(true)
 
       return
     }
 
     let timer: ReturnType<typeof setTimeout> | undefined
+    let delay = POLL_INTERVAL_MS
+
+    const schedule = () => {
+      if (aliveRef.current) {
+        timer = setTimeout(() => void tick(), delay)
+      }
+    }
 
     const tick = async () => {
+      // Don't spend a sidecar process on a backgrounded window — recheck cheaply.
+      if (typeof document !== 'undefined' && document.hidden) {
+        delay = POLL_INTERVAL_MS
+        schedule()
+
+        return
+      }
+
       try {
-        const img = await capture(title)
+        const img = await capture(hwnd)
 
         if (!aliveRef.current) {
           return
@@ -47,17 +68,18 @@ export function WindowPreview({ attachment, onRemove }: { attachment: ComposerAt
         if (img) {
           setFrame(img)
           setFailed(false)
+          delay = POLL_INTERVAL_MS
         } else {
           setFailed(true)
+          delay = Math.min(delay * 2, POLL_MAX_INTERVAL_MS)
         }
       } catch {
         if (aliveRef.current) {
           setFailed(true)
+          delay = Math.min(delay * 2, POLL_MAX_INTERVAL_MS)
         }
       } finally {
-        if (aliveRef.current) {
-          timer = setTimeout(() => void tick(), POLL_INTERVAL_MS)
-        }
+        schedule()
       }
     }
 
@@ -70,7 +92,7 @@ export function WindowPreview({ attachment, onRemove }: { attachment: ComposerAt
         clearTimeout(timer)
       }
     }
-  }, [title])
+  }, [hwnd])
 
   return (
     <div className="relative mx-1 mt-1 overflow-hidden rounded-xl border border-border/60 bg-background/40">

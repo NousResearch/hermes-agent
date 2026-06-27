@@ -7,15 +7,16 @@ import { atom } from 'nanostores'
  */
 export const $dockedWindow = atom<string | null>(null)
 
-/** Tile the app and snap Hermes beside it. Returns true on success. */
-export async function dockWindow(title: string): Promise<boolean> {
+/** Tile the app (by exact hwnd) and snap Hermes beside it. The title is only
+ * used for the "Controlling <title>" banner. Returns true on success. */
+export async function dockWindow(hwnd: number | null | undefined, title: string): Promise<boolean> {
   const dock = window.hermesDesktop?.dockToWindow
 
-  if (!dock) {
+  if (!dock || !hwnd) {
     return false
   }
 
-  const result = await dock(title).catch(() => ({ ok: false }))
+  const result = await dock(hwnd).catch(() => ({ ok: false }))
 
   if (result?.ok) {
     $dockedWindow.set(title)

@@ -14,7 +14,7 @@ import {
   removeComposerAttachment,
   setComposerTerminalSelection
 } from '@/store/composer'
-import { dockWindow } from '@/store/dock'
+import { $dockedWindow, dockWindow, undockWindow } from '@/store/dock'
 import { notify, notifyError } from '@/store/notifications'
 
 import type { ImageDetachResponse } from '../../types'
@@ -609,20 +609,28 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     const refText = `@window:${formatRefValue(title)}`
 
     attachToMain({
-      id: attachmentId('window', `${refText}#${win.pid}`),
+      id: attachmentId('window', `${refText}#${win.hwnd ?? win.pid}`),
       kind: 'window',
       label: title,
       detail: win.class_name ? `${win.class_name} · PID ${win.pid}` : `PID ${win.pid}`,
       refText,
-      pid: win.pid
+      pid: win.pid,
+      hwnd: win.hwnd ?? undefined
     })
 
-    void dockWindow(title)
+    void dockWindow(win.hwnd, title)
   }, [])
 
   const removeAttachment = useCallback(
     async (id: string) => {
       const removed = removeComposerAttachment(id)
+
+      // Removing the docked window's chip is the natural "stop controlling it"
+      // gesture — undock so the user isn't stranded in the narrow panel with a
+      // stale banner.
+      if (removed?.kind === 'window' && $dockedWindow.get() === removed.label) {
+        void undockWindow()
+      }
 
       if (
         removed?.kind === 'image' &&

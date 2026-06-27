@@ -13445,19 +13445,22 @@ def _wake_on_detect() -> None:
     with _wake_lock:
         sid = _wake_event_sid
         transport = _wake_transport
+    phrase, new_session = "", True
     try:
-        from tools.wake_word import wake_phrase
-        phrase = wake_phrase()
+        from tools.wake_word import load_wake_word_config, wake_phrase
+        cfg = load_wake_word_config()
+        phrase = wake_phrase(cfg)
+        new_session = bool(cfg.get("start_new_session", True))
     except Exception:
-        phrase = ""
+        pass
     logger.info("wake.detected: emitting to sid=%r (transport=%s)",
                 sid, type(transport).__name__ if transport else None)
     # Bind the arming request's transport so write_json reaches the right peer
     # (WS for desktop/dashboard) instead of falling back to stdio on this
-    # background thread.
+    # background thread. Carry start_new_session so every surface honors it.
     token = bind_transport(transport) if transport is not None else None
     try:
-        _emit("wake.detected", sid, {"phrase": phrase})
+        _emit("wake.detected", sid, {"phrase": phrase, "start_new_session": new_session})
     finally:
         if token is not None:
             reset_transport(token)

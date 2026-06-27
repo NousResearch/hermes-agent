@@ -637,10 +637,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'wake.detected': {
-        // "Hey Hermes": open a fresh session, then arm voice capture so the
-        // user can speak their request hands-free. Mirrors the CLI flow.
+        // "Hey Hermes": optionally open a fresh session (start_new_session),
+        // then arm voice capture so the user can speak hands-free. Mirrors CLI.
         void (async () => {
-          await newSession()
+          if (ev.payload?.start_new_session !== false) {
+            await newSession()
+          }
           const sid = getUiState().sid
           if (!sid) {
             return

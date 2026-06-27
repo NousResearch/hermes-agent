@@ -160,6 +160,7 @@ from hermes_cli.cli_output import (  # noqa: E402
     print_warning,
 )
 from hermes_cli.secret_prompt import masked_secret_prompt  # noqa: E402
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 
 def is_interactive_stdin() -> bool:
@@ -805,11 +806,11 @@ def _install_neutts_deps() -> bool:
         if prompt_yes_no("Install espeak-ng now?", True):
             try:
                 if sys.platform == "darwin":
-                    subprocess.run(["brew", "install", "espeak-ng"], check=True)
+                    subprocess.run(["brew", "install", "espeak-ng"], check=True, creationflags=windows_hide_flags())
                 elif sys.platform == "win32":
-                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True)
+                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True, creationflags=windows_hide_flags())
                 else:
-                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True)
+                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True, creationflags=windows_hide_flags())
                 print_success("espeak-ng installed")
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 print_warning(f"Could not install espeak-ng automatically: {e}")
@@ -827,6 +828,7 @@ def _install_neutts_deps() -> bool:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-U", "neutts[all]", "--quiet"],
             check=True, timeout=300,
+            creationflags=windows_hide_flags(),
         )
         print_success("neutts installed successfully")
         return True
@@ -852,6 +854,7 @@ def _install_kittentts_deps() -> bool:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-U", wheel_url, "soundfile", "--quiet"],
             check=True, timeout=300,
+            creationflags=windows_hide_flags(),
         )
         print_success("kittentts installed successfully")
         return True

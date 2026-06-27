@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 # Platforms with a cua-driver runtime backend (mirrors the toolset platform_gate).
 _RUNTIME_PLATFORMS = frozenset({"darwin", "win32", "linux"})
@@ -180,6 +181,7 @@ def request_permissions_grant(driver_cmd: Optional[str] = None) -> int:
                 [binary, "permissions", "grant"],
                 env=_child_env(),
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             ).returncode
         )
     except KeyboardInterrupt:  # pragma: no cover - interactive

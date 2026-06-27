@@ -41,6 +41,7 @@ from hermes_cli.config import (
     save_env_value,
 )
 from hermes_cli.cli_output import prompt as _prompt_input
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 _MANIFEST_VERSION = 1
 
@@ -364,7 +365,7 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """
     for cmd in commands:
         print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        proc = subprocess.run(cmd, cwd=str(cwd), shell=True, creationflags=windows_hide_flags())
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {cmd}"
@@ -399,6 +400,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     if not is_sha_ref:
         proc = subprocess.run(
             [git, "clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)],
+            creationflags=windows_hide_flags(),
         )
         if proc.returncode == 0:
             pass
@@ -410,10 +412,10 @@ def _do_git_install(entry: CatalogEntry) -> Path:
             is_sha_ref = True  # treat the same as a SHA ref from here
 
     if is_sha_ref:
-        proc = subprocess.run([git, "clone", install.url, str(dest)])
+        proc = subprocess.run([git, "clone", install.url, str(dest)], creationflags=windows_hide_flags())
         if proc.returncode != 0:
             raise CatalogError(f"git clone failed for {install.url}")
-        proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref])
+        proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref], creationflags=windows_hide_flags())
         if proc.returncode != 0:
             raise CatalogError(f"git checkout {install.ref} failed")
 

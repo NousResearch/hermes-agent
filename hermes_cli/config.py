@@ -7019,7 +7019,7 @@ def edit_config():
         return
     
     print(f"Opening {config_path} in {editor}...")
-    subprocess.run([editor, str(config_path)])
+    subprocess.run([editor, str(config_path)])  # windows-footgun: ok — $EDITOR launch is interactive/foreground
 
 
 def set_config_value(key: str, value: str):

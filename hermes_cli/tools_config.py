@@ -228,6 +228,7 @@ def _checklist_toolset_keys(platform: str) -> Set[str]:
 # module shares the same data.  Kept as dict-of-dicts for backward
 # compatibility with existing ``PLATFORMS[key]["label"]`` access patterns.
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 PLATFORMS = {
     k: {"label": info.label, "default_toolset": info.default_toolset}
@@ -886,7 +887,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         # debuggable. Verbose installs (interactive `computer-use install`)
         # keep streaming live.
         if verbose:
-            result = subprocess.run(install_cmd, shell=use_shell, timeout=300, env=_cua_driver_env())
+            result = subprocess.run(install_cmd, shell=use_shell, timeout=300, env=_cua_driver_env(), creationflags=windows_hide_flags())
         else:
             result = subprocess.run(
                 install_cmd, shell=use_shell, timeout=300, env=_cua_driver_env(),

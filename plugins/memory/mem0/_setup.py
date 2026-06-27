@@ -522,7 +522,8 @@ def _ensure_ollama(models: list[str]) -> bool:
             print(f"  Pulling '{model}'... (this may take a few minutes)")
             try:
                 subprocess.run([ollama_bin or "ollama", "pull", model], timeout=600,
-                               stdin=subprocess.DEVNULL)
+                               stdin=subprocess.DEVNULL,
+                               creationflags=windows_hide_flags())
                 print(f"  ✓ Model '{model}' pulled")
             except Exception as e:
                 print(f"  Warning: Could not pull '{model}': {e}")

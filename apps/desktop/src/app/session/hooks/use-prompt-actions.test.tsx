@@ -428,7 +428,7 @@ describe('usePromptActions /compress', () => {
 
     await submitted
 
-    expect(requestGateway).toHaveBeenCalledWith('session.compress', { session_id: RUNTIME_SESSION_ID }, 120_000)
+    expect(requestGateway).toHaveBeenCalledWith('session.compress', { session_id: RUNTIME_SESSION_ID }, 0)
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
     const rendered = renderedTextFrom(states)
@@ -474,7 +474,7 @@ describe('usePromptActions /compress', () => {
         focus_topic: 'the auth refactor',
         session_id: RUNTIME_SESSION_ID
       },
-      120_000
+      0
     )
   })
 

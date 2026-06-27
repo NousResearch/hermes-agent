@@ -230,7 +230,9 @@ type GatewayRequest = <T>(
   signal?: AbortSignal
 ) => Promise<T>
 
-const SESSION_COMPRESS_TIMEOUT_MS = 120_000
+// Compression can exceed the default JSON-RPC timeout for large contexts;
+// 0 disables the client timer so the backend can return its final transcript.
+const SESSION_COMPRESS_TIMEOUT_MS = 0
 
 /**
  * Stage one file/image attachment into the session workspace and return the

@@ -294,6 +294,31 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 # Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
 
+# Model name substrings that, in addition to the tier-1 tool-use enforcement
+# block, also receive the longer OPENAI_MODEL_EXECUTION_GUIDANCE block (tool
+# persistence, mandatory tool use, prerequisite checks, verification,
+# anti-hallucination).
+#
+# History: started as a hard-coded {gpt, codex} substring check in
+# system_prompt.py.  PR #27797 extended it to {grok} after observing that
+# xAI Grok / xai-oauth models exhibit the same failure modes — claiming
+# completion without tool calls, suggesting workarounds instead of using
+# existing tools.
+#
+# Local-model users running Qwen, DeepSeek, or GLM via oMLX / LM Studio /
+# OpenRouter hit the same failure modes (e.g. skipping later phases of a
+# multi-phase workflow after declaring an earlier phase "done").  Adding
+# these families here gives them the same discipline injection.
+#
+# Override via config.yaml `agent.execution_discipline`:
+#   "auto" (default) — match against this tuple
+#   true             — always inject
+#   false            — never inject
+#   [list]           — custom substring list
+OPENAI_EXECUTION_DISCIPLINE_MODELS = (
+    "gpt", "codex", "grok", "qwen", "deepseek", "glm",
+)
+
 # Universal "finish the job" guidance — applied to ALL models, not gated
 # by model family.  Addresses two cross-model failure modes:
 #   1. Stopping after a stub: writing a tiny file or running one command

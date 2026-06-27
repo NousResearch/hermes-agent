@@ -1267,6 +1267,17 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Execution-discipline gate.  Controls whether OPENAI_MODEL_EXECUTION_GUIDANCE
+    # is appended on top of TOOL_USE_ENFORCEMENT_GUIDANCE for a given session.
+    # Mirrors the tool_use_enforcement value semantics:
+    #   "auto" (default) — match against OPENAI_EXECUTION_DISCIPLINE_MODELS
+    #   true / "true" / "always" / "yes" / "on" — always inject
+    #   false / "false" / "never" / "no" / "off" — never inject
+    #   list of substrings — custom model-name match list
+    # See agent/system_prompt.py for the gate logic and prompt_builder.py
+    # for the model substring tuple.
+    agent._execution_discipline = _agent_section.get("execution_discipline", "auto")
+
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance
     # applies to ALL models, not just the model families enforcement

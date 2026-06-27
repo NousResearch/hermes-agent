@@ -249,12 +249,37 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # paths, parallel tool calls, verify-before-edit, etc.)
             if "gemini" in _model_lower or "gemma" in _model_lower:
                 stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-            # OpenAI GPT/Codex execution discipline (tool persistence,
+            # OpenAI-style execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
-            # Also applied to xAI Grok — same failure modes (claims completion
-            # without tool calls, suggests workarounds instead of using
-            # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+            # Originally for GPT/Codex; extended to xAI Grok (PR #27797)
+            # after observing the same failure modes; now also covers
+            # Qwen / DeepSeek / GLM by default for local-model parity.
+            # Config-driven gate mirrors agent.tool_use_enforcement
+            # semantics (auto/true/false/list).
+            from agent.prompt_builder import OPENAI_EXECUTION_DISCIPLINE_MODELS
+            _discipline = getattr(agent, "_execution_discipline", "auto")
+            _discipline_inject = False
+            if _discipline is True or (
+                isinstance(_discipline, str)
+                and _discipline.lower() in {"true", "always", "yes", "on"}
+            ):
+                _discipline_inject = True
+            elif _discipline is False or (
+                isinstance(_discipline, str)
+                and _discipline.lower() in {"false", "never", "no", "off"}
+            ):
+                _discipline_inject = False
+            elif isinstance(_discipline, list):
+                _discipline_inject = any(
+                    isinstance(p, str) and p.lower() in _model_lower
+                    for p in _discipline
+                )
+            else:
+                # "auto" or any unrecognised value — fall back to defaults
+                _discipline_inject = any(
+                    p in _model_lower for p in OPENAI_EXECUTION_DISCIPLINE_MODELS
+                )
+            if _discipline_inject:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])

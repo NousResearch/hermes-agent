@@ -1291,7 +1291,7 @@ agent:
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`. Disabled for all others (Claude, DeepSeek, Qwen, etc.). |
+| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`, `glm`, `qwen`, `deepseek`. Disabled for Claude and other families. |
 | `true` | Always enabled, regardless of model. Useful if you notice your current model describing actions instead of performing them. |
 | `false` | Always disabled, regardless of model. |
 | `["gpt", "codex", "qwen", "llama"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive). |
@@ -1302,7 +1302,7 @@ When enabled, three layers of guidance may be added to the system prompt:
 
 1. **General tool-use enforcement** (all matched models) — instructs the model to make tool calls immediately instead of describing intentions, keep working until the task is complete, and never end a turn with a promise of future action.
 
-2. **OpenAI execution discipline** (GPT and Codex models only) — additional guidance addressing GPT-specific failure modes: abandoning work on partial results, skipping prerequisite lookups, hallucinating instead of using tools, and declaring "done" without verification.
+2. **OpenAI execution discipline** (controlled separately by `agent.execution_discipline`; default-on for `gpt`, `codex`, `grok`, `qwen`, `deepseek`, `glm`) — addresses cross-model failure modes: abandoning work on partial results, skipping prerequisite lookups, hallucinating instead of using tools, and declaring "done" without verification.
 
 3. **Google operational guidance** (Gemini and Gemma models only) — conciseness, absolute paths, parallel tool calls, and verify-before-edit patterns.
 
@@ -1316,6 +1316,32 @@ If you're using a model not in the default auto list and notice it frequently de
 agent:
   tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
 ```
+
+## Execution Discipline (Layered on Tool-Use Enforcement)
+
+`agent.execution_discipline` toggles the longer OpenAI-style execution-discipline block. It only fires when tool-use enforcement is already active for the same session (so it inherits the `tool_use_enforcement` gate first, then applies its own model-family check on top).
+
+```yaml
+agent:
+  execution_discipline: "auto"   # "auto" | true | false | ["model-substring", ...]
+```
+
+| Value | Behavior |
+|-------|----------|
+| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `grok`, `qwen`, `deepseek`, `glm`. Disabled for Claude, Gemini, Gemma, and others. |
+| `true` | Always inject when tool-use enforcement is active (useful for locally renamed models whose identifier doesn't substring-match the default list). |
+| `false` | Never inject. |
+| `["qwen", "my-local-model"]` | Inject only for models whose name contains one of the listed substrings (case-insensitive). |
+
+### What it injects
+
+A block called **Execution discipline** with five sections: `<tool_persistence>` (keep calling tools until done + verified), `<mandatory_tool_use>` (never compute from memory when a tool is available), `<act_dont_ask>` (clarifying questions only when they change which tool you'd call), `<prerequisite_checks>` (resolve dependencies before action), `<verification>` (sanity-check correctness/grounding/format/safety before finalising), and `<missing_context>` (look up missing info, never hallucinate it).
+
+### When to override the auto behavior
+
+- **Locally-renamed models** (e.g. an oMLX or LM Studio model loaded under `my-custom-7b`) — the substring match won't catch them. Set `execution_discipline: true` or add the name to the list.
+- **You're confident your model doesn't need it** — set `execution_discipline: false` to save the prompt tokens.
+- **You want to apply it to Claude or Gemini selectively** — set `execution_discipline: true` (combined with `tool_use_enforcement: true`).
 
 ## TTS Configuration
 

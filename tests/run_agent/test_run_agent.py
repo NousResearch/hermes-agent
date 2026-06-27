@@ -1180,8 +1180,21 @@ class TestBuildSystemPrompt:
 class TestToolUseEnforcementConfig:
     """Tests for the agent.tool_use_enforcement config option."""
 
-    def _make_agent(self, model="openai/gpt-4.1", tool_use_enforcement="auto"):
-        """Create an agent with tools and a specific enforcement config."""
+    def _make_agent(
+        self,
+        model="openai/gpt-4.1",
+        tool_use_enforcement="auto",
+        execution_discipline=None,
+    ):
+        """Create an agent with tools and a specific enforcement config.
+
+        ``execution_discipline`` mirrors ``tool_use_enforcement`` semantics:
+        ``None`` means "do not set the key" (use the production default of
+        "auto"); ``True``/``False``/string/list values are passed through.
+        """
+        agent_cfg = {"tool_use_enforcement": tool_use_enforcement}
+        if execution_discipline is not None:
+            agent_cfg["execution_discipline"] = execution_discipline
         with (
             patch(
                 "run_agent.get_tool_definitions",
@@ -1191,7 +1204,7 @@ class TestToolUseEnforcementConfig:
             patch("run_agent.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
-                return_value={"agent": {"tool_use_enforcement": tool_use_enforcement}},
+                return_value={"agent": agent_cfg},
             ),
         ):
             a = AIAgent(
@@ -1270,6 +1283,92 @@ class TestToolUseEnforcementConfig:
         )
         prompt = agent._build_system_prompt()
         assert OPENAI_MODEL_EXECUTION_GUIDANCE not in prompt
+
+    # ── Execution discipline extension: Qwen / DeepSeek / GLM families ──
+    # The previous behaviour hard-coded substring matching against
+    # {gpt, codex, grok}.  Local-model users running Qwen / DeepSeek / GLM
+    # hit the same failure modes (claiming completion without tool calls,
+    # skipping prerequisite phases) but received no discipline injection.
+    # See feat/qwen-execution-discipline.
+
+    def test_auto_injects_execution_guidance_for_qwen(self):
+        """Qwen models hit the same 'claims done without tool calls' pattern.
+        Verified empirically on Qwen3.5-35B via oMLX during a 7-phase
+        COBOL→Java translation where Phase 5/6 were skipped after Phase 4.
+        """
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="qwen/qwen-plus", tool_use_enforcement="auto"
+        )
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_auto_injects_execution_guidance_for_qwen_bare_local_name(self):
+        """Local oMLX / LM Studio users often use bare model names like
+        'qwen3-coder-next' or 'MLX-Qwen3.5-35B-A3B-...' without provider slash.
+        Substring match must still catch these."""
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="MLX-Qwen3.5-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled-8bit",
+            tool_use_enforcement="auto",
+        )
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_auto_injects_execution_guidance_for_deepseek(self):
+        """DeepSeek reasoning models exhibit empty-response and over-confident
+        completion patterns documented in v0.13.0 release notes."""
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="deepseek/deepseek-r1", tool_use_enforcement="auto"
+        )
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_auto_injects_execution_guidance_for_glm(self):
+        """GLM family also benefits from the discipline block (same
+        precedent as Grok extension in #27797)."""
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="glm-4.6", tool_use_enforcement="auto"
+        )
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_execution_discipline_explicit_off_for_qwen(self):
+        """When execution_discipline=false, do not inject even for matched models."""
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="qwen/qwen-plus",
+            tool_use_enforcement="auto",
+            execution_discipline=False,
+        )
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE not in prompt
+
+    def test_execution_discipline_explicit_on_for_claude(self):
+        """When execution_discipline=true, inject for any model (escape
+        hatch for users whose local model has a renamed identifier that
+        doesn't substring-match the default list)."""
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="anthropic/claude-sonnet-4",
+            tool_use_enforcement=True,  # required for any injection
+            execution_discipline=True,
+        )
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_execution_discipline_custom_list(self):
+        """Custom list lets users add new local-model substrings."""
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="my-custom-7b",
+            tool_use_enforcement=True,
+            execution_discipline=["my-custom"],
+        )
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
 
     def test_true_forces_for_all_models(self):
         from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE

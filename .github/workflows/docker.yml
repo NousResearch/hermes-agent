@@ -173,7 +173,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Build once, load into the local daemon for testing, then push
-      # by digest below. Reads AND writes the registry-backed cache so the
+      # by digest below. Reads the registry-backed cache on every event and
+      # writes it only on push-to-main / release (see cache-to below), so the
       # push reuses layers from this build and the next build starts warm.
       #
       # Registry cache (type=registry on ghcr.io) is used instead of the gha
@@ -191,7 +192,16 @@ jobs:
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
-          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
+          # Write the shared registry cache only when the job's GITHUB_TOKEN has
+          # packages:write — i.e. on push-to-main / release. On pull_request
+          # events the token is downgraded to read-only (always for fork PRs,
+          # regardless of the packages:write permission declared above), so an
+          # unconditional cache-to fails the export with
+          # "denied: installation not allowed to Write organization package"
+          # and breaks an otherwise-green build. PRs still READ the cache
+          # (cache-from above), so they stay warm; they just never write it.
+          # An empty cache-to is a no-op, matching this step's documented intent.
+          cache-to: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release') && 'type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max' || '' }}
 
       - name: Install uv for docker tests
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0

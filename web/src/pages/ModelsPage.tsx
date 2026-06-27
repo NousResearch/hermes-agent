@@ -846,6 +846,11 @@ function MoaModelsModal({
           alwaysGlobal
           title="Select MoA Model"
           onApply={async ({ provider, model }) => {
+            if ((provider || "").toLowerCase() === "moa") {
+              setError("MoA presets can't reference or aggregate the Mixture of Agents provider (no recursive MoA).");
+              return;
+            }
+            setError(null);
             updateSelectedPreset((prev) => {
               if (picker.kind === "aggregator") return { ...prev, aggregator: { provider, model } };
               return {

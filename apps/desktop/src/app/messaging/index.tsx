@@ -14,6 +14,7 @@ import {
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -404,14 +405,31 @@ function PlatformDetail({
             <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
               {introCopy(platform, m)}
             </p>
-            <div className="mt-3">
-              <Button asChild size="sm" variant="textStrong">
-                <a href={platform.docs_url} rel="noreferrer" target="_blank">
-                  {m.openSetupGuide}
-                  <ExternalLink className="size-3.5" />
-                </a>
-              </Button>
-            </div>
+            {platform.docs_url && (
+              <div className="mt-3">
+                <Button asChild size="sm" variant="textStrong">
+                  <a
+                    href={platform.docs_url}
+                    onClick={event => {
+                      // Route through the validated external opener instead of
+                      // letting Electron resolve the anchor. A packaged build's
+                      // empty/relative href resolves to the app's own
+                      // index.html file path, which shell.openPath then fails to
+                      // open ("file not found"). Plugin platforms (Teams, etc.)
+                      // ship no docs_url, so this guard + handler keeps the
+                      // button from ever pointing at a local bundle path.
+                      event.preventDefault()
+                      openExternalLink(platform.docs_url)
+                    }}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {m.openSetupGuide}
+                    <ExternalLink className="size-3.5" />
+                  </a>
+                </Button>
+              </div>
+            )}
           </section>
 
           <section>

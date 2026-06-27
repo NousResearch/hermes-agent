@@ -1,0 +1,17 @@
+# systemd --user unit for the wireproxy SOCKS5 egress proxy.
+# Rendered by scripts/vpn-exit.sh install-service into
+# ~/.config/systemd/user/<SERVICE_NAME>.service
+
+[Unit]
+Description=Userspace WireGuard SOCKS5 exit proxy (wireproxy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=@WIREPROXY_BIN@ -c @WIREPROXY_CONF@
+Restart=on-failure
+RestartSec=3
+# Local SOCKS5 listener exposed on 127.0.0.1:@SOCKS_PORT@
+
+[Install]
+WantedBy=default.target

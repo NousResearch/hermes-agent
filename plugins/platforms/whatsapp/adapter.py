@@ -1061,6 +1061,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if resp.status == 200:
                         messages = await resp.json()
                         for msg_data in messages:
+                            if await self._handle_special_inbound(msg_data):
+                                continue
                             event = await self._build_message_event(msg_data)
                             if event:
                                 if event.message_type == MessageType.TEXT:
@@ -1138,6 +1140,85 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
+
+    @staticmethod
+    def _wa_norm(value) -> str:
+        """Reduce a WhatsApp jid/number to its bare id (drop device suffix,
+        domain, leading '+'), mirroring allowlist.js normalizeWhatsAppIdentifier."""
+        import re as _re
+        s = str(value or "").strip()
+        s = _re.sub(r":.*@", "@", s)
+        s = _re.sub(r"@.*", "", s)
+        return s.lstrip("+")
+
+    async def _bridge_allow(self, number: str) -> bool:
+        """Add a number to the bridge's live allowlist (POST /allow, no restart)."""
+        import aiohttp
+        if not self._http_session:
+            return False
+        try:
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/allow",
+                json={"number": number},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    async def _handle_special_inbound(self, data) -> bool:
+        """Handle bridge 'knock' events (non-allowlisted sender) and the owner's
+        'allow <number>' approval before normal dispatch.
+
+        Returns True when consumed here (skip agent dispatch). A stranger's text
+        is untrusted: it is only ever shown to the owner as a quoted preview,
+        never fed to the agent. The owner is the configured WHATSAPP_HOME_CHANNEL.
+        """
+        import os as _os
+        try:
+            home_chat = (_os.getenv("WHATSAPP_HOME_CHANNEL") or "").strip()
+
+            # 1) Stranger knocking -> notify the owner's home channel.
+            if data.get("knock"):
+                if home_chat:
+                    sender_num = self._wa_norm(data.get("senderNumber") or data.get("senderId") or "")
+                    sender_name = (data.get("senderName") or sender_num or "someone").strip()
+                    preview = (data.get("preview") or "").strip()
+                    note = (
+                        "\U0001F514 Someone *not on your allowlist* just messaged me:\n"
+                        "• From: " + sender_name + " (+" + sender_num + ")\n"
+                        "• They said: \"" + preview + "\"\n\n"
+                        "Reply  `allow " + sender_num + "`  to let them through, or ignore this."
+                    )
+                    try:
+                        await self.send(home_chat, note)
+                    except Exception:
+                        pass
+                return True  # never dispatch a knock to the agent
+
+            # 2) Owner approves: 'allow <number>' from the home channel only.
+            body = (data.get("body") or "").strip()
+            if home_chat and len(body) >= 6 and body[:6].lower() == "allow ":
+                hc = self._wa_norm(home_chat)
+                if hc and (self._wa_norm(data.get("chatId") or "") == hc
+                           or self._wa_norm(data.get("senderId") or "") == hc):
+                    import re as _re
+                    m = _re.match(r"^allow\s+\+?([0-9][0-9 \-]{4,})$", body, _re.IGNORECASE)
+                    if m:
+                        number = _re.sub(r"[^0-9]", "", m.group(1))
+                        ok = await self._bridge_allow(number)
+                        if ok:
+                            reply = "✅ Added +" + number + " to your allowlist — they can reach me now."
+                        else:
+                            reply = "⚠️ Couldn't add +" + number + " right now."
+                        try:
+                            await self.send(home_chat, reply)
+                        except Exception:
+                            pass
+                        return True
+        except Exception:
+            pass
+        return False
 
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""

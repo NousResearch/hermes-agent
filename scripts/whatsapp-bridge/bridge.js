@@ -23,13 +23,13 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { matchesAllowedUser, parseAllowedUsers, normalizeWhatsAppIdentifier } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -190,6 +190,52 @@ const logger = pino({ level: 'warn' });
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
 
+// ── Stranger-knocking support ───────────────────────────────────────────────
+// Owner-approved runtime allowlist additions, persisted next to the session so
+// they survive a bridge restart, merged into ALLOWED_USERS at startup.
+const RUNTIME_ALLOW_FILE = path.join(path.dirname(SESSION_DIR), 'allowlist-runtime.txt');
+try {
+  if (existsSync(RUNTIME_ALLOW_FILE)) {
+    for (const line of readFileSync(RUNTIME_ALLOW_FILE, 'utf8').split('\n')) {
+      const id = normalizeWhatsAppIdentifier(line);
+      if (id) ALLOWED_USERS.add(id);
+    }
+  }
+} catch {}
+// De-dup "stranger knocking" notices: at most one per sender per window.
+const KNOCK_DEDUP_MS = 6 * 60 * 60 * 1000;
+const knockSeen = new Map();
+function maybeEmitKnock(msg, senderId, senderNumber, chatId) {
+  const tsNow = Date.now();
+  const last = knockSeen.get(senderId) || 0;
+  if (tsNow - last < KNOCK_DEDUP_MS) return;
+  knockSeen.set(senderId, tsNow);
+  let preview = '';
+  try {
+    const mc = getMessageContent(msg) || {};
+    preview = mc.conversation || (mc.extendedTextMessage && mc.extendedTextMessage.text) || '';
+    if (!preview) {
+      if (mc.imageMessage) preview = '[photo]';
+      else if (mc.videoMessage) preview = '[video]';
+      else if (mc.audioMessage || mc.pttMessage) preview = '[voice note]';
+      else if (mc.documentMessage) preview = '[document]';
+      else preview = '[message]';
+    }
+  } catch { preview = '[message]'; }
+  preview = String(preview).replace(/\s+/g, ' ').trim().slice(0, 140);
+  messageQueue.push({
+    knock: true,
+    messageId: msg.key.id,
+    chatId,
+    senderId,
+    senderNumber,
+    senderName: msg.pushName || senderNumber,
+    preview,
+    timestamp: msg.messageTimestamp,
+  });
+  if (messageQueue.length > MAX_QUEUE_SIZE) messageQueue.shift();
+}
+
 // Track recently sent message IDs to prevent echo-back loops with media
 const recentlySentIds = new Set();
 const MAX_RECENT_IDS = 50;
@@ -322,6 +368,9 @@ async function startSocket() {
           continue;
         }
         if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+          // Stranger (not on allowlist): emit a deduped "knock" so the gateway
+          // can alert the owner, then drop. The body never reaches the agent.
+          try { maybeEmitKnock(msg, senderId, senderNumber, chatId); } catch {}
           try {
             console.log(JSON.stringify({
               event: 'ignored',
@@ -510,6 +559,17 @@ app.get('/messages', (req, res) => {
 });
 
 // Send a message
+// Runtime allowlist add — owner-approved "stranger knocking" sender.
+app.post('/allow', (req, res) => {
+  const raw = (req.body && (req.body.number || req.body.id)) || '';
+  const id = normalizeWhatsAppIdentifier(raw);
+  if (!id) return res.status(400).json({ error: 'number/id required' });
+  ALLOWED_USERS.add(id);
+  try { appendFileSync(RUNTIME_ALLOW_FILE, id + '\n'); } catch {}
+  try { console.log(JSON.stringify({ event: 'allowlist_add', id })); } catch {}
+  return res.json({ success: true, id });
+});
+
 app.post('/send', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });

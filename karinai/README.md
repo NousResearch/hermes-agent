@@ -26,3 +26,14 @@ karinai/
 Product-facing runtime identity should be KarinAI agent. Upstream Hermes should remain the engine/base and be referenced where technically useful, but KarinAI prompt/branding should be template/config driven rather than hardcoded directly into upstream files.
 
 If a change must touch upstream core files, document it in `docs/karinai-patches.md` with the reason and whether it is upstreamable, temporary, or permanent KarinAI behavior.
+
+
+## Container image release
+
+The KarinAI managed agent runtime image is built from the upstream Hermes `Dockerfile` by `.github/workflows/karinai-image.yml` and published as:
+
+```text
+ghcr.io/bambak-org/karinai-agent:<commit-sha>
+```
+
+Staging should pin this commit-SHA tag or a digest in `karinai-infra` rather than using mutable tags.

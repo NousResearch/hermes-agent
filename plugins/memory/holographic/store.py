@@ -95,6 +95,32 @@ def _clamp_trust(value: float) -> float:
     return max(_TRUST_MIN, min(_TRUST_MAX, value))
 
 
+def _sanitize_fts5_query(query: str) -> str:
+    """Sanitize user input for safe use in FTS5 MATCH queries.
+
+    Mirrors the SessionDB FTS5 query handling so memory fact search treats
+    hyphenated and dotted tokens the same way as transcript search.
+    """
+    quoted_parts: list[str] = []
+
+    def _preserve_quoted(match: re.Match[str]) -> str:
+        quoted_parts.append(match.group(0))
+        return f"\x00Q{len(quoted_parts) - 1}\x00"
+
+    sanitized = re.sub(r'"[^"]*"', _preserve_quoted, query)
+    sanitized = re.sub(r'[+{}()"^]', " ", sanitized)
+    sanitized = re.sub(r"\*+", "*", sanitized)
+    sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
+    sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
+    sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
+    sanitized = re.sub(r"\b(\w+(?:[.-]\w+)+)\b", r'"\1"', sanitized)
+
+    for idx, quoted in enumerate(quoted_parts):
+        sanitized = sanitized.replace(f"\x00Q{idx}\x00", quoted)
+
+    return sanitized.strip()
+
+
 class MemoryStore:
     """SQLite-backed fact store with entity resolution and trust scoring."""
 
@@ -201,7 +227,7 @@ class MemoryStore:
         descending. Also increments retrieval_count for matched facts.
         """
         with self._lock:
-            query = query.strip()
+            query = _sanitize_fts5_query(query)
             if not query:
                 return []
 

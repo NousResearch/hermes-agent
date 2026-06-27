@@ -10,6 +10,8 @@ import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from .store import _sanitize_fts5_query
+
 if TYPE_CHECKING:
     from .store import MemoryStore
 
@@ -496,7 +498,7 @@ class FactRetriever:
         # We need to join facts_fts with facts to get all columns
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        params.append(_sanitize_fts5_query(query))
 
         if category:
             where_clauses.append("f.category = ?")

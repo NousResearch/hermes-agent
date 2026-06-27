@@ -892,6 +892,8 @@ class WeComAdapter(BasePlatformAdapter):
     def _is_group_allowed(self, chat_id: str, sender_id: str) -> bool:
         if self._group_policy == "disabled":
             return False
+        if self._group_policy == "pairing":
+            return False
         if self._group_policy == "allowlist" and not _entry_matches(self._group_allow_from, chat_id):
             return False
 

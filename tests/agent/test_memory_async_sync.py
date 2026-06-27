@@ -136,3 +136,63 @@ def test_writes_are_serialized_in_order():
         mgr.sync_all(f"turn-{i}", "resp", session_id="s1")
     assert mgr.flush_pending(timeout=10) is True
     assert order == [f"turn-{i}" for i in range(5)]
+
+
+def test_on_session_end_flushes_pending_sync_before_provider_hook():
+    """Session-end hooks must see all turns queued before the boundary.
+
+    Providers such as Supermemory buffer turn data in ``sync_turn`` and write
+    the full conversation from ``on_session_end``. If the manager calls
+    ``on_session_end`` before draining the background executor, a one-shot CLI
+    process can exit with queued turns still missing from the provider's
+    session-end write.
+    """
+    import threading
+
+    first_sync_started = threading.Event()
+    allow_first_sync_to_finish = threading.Event()
+
+    class _SessionProvider(_SlowProvider):
+        _name = "session-provider"
+
+        def __init__(self):
+            super().__init__(delay=0.0)
+            self.buffered_turns = []
+            self.session_end_seen = None
+
+        def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
+            if user_content == "turn-1":
+                first_sync_started.set()
+                assert allow_first_sync_to_finish.wait(timeout=5), "test did not release first sync_turn"
+            self.buffered_turns.append((user_content, assistant_content, session_id))
+
+        def on_session_end(self, messages):
+            self.session_end_seen = list(self.buffered_turns)
+
+    mgr = MemoryManager()
+    provider = _SessionProvider()
+    mgr.add_provider(provider)
+
+    mgr.sync_all("turn-1", "stored-1", session_id="cli-one-shot")
+    assert first_sync_started.wait(timeout=5), "first background sync did not start"
+    mgr.sync_all("turn-2", "stored-2", session_id="cli-one-shot")
+
+    release_timer = threading.Timer(0.2, allow_first_sync_to_finish.set)
+    release_timer.start()
+    t0 = time.monotonic()
+    try:
+        mgr.on_session_end([{"role": "user", "content": "turn-2"}])
+    finally:
+        release_timer.cancel()
+        allow_first_sync_to_finish.set()
+    elapsed = time.monotonic() - t0
+
+    # Without a drain in on_session_end, the hook returns immediately after
+    # seeing an incomplete buffer because turn-2 is still queued behind the
+    # blocked first sync. A correct implementation waits for the queued work.
+    assert elapsed >= 0.15, "on_session_end returned before queued sync drained"
+
+    assert provider.session_end_seen == [
+        ("turn-1", "stored-1", "cli-one-shot"),
+        ("turn-2", "stored-2", "cli-one-shot"),
+    ]

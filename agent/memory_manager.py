@@ -767,7 +767,22 @@ class MemoryManager:
                 )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """Notify all providers of session end."""
+        """Notify all providers of session end.
+
+        End-of-turn memory writes are dispatched on a background worker so slow
+        providers cannot stall the user-visible turn. Session-end hooks are the
+        boundary where providers such as Supermemory turn their buffered turn
+        data into a durable full-session write, so queued sync work must be
+        drained before those hooks run. Otherwise a one-shot CLI process can
+        shut down while the final ``sync_turn`` is still queued and the session
+        write observes stale/incomplete provider state.
+        """
+        if not self.flush_pending(timeout=_SYNC_DRAIN_TIMEOUT_S):
+            logger.warning(
+                "Memory sync queue did not drain within %.1fs before on_session_end; "
+                "provider session-end hooks may see incomplete turn data",
+                _SYNC_DRAIN_TIMEOUT_S,
+            )
         for provider in self._providers:
             try:
                 provider.on_session_end(messages)

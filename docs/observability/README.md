@@ -307,8 +307,8 @@ nested agent work or security lifecycle events.
 
 ## Existing Consumers
 
-The bundled **`telemetry`** plugin is the built-in local-first telemetry plane: it
-records runs, model calls, and tool calls to a local event log + `state.db`, powers
+The bundled **`telemetry`** plugin is the built-in local-first telemetry system: it
+records runs, spans, model calls, and tool calls to a local event log + `state.db`, powers
 `hermes insights`, and supports export to your own file or OpenTelemetry Collector. It
 is on by default and never sends data to Nous unless you opt in. See
 [`telemetry.md`](./telemetry.md) for the full feature, the `hermes telemetry` commands,

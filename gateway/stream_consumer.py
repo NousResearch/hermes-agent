@@ -1459,7 +1459,7 @@ class GatewayStreamConsumer:
             logger.error("Segment-break tail flush error: %s", e)
 
     async def _try_strip_cursor(self) -> None:
-        """Best-effort edit to remove the cursor from the last visible message.
+        """Best-effort attempt to remove the cursor from the last visible message.
 
         Called when entering fallback mode so the user doesn't see a stuck
         cursor (▉) in the partial message.  If the edit is flood-controlled or
@@ -1472,6 +1472,7 @@ class GatewayStreamConsumer:
         prefix = self._visible_prefix()
         if not prefix or not prefix.strip():
             return
+        edit_flood_controlled = False
         try:
             result = await self._edit_message(
                 message_id=self._message_id,
@@ -1479,6 +1480,8 @@ class GatewayStreamConsumer:
             )
             if getattr(result, "success", False):
                 self._last_sent_text = prefix
+                return
+            edit_flood_controlled = self._is_flood_error(result)
         except Exception:
             pass  # best-effort — leave message intact on any failure
 

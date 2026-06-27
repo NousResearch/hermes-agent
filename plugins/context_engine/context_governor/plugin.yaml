@@ -1,0 +1,3 @@
+name: context_governor
+description: "Receipt-backed deterministic context compaction via RecursiveIntell context-governor"
+version: "0.1.0"

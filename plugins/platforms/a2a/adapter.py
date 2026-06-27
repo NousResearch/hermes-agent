@@ -108,9 +108,28 @@ class A2AAdapter(BasePlatformAdapter):
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _request_public_url(self) -> str:
+                """Derive the routable URL for this request.
+
+                Priority: A2A_PUBLIC_URL env > X-Forwarded-Host / Host
+                header (with scheme from X-Forwarded-Proto) > empty.
+                Empty means "caller has no info, fall back to bind host".
+                See gfdsa's k8s bind-host bug report (PR #41711).
+                """
+                explicit = os.getenv("A2A_PUBLIC_URL", "").strip()
+                if explicit:
+                    return explicit
+                host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+                if not host:
+                    return ""
+                host = host.split(",")[0].strip()
+                scheme = (self.headers.get("X-Forwarded-Proto", "") or "http").split(",")[0].strip()
+                return f"{scheme}://{host}/"
+
             def do_GET(self):  # noqa: N802
                 if self.path.rstrip("/") in ("/.well-known/agent.json", "/.well-known/agent-card.json"):
-                    self._json(200, adapter._build_card())
+                    public_url = self._request_public_url() or None
+                    self._json(200, adapter._build_card(public_url))
                     return
                 if self.path.rstrip("/") in ("", "/health"):
                     self._json(200, {"status": "ok", "agent": adapter.agent_name})
@@ -185,16 +204,20 @@ class A2AAdapter(BasePlatformAdapter):
 
     # ── Agent Card ────────────────────────────────────────────────────────
 
-    def _build_card(self) -> dict:
+    def _build_card(self, public_url: Optional[str] = None) -> dict:
         toolsets = []
         try:
             extra = getattr(self.config, "extra", {}) or {}
             toolsets = list(extra.get("advertised_toolsets") or [])
         except Exception:
             pass
+        # v4 fix: prefer per-request public URL (from X-Forwarded-Host
+        # / Host / A2A_PUBLIC_URL) over bind host, so peers can call back
+        # when we're behind a reverse proxy. See gfdsa's PR #41711 review.
+        url = (public_url or "").strip() or f"http://{self.host}:{self.port}/"
         return protocol.build_agent_card(
             name=self.agent_name,
-            url=f"http://{self.host}:{self.port}/",
+            url=url,
             description=os.getenv(
                 "A2A_AGENT_DESCRIPTION",
                 "Hermes Agent — a general-purpose agent reachable over A2A.",

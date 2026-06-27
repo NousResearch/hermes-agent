@@ -49,6 +49,18 @@ except ImportError:
 # Configuration
 # =============================================================================
 
+# Cron is per-profile by design (issue #4707). Each profile owns its own cron
+# store under its own HERMES_HOME, and a profile-scoped gateway runs that
+# profile's jobs under that same HERMES_HOME — so a job authored in profile
+# `coder` lives in `~/.hermes/profiles/coder/cron/jobs.json` and executes with
+# `coder`'s `.env`, `config.yaml`, and skills. We deliberately anchor on
+# `get_hermes_home()` (the active profile home), NOT `get_default_hermes_root()`
+# (the shared root). Anchoring at the root would funnel every profile's jobs
+# into one shared `jobs.json` and run them under whatever HERMES_HOME the
+# ticker process happens to have — leaking config/credentials/skills across
+# profiles (the security boundary #4707 was filed for). Do NOT change this to
+# the default root: that re-breaks per-profile isolation. See also the dynamic
+# `_get_hermes_home()` / `_get_lock_paths()` resolution in cron/scheduler.py.
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"

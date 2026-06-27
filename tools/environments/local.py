@@ -235,6 +235,26 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     return sanitized
 
 
+def _is_wsl_bash_launcher(path: str) -> bool:
+    """True if *path* is the Windows-bundled WSL launcher, not Git Bash.
+
+    Windows ships ``%SystemRoot%\\System32\\bash.exe`` (and its WOW64
+    redirects ``Sysnative`` / ``SysWOW64``).  It is a stub that boots the
+    default WSL distro; on a machine with no distro installed it prints
+    "no installed distributions" and exits 1, so it must never be selected
+    as the shell for Hermes' bash scripts.  Real Git Bash always lives under
+    Git for Windows or our portable Git, never in the Windows system
+    directory, so matching the system-dir tail is a safe, false-positive-free
+    test.
+    """
+    if not _IS_WINDOWS or not path:
+        return False
+    norm = path.replace("/", "\\").lower()
+    return norm.endswith(
+        ("\\system32\\bash.exe", "\\sysnative\\bash.exe", "\\syswow64\\bash.exe")
+    )
+
+
 def _find_bash() -> str:
     """Find bash for command execution."""
     if not _IS_WINDOWS:
@@ -269,8 +289,12 @@ def _find_bash() -> str:
             if os.path.isfile(candidate):
                 return candidate
 
+    # shutil.which() can return the System32 WSL launcher (it's on PATH by
+    # default on Windows 10/11, ahead of Git for Windows whose bin/ usually
+    # is not).  Skip it so a missing/uninstalled WSL distro can't hijack the
+    # lookup — fall through to the real Git for Windows locations below.
     found = shutil.which("bash")
-    if found:
+    if found and not _is_wsl_bash_launcher(found):
         return found
 
     for candidate in (

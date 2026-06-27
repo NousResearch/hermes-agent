@@ -888,7 +888,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for action=create. For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp. Examples: '30m' (every 30 minutes), 'every 2h' (every 2 hours), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (one-shot). You MUST include this field when action=create."
+                "description": "REQUIRED for action=create. Schedule forms: (1) relative one-shot - '30m', '2h', '1d' fire ONCE that far from now (use this for 'remind me in N minutes/hours' - do NOT hand-compute an absolute timestamp); (2) recurring interval - 'every 30m', 'every 2h'; (3) cron - '0 9 * * *' (daily at 9am); (4) absolute one-shot - ISO timestamp like '2026-06-01T09:00:00' (only when the user gives a specific clock time/date). Examples: '3m' (once in 3 minutes), 'every 2h' (recurring every 2 hours), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (once at that time). You MUST include this field when action=create."
             },
             "name": {
                 "type": "string",

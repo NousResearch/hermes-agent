@@ -54,6 +54,11 @@ import yaml
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
+from hermes_cli.reasoning_clamp import (
+    StreamingReasoningClamp,
+    clamp_lines,
+    clamp_notice,
+)
 
 # prompt_toolkit for fixed input area TUI
 from prompt_toolkit.history import FileHistory
@@ -5233,6 +5238,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Open reasoning box on first reasoning token
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
+            # Start a fresh line-clamp for this box so streamed reasoning
+            # honors /reasoning clamp just like the non-streaming recap.
+            self._reasoning_clamp = StreamingReasoningClamp(
+                getattr(self, "reasoning_full", False)
+            )
             w = self._scrollback_box_width()
             r_label = " Reasoning "
             r_fill = w - 2 - len(r_label)
@@ -5241,25 +5251,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
 
         # Emit complete lines, and force-flush long partial lines so
-        # reasoning is visible in real-time even without newlines.
+        # reasoning is visible in real-time even without newlines.  Each line
+        # passes through the clamp: past the threshold it's counted but not
+        # printed (the hidden total is surfaced when the box closes).
+        clamp = getattr(self, "_reasoning_clamp", None)
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_DIM}{line}{_RST}")
+            if clamp is None or clamp.should_show():
+                _cprint(f"{_DIM}{line}{_RST}")
         if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            if clamp is None or clamp.should_show():
+                _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
             self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open."""
         if getattr(self, "_reasoning_box_opened", False):
-            # Flush remaining reasoning buffer
+            clamp = getattr(self, "_reasoning_clamp", None)
+            # Flush remaining reasoning buffer (still subject to the clamp).
             buf = getattr(self, "_reasoning_buf", "")
             if buf:
-                _cprint(f"{_DIM}{buf}{_RST}")
+                if clamp is None or clamp.should_show():
+                    _cprint(f"{_DIM}{buf}{_RST}")
                 self._reasoning_buf = ""
+            # Surface how many lines were withheld by the clamp.
+            hidden = getattr(clamp, "hidden", 0) if clamp is not None else 0
+            if hidden:
+                _cprint(f"{_DIM}  {clamp_notice(hidden)}{_RST}")
             w = self._scrollback_box_width()
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
             self._reasoning_box_opened = False
+            self._reasoning_clamp = None
 
             # Flush any content that was deferred while reasoning was rendering.
             deferred = getattr(self, "_deferred_content", "")
@@ -5562,6 +5584,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._in_reasoning_block = False
         self._stream_last_was_newline = True
         self._reasoning_box_opened = False
+        self._reasoning_clamp = None
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
@@ -11967,14 +11990,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     r_fill = w - 2 - len(r_label)
                     r_top = f"{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}"
                     r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
-                    # Collapse long reasoning to the first 10 lines unless the
-                    # user opted into full display via /reasoning full.
+                    # Collapse long reasoning unless the user opted into full
+                    # display via /reasoning full.  Shares the threshold and
+                    # footer with the streaming path (hermes_cli.reasoning_clamp).
                     lines = reasoning.strip().splitlines()
-                    if len(lines) > 10 and not getattr(self, "reasoning_full", False):
-                        display_reasoning = "\n".join(lines[:10])
-                        display_reasoning += f"\n{_DIM}  ... ({len(lines) - 10} more lines — /reasoning full to show){_RST}"
-                    else:
-                        display_reasoning = reasoning.strip()
+                    visible, hidden = clamp_lines(
+                        lines, getattr(self, "reasoning_full", False)
+                    )
+                    display_reasoning = "\n".join(visible)
+                    if hidden:
+                        display_reasoning += f"\n{_DIM}  {clamp_notice(hidden)}{_RST}"
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
             if response and not response_previewed:

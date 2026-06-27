@@ -7,12 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Hermes-CN-Core** (git remote `Eynzof/Hermes-CN-Core`; the Python package is still named `hermes-agent`) is a
 long-lived Chinese-community **fork** of [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent).
 It tracks upstream while carrying a documented patch set for Chinese provider metadata, the desktop runtime, and
-Dashboard APIs consumed by [`hermes-agent-cn-desktop`](https://github.com/Eynzof/hermes-agent-cn-desktop). The
+Dashboard APIs consumed by [`Hermes-CN-Desktop`](https://github.com/Eynzof/Hermes-CN-Desktop). The
 `pyproject.toml` project name is still `hermes-agent` and the CLI entry point is still `hermes` — do not assume
 "clean reimplementation," assume "downstream patches on top of upstream." (`README.md` is the Chinese version;
 `README.en.md` is English. Some maintenance docs such as `MAINTAINING.md` still use the older `hermes-agent-cn` name.)
 
-- **Every fork-specific behavioral change is tracked in [`FORK_NOTES.md`](./FORK_NOTES.md) as `P-NNN`.** Read it
+- **Every fork-specific behavioral change is tracked in [`FORK_NOTES.md`](./FORK_NOTES.md) as `P-NNN`** (currently through P-023). Read it
   before touching `hermes_cli/web_server.py`, `tui_gateway/`, or `hermes_cli/config.py`'s `OPTIONAL_ENV_VARS` —
   those files carry deliberate divergence from upstream. New behavioral patches use a `[CN-fork] P-NNN` commit
   prefix and must be added to the FORK_NOTES table.
@@ -28,7 +28,7 @@ Dashboard APIs consumed by [`hermes-agent-cn-desktop`](https://github.com/Eynzof
 
 ## AGENTS.md is the canonical deep guide
 
-[`AGENTS.md`](./AGENTS.md) (~1200 lines) is the authoritative development reference — architecture internals,
+[`AGENTS.md`](./AGENTS.md) (~1,370 lines) is the authoritative development reference — architecture internals,
 the tool registry chain, slash-command registry, TUI/Dashboard/Electron surfaces, plugins, skills, delegation,
 curator, cron, kanban, profiles, and the full "Known Pitfalls" list. **Read it for any non-trivial change.**
 This file is the orientation layer + fork specifics; AGENTS.md is the detail.
@@ -45,24 +45,25 @@ scripts/run_tests.sh                                   # full suite
 scripts/run_tests.sh tests/gateway/                    # one directory
 scripts/run_tests.sh tests/agent/test_foo.py::test_x   # one test
 scripts/run_tests.sh tests/foo.py -- --tb=long         # path + pytest args (after `--`)
-scripts/run_tests.sh --no-isolate tests/foo/           # faster, for interactive debugging
 
-# Lint / typecheck (CI: .github/workflows/lint.yml)
-ruff check .       # BLOCKING — enforces PLW1514 (unspecified-encoding); all other rules are advisory-diff only
-ty check           # type checker (astral ty), advisory
+# Lint / typecheck
+ruff check .       # BLOCKING (lint.yml) — enforces PLW1514 (unspecified-encoding); other ruff rules advisory-diff only
+ty check           # type checker (astral ty), advisory for Python
+# Also blocking in CI: scripts/check-windows-footguns.py (lint.yml) and TypeScript `npm run typecheck` (typecheck.yml)
 
 # Run the app
 hermes             # interactive CLI    | hermes --tui (Ink TUI) | hermes gateway (messaging)
 hermes dashboard --no-open   # localhost SPA + API; the fork smoke test for CN-only APIs lives in MAINTAINING.md
 ./hermes           # local launcher equivalent to the installed `hermes` command
+# (extra entry points: `hermes-agent` → run_agent:main, `hermes-acp` → acp_adapter.entry:main)
 
 # TypeScript TUI (ui-tui/) — npm workspace rooted at repo top
 cd ui-tui && npm install
 npm run dev        # watch (rebuild hermes-ink + tsx --watch)
-npm run build      # full build   | npm run type-check | npm run lint | npm test (vitest)
+npm run build      # full build   | npm run typecheck | npm run lint | npm test (vitest)
 ```
 
-The Python test suite is ~17k tests across ~900 files; CI slices it 6 ways. Run the full suite before pushing.
+The Python test suite is large — ~1,600 test files; CI slices it 6 ways. Run the full suite before pushing.
 
 ## 开发前预检（双仓同步 + Worktree 隔离）
 
@@ -99,7 +100,7 @@ For local/custom tools, prefer a `~/.hermes/plugins/<name>/` plugin over editing
 
 **Entry points / surfaces:**
 - `hermes_cli/main.py` — CLI command dispatch; `_apply_profile_override()` sets `HERMES_HOME` before imports.
-- `run_agent.py` — `AIAgent` (~60-param constructor); messages are OpenAI-format dicts.
+- `run_agent.py` — `AIAgent` (~70-param constructor); messages are OpenAI-format dicts.
 - `gateway/` — single multi-platform messaging process; one adapter per platform in `gateway/platforms/`.
 - `tui_gateway/` (Python JSON-RPC) ⇄ `ui-tui/` (Ink/React) — the `hermes --tui` experience. The Dashboard
   `/chat` pane and the embedded chat **reuse this same TUI over a PTY** — do not re-implement the chat
@@ -123,5 +124,5 @@ User state lives under `~/.hermes/` (config.yaml = settings, `.env` = secrets on
   bump. See AGENTS.md "Dependency Pinning Policy".
 - **Don't write change-detector tests** (snapshots of model catalogs, config-version literals, enumeration
   counts). Assert relationships/invariants instead. See AGENTS.md "Don't write change-detector tests".
-- **Tests must not write to `~/.hermes/`** — the autouse fixture in `tests/conftest.py` redirects `HERMES_HOME`.
+- **Tests must not write to `~/.hermes/`** — the autouse `_hermetic_environment` fixture in `tests/conftest.py` redirects `HERMES_HOME` to a per-test tempdir.
 - **Plugins must not modify core files.** Extend the generic plugin surface (a new hook / ctx method) instead.

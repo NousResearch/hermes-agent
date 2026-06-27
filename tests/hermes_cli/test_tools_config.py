@@ -1598,3 +1598,81 @@ def test_real_configurable_changes_still_reported_in_diff():
     assert ((new_enabled2 - current) & universe) == {"vision"}
 
 
+def test_vision_picker_writes_provider_and_model(tmp_path, monkeypatch):
+    """Picking a provider+model persists auxiliary.vision.{provider,model}.
+
+    Vision must not force OpenRouter — it offers the same any-provider surface
+    as ``hermes model`` and writes the selection to the auxiliary config keys
+    the resolver reads.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+    from hermes_cli.config import load_config
+
+    fake_providers = [
+        {"slug": "anthropic", "name": "Anthropic", "total_models": 2,
+         "models": ["claude-sonnet-4.6", "claude-opus-4.6"]},
+        {"slug": "openai", "name": "OpenAI", "total_models": 1,
+         "models": ["gpt-5.4"]},
+    ]
+    # Top-level choice 1 (pick provider+model) → provider idx 0 (anthropic)
+    # → model idx 1 (claude-opus-4.6).
+    seq = iter([1, 0, 1])
+    with patch("hermes_cli.model_switch.list_authenticated_providers",
+               return_value=fake_providers), \
+         patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
+         patch.object(tc, "_toolset_has_keys", return_value=False):
+        tc._configure_vision_backend()
+
+    v = load_config().get("auxiliary", {}).get("vision", {})
+    assert v.get("provider") == "anthropic"
+    assert v.get("model") == "claude-opus-4.6"
+    # Provider selection must not leave a stale custom endpoint.
+    assert not v.get("base_url")
+
+
+def test_vision_picker_auto_clears_override(tmp_path, monkeypatch):
+    """Choosing Auto clears any pinned provider/model so resolution auto-detects."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg.setdefault("auxiliary", {})["vision"] = {
+        "provider": "openrouter", "model": "google/gemini-2.5-flash"}
+    save_config(cfg)
+
+    seq = iter([0])  # Auto
+    with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
+         patch.object(tc, "_toolset_has_keys", return_value=False):
+        tc._configure_vision_backend()
+
+    v = load_config().get("auxiliary", {}).get("vision", {})
+    # Cleared back to the "auto" sentinel (DEFAULT_CONFIG default) — no pinned
+    # real provider/model survive.
+    assert v.get("provider") in (None, "", "auto")
+    assert not v.get("model")
+
+
+def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
+    """Custom endpoint writes base_url+model to config and the key to env."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+    from hermes_cli.config import load_config
+
+    seq = iter([2])  # Custom OpenAI-compatible endpoint
+    prompts = iter(["https://my.endpoint/v1", "sk-secret", "my-vision-model"])
+    with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
+         patch.object(tc, "_prompt", side_effect=lambda *a, **k: next(prompts)), \
+         patch.object(tc, "save_env_value") as save_env, \
+         patch.object(tc, "_toolset_has_keys", return_value=False):
+        tc._configure_vision_backend()
+
+    v = load_config().get("auxiliary", {}).get("vision", {})
+    assert v.get("base_url") == "https://my.endpoint/v1"
+    assert v.get("model") == "my-vision-model"
+    # provider pinned to "custom" so the resolver routes through base_url.
+    assert v.get("provider") == "custom"
+    save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
+
+

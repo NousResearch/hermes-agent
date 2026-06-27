@@ -7328,8 +7328,31 @@ _inject_profile_env_vars()
 _platform_plugin_env_vars_injected = False
 
 
+def _iter_plugin_manifest_paths(root: Path):
+    """Yield plugin manifest paths from flat or category plugin layouts."""
+    if not root.is_dir():
+        return
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        for manifest_name in ("plugin.yaml", "plugin.yml"):
+            manifest_path = child / manifest_name
+            if manifest_path.exists():
+                yield manifest_path
+                break
+        else:
+            for grandchild in child.iterdir():
+                if not grandchild.is_dir():
+                    continue
+                for manifest_name in ("plugin.yaml", "plugin.yml"):
+                    manifest_path = grandchild / manifest_name
+                    if manifest_path.exists():
+                        yield manifest_path
+                        break
+
+
 def _inject_platform_plugin_env_vars() -> None:
-    """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests.
+    """Populate OPTIONAL_ENV_VARS from bundled and user platform plugins.
 
     Called once at module load time. Idempotent — repeated calls are no-ops.
     Failures are swallowed so a malformed plugin.yaml can't break CLI import.
@@ -7344,56 +7367,57 @@ def _inject_platform_plugin_env_vars() -> None:
         # Resolve the bundled plugins dir from this file's location so the
         # injector works regardless of CWD.
         repo_root = Path(__file__).resolve().parents[1]
-        platforms_dir = repo_root / "plugins" / "platforms"
-        if not platforms_dir.is_dir():
-            return
-        for child in platforms_dir.iterdir():
-            if not child.is_dir():
-                continue
-            manifest_path = child / "plugin.yaml"
-            if not manifest_path.exists():
-                manifest_path = child / "plugin.yml"
-            if not manifest_path.exists():
-                continue
-            try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
-                    manifest = yaml.safe_load(f) or {}
-            except Exception:
-                continue
-            label = manifest.get("label") or manifest.get("name") or child.name
-            # Merge required + optional env var declarations.
-            entries = list(manifest.get("requires_env") or [])
-            entries.extend(manifest.get("optional_env") or [])
-            for entry in entries:
-                if isinstance(entry, str):
-                    name = entry
-                    meta: dict = {}
-                elif isinstance(entry, dict) and entry.get("name"):
-                    name = entry["name"]
-                    meta = entry
-                else:
+        manifest_roots = [
+            repo_root / "plugins" / "platforms",
+            get_hermes_home() / "plugins",
+        ]
+        for root in manifest_roots:
+            for manifest_path in _iter_plugin_manifest_paths(root):
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as f:
+                        manifest = yaml.safe_load(f) or {}
+                except Exception:
                     continue
-                if name in OPTIONAL_ENV_VARS:
-                    continue  # hardcoded entry wins (back-compat)
-                # Heuristic: anything named *TOKEN, *SECRET, *KEY, *PASSWORD
-                # is a password field unless explicitly overridden.
-                name_upper = name.upper()
-                is_secret = bool(meta.get("password") or meta.get("secret"))
-                if not is_secret and not meta.get("password") is False:
-                    is_secret = any(
-                        name_upper.endswith(suf)
-                        for suf in ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
-                    )
-                OPTIONAL_ENV_VARS[name] = {
-                    "description": (
-                        meta.get("description")
-                        or f"{label} configuration"
-                    ),
-                    "prompt": meta.get("prompt") or name,
-                    "url": meta.get("url") or None,
-                    "password": is_secret,
-                    "category": meta.get("category") or "messaging",
-                }
+                if manifest.get("kind") != "platform":
+                    continue
+                label = (
+                    manifest.get("label")
+                    or manifest.get("name")
+                    or manifest_path.parent.name
+                )
+                # Merge required + optional env var declarations.
+                entries = list(manifest.get("requires_env") or [])
+                entries.extend(manifest.get("optional_env") or [])
+                for entry in entries:
+                    if isinstance(entry, str):
+                        name = entry
+                        meta: dict = {}
+                    elif isinstance(entry, dict) and entry.get("name"):
+                        name = entry["name"]
+                        meta = entry
+                    else:
+                        continue
+                    if name in OPTIONAL_ENV_VARS:
+                        continue  # hardcoded entry wins (back-compat)
+                    # Heuristic: anything named *TOKEN, *SECRET, *KEY, *PASSWORD
+                    # is a password field unless explicitly overridden.
+                    name_upper = name.upper()
+                    is_secret = bool(meta.get("password") or meta.get("secret"))
+                    if not is_secret and not meta.get("password") is False:
+                        is_secret = any(
+                            name_upper.endswith(suf)
+                            for suf in ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
+                        )
+                    OPTIONAL_ENV_VARS[name] = {
+                        "description": (
+                            meta.get("description")
+                            or f"{label} configuration"
+                        ),
+                        "prompt": meta.get("prompt") or name,
+                        "url": meta.get("url") or None,
+                        "password": is_secret,
+                        "category": meta.get("category") or "messaging",
+                    }
     except Exception:
         pass
 

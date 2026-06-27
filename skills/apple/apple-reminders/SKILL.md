@@ -58,7 +58,20 @@ remindctl list               # List all lists
 remindctl list Work          # Show specific list
 remindctl list Projects --create    # Create list
 remindctl list Work --delete        # Delete list
+remindctl open --list Work --app    # Open list in Reminders.app
 ```
+
+### Sharing Lists
+
+`remindctl` uses public EventKit APIs and does not expose collaborator invites
+or native Reminders list sharing. When a user asks to share a list:
+
+1. Create or verify the target list with `remindctl list <name> --create`.
+2. Open it in Reminders.app with `remindctl open --list "<name>" --app`.
+3. Tell the user to use the Reminders.app Share List control to add people.
+
+Do not claim a terminal command can share the list directly unless `remindctl`
+adds an explicit sharing command in the future.
 
 ### Create Reminders
 
@@ -128,3 +141,4 @@ Accepted by `--due` and date filters:
 1. When user says "remind me", clarify: Apple Reminders (syncs to phone) vs agent cronjob alert
 2. Always confirm reminder content and due date before creating
 3. Use `--json` for programmatic parsing
+4. List sharing is an app handoff: open the list in Reminders.app, then have the user finish sharing there

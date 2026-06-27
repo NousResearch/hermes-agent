@@ -80,6 +80,29 @@ class ToolCallEvent:
 
 
 @dataclass(slots=True)
+class SpanEvent:
+    """A timed span — the timing/lineage backbone of a trace.
+
+    One row per run (the root, ``parent_span_id=None``) and one per model/tool call
+    (``parent_span_id`` = the run's root span). Detail rows in ``tel_model_calls`` /
+    ``tel_tool_calls`` share the ``span_id`` and are joined here for ordering and
+    placement on a timeline.
+    """
+    span_id: str
+    trace_id: str
+    run_id: str
+    name: str
+    kind: str                              # "run" | "model" | "tool"
+    start_ns: int
+    end_ns: Optional[int] = None
+    parent_span_id: Optional[str] = None
+    status: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"event": "span", **asdict(self)}
+
+
+@dataclass(slots=True)
 class ErrorEvent:
     run_id: Optional[str]
     error_class: str
@@ -95,5 +118,6 @@ __all__ = [
     "RunEvent",
     "ModelCallEvent",
     "ToolCallEvent",
+    "SpanEvent",
     "ErrorEvent",
 ]

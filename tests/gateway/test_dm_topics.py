@@ -45,7 +45,9 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
+import plugins.platforms.telegram.adapter as telegram_module  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from hermes_state import SessionDB  # noqa: E402
 
 
 def _make_adapter(dm_topics_config=None, group_topics_config=None):
@@ -542,7 +544,7 @@ def test_cache_dm_topic_from_message_no_overwrite():
 
 def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id=None,
                        user_id=42, user_name="Test User", forum_topic_created=None,
-                       is_topic_message=None, is_forum=None):
+                       forum_topic_edited=None, is_topic_message=None, is_forum=None):
     """Create a mock Telegram Message for _build_message_event tests."""
     chat = SimpleNamespace(
         id=chat_id,
@@ -573,6 +575,7 @@ def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id
         reply_to_message=None,
         date=None,
         forum_topic_created=forum_topic_created,
+        forum_topic_edited=forum_topic_edited,
     )
     return msg
 
@@ -784,6 +787,126 @@ def test_group_topic_unmapped_thread_id():
     assert event.source.chat_topic is None
 
 
+def test_group_topic_config_takes_priority_over_cache():
+    """Manual group_topics config should win over the learned cache."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "Configured", "thread_id": 5, "skill": "configured-skill"},
+            ],
+        }
+    ])
+    cache_db = SimpleNamespace(get_telegram_group_topic_name=MagicMock(return_value="Cached"))
+    adapter._telegram_group_topic_cache_db = cache_db
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=5,
+        text="hello",
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == "configured-skill"
+    assert event.source.chat_topic == "Configured"
+    cache_db.get_telegram_group_topic_name.assert_not_called()
+
+
+def test_group_topic_cache_hit_sets_chat_topic_without_config():
+    """A learned group topic name should populate SessionSource.chat_topic."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    adapter._telegram_group_topic_cache_db = SimpleNamespace(
+        get_telegram_group_topic_name=MagicMock(return_value="Cached Topic")
+    )
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=12,
+        text="hello",
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill is None
+    assert event.source.chat_topic == "Cached Topic"
+    adapter._telegram_group_topic_cache_db.get_telegram_group_topic_name.assert_called_once_with(
+        chat_id="-1001234567890",
+        thread_id="12",
+    )
+
+
+def test_group_topic_cache_miss_keeps_chat_topic_none():
+    """Unknown group topic names should preserve the existing None behavior."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    adapter._telegram_group_topic_cache_db = SimpleNamespace(
+        get_telegram_group_topic_name=MagicMock(return_value=None)
+    )
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=12,
+        text="hello",
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill is None
+    assert event.source.chat_topic is None
+
+
+@pytest.mark.asyncio
+async def test_group_topic_cache_reuses_runner_session_db_and_disconnect_keeps_it_open(tmp_path):
+    """A gateway runner-owned SessionDB is shared, not adapter-owned."""
+    adapter = _make_adapter()
+    shared_db = SessionDB(db_path=tmp_path / "state.db")
+
+    class Runner:
+        def __init__(self, session_db):
+            self._session_db = session_db
+
+        async def handle_message(self, *_args, **_kwargs):
+            return None
+
+    runner = Runner(shared_db)
+    adapter._message_handler = runner.handle_message
+
+    try:
+        cache_db = adapter._get_telegram_group_topic_cache_db(create=True)
+
+        assert cache_db is shared_db
+        assert adapter._telegram_group_topic_cache_db is shared_db
+        assert adapter._owns_telegram_group_topic_cache_db is False
+
+        await adapter.disconnect()
+
+        assert shared_db._conn is not None
+        shared_db.set_telegram_group_topic_name(
+            chat_id="-1001234567890",
+            thread_id="77",
+            name="Shared",
+            source="test",
+        )
+        assert shared_db.get_telegram_group_topic_name(
+            chat_id="-1001234567890",
+            thread_id="77",
+        ) == "Shared"
+    finally:
+        shared_db.close()
+
+
 def test_group_topic_unmapped_chat_id():
     """Chat ID not in group_topics config should fall through silently."""
     from gateway.platforms.base import MessageType
@@ -809,6 +932,138 @@ def test_group_topic_unmapped_chat_id():
 
     assert event.auto_skill is None
     assert event.source.chat_topic is None
+
+
+@pytest.mark.asyncio
+async def test_forum_topic_created_service_message_writes_cache_without_agent(tmp_path):
+    """forum_topic_created should only update the cache and not dispatch to the agent."""
+    adapter = _make_adapter()
+    cache_db = SessionDB(db_path=tmp_path / "state.db")
+    adapter._telegram_group_topic_cache_db = cache_db
+    adapter.handle_message = AsyncMock()
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=77,
+        is_topic_message=True,
+        is_forum=True,
+        forum_topic_created=SimpleNamespace(name="Launch"),
+    )
+    update = SimpleNamespace(update_id=1, effective_message=msg, message=msg)
+
+    await adapter._handle_forum_topic_status_update(update, None)
+
+    assert cache_db.get_telegram_group_topic_name(
+        chat_id="-1001234567890",
+        thread_id="77",
+    ) == "Launch"
+    adapter.handle_message.assert_not_awaited()
+    cache_db.close()
+
+
+@pytest.mark.asyncio
+async def test_forum_topic_edited_nonempty_name_updates_cache(tmp_path):
+    """forum_topic_edited with a name should replace the learned cache value."""
+    adapter = _make_adapter()
+    cache_db = SessionDB(db_path=tmp_path / "state.db")
+    cache_db.set_telegram_group_topic_name(
+        chat_id="-1001234567890",
+        thread_id="77",
+        name="Old",
+        source="test",
+    )
+    adapter._telegram_group_topic_cache_db = cache_db
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=77,
+        is_topic_message=True,
+        is_forum=True,
+        forum_topic_edited=SimpleNamespace(name="Renamed"),
+    )
+    update = SimpleNamespace(update_id=2, effective_message=msg, message=msg)
+
+    await adapter._handle_forum_topic_status_update(update, None)
+
+    assert cache_db.get_telegram_group_topic_name(
+        chat_id="-1001234567890",
+        thread_id="77",
+    ) == "Renamed"
+    cache_db.close()
+
+
+@pytest.mark.asyncio
+async def test_forum_topic_edited_empty_name_does_not_overwrite_cache(tmp_path):
+    """Icon-only forum_topic_edited events should leave the old cached name intact."""
+    adapter = _make_adapter()
+    cache_db = SessionDB(db_path=tmp_path / "state.db")
+    cache_db.set_telegram_group_topic_name(
+        chat_id="-1001234567890",
+        thread_id="77",
+        name="Still Here",
+        source="test",
+    )
+    adapter._telegram_group_topic_cache_db = cache_db
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=77,
+        is_topic_message=True,
+        is_forum=True,
+        forum_topic_edited=SimpleNamespace(name=None),
+    )
+    update = SimpleNamespace(update_id=3, effective_message=msg, message=msg)
+
+    await adapter._handle_forum_topic_status_update(update, None)
+
+    assert cache_db.get_telegram_group_topic_name(
+        chat_id="-1001234567890",
+        thread_id="77",
+    ) == "Still Here"
+    cache_db.close()
+
+
+def test_forum_topic_status_handler_registers_created_and_edited(monkeypatch):
+    """The Telegram adapter should register status filters for created and edited topics."""
+    adapter = _make_adapter()
+    adapter._app = SimpleNamespace(add_handler=MagicMock())
+
+    class FakeFilter:
+        def __init__(self, names):
+            self.names = set(names)
+
+        def __or__(self, other):
+            return FakeFilter(self.names | other.names)
+
+    created = FakeFilter({"FORUM_TOPIC_CREATED"})
+    edited = FakeFilter({"FORUM_TOPIC_EDITED"})
+    monkeypatch.setattr(
+        telegram_module,
+        "filters",
+        SimpleNamespace(
+            StatusUpdate=SimpleNamespace(
+                FORUM_TOPIC_CREATED=created,
+                FORUM_TOPIC_EDITED=edited,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        telegram_module,
+        "TelegramMessageHandler",
+        lambda filter_obj, callback: SimpleNamespace(
+            filter=filter_obj,
+            callback=callback,
+        ),
+    )
+
+    adapter._register_forum_topic_status_handler()
+
+    handler = adapter._app.add_handler.call_args.args[0]
+    assert handler.filter.names == {"FORUM_TOPIC_CREATED", "FORUM_TOPIC_EDITED"}
+    assert handler.callback == adapter._handle_forum_topic_status_update
 
 
 def test_group_topic_no_config():

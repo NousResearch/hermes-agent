@@ -426,6 +426,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._send_path_degraded: bool = False
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
+        self._telegram_group_topic_cache_db = None
+        self._owns_telegram_group_topic_cache_db = False
         # Track forum chats where we've already registered bot commands
         self._forum_command_registered: set[int] = set()
         # Lock per la registrazione sicura dei comandi nei forum supergroup
@@ -2298,6 +2300,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
+            self._register_forum_topic_status_handler()
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             
@@ -2564,6 +2567,17 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, e, exc_info=True)
         self._release_platform_lock()
+
+        if getattr(self, "_owns_telegram_group_topic_cache_db", False):
+            db = getattr(self, "_telegram_group_topic_cache_db", None)
+            close = getattr(db, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            self._telegram_group_topic_cache_db = None
+            self._owns_telegram_group_topic_cache_db = False
 
         for task in self._pending_photo_batch_tasks.values():
             if task and not task.done():
@@ -6263,6 +6277,117 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
 
+    def _get_telegram_group_topic_cache_db(self, *, create: bool = False):
+        """Return the state.db handle used for Telegram forum topic name cache."""
+        db = getattr(self, "_telegram_group_topic_cache_db", None)
+        if db is not None:
+            return db
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        db = getattr(runner, "_session_db", None)
+        if db is not None:
+            self._telegram_group_topic_cache_db = db
+            return db
+
+        if not create:
+            return None
+
+        try:
+            from hermes_state import SessionDB
+
+            db = SessionDB()
+            self._telegram_group_topic_cache_db = db
+            self._owns_telegram_group_topic_cache_db = True
+            return db
+        except Exception as exc:
+            logger.debug(
+                "[%s] Telegram group topic cache unavailable: %s",
+                self.name,
+                exc,
+            )
+            return None
+
+    def _cache_telegram_group_topic_name(
+        self,
+        chat_id: str,
+        thread_id: str,
+        name: str,
+        *,
+        source: str,
+    ) -> None:
+        """Persist an observed Telegram forum group topic name."""
+        db = self._get_telegram_group_topic_cache_db(create=True)
+        if db is None:
+            return
+        try:
+            db.set_telegram_group_topic_name(
+                chat_id=str(chat_id),
+                thread_id=str(thread_id),
+                name=name,
+                source=source,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[%s] Failed to cache Telegram group topic %s/%s: %s",
+                self.name,
+                chat_id,
+                thread_id,
+                exc,
+            )
+
+    def _get_cached_telegram_group_topic_name(
+        self,
+        chat_id: str,
+        thread_id: str,
+    ) -> Optional[str]:
+        """Return a persisted Telegram forum group topic name, if known."""
+        db = self._get_telegram_group_topic_cache_db(create=False)
+        if db is None:
+            return None
+        try:
+            return db.get_telegram_group_topic_name(
+                chat_id=str(chat_id),
+                thread_id=str(thread_id),
+            )
+        except Exception as exc:
+            logger.debug(
+                "[%s] Failed to read Telegram group topic cache %s/%s: %s",
+                self.name,
+                chat_id,
+                thread_id,
+                exc,
+            )
+            return None
+
+    def _forum_topic_status_filter(self):
+        """Build the PTB filter for forum topic created/edited service updates."""
+        status_update = getattr(filters, "StatusUpdate", None) if filters is not None else None
+        if status_update is None:
+            return None
+        created = getattr(status_update, "FORUM_TOPIC_CREATED", None)
+        edited = getattr(status_update, "FORUM_TOPIC_EDITED", None)
+        if created is None:
+            return edited
+        if edited is None:
+            return created
+        try:
+            return created | edited
+        except Exception:
+            return None
+
+    def _register_forum_topic_status_handler(self) -> None:
+        """Register a non-agent handler for forum topic created/edited events."""
+        if not self._app:
+            return
+        status_filter = self._forum_topic_status_filter()
+        if status_filter is None:
+            logger.debug("[%s] Telegram forum topic status filters unavailable", self.name)
+            return
+        self._app.add_handler(TelegramMessageHandler(
+            status_filter,
+            self._handle_forum_topic_status_update,
+        ))
+
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.
 
@@ -6272,6 +6397,44 @@ class TelegramAdapter(BasePlatformAdapter):
         consuming channel posts without ever building a gateway event.
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
+    async def _handle_forum_topic_status_update(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Cache forum topic names from Telegram service messages and return."""
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+
+        chat = getattr(msg, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        thread_id = getattr(msg, "message_thread_id", None)
+        if chat_id is None or thread_id is None:
+            return
+
+        name = None
+        source = None
+        created = getattr(msg, "forum_topic_created", None)
+        if created is not None:
+            name = getattr(created, "name", None)
+            source = "forum_topic_created"
+        else:
+            edited = getattr(msg, "forum_topic_edited", None)
+            if edited is not None:
+                name = getattr(edited, "name", None)
+                source = "forum_topic_edited"
+
+        if not source or not name or not str(name).strip():
+            return
+
+        self._cache_telegram_group_topic_name(
+            str(chat_id),
+            str(thread_id),
+            str(name).strip(),
+            source=source,
+        )
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
@@ -7110,6 +7273,11 @@ class TelegramAdapter(BasePlatformAdapter):
                             topic_skill = topic.get("skill")
                             break
                     break
+            if not chat_topic:
+                chat_topic = self._get_cached_telegram_group_topic_name(
+                    str(chat.id),
+                    thread_id_str,
+                )
 
         # Build source
         source = self.build_source(

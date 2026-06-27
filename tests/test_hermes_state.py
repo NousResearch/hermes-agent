@@ -2377,6 +2377,89 @@ class TestSchemaInit:
         columns = {row[1] for row in cursor.fetchall()}
         assert "title" in columns
 
+    def test_existing_db_creates_telegram_group_topic_cache_without_version_bump(
+        self, tmp_path
+    ):
+        """Opening an existing DB should create the group-topic cache table."""
+        from hermes_state import SCHEMA_VERSION
+
+        old_db = tmp_path / "old.db"
+        conn = sqlite3.connect(old_db)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+            """
+        )
+        conn.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
+        conn.commit()
+        conn.close()
+
+        db = SessionDB(db_path=old_db)
+        try:
+            version = db._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+            assert version == SCHEMA_VERSION
+
+            db.set_telegram_group_topic_name(
+                chat_id="-1001234567890",
+                thread_id="77",
+                name="Launch",
+                source="test",
+            )
+
+            assert db.get_telegram_group_topic_name(
+                chat_id="-1001234567890",
+                thread_id="77",
+            ) == "Launch"
+        finally:
+            db.close()
+
     def test_topic_mode_schema_is_not_auto_migrated_on_open(self, tmp_path):
         """Opening an old DB should not add topic-mode columns until /topic opts in.
 

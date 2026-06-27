@@ -28,6 +28,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -2830,10 +2831,9 @@ def run_conversation(
                             approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
-                        # Compression created a new session — clear history
-                        # so _flush_messages_to_session_db writes compressed
-                        # messages to the new session, not skipping them.
-                        conversation_history = None
+                        conversation_history = conversation_history_after_compression(
+                            agent, messages
+                        )
                         if len(messages) < original_len or old_ctx > _reduced_ctx:
                             agent._buffer_status(
                                 f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
@@ -3042,10 +3042,9 @@ def run_conversation(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
                     )
-                    # Compression created a new session — clear history
-                    # so _flush_messages_to_session_db writes compressed
-                    # messages to the new session, not skipping them.
-                    conversation_history = None
+                    conversation_history = conversation_history_after_compression(
+                        agent, messages
+                    )
 
                     # Re-estimate tokens after compression.  Same-message-count
                     # compression (tool-result pruning, in-place summarization)
@@ -3209,10 +3208,9 @@ def run_conversation(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
                     )
-                    # Compression created a new session — clear history
-                    # so _flush_messages_to_session_db writes compressed
-                    # messages to the new session, not skipping them.
-                    conversation_history = None
+                    conversation_history = conversation_history_after_compression(
+                        agent, messages
+                    )
 
                     # Re-estimate tokens after compression.  Same-message-count
                     # compression (tool-result pruning, in-place summarization)
@@ -4316,10 +4314,9 @@ def run_conversation(
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
                         task_id=effective_task_id,
                     )
-                    # Compression created a new session — clear history so
-                    # _flush_messages_to_session_db writes compressed messages
-                    # to the new session (see preflight compression comment).
-                    conversation_history = None
+                    conversation_history = conversation_history_after_compression(
+                        agent, messages
+                    )
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

@@ -14851,10 +14851,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"
         )
-        _streaming_enabled = (
-            _scfg.enabled and _scfg.transport != "off"
-            if _plat_streaming is None
-            else bool(_plat_streaming)
+        _global_streaming_enabled = bool(_scfg.enabled) and _scfg.transport != "off"
+        _streaming_enabled = _global_streaming_enabled and (
+            True if _plat_streaming is None else bool(_plat_streaming)
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
@@ -16031,10 +16030,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_config, platform_key, "streaming"
             )
             # None = no per-platform override → follow global config
-            _streaming_enabled = (
-                _scfg.enabled and _scfg.transport != "off"
-                if _plat_streaming is None
-                else bool(_plat_streaming)
+            _global_streaming_enabled = bool(_scfg.enabled) and _scfg.transport != "off"
+            _streaming_enabled = _global_streaming_enabled and (
+                True if _plat_streaming is None else bool(_plat_streaming)
             )
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled

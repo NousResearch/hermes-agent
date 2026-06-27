@@ -474,6 +474,33 @@ class TestHandleSessionsCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_blocks_blank_source_same_uid_row(self, tmp_path):
+        """A persisted row whose `source` is blank/legacy cannot prove it shares
+        the caller's platform, so user_id equality alone must NOT authorize a
+        resume — the blank source fails closed exactly like a missing user_id
+        (IDOR regression: an identified caller could otherwise bind to an
+        unproven-origin transcript)."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("blank_source_same_uid", "telegram", user_id="12345")
+        db.set_session_title("blank_source_same_uid", "Blank Source Same UID")
+        # Simulate a malformed/legacy row that does not record its origin.
+        db._conn.execute(
+            "UPDATE sessions SET source = '' WHERE id = ?", ("blank_source_same_uid",)
+        )
+        db._conn.commit()
+        db.create_session("current_session_001", "telegram", user_id="12345")
+
+        for name in ("Blank Source Same UID", "blank_source_same_uid"):
+            event = _make_event(text=f"/resume {name}")
+            runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                                  event=event)
+            result = await runner._handle_resume_command(event)
+            runner.session_store.switch_session.assert_not_called()
+            assert "Resumed" not in result, name
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_gateway_dispatches_sessions_command(self, tmp_path):
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")

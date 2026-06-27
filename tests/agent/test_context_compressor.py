@@ -62,6 +62,27 @@ class TestUpdateFromResponse:
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
+    def test_anthropic_style_keys(self, compressor):
+        # OpenAI-compat servers (mlx_vlm, NVIDIA NIM) may return Anthropic-shaped usage
+        compressor.update_from_response({
+            "input_tokens": 4000,
+            "output_tokens": 800,
+        })
+        assert compressor.last_prompt_tokens == 4000
+        assert compressor.last_completion_tokens == 800
+        assert compressor.last_total_tokens == 4800
+
+    def test_openai_keys_take_priority(self, compressor):
+        # When both key styles are present, OpenAI-style wins
+        compressor.update_from_response({
+            "prompt_tokens": 5000,
+            "completion_tokens": 1000,
+            "input_tokens": 4000,
+            "output_tokens": 800,
+        })
+        assert compressor.last_prompt_tokens == 5000
+        assert compressor.last_completion_tokens == 1000
+
 
 class TestPreflightDeferral:
     def test_defers_when_recent_real_usage_fit_and_rough_growth_is_small(self, compressor):

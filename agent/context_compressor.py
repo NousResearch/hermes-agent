@@ -906,9 +906,16 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model: Optional[str] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
-        """Update tracked token usage from API response."""
-        self.last_prompt_tokens = usage.get("prompt_tokens", 0)
-        self.last_completion_tokens = usage.get("completion_tokens", 0)
+        """Update tracked token usage from API response.
+
+        Accepts both OpenAI-style keys (prompt_tokens/completion_tokens) and
+        Anthropic-style keys (input_tokens/output_tokens) so that plugin authors
+        and OpenAI-compat local servers (e.g. mlx_vlm, NVIDIA NIM) that emit
+        Anthropic-shaped usage dicts don't silently produce zero token counts.
+        OpenAI-style keys take priority when both are present.
+        """
+        self.last_prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens", 0)
+        self.last_completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens

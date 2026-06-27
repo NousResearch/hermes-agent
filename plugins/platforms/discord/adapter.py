@@ -102,7 +102,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -859,7 +859,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         asyncio.create_task(_notify())
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
@@ -3411,13 +3411,14 @@ class DiscordAdapter(BasePlatformAdapter):
             print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
 
     def format_message(self, content: str) -> str:
-        """
-        Format message for Discord.
+        """Format message for Discord.
 
-        Discord uses its own markdown variant.
+        Converts GFM markdown tables to bullet-list groups since Discord
+        does not render pipe tables natively.
         """
-        # Discord markdown is fairly standard, no special escaping needed
-        return content
+        if not content:
+            return content
+        return convert_table_to_bullets(content)
 
     async def _run_simple_slash(
         self,
@@ -5285,6 +5286,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
+                    # Pre-seed dedup: when _auto_create_thread creates a thread
+                    # via message.create_thread(), Discord fires a second
+                    # MESSAGE_CREATE event for the "thread starter message".
+                    # That starter message carries id == thread.id and may
+                    # arrive with type=default (not type=21/thread_starter_message),
+                    # so the type filter above does not catch it.  Marking the
+                    # thread id in the dedup cache now ensures that duplicate
+                    # event is dropped before it can trigger a second agent run.
+                    # Fixes #51057.
+                    self._dedup.is_duplicate(str(thread.id))
 
         referenced_attachments = []
         reference = getattr(message, "reference", None)
@@ -5699,7 +5710,8 @@ def _component_check_auth(
 
     Mirrors the gateway's external-surface authorization model: component
     button clicks must be explicitly authorized by a Discord user/role
-    allowlist, a global user allowlist, or an explicit allow-all flag.
+    allowlist, a global user allowlist, an explicit allow-all flag, or
+    the pairing store (``hermes pairing approve``).
 
     Behavior:
 
@@ -5709,6 +5721,7 @@ def _component_check_auth(
       - role allowlist set + interaction.user has no resolvable
         ``roles`` attribute (e.g. DM context with a role policy active)
         -> reject (fail closed)
+      - user is approved in the pairing store -> allow
       - otherwise -> reject
     """
     if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
@@ -5730,11 +5743,13 @@ def _component_check_auth(
     if user is None:
         return False
 
+    # Resolve user ID once for both allowlist and pairing checks.
+    try:
+        uid = str(user.id)
+    except AttributeError:
+        uid = ""
+
     if has_users:
-        try:
-            uid = str(user.id)
-        except AttributeError:
-            uid = ""
         if "*" in user_set or (uid and uid in user_set):
             return True
 
@@ -5752,6 +5767,18 @@ def _component_check_auth(
             return False
         if user_role_ids & role_set:
             return True
+
+    # Check pairing store — mirrors ``authz_mixin._check_authorization``
+    # so users approved via ``hermes pairing approve`` can interact with
+    # component buttons even without DISCORD_ALLOWED_USERS set.
+    if uid:
+        try:
+            from gateway.pairing import PairingStore
+            store = PairingStore()
+            if store.is_approved("discord", uid):
+                return True
+        except Exception:
+            pass
 
     return False
 

@@ -411,7 +411,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return float(default)
         return parsed
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
         Start the WhatsApp bridge.
         
@@ -599,7 +599,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ],
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
-                preexec_fn=None if _IS_WINDOWS else os.setsid,
+                start_new_session=True,
                 env=bridge_env,
             )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
@@ -1293,6 +1293,31 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 # ──────────────────────────────────────────────────────────────────────────
 
 
+_WA_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_WA_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+_WA_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
+
+
+def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> str:
+    """Map a local media file to the bridge /send-media ``mediaType``.
+
+    Returns one of ``image`` | ``video`` | ``audio`` | ``document`` so the
+    Baileys bridge renders the right native WhatsApp message kind. Voice notes
+    and audio files route to ``audio``; ``force_document`` (the [[as_document]]
+    directive) forces every file to ``document`` regardless of extension.
+    """
+    if force_document:
+        return "document"
+    ext = os.path.splitext(file_path)[1].lower()
+    if is_voice or ext in _WA_AUDIO_EXTS:
+        return "audio"
+    if ext in _WA_IMAGE_EXTS:
+        return "image"
+    if ext in _WA_VIDEO_EXTS:
+        return "video"
+    return "document"
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -1316,22 +1341,55 @@ async def _standalone_send(
     try:
         bridge_port = extra.get("bridge_port", 3000)
         normalized_chat_id = to_whatsapp_jid(chat_id)
+        media = media_files or []
+        text = message or ""
+        last_message_id = None
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"http://localhost:{bridge_port}/send",
-                json={"chatId": normalized_chat_id, "message": message},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status == 200:
+            # 1) Text first (skip the /send call when this chunk is media-only).
+            if text.strip():
+                async with session.post(
+                    f"http://localhost:{bridge_port}/send",
+                    json={"chatId": normalized_chat_id, "message": text},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return {"error": f"WhatsApp bridge error ({resp.status}): {body}"}
                     data = await resp.json()
-                    return {
-                        "success": True,
-                        "platform": "whatsapp",
-                        "chat_id": normalized_chat_id,
-                        "message_id": data.get("messageId"),
-                    }
-                body = await resp.text()
-                return {"error": f"WhatsApp bridge error ({resp.status}): {body}"}
+                    last_message_id = data.get("messageId")
+
+            # 2) Each media file as a native attachment via /send-media. The
+            # bridge maps mediaType -> image/video/audio/document message kinds
+            # so PNG/JPEG/WebP/GIF arrive as inline images, MP4 as a video
+            # bubble, and ogg/opus as a voice note — not a file/document.
+            for media_path, is_voice in media:
+                if not os.path.exists(media_path):
+                    return {"error": f"WhatsApp media file not found: {media_path}"}
+                media_type = _bridge_media_type(media_path, is_voice, force_document)
+                payload: Dict[str, Any] = {
+                    "chatId": normalized_chat_id,
+                    "filePath": media_path,
+                    "mediaType": media_type,
+                }
+                if media_type == "document":
+                    payload["fileName"] = os.path.basename(media_path)
+                async with session.post(
+                    f"http://localhost:{bridge_port}/send-media",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return {"error": f"WhatsApp media error ({resp.status}): {body}"}
+                    data = await resp.json()
+                    last_message_id = data.get("messageId") or last_message_id
+
+        return {
+            "success": True,
+            "platform": "whatsapp",
+            "chat_id": normalized_chat_id,
+            "message_id": last_message_id,
+        }
     except Exception as e:
         return {"error": f"WhatsApp send failed: {e}"}
 

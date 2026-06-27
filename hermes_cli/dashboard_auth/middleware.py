@@ -22,7 +22,7 @@ from typing import Awaitable, Callable
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from hermes_cli.dashboard_auth import list_providers
+from hermes_cli.dashboard_auth import list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
 from hermes_cli.dashboard_auth.cookies import read_session_cookies
@@ -181,6 +181,13 @@ async def gated_auth_middleware(
     if not getattr(request.app.state, "auth_required", False):
         return await call_next(request)
 
+    # A request already authenticated by the token-auth seam (a service caller
+    # on a registered token route) carries ``token_authenticated`` — it is NOT
+    # a cookie session and must not be bounced to /login. Pass it through; the
+    # seam already attached ``request.state.token_principal``.
+    if getattr(request.state, "token_authenticated", False):
+        return await call_next(request)
+
     path = request.url.path
     if _path_is_public(path):
         return await call_next(request)
@@ -223,7 +230,7 @@ async def gated_auth_middleware(
         # 503 — distinguishing "transient IDP outage" (don't force re-login)
         # from "token genuinely invalid" (fall through to refresh/relogin).
         unreachable_provider: str | None = None
-        for provider in list_providers():
+        for provider in list_session_providers():
             try:
                 session = provider.verify_session(access_token=at)
             except ProviderError as e:
@@ -337,7 +344,7 @@ def _attempt_refresh(request: Request, *, refresh_token):
     """
     if not refresh_token:
         return None
-    for provider in list_providers():
+    for provider in list_session_providers():
         try:
             new_session = provider.refresh_session(refresh_token=refresh_token)
         except RefreshExpiredError:

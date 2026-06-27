@@ -3446,6 +3446,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
+                "request_overrides": override.get("request_overrides"),
             }
             if override_runtime.get("api_key"):
                 logger.debug(
@@ -14278,6 +14279,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        # request_overrides reflects the switched-to provider; apply it even
+        # when None so switching to a provider without one clears a stale value.
+        if "request_overrides" in override:
+            runtime_kwargs["request_overrides"] = override.get("request_overrides")
         return model, runtime_kwargs
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:

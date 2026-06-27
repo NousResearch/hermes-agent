@@ -3559,6 +3559,26 @@ class TestHandleMaxIterations:
             "call_123"
         ]
 
+    def test_summary_includes_max_tokens_when_unset(self, agent):
+        """Regression: when agent.max_tokens is None, the summary call must
+        still include an explicit output budget so Anthropic doesn't 400 and
+        cloud providers don't default to an inadequate 4-8K cap."""
+        agent.max_tokens = None
+        resp = _mock_response(content="Here is a summary.")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+
+        agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 90)
+
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        # Must have either max_tokens or max_completion_tokens (provider-dependent)
+        has_output_cap = "max_tokens" in kwargs or "max_completion_tokens" in kwargs
+        assert has_output_cap, (
+            f"Summary call missing output budget when max_tokens=None: {list(kwargs.keys())}"
+        )
+        cap_value = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
+        assert cap_value == 16384
+
 
 class TestRunConversation:
     """Tests for the main run_conversation method.

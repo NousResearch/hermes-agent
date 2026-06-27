@@ -1465,6 +1465,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 summary_kwargs["temperature"] = _summary_temperature
             if agent.max_tokens is not None:
                 summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
+            else:
+                # Anthropic rejects calls without max_tokens; cloud providers
+                # default to ~4-8K (too small for 90-turn summaries); local
+                # llama.cpp runs unbounded until KV cache saturates.
+                summary_kwargs.update(agent._max_tokens_param(16384))
             if _lm_reasoning_effort is not None:
                 summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
 
@@ -1556,6 +1561,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     summary_kwargs["temperature"] = _summary_temperature
                 if agent.max_tokens is not None:
                     summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
+                else:
+                    summary_kwargs.update(agent._max_tokens_param(16384))
                 if _lm_reasoning_effort is not None:
                     summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
                 if summary_extra_body:

@@ -364,11 +364,36 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
 
         id_token = payload.get("id_token")
         if not id_token or not isinstance(id_token, str):
-            raise ProviderError(
-                "OIDC token response missing id_token — ensure the 'openid' "
-                "scope is configured and the client is allowed to receive an "
-                "ID token."
-            )
+            # OIDC Core §12.2: the ID token is OPTIONAL on a refresh response.
+            # Many conformant self-hosted IDPs (Keycloak in common configs,
+            # Authentik, Dex) return only access_token + rotated refresh_token
+            # on the refresh grant. Treat a missing id_token as a hard error
+            # only on the authorization-code path (initial login); on the
+            # refresh path, fall back to the IDP's access_token if it is a
+            # verifiable JWT — some IDPs issue JWT access tokens that carry the
+            # same identity claims.
+            is_refresh = bool(previous_refresh_token)
+            if not is_refresh:
+                raise ProviderError(
+                    "OIDC token response missing id_token — ensure the "
+                    "'openid' scope is configured and the client is allowed "
+                    "to receive an ID token."
+                )
+            # Refresh path: try the access_token as an identity JWT fallback.
+            access_token_raw = payload.get("access_token")
+            if access_token_raw and isinstance(access_token_raw, str):
+                try:
+                    self._verify_id_token(access_token_raw)
+                    id_token = access_token_raw
+                except Exception:
+                    pass
+            if not id_token:
+                raise ProviderError(
+                    "OIDC refresh response contained neither an id_token "
+                    "nor a verifiable JWT access_token. The IDP may need "
+                    "'openid' scope configured on the refresh grant, or "
+                    "JWT access-token format enabled."
+                )
 
         token_type = str(payload.get("token_type", "")).lower()
         if token_type and token_type != "bearer":

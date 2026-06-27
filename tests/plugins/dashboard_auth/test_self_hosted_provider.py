@@ -775,6 +775,69 @@ class TestRefreshAndRevoke:
             session = provider.refresh_session(refresh_token="rt_kept")
         assert session.refresh_token == "rt_kept"
 
+    def test_refresh_tolerates_missing_id_token_with_jwt_access_token(
+        self, provider, rsa_keypair
+    ):
+        # OIDC Core §12.2: id_token is OPTIONAL on a refresh response.
+        # When the IDP omits it but issues a JWT access_token that passes
+        # verification, the session must succeed using that JWT.
+        jwt_at = _mint_id_token(rsa_keypair)
+        mock_resp = _mock_post(
+            200,
+            {
+                "access_token": jwt_at,
+                "token_type": "Bearer",
+                "refresh_token": "rt_new",
+            },
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            session = provider.refresh_session(refresh_token="rt_old")
+        assert isinstance(session, Session)
+        assert session.access_token == jwt_at
+        assert session.refresh_token == "rt_new"
+
+    def test_refresh_no_id_token_no_jwt_access_token_raises(
+        self, provider
+    ):
+        # When neither id_token nor a verifiable JWT access_token is present
+        # on a refresh response, a clear ProviderError is raised.
+        mock_resp = _mock_post(
+            200,
+            {
+                "access_token": "opaque-not-a-jwt",
+                "token_type": "Bearer",
+                "refresh_token": "rt_new",
+            },
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(ProviderError, match="neither.*id_token.*nor.*JWT"):
+                provider.refresh_session(refresh_token="rt_old")
+
+    def test_login_still_requires_id_token(self, provider, rsa_keypair):
+        # The authorization-code path must still hard-fail when id_token is
+        # missing — the OIDC §12.2 relaxation applies only to refresh.
+        mock_resp = _mock_post(
+            200,
+            {
+                "access_token": _mint_id_token(rsa_keypair),
+                "token_type": "Bearer",
+            },
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(ProviderError, match="missing id_token"):
+                provider.complete_login(
+                    code="auth-code",
+                    state="s",
+                    code_verifier="verifier",
+                    redirect_uri="https://localhost/callback",
+                )
+
     def test_refresh_400_raises_refresh_expired(self, provider):
         mock_resp = _mock_post(400, {"error": "invalid_grant"})
         with patch(

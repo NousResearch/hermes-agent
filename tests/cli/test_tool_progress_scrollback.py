@@ -169,14 +169,39 @@ class TestToolProgressScrollback:
 
         assert mock_print.call_count == 2
 
-    def test_verbose_mode_no_duplicate_scrollback(self):
-        """In 'verbose' mode, scrollback lines are NOT printed (run_agent handles verbose output)."""
+    def test_verbose_mode_commits_scrollback_line(self):
+        """In 'verbose' mode, tool.completed commits a persistent scrollback line.
+
+        Regression: 'verbose' used to be omitted from the scrollback gate on
+        the premise that run_agent renders verbose output. That premise is
+        false in the interactive CLI — run_agent's verbose prints are gated on
+        ``not quiet_mode`` and the interactive CLI runs quiet_mode=True. So a
+        non-streaming model call (MoA aggregator, copilot-acp) under 'verbose'
+        rendered each tool only into the self-overwriting spinner, building no
+        scrollable history. 'verbose' is strictly more than 'all', so it must
+        commit at least the same line.
+        """
         cli = _make_cli(tool_progress="verbose")
         with patch.object(_cli_mod, "_cprint") as mock_print:
             cli._on_tool_progress("tool.started", "terminal", "ls", {"command": "ls"})
             cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.5, is_error=False)
 
-        mock_print.assert_not_called()
+        mock_print.assert_called_once()
+
+    def test_verbose_mode_commits_every_call(self):
+        """In 'verbose' mode, consecutive same-tool calls each commit a line.
+
+        Mirrors 'all' (no consecutive-repeat suppression — that is 'new'-only),
+        so a multi-step turn builds a full scrollable tool history.
+        """
+        cli = _make_cli(tool_progress="verbose")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("tool.started", "terminal", "echo one", {"command": "echo one"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
+            cli._on_tool_progress("tool.started", "terminal", "echo two", {"command": "echo two"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
+
+        assert mock_print.call_count == 2
 
     def test_verbose_mode_config_does_not_enable_global_debug_logging(self):
         """display.tool_progress=verbose controls TOOL-CALL DISPLAY ONLY.

@@ -561,15 +561,12 @@ def agent_browser_runnable(path: str | None) -> bool:
         return False
     import subprocess
 
-    from hermes_cli import _subprocess_compat
-
     try:
-        result = _subprocess_compat.run(
+        result = subprocess.run(
             [path, "--version"],
             capture_output=True,
             timeout=10,
             env=with_hermes_node_path(),
-            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False

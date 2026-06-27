@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
-from hermes_cli import _subprocess_compat
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
@@ -292,7 +291,7 @@ def _expand_git_reference(
     label: str,
 ) -> tuple[str | None, str | None]:
     try:
-        result = _subprocess_compat.run(
+        result = subprocess.run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,

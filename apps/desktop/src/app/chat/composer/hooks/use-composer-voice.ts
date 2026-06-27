@@ -144,22 +144,25 @@ export function useComposerVoice({
   )
 
   const wakePausedRef = useRef(false)
-
-  useEffect(() => {
-    const gateway = $gateway.get()
-
-    if (!gateway) {
+  const resumeWakeIfPaused = useCallback(() => {
+    if (!wakePausedRef.current) {
       return
     }
 
+    wakePausedRef.current = false
+    void $gateway.get()?.request('wake.resume', {}).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
     if (voiceConversationActive) {
       wakePausedRef.current = true
-      void gateway.request('wake.pause', {}).catch(() => undefined)
-    } else if (wakePausedRef.current) {
-      wakePausedRef.current = false
-      void gateway.request('wake.resume', {}).catch(() => undefined)
+      void $gateway.get()?.request('wake.pause', {}).catch(() => undefined)
+    } else {
+      resumeWakeIfPaused()
     }
-  }, [voiceConversationActive])
+  }, [resumeWakeIfPaused, voiceConversationActive])
+
+  useEffect(() => resumeWakeIfPaused, [resumeWakeIfPaused])
 
   // Explicit start/end for the on-screen conversation controls (the hotkey uses
   // the gated toggle above).

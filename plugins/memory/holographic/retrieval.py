@@ -7,6 +7,7 @@ Jaccard similarity reranking and trust-weighted scoring.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -106,6 +107,7 @@ class FactRetriever:
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
+
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
@@ -492,11 +494,16 @@ class FactRetriever:
         """
         conn = self.store._conn
 
+        # Sanitize query for FTS5: hyphens and special chars break MATCH.
+        # Strategy: try original first; on failure, fall back to AND of
+        # individual tokens; on further failure, fall back to OR.
+        sanitized = self._sanitize_fts_query(query)
+
         # Build query - FTS5 rank is negative (lower = better match)
         # We need to join facts_fts with facts to get all columns
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        params.append(sanitized)
 
         if category:
             where_clauses.append("f.category = ?")
@@ -517,11 +524,15 @@ class FactRetriever:
         """
         params.append(limit)
 
-        try:
-            rows = conn.execute(sql, params).fetchall()
-        except Exception:
-            # FTS5 MATCH can fail on malformed queries — fall back to empty
-            return []
+        rows = []
+        for attempt_query in (sanitized, self._sanitize_fts_query(query, mode="and"), self._sanitize_fts_query(query, mode="or")):
+            attempt_params = [attempt_query] + params[1:]
+            try:
+                rows = conn.execute(sql, attempt_params).fetchall()
+                if rows:
+                    break
+            except Exception:
+                continue
 
         if not rows:
             return []
@@ -540,6 +551,35 @@ class FactRetriever:
             results.append(fact)
 
         return results
+
+    @staticmethod
+    def _sanitize_fts_query(query: str, mode: str = "default") -> str:
+        """Sanitize a query string for FTS5 MATCH.
+
+        FTS5 treats hyphens as column-filter operators and several other
+        characters as query syntax. This strips or escapes them to prevent
+        "no such column" errors.
+
+        Modes:
+          - "default": quote each token individually (handles hyphens)
+          - "and": space-separated tokens (implicit AND)
+          - "or": OR-joined tokens (broader fallback)
+        """
+        # Remove FTS5 operators: AND, OR, NOT, *, ^, column:
+        tokens = re.split(r'[\s\-\.]+', query.strip())
+        tokens = [t.strip('.,;:!?\"\'()[]{}#@<>') for t in tokens]
+        tokens = [t for t in tokens if t]
+
+        if not tokens:
+            return query  # give up, let FTS5 handle it
+
+        if mode == "or":
+            return " OR ".join(f'"{t}"' for t in tokens)
+        elif mode == "and":
+            return " ".join(f'"{t}"' for t in tokens)
+        else:
+            # default: quote each token to handle hyphens
+            return " ".join(f'"{t}"' for t in tokens)
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:

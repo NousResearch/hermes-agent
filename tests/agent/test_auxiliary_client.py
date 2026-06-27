@@ -29,6 +29,7 @@ from agent.auxiliary_client import (
     _try_payment_fallback,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
+    _resolve_task_provider_model,
     _CodexCompletionsAdapter,
 )
 
@@ -91,6 +92,38 @@ def codex_auth_dir(tmp_path, monkeypatch):
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
+
+
+class TestResolveTaskProviderModel:
+    def test_explicit_base_url_preserves_known_provider_identity(self):
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="moa_reference",
+            provider="openai-codex",
+            model="gpt-5.5",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+        )
+
+        assert provider == "openai-codex"
+        assert model == "gpt-5.5"
+        assert base_url == "https://chatgpt.com/backend-api/codex"
+        assert api_key == "codex-token"
+        assert api_mode is None
+
+    def test_explicit_base_url_without_provider_still_uses_custom(self):
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="moa_reference",
+            provider="",
+            model="local-model",
+            base_url="http://127.0.0.1:11434/v1",
+            api_key="local-key",
+        )
+
+        assert provider == "custom"
+        assert model == "local-model"
+        assert base_url == "http://127.0.0.1:11434/v1"
+        assert api_key == "local-key"
+        assert api_mode is None
 
 
 class TestAuxiliaryMaxTokensParam:

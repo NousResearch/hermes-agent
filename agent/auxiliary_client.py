@@ -5187,6 +5187,14 @@ def _resolve_task_provider_model(
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
     if base_url:
+        # A caller may pass a resolved endpoint together with a real provider
+        # identity (MoA slots do this after resolve_runtime_provider()).  Do not
+        # collapse that back to ``custom``: provider identity controls important
+        # transport/auth behavior such as openai-codex Responses wrapping and
+        # Cloudflare headers.  Only provider-less or explicitly custom endpoints
+        # should use the generic custom route.
+        if provider and provider.strip().lower() not in {"auto", "custom"}:
+            return provider, resolved_model, base_url, api_key, resolved_api_mode
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode

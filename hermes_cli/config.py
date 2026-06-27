@@ -4638,6 +4638,8 @@ def show_config():
     
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
+        ("OPENCODE_ZEN_API_KEY", "OpenCode Zen"),
+        ("OPENCODE_GO_API_KEY", "OpenCode Go"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("EXA_API_KEY", "Exa"),
         ("PARALLEL_API_KEY", "Parallel"),

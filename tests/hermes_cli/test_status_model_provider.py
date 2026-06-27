@@ -43,8 +43,8 @@ def test_show_status_displays_configured_dict_model_and_provider_label(monkeypat
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     out = capsys.readouterr().out
-    assert "Model:        anthropic/claude-sonnet-4" in out
-    assert "Provider:     Anthropic" in out
+    assert "Configured model:    anthropic/claude-sonnet-4" in out
+    assert "Resolved provider:   Anthropic" in out
 
 
 def test_show_status_displays_legacy_string_model_and_custom_endpoint(monkeypatch, capsys, tmp_path):
@@ -59,8 +59,8 @@ def test_show_status_displays_legacy_string_model_and_custom_endpoint(monkeypatc
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     out = capsys.readouterr().out
-    assert "Model:        qwen3:latest" in out
-    assert "Provider:     Custom endpoint" in out
+    assert "Configured model:    qwen3:latest" in out
+    assert "Resolved provider:   Custom endpoint" in out
 
 
 def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path):

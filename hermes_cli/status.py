@@ -113,8 +113,8 @@ def show_status(args):
     except Exception:
         config = {}
 
-    print(f"  Model:        {_configured_model_label(config)}")
-    print(f"  Provider:     {_effective_provider_label()}")
+    print(f"  Configured model:    {_configured_model_label(config)}")
+    print(f"  Resolved provider:   {_effective_provider_label()}")
 
     # =========================================================================
     # API Keys
@@ -305,6 +305,8 @@ def show_status(args):
     print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
 
     apikey_providers = {
+        "OpenCode Zen":     ("OPENCODE_ZEN_API_KEY",),
+        "OpenCode Go":      ("OPENCODE_GO_API_KEY",),
         "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         "Kimi / Moonshot":  ("KIMI_API_KEY",),
         "StepFun Step Plan": ("STEPFUN_API_KEY",),

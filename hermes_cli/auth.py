@@ -3603,6 +3603,8 @@ def refresh_codex_oauth_pure(
 def _refresh_codex_auth_tokens(
     tokens: Dict[str, str],
     timeout_seconds: float,
+    *,
+    allow_cli_recovery: bool = False,
 ) -> Dict[str, str]:
     """Refresh Codex access token using the refresh token.
     
@@ -3627,7 +3629,7 @@ def _refresh_codex_auth_tokens(
         # 401'ing until a manual re-auth. Transient failures (e.g. 429 quota)
         # keep relogin_required=False — the stored token is still valid there, so
         # we never self-heal those and re-raise unchanged.
-        if not getattr(exc, "relogin_required", False):
+        if not allow_cli_recovery or not getattr(exc, "relogin_required", False):
             raise
         imported = _recover_codex_tokens_from_cli(
             f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
@@ -3683,6 +3685,7 @@ def resolve_codex_runtime_credentials(
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+    import_cli_on_missing: bool = False,
 ) -> Dict[str, Any]:
     """Resolve runtime credentials from Hermes's own Codex token store.
 
@@ -3700,18 +3703,7 @@ def resolve_codex_runtime_credentials(
         data = _read_codex_tokens()
     except AuthError as exc:
         read_error = exc
-        if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
-            "codex_auth_missing_access_token",
-            "codex_auth_missing_refresh_token",
-            "codex_auth_invalid_shape",
-        }:
-            imported = _recover_codex_tokens_from_cli(str(getattr(exc, "code", None) or "auth_error"))
-            if imported:
-                data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
-            else:
-                data = None
-        else:
-            data = None
+        data = None
 
     if data is None:
         pool_token = _pool_codex_access_token()
@@ -3748,14 +3740,29 @@ def resolve_codex_runtime_credentials(
                 code=CODEX_RATE_LIMITED_CODE,
                 relogin_required=False,
             )
-        if read_error is not None:
+        recoverable_read_codes = {
+            "codex_auth_missing",
+            "codex_auth_missing_access_token",
+            "codex_auth_missing_refresh_token",
+            "codex_auth_invalid_shape",
+        }
+        if (
+            import_cli_on_missing
+            and getattr(read_error, "relogin_required", False)
+            and getattr(read_error, "code", None) in recoverable_read_codes
+        ):
+            imported = _recover_codex_tokens_from_cli(str(getattr(read_error, "code", None) or "auth_error"))
+            if imported:
+                data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
+        if data is None and read_error is not None:
             raise read_error
-        raise AuthError(
-            "No Codex credentials stored. Run `hermes auth` to authenticate.",
-            provider="openai-codex",
-            code="codex_auth_missing",
-            relogin_required=True,
-        )
+        if data is None:
+            raise AuthError(
+                "No Codex credentials stored. Run `hermes auth` to authenticate.",
+                provider="openai-codex",
+                code="codex_auth_missing",
+                relogin_required=True,
+            )
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
@@ -3776,7 +3783,11 @@ def resolve_codex_runtime_credentials(
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                tokens = _refresh_codex_auth_tokens(
+                    tokens,
+                    refresh_timeout_seconds,
+                    allow_cli_recovery=import_cli_on_missing,
+                )
                 access_token = str(tokens.get("access_token", "") or "").strip()
 
     base_url = (

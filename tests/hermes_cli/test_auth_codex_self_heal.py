@@ -41,7 +41,7 @@ def test_self_heals_on_stale_refresh_token(monkeypatch):
     monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda: dict(fresh))
     monkeypatch.setattr(auth, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
 
-    out = _refresh_codex_auth_tokens(STALE, 20.0)
+    out = _refresh_codex_auth_tokens(STALE, 20.0, allow_cli_recovery=True)
 
     assert out["access_token"] == "fresh-access"
     assert out["refresh_token"] == "fresh-refresh"
@@ -70,7 +70,7 @@ def test_does_not_self_heal_on_rate_limit(monkeypatch):
     monkeypatch.setattr(auth, "_save_codex_tokens", lambda *a, **k: None)
 
     with pytest.raises(AuthError) as ei:
-        _refresh_codex_auth_tokens(STALE, 20.0)
+        _refresh_codex_auth_tokens(STALE, 20.0, allow_cli_recovery=True)
 
     assert ei.value.code == "codex_rate_limited"
     assert import_calls["n"] == 0  # never touched ~/.codex on a transient failure
@@ -92,7 +92,7 @@ def test_reraises_when_codex_cli_token_absent(monkeypatch):
     monkeypatch.setattr(auth, "_save_codex_tokens", lambda *a, **k: None)
 
     with pytest.raises(AuthError) as ei:
-        _refresh_codex_auth_tokens(STALE, 20.0)
+        _refresh_codex_auth_tokens(STALE, 20.0, allow_cli_recovery=True)
 
     assert ei.value.code == "refresh_token_reused"
 
@@ -140,7 +140,7 @@ def test_reraises_when_imported_token_lacks_refresh_token(monkeypatch):
     monkeypatch.setattr(auth, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
 
     with pytest.raises(AuthError) as ei:
-        _refresh_codex_auth_tokens(STALE, 20.0)
+        _refresh_codex_auth_tokens(STALE, 20.0, allow_cli_recovery=True)
 
     assert ei.value.code == "invalid_grant"
     assert saved == {}  # nothing was persisted
@@ -171,7 +171,7 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-    resolved = resolve_codex_runtime_credentials()
+    resolved = resolve_codex_runtime_credentials(import_cli_on_missing=True)
 
     assert resolved["api_key"] == "fresh-access"
     assert resolved["source"] == "hermes-auth-store"

@@ -122,7 +122,7 @@ def test_resolve_runtime_provider_falls_back_when_pool_empty(monkeypatch):
     monkeypatch.setattr(
         rp,
         "resolve_codex_runtime_credentials",
-        lambda: {
+        lambda **kwargs: {
             "provider": "openai-codex",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "codex-token",
@@ -147,7 +147,7 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     monkeypatch.setattr(
         rp,
         "resolve_codex_runtime_credentials",
-        lambda: {
+        lambda **kwargs: {
             "provider": "openai-codex",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "codex-token",

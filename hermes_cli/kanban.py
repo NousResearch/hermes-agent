@@ -1823,6 +1823,7 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 
 def _cmd_claim(args: argparse.Namespace) -> int:
+    board_slug = args.board or kb.get_current_board()
     with kb.connect_closing() as conn:
         task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
         if task is None:
@@ -1837,7 +1838,18 @@ def _cmd_claim(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        workspace = kb.resolve_workspace(task)
+        use_worktree = task.workspace_kind == "worktree" or (
+            kb._board_is_git_backed(board_slug) and not getattr(task, "goal_mode", False)
+        )
+        if use_worktree:
+            workspace, resolved_branch_name, base_ref, base_commit = kb._resolve_worktree_workspace(
+                task, board=board_slug
+            )
+            kb.set_workspace_kind(conn, task.id, "worktree")
+            kb.set_branch_name(conn, task.id, resolved_branch_name)
+            kb.set_workspace_base(conn, task.id, base_ref, base_commit)
+        else:
+            workspace = kb.resolve_workspace(task, board=board_slug)
         kb.set_workspace_path(conn, task.id, str(workspace))
     print(f"Claimed {task.id}")
     print(f"Workspace: {workspace}")

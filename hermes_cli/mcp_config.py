@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
@@ -238,6 +239,13 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     loading worked because it interpolates. (#37792)
     """
     from tools.mcp_tool import _interpolate_env_vars
+    from hermes_cli.env_loader import _load_dotenv_with_fallback
+
+    env_file = config.get("env_file")
+    if env_file:
+        env_path = Path(env_file).expanduser()
+        if env_path.exists():
+            _load_dotenv_with_fallback(env_path, override=True)
 
     try:
         from hermes_cli.env_loader import load_hermes_dotenv

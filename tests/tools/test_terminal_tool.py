@@ -28,6 +28,31 @@ def test_terminal_schema_advertises_persistent_env_state():
     assert "exported environment variables persist between calls" in description
     assert "activate a virtualenv" in description
     assert "do not re-source the same environment before every command" in description
+    assert "already executes commands on the configured SSH target" in description
+    assert "Windows PowerShell" in description
+
+
+def test_nested_ssh_target_parser_handles_common_options():
+    command = 'ssh -o ConnectTimeout=10 -i /tmp/key alice@192.168.2.5 "hostname" 2>&1'
+
+    assert terminal_tool._find_nested_ssh_target(command) == "192.168.2.5"
+
+
+def test_nested_ssh_to_configured_target_is_blocked():
+    config = {"env_type": "ssh", "ssh_host": "192.168.2.5"}
+    command = 'ssh -o ConnectTimeout=10 192.168.2.5 "cmd /c hostname"'
+
+    error = terminal_tool._nested_ssh_to_configured_target_error(command, config)
+
+    assert "already connected" in error
+    assert "Run the remote command directly" in error
+
+
+def test_nested_ssh_to_other_host_is_allowed():
+    config = {"env_type": "ssh", "ssh_host": "192.168.2.5"}
+    command = 'ssh buildbox.example "hostname"'
+
+    assert terminal_tool._nested_ssh_to_configured_target_error(command, config) == ""
 
 
 def test_printf_literal_sudo_does_not_trigger_rewrite(monkeypatch):

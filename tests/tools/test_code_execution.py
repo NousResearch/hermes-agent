@@ -842,6 +842,22 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("No code", result["error"])
 
+    def test_windows_ssh_backend_returns_actionable_error(self):
+        env_config = {
+            "env_type": "ssh",
+            "ssh_host": "192.168.2.5",
+            "ssh_user": "alice",
+            "ssh_port": 22,
+            "ssh_key": "",
+        }
+        with patch("tools.terminal_tool._get_env_config", return_value=env_config), \
+             patch("tools.environments.ssh.detect_windows_ssh_host", return_value=True):
+            result = json.loads(execute_code("print('hi')", task_id="test"))
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Windows SSH PowerShell backend", result["error"])
+        self.assertIn("terminal() is already executing there", result["error"])
+
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
     def test_none_enabled_tools_uses_all(self):
         """When enabled_tools is None, all sandbox tools should be available."""

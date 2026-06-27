@@ -1103,7 +1103,33 @@ def execute_code(
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config
-    env_type = _get_env_config()["env_type"]
+    env_config = _get_env_config()
+    env_type = env_config["env_type"]
+
+    if env_type == "ssh":
+        try:
+            from tools.environments.ssh import detect_windows_ssh_host
+
+            if detect_windows_ssh_host(
+                env_config.get("ssh_host", ""),
+                env_config.get("ssh_user", ""),
+                env_config.get("ssh_port", 22),
+                env_config.get("ssh_key", ""),
+            ):
+                return json.dumps({
+                    "status": "error",
+                    "error": (
+                        "execute_code is not supported on the native Windows SSH "
+                        "PowerShell backend. Use terminal() with direct PowerShell "
+                        "commands instead, for example `hostname; whoami`. Do not "
+                        "run `ssh` to the configured SSH host from inside the "
+                        "terminal backend; terminal() is already executing there."
+                    ),
+                    "tool_calls_made": 0,
+                    "duration_seconds": 0,
+                }, ensure_ascii=False)
+        except Exception as exc:
+            logger.debug("Could not determine whether SSH backend is Windows: %s", exc)
 
     # execute_code runs arbitrary Python (subprocess/os.system/...) that never
     # passes through terminal()/DANGEROUS_PATTERNS, so guard the whole script

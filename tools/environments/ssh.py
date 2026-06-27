@@ -1,5 +1,6 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
+import base64
 import hashlib
 import logging
 import os
@@ -21,16 +22,72 @@ from tools.environments.file_sync import (
 logger = logging.getLogger(__name__)
 
 
-def _ensure_ssh_available() -> None:
+def _ensure_ssh_client_available() -> None:
     """Fail fast with a clear error when the SSH client is unavailable."""
     if not shutil.which("ssh"):
         raise RuntimeError(
             "SSH is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
         )
+
+
+def _ensure_ssh_available() -> None:
+    """Fail fast with a clear error when SSH/SCP clients are unavailable."""
+    _ensure_ssh_client_available()
     if not shutil.which("scp"):
         raise RuntimeError(
             "SCP is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
         )
+
+
+def encode_powershell_command(script: str) -> str:
+    """Encode a PowerShell script for ``-EncodedCommand``."""
+    return base64.b64encode(script.encode("utf-16le")).decode("ascii")
+
+
+def detect_windows_ssh_host(host: str, user: str, port: int = 22, key_path: str = "") -> bool:
+    """Return True when the SSH target appears to be native Windows.
+
+    Linux/macOS SSH targets remain on the bash-based SSHEnvironment. The probe
+    is deliberately best-effort: any connection, auth, or PowerShell failure
+    returns False so the normal SSH path can surface its existing diagnostics.
+    """
+    if not host or not user or not shutil.which("ssh"):
+        return False
+
+    script = """
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+if ($env:OS -eq 'Windows_NT' -or $env:USERPROFILE) {
+  Write-Output 'hermes-windows-ssh'
+}
+"""
+    cmd = ["ssh"]
+    cmd.extend(["-o", "BatchMode=yes"])
+    cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
+    cmd.extend(["-o", "ConnectTimeout=10"])
+    if port != 22:
+        cmd.extend(["-p", str(port)])
+    if key_path:
+        cmd.extend(["-i", key_path])
+    cmd.append(f"{user}@{host}")
+    cmd.extend([
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        encode_powershell_command(script),
+    ])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and "hermes-windows-ssh" in result.stdout.lower()
 
 
 class SSHEnvironment(BaseEnvironment):

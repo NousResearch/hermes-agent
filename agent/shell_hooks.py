@@ -447,7 +447,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
             input=stdin_json,
             capture_output=True,
             timeout=spec.timeout,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             shell=False,
         )
     except subprocess.TimeoutExpired:

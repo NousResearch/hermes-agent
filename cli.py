@@ -6512,7 +6512,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not sessions:
             return False
 
-        from hermes_cli.main import _relative_time
+        from hermes_cli.main import _relative_time, _cell
 
         print()
         if reason == "history":
@@ -6523,10 +6523,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
         print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
         for idx, session in enumerate(sessions, start=1):
-            title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
+            title = _cell(session.get("title") or "—", 32, ellipsis=False)
+            preview = _cell(session.get("preview") or "", 40, ellipsis=True)
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            print(
+                f"  {idx:<3} {title} {preview} "
+                f"{_cell(last_active, 13, ellipsis=False)} "
+                f"{session['id']}"
+            )
         print()
         print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
         print("  Example: /resume 2")

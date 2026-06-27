@@ -773,6 +773,98 @@ def _relative_time(ts) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
 
+def _table_safe(text: str) -> str:
+    """Normalize text for table display by stripping variation selectors.
+
+    Variation selectors (e.g. U+FE0F after U+2699 ⚙) can cause different
+    terminals to report different display widths for the same emoji sequence.
+    Stripping them gives consistent column alignment across all terminals
+    while preserving the core glyph.
+    """
+    return text.replace("\ufe0f", "")
+
+
+def _cell(text: str, width: int, *, ellipsis: bool = True) -> str:
+    """Format *text* to exactly *width* terminal display cells.
+
+    Guarantees ``wcswidth(_cell(x, width)) == width`` for any input.
+    Truncation is grapheme-cluster-safe (uses ``regex.findall(r'\\X', …)``)
+    so ZWJ emoji, combining characters, and variation sequences are never
+    split mid-cluster.  When *ellipsis* is True and truncation occurs, the
+    last retained cluster is followed by ``…`` within the *width* budget.
+    """
+    try:
+        import regex as _regex_mod  # grapheme-cluster-aware, not stdlib re
+    except ImportError:
+        _regex_mod = None
+
+    try:
+        from wcwidth import wcswidth
+    except ImportError:
+        # Degrade gracefully: character-level truncation + padding
+        s = text[:width]
+        return s + " " * (width - len(s))
+
+    # Normalize for table-safe display (strip variation selectors)
+    text = _table_safe(text)
+
+    disp_w = wcswidth(text)
+    if disp_w < 0:
+        disp_w = len(text)
+
+    # Fast path: fits without truncation → just pad
+    if disp_w <= width:
+        return text + " " * max(0, width - disp_w)
+
+    # --- Truncation path ---
+    if _regex_mod is not None:
+        clusters = _regex_mod.findall(r"\X", text)
+    else:
+        clusters = list(text)
+    if not clusters:
+        return " " * width
+
+    suffix = "…" if ellipsis else ""
+    suffix_w = wcswidth(suffix) if suffix else 0
+    if suffix_w < 0:
+        suffix_w = len(suffix)
+
+    if suffix_w >= width:
+        return suffix[:width].ljust(width)
+
+    budget = width - suffix_w
+
+    # Build prefix grapheme-cluster by grapheme-cluster
+    kept: list[str] = []
+    kept_w = 0
+    for cluster in clusters:
+        cw = wcswidth(cluster)
+        if cw < 0:
+            cw = len(cluster)
+        if kept_w + cw > budget:
+            break
+        kept.append(cluster)
+        kept_w += cw
+
+    if not kept:
+        # All clusters are wider than budget — drop down to per-codepoint
+        # truncation as a last resort.
+        for i in range(1, len(text) + 1):
+            cw = wcswidth(text[:i])
+            if cw < 0:
+                cw = i
+            if cw > budget:
+                prefix = text[: i - 1]
+                pw = wcswidth(prefix)
+                if pw < 0:
+                    pw = i - 1
+                return prefix + suffix + " " * max(0, width - pw - suffix_w)
+        return text[:budget] + suffix
+
+    result = "".join(kept) + suffix
+    return result + " " * max(0, width - kept_w - suffix_w)
+
+
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
     from hermes_cli.config import get_env_path, get_hermes_home, load_config
@@ -914,17 +1006,21 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
             # Adaptive column widths based on terminal width
             # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18]
-            fixed_cols = 3 + 12 + 6 + 18 + 6  # arrow + active + src + id + padding
-            name_width = max(20, max_x - fixed_cols)
+            # Arrow width (3) is handled by the caller, NOT included in fixed_cols.
+            fixed_cols = 12 + 6 + 18 + 6  # active + src + id + padding
+            name_width = max(20, max_x - 3 - fixed_cols)
 
             if title:
-                name = title[:name_width]
+                name = _cell(title, name_width, ellipsis=True)
             elif preview:
-                name = preview[:name_width]
+                name = _cell(preview, name_width, ellipsis=True)
             else:
-                name = sid
+                name = _cell(sid, name_width, ellipsis=False)
 
-            return f"{name:<{name_width}}  {last_active:<10}  {source:<5} {sid}"
+            return (
+                f"{name}  "
+                f"{last_active:<10}  {source:<5} {sid}"
+            )
 
         def _match(s, query):
             """Check if a session matches the search query (case-insensitive)."""
@@ -981,8 +1077,9 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     pass
 
                 # Column header line
-                fixed_cols = 3 + 12 + 6 + 18 + 6
-                name_width = max(20, max_x - fixed_cols)
+                # Arrow width (3) is NOT in fixed_cols — match _format_row's calculation.
+                fixed_cols = 12 + 6 + 18 + 6  # active + src + id + padding
+                name_width = max(20, max_x - 3 - fixed_cols)
                 col_header = f"   {'Title / Preview':<{name_width}}  {'Active':<10}  {'Src':<5} {'ID'}"
                 try:
                     dim_attr = (
@@ -6635,7 +6732,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     if not has_upstream:
         # Check if user previously declined
         if _should_skip_upstream_prompt():
-            return
+            return False
 
         # Ask user if they want to add upstream
         print()
@@ -6659,13 +6756,13 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
                 has_upstream = True
             else:
                 print("  ✗ Failed to add upstream remote. Skipping upstream sync.")
-                return
+                return False
         else:
             print(
                 "  Skipped. Run 'git remote add upstream https://github.com/NousResearch/hermes-agent.git' to add later."
             )
             _mark_skip_upstream_prompt()
-            return
+            return False
 
     # Fetch upstream main only. This sync compares upstream/main with
     # origin/main, so there's no reason to pull every upstream ref — and a bare
@@ -6681,7 +6778,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         )
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
-        return
+        return False
 
     # Compare origin/main with upstream/main
     origin_ahead = _count_commits_between(git_cmd, cwd, "upstream/main", "origin/main")
@@ -6691,7 +6788,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
     if origin_ahead < 0 or upstream_ahead < 0:
         print("  ✗ Could not compare branches. Skipping upstream sync.")
-        return
+        return False
 
     # If origin/main has commits not on upstream, don't trample
     if origin_ahead > 0:
@@ -6700,12 +6797,12 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("  Skipping upstream sync to preserve your changes.")
         print("  If you want to merge upstream changes, run:")
         print("    git pull upstream main")
-        return
+        return False
 
     # If upstream is not ahead, fork is up to date
     if upstream_ahead == 0:
         print("  ✓ Fork is up to date with upstream")
-        return
+        return False
 
     # origin/main is strictly behind upstream/main (can fast-forward)
     print()
@@ -6722,7 +6819,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print(
             "  ✗ Failed to pull from upstream. You may need to resolve conflicts manually."
         )
-        return
+        return False
 
     print("  ✓ Updated from upstream")
 
@@ -6735,6 +6832,8 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             "  ℹ Got updates from upstream but couldn't push to fork (no write access?)"
         )
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
+
+    return True
 
 
 def _invalidate_update_cache():
@@ -9087,36 +9186,43 @@ def _cmd_update_impl(args, gateway_mode: bool):
             check=True,
         )
         commit_count = int(result.stdout.strip())
+        upstream_synced = False
 
         if commit_count == 0:
             _invalidate_update_cache()
 
             # Even if origin is up to date, the fork may be behind upstream
             if is_fork and branch == "main":
-                _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+                upstream_synced = _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
-            # Restore stash and switch back to original branch if we moved
-            if auto_stash_ref is not None:
-                _restore_stashed_changes(
-                    git_cmd,
-                    PROJECT_ROOT,
-                    auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn,
-                )
-            if current_branch not in {branch, "HEAD"}:
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            print("✓ Already up to date!")
-            _resume_windows_gateways_after_update(_windows_gateway_resume)
-            return
+            if not upstream_synced:
+                # Restore stash and switch back to original branch if we moved
+                if auto_stash_ref is not None:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                        input_fn=gw_input_fn,
+                    )
+                if current_branch not in {branch, "HEAD"}:
+                    subprocess.run(
+                        git_cmd + ["checkout", current_branch],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                print("✓ Already up to date!")
+                _resume_windows_gateways_after_update(_windows_gateway_resume)
+                return
 
-        print(f"→ Found {commit_count} new commit(s)")
+            # Upstream had new commits — continue to snapshot + pull + dep updates
+
+        if upstream_synced:
+            print("→ Upstream changes pulled — updating dependencies...")
+        else:
+            print(f"→ Found {commit_count} new commit(s)")
 
         # Snapshot critical state (state.db, config, pairing JSONs, etc.)
         # before pulling so a user can recover if something goes wrong.
@@ -12909,6 +13015,7 @@ def main():
                 return
             has_titles = any(s.get("title") for s in sessions)
             if has_titles:
+                # Headers are ASCII-only — safe to use native f-string padding
                 print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
                 print("─" * 110)
             else:
@@ -12916,18 +13023,24 @@ def main():
                 print("─" * 95)
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
-                preview = (
-                    s.get("preview", "")[:38]
-                    if has_titles
-                    else s.get("preview", "")[:48]
-                )
                 if has_titles:
-                    title = (s.get("title") or "—")[:30]
+                    title = _cell((s.get("title") or "—"), 32, ellipsis=False)
+                    preview = _cell(s.get("preview", ""), 40, ellipsis=True)
                     sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                    print(
+                        f"{title} {preview} "
+                        f"{_cell(last_active, 13, ellipsis=False)} "
+                        f"{sid}"
+                    )
                 else:
+                    preview = _cell(s.get("preview", ""), 50, ellipsis=True)
                     sid = s["id"]
-                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                    print(
+                        f"{preview} "
+                        f"{_cell(last_active, 13, ellipsis=False)} "
+                        f"{_cell(s['source'], 6, ellipsis=False)} "
+                        f"{sid}"
+                    )
 
         elif action == "export":
             if args.session_id:

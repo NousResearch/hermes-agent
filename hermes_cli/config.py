@@ -1184,7 +1184,7 @@ DEFAULT_CONFIG = {
         "exit_recovery": {
             "auto_recover": False,
             "preferred_exit": "residential",
-            "fallback_exits": ["residential", "surfshark"],
+            "fallback_exits": ["residential", "vpn"],
             "allow_direct_fallback": False,
             "controller": "",
             "timeout_s": 45,
@@ -3471,15 +3471,6 @@ OPTIONAL_ENV_VARS = {
         "tools": ["web_search"],
         "password": True,
         "category": "tool",
-    },
-    "HERMES_BROWSER_AUTO_EXIT_RECOVERY": {
-        "description": "Auto-switch browser network exits on recoverable proxy/tunnel/DNS failures",
-        "prompt": "Enable automatic browser exit recovery? (true/false)",
-        "url": None,
-        "password": False,
-        "tools": ["browser_exit_recover"],
-        "category": "tool",
-        "advanced": True,
     },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for cloud browser (optional — local browser works without this)",

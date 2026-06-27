@@ -2434,9 +2434,6 @@ def _browser_exit_recovery_config() -> dict:
 
 
 def _browser_exit_auto_recovery_enabled() -> bool:
-    env_val = os.getenv("HERMES_BROWSER_AUTO_EXIT_RECOVERY")
-    if env_val is not None and env_val.strip():
-        return is_truthy_value(env_val, default=False)
     return is_truthy_value(
         _browser_exit_recovery_config().get("auto_recover"),
         default=False,

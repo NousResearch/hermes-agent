@@ -21,8 +21,8 @@ from tools.registry import registry
 from utils import is_truthy_value
 
 
-_KNOWN_EXIT_PROFILES: Tuple[str, ...] = ("residential", "surfshark", "direct")
-_DEFAULT_EXIT_PROFILES: Tuple[str, ...] = ("residential", "surfshark")
+_KNOWN_EXIT_PROFILES: Tuple[str, ...] = ("residential", "vpn", "direct")
+_DEFAULT_EXIT_PROFILES: Tuple[str, ...] = ("residential", "vpn")
 _DEFAULT_TIMEOUT_S = 45
 _MAX_OUTPUT = 1200
 
@@ -334,12 +334,7 @@ def resolve_exit_controller() -> Optional[str]:
         candidates.append(path)
     else:
         home = Path.home()
-        candidates.extend(
-            [
-                home / ".hermes" / "bin" / "hermes-control.sh",
-                home / "AI" / "shared" / "hermes-vps" / "bin" / "hermes-control.sh",
-            ]
-        )
+        candidates.append(home / ".hermes" / "bin" / "hermes-control.sh")
 
     for candidate in candidates:
         try:

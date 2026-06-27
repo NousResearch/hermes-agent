@@ -150,7 +150,7 @@ def test_recover_browser_exit_runs_fixed_controller_args(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {
         "browser": {
             "exit_recovery": {
-                "fallback_exits": ["residential", "surfshark"],
+                "fallback_exits": ["residential", "vpn"],
                 "timeout_s": 7,
             }
         }
@@ -182,7 +182,7 @@ def test_direct_exit_requires_operator_config_even_when_tool_arg_allows(monkeypa
     monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {
         "browser": {
             "exit_recovery": {
-                "fallback_exits": ["residential", "surfshark", "direct"],
+                "fallback_exits": ["residential", "vpn", "direct"],
                 "allow_direct_fallback": False,
             }
         }
@@ -264,12 +264,12 @@ def test_browser_exit_recover_tool_shape(monkeypatch):
     response = json.loads(
         browser_exit_recover(
             reason="ERR_PROXY_CONNECTION_FAILED",
-            preferred_exit="surfshark",
+            preferred_exit="vpn",
         )
     )
 
     assert response["success"] is True
-    assert response["ip_recovery"]["selected_exit"] == "surfshark"
+    assert response["ip_recovery"]["selected_exit"] == "vpn"
 
 
 def test_browser_exit_tool_is_in_browser_toolset():
@@ -283,7 +283,9 @@ def test_browser_exit_tool_is_in_browser_toolset():
     assert "browser_exit_recover" in registry._tools
     assert DEFAULT_CONFIG["browser"]["exit_recovery"]["auto_recover"] is False
     assert DEFAULT_CONFIG["browser"]["exit_recovery"]["allow_direct_fallback"] is False
-    assert "HERMES_BROWSER_AUTO_EXIT_RECOVERY" in OPTIONAL_ENV_VARS
+    # Non-secret feature flags live in config.yaml (browser.exit_recovery.*),
+    # never as user-facing HERMES_* env vars.
+    assert "HERMES_BROWSER_AUTO_EXIT_RECOVERY" not in OPTIONAL_ENV_VARS
     assert "HERMES_BROWSER_EXIT_CONTROLLER" not in OPTIONAL_ENV_VARS
 
 

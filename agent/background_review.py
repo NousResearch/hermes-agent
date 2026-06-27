@@ -9,8 +9,9 @@ touched.
 
 The fork inherits the parent's live runtime (provider, model, base_url,
 credentials, cached system prompt) so it hits the same prefix cache and
-uses the same auth.  It runs with a tool whitelist limited to memory and
-skill management tools; everything else is denied at runtime.
+uses the same auth.  It runs with a tool whitelist limited to memory,
+skill, and MCP-memory management tools; everything else is denied at
+runtime.
 
 See the ``hermes-agent-dev`` skill (``references/self-improvement-loop.md``)
 for invariants and PR review criteria.
@@ -725,10 +726,29 @@ def _run_review_in_thread(
                 clear_thread_tool_whitelist,
             )
 
+            # Build the toolset list — always include memory and skills.
+            # If the parent agent uses an MCP-based memory provider
+            # (e.g. agentmemory), also include its MCP toolset so the
+            # review agent can fall back to MCP memory tools when the
+            # built-in store is at capacity.  See issue #34746.
+            _review_toolsets = ["memory", "skills"]
+            try:
+                _mm = getattr(agent, "_memory_manager", None)
+                if _mm and getattr(_mm, "providers", None):
+                    from hermes_cli.mcp_catalog import installed_servers
+                    _mcp_servers = installed_servers()
+                    for _prov in _mm.providers:
+                        if _prov.name in _mcp_servers:
+                            _ts = f"mcp-{_prov.name}"
+                            if _ts not in _review_toolsets:
+                                _review_toolsets.append(_ts)
+            except Exception:
+                pass  # Best-effort — fall back to memory/skills only
+
             review_whitelist = {
                 t["function"]["name"]
                 for t in get_tool_definitions(
-                    enabled_toolsets=["memory", "skills"],
+                    enabled_toolsets=_review_toolsets,
                     quiet_mode=True,
                 )
             }
@@ -736,7 +756,8 @@ def _run_review_in_thread(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Only memory/skill/MCP-memory tools "
+                    "are allowed."
                 ),
             )
             try:
@@ -751,7 +772,8 @@ def _run_review_in_thread(
                     user_message=(
                         prompt
                         + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
+                        "management tools (including MCP memory tools "
+                        "if configured). Other tools will be denied "
                         "at runtime — do not attempt them."
                     ),
                     conversation_history=_review_history,

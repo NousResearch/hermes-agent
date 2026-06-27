@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   checkHermesUpdate,
   getActionStatus,
+  getElevenLabsVoices,
   getStatus,
   restartGateway,
   setApiRequestProfile,
+  speakText,
+  transcribeAudio,
   updateHermes
 } from './hermes'
 
@@ -41,6 +44,9 @@ describe('backend action helpers are profile-scoped', () => {
     void updateHermes()
     void checkHermesUpdate()
     void getActionStatus('gateway-restart')
+    void transcribeAudio('data:audio/webm;base64,AAAA', 'audio/webm')
+    void speakText('hello')
+    void getElevenLabsVoices()
 
     for (const call of api.mock.calls) {
       expect(call[0].profile).toBe('coder')

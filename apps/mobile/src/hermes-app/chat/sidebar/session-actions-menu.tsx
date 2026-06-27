@@ -253,7 +253,10 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
     longPressOrigin.current = null
   }
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType !== 'touch') return
+    // Accept mouse too — the iOS simulator dispatches pointerType 'mouse'.
+    // Right-click still opens normally via Radix's own handler; this only
+    // fires the synthetic event after a 500ms hold, never on a quick click.
+    if (event.pointerType !== 'touch' && event.pointerType !== 'mouse' && event.pointerType !== 'pen') return
     longPressOrigin.current = { x: event.clientX, y: event.clientY }
     const { clientX, clientY, currentTarget } = event
     longPressTimer.current = window.setTimeout(() => {

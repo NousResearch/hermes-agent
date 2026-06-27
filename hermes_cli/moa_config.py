@@ -199,4 +199,4 @@ def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | No
 
 
 def moa_usage() -> str:
-    return "Usage: /moa [preset-name | prompt]  (bare /moa toggles the default preset)"
+    return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"

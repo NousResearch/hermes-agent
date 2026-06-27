@@ -8419,50 +8419,41 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
         elif canonical == "moa":
+            # /moa is one-shot sugar only: run a single prompt through the
+            # default MoA preset, then restore the prior model. To *switch* to a
+            # MoA preset for the session, pick it from the model picker (MoA
+            # presets surface as a virtual "Mixture of Agents" provider).
             from hermes_cli.moa_config import (
-                exact_moa_preset_name,
                 moa_usage,
                 normalize_moa_config,
-                resolve_moa_preset,
             )
 
             parts = cmd_original.split(None, 1)
             payload = parts[1].strip() if len(parts) > 1 else ""
+            if not payload:
+                _cprint(f"  {moa_usage()}")
+                return True
             moa_cfg = self.config.get("moa") if isinstance(self.config, dict) else {}
             normalized = normalize_moa_config(moa_cfg)
-            matched_preset = exact_moa_preset_name(normalized, payload) if payload else normalized["default_preset"]
-            if matched_preset:
-                self.requested_provider = "moa"
-                self.provider = "moa"
-                self.model = matched_preset
-                self.api_key = "moa-virtual-provider"
-                self.base_url = "moa://local"
-                self.api_mode = "chat_completions"
-                self.agent = None
-                _cprint(f"  Model switched to MoA preset: {matched_preset}.")
-            else:
-                if not payload:
-                    _cprint(f"  {moa_usage()}")
-                    return True
-                preset = normalized["default_preset"]
-                self._pending_moa_restore_model = {
-                    "requested_provider": getattr(self, "requested_provider", None),
-                    "provider": getattr(self, "provider", None),
-                    "model": getattr(self, "model", None),
-                    "api_key": getattr(self, "api_key", None),
-                    "base_url": getattr(self, "base_url", None),
-                    "api_mode": getattr(self, "api_mode", None),
-                }
-                self.requested_provider = "moa"
-                self.provider = "moa"
-                self.model = preset
-                self.api_key = "moa-virtual-provider"
-                self.base_url = "moa://local"
-                self.api_mode = "chat_completions"
-                self.agent = None
-                self._pending_moa_disable_after_turn = True
-                self._pending_agent_seed = payload
-                _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")
+            preset = normalized["default_preset"]
+            self._pending_moa_restore_model = {
+                "requested_provider": getattr(self, "requested_provider", None),
+                "provider": getattr(self, "provider", None),
+                "model": getattr(self, "model", None),
+                "api_key": getattr(self, "api_key", None),
+                "base_url": getattr(self, "base_url", None),
+                "api_mode": getattr(self, "api_mode", None),
+            }
+            self.requested_provider = "moa"
+            self.provider = "moa"
+            self.model = preset
+            self.api_key = "moa-virtual-provider"
+            self.base_url = "moa://local"
+            self.api_mode = "chat_completions"
+            self.agent = None
+            self._pending_moa_disable_after_turn = True
+            self._pending_agent_seed = payload
+            _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":

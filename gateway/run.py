@@ -8756,33 +8756,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_goal_command(event)
 
         if canonical == "moa":
+            # /moa is one-shot sugar only: run a single prompt through the
+            # default MoA preset, then restore the prior model. To *switch* to a
+            # MoA preset for the session, pick it from the model picker (MoA
+            # presets surface as a virtual "Mixture of Agents" provider).
             from hermes_cli.moa_config import (
-                exact_moa_preset_name,
                 moa_usage,
                 normalize_moa_config,
-                resolve_moa_preset,
             )
             from hermes_cli.config import load_config
 
             moa_payload = event.get_command_args().strip()
+            if not moa_payload:
+                return moa_usage()
             try:
                 cfg = load_config()
                 moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
             except Exception:
                 moa_cfg = normalize_moa_config({})
-            matched_preset = exact_moa_preset_name(moa_cfg, moa_payload) if moa_payload else moa_cfg["default_preset"]
-            if matched_preset:
-                self._session_model_overrides[_quick_key] = {
-                    "provider": "moa",
-                    "model": matched_preset,
-                    "base_url": "moa://local",
-                    "api_key": "moa-virtual-provider",
-                    "api_mode": "chat_completions",
-                }
-                self._evict_cached_agent(_quick_key)
-                return f"Model switched to MoA preset: {matched_preset}."
-            if not moa_payload:
-                return moa_usage()
             preset = moa_cfg["default_preset"]
             try:
                 event.text = moa_payload

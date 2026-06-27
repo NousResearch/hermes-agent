@@ -26,7 +26,10 @@ Lifecycle:
 """
 
 from abc import ABC, abstractmethod
+import logging
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 class ContextEngine(ABC):
@@ -146,7 +149,15 @@ class ContextEngine(ABC):
     def record_skew_from_real(self, real_prompt_tokens: int) -> None:
         """Pair a real provider ``prompt_tokens`` with the stashed rough (atomically,
         from the engine's ``update_from_response``). Records ratio ≤ 1.0 (rough
-        over-counts; never scale UP), keeps the last-k for median smoothing."""
+        over-counts; never scale UP), keeps the last-k for median smoothing.
+
+        T0 (2026-06-27): the stashed rough is CONSUMED (reset to 0) after use, so a
+        single ``note_rough_sent`` pairs with exactly ONE real reading. Without this,
+        a multi-call turn (one preflight ``note_rough_sent`` + N ``update_from_response``)
+        divided the SAME stale rough into N growing reals, polluting the skew median
+        the trigger calibrates on. See spec
+        ~/.hermes/plans/2026-06-27_skew-telemetry-and-render-harness-SPEC.md.
+        """
         last_rough = getattr(self, "_last_rough_sent", 0)
         if real_prompt_tokens and real_prompt_tokens > 0 and last_rough > 0:
             self.rough_at_last_real = last_rough
@@ -158,6 +169,59 @@ class ContextEngine(ABC):
             hist.append(ratio)
             if len(hist) > self._SKEW_HISTORY:
                 self._recent_skews = hist[-self._SKEW_HISTORY:]
+            # T0: consume the stashed rough so the next real reading without a fresh
+            # note_rough_sent records nothing (bounds cross-turn/session mispairing
+            # to ≤1 on the process-global singleton).
+            self._last_rough_sent = 0
+            # T1: skew telemetry — one COMPACTION_SKEW line per FRESH pair, so a skew
+            # distribution is buildable from logs. Best-effort: a logging failure or a
+            # missing attribute must NEVER propagate into the live turn (INV-2).
+            self._emit_skew_telemetry(last_rough, int(real_prompt_tokens), ratio)
+
+    def _emit_skew_telemetry(self, rough: int, real: int, ratio: float) -> None:
+        """Best-effort COMPACTION_SKEW telemetry (T1). Never raises into the hot path.
+
+        Emits one ``info`` line per fresh (rough, real) pair and appends the same
+        ``task=main`` line to a dedicated append-only sink for the v0.2 floor tune
+        (the rotating gateway logs can rotate skew lines out before N accrues).
+        """
+        try:
+            task = getattr(self, "_aux_task", None) or "main"
+            model = getattr(self, "model", "") or ""
+            provider = getattr(self, "provider", "") or ""
+            ctx = getattr(self, "context_length", 0) or 0
+            model_str = f"{provider}/{model}" if provider else model
+            line = (
+                f"COMPACTION_SKEW rough={rough} real={real} ratio={ratio:.3f} "
+                f"task={task} model={model_str} ctx={ctx}"
+            )
+            logger.info(line)
+            # Dedicated non-rotating sample sink (main-turn distribution only — the
+            # task the trigger uses). Aux tasks don't reach here without their own
+            # note_rough_sent (consumed), so this is naturally main-dominated.
+            if task == "main":
+                self._append_skew_sample(line)
+        except Exception:
+            # Telemetry must never break a live turn (INV-2).
+            pass
+
+    def _append_skew_sample(self, line: str) -> None:
+        """Append one skew sample to ~/.hermes/state/skew-samples.log (append-only,
+        non-rotating). Best-effort; any failure is swallowed by the caller's guard."""
+        import os
+
+        home = os.environ.get("HERMES_HOME") or os.path.join(
+            os.path.expanduser("~"), ".hermes"
+        )
+        # HERMES_HOME may already be a profile dir; the sink is per-process-home,
+        # which is the correct scope for a per-process skew distribution.
+        state_dir = os.path.join(home, "state")
+        os.makedirs(state_dir, exist_ok=True)
+        import time as _time
+
+        stamp = _time.strftime("%Y-%m-%dT%H:%M:%S")
+        with open(os.path.join(state_dir, "skew-samples.log"), "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {line}\n")
 
     def _current_skew(self) -> float:
         """Median of the last-k real/rough ratios, clamped to [floor, 1.0]. Returns

@@ -35,6 +35,30 @@ _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 
+# Task creation/dispatch header patterns for message routing.
+# Detects "### [YYYY-MM-DD_任务N]" and "### [YYYY-MM-DD_任务N_FOLLOWUP]" headers
+# so the gateway can route task-related messages correctly even when the
+# platform adapter doesn't explicitly know about task semantics.
+_TASK_CREATE_RE = re.compile(r"###\s*\[(\d{4}-\d{2}-\d{2}_任务\d+(?:_FOLLOWUP)?)\]")
+_TASK_ANCHOR_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}_任务\d+(?:_FOLLOWUP)?)\]")
+
+
+def detect_task_reference(text: str) -> str | None:
+    """Detect task reference in message text.
+
+    Returns task_id if found, None otherwise.
+    Used by gateway to route task-related messages correctly.
+    """
+    if not text:
+        return None
+    match = _TASK_CREATE_RE.search(text)
+    if match:
+        return match.group(1)
+    match = _TASK_ANCHOR_RE.search(text)
+    if match:
+        return match.group(1)
+    return None
+
 
 def _platform_name(platform) -> str:
     """Normalize a Platform enum / raw string into a lowercase name."""

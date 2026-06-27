@@ -552,6 +552,10 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Set when a session was auto-reset; contains the previous session_id
+    # so the parent session can be identified (#12857).
+    parent_session_id: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -582,6 +586,7 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "parent_session_id": self.parent_session_id,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -644,6 +649,7 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            parent_session_id=data.get("parent_session_id"),
         )
 
 
@@ -1095,6 +1101,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                parent_session_id=db_end_session_id,
             )
 
             self._entries[session_key] = entry
@@ -1103,6 +1110,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "parent_session_id": db_end_session_id,
             }
 
         # SQLite operations outside the lock

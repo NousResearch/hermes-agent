@@ -93,6 +93,14 @@ def _run(cli: HermesCLI, command: str) -> str:
 
 
 def main():
+    # Stdio worker spawned by the gateway: drop any console a uv pythonw→python
+    # re-exec auto-allocated. No-op on POSIX.
+    try:
+        import hermes_bootstrap
+        hermes_bootstrap.detach_orphan_console()
+    except Exception:
+        pass
+
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")

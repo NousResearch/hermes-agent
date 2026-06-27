@@ -59,6 +59,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+from hermes_cli import _subprocess_compat
 
 logger = logging.getLogger("hermes.coding_context")
 
@@ -648,7 +649,7 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
 
 def _git(cwd: Path, *args: str) -> str:
     try:
-        out = subprocess.run(
+        out = _subprocess_compat.run(
             ["git", "-C", str(cwd), *args],
             capture_output=True,
             text=True,

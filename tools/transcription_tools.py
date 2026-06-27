@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
 
+from hermes_cli import _subprocess_compat
 from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
@@ -485,7 +486,7 @@ def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
 
     if os.name == "nt":
         try:
-            subprocess.run(
+            _subprocess_compat.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -556,7 +557,7 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
     else:
         popen_kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
+    proc = _subprocess_compat.popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -1187,7 +1188,7 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
     command = [ffmpeg, "-y", "-i", file_path, converted_path]
 
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+        _subprocess_compat.run(command, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
         return converted_path, None
     except subprocess.TimeoutExpired:
         logger.error("ffmpeg conversion timed out for %s", file_path)
@@ -1233,9 +1234,9 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
             if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+                _subprocess_compat.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
             else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+                _subprocess_compat.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
             
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))

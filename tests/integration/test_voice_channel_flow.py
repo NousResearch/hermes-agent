@@ -110,7 +110,11 @@ def _build_padded_rtp_packet(
     nonce_counter = struct.pack(">I", seq)
     full_nonce = nonce_counter + b"\x00" * 20
 
-    enc_msg = box.encrypt(plaintext, header, full_nonce)
+    # Discord's aead_*_rtpsize authenticates the fixed RTP header as AAD. For
+    # extension packets, the 4-byte extension preamble remains clear in the
+    # packet but is not included in AAD; extension data itself is encrypted.
+    aad = fixed_header
+    enc_msg = box.encrypt(plaintext, aad, full_nonce)
     ciphertext = enc_msg.ciphertext
 
     return header + ciphertext + nonce_counter

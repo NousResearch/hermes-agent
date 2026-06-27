@@ -2,19 +2,20 @@
 double-invoke channel.connect() on the same guild."""
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
 
 
-def _make_adapter():
+def _make_adapter(extra=None):
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     adapter = object.__new__(DiscordAdapter)
     adapter._platform = Platform.DISCORD
-    adapter.config = PlatformConfig(enabled=True, token="t")
+    adapter.config = PlatformConfig(enabled=True, token="t", extra=extra or {})
     adapter._ready_event = asyncio.Event()
     adapter._allowed_user_ids = set()
     adapter._allowed_role_ids = set()
@@ -77,3 +78,110 @@ async def test_concurrent_joins_do_not_double_connect():
     )
     assert r1 is True and r2 is True
     assert 42 in adapter._voice_clients
+
+
+@pytest.mark.asyncio
+async def test_auto_voice_join_configured_user_joining_configured_channel_triggers_callback():
+    adapter = _make_adapter({
+        "voice_auto_join": {
+            "enabled": True,
+            "guild_id": "42",
+            "voice_channel_id": "111",
+            "text_channel_id": "222",
+            "user_ids": '["999"]',
+        }
+    })
+    adapter._voice_auto_join_callback = AsyncMock(return_value=True)
+
+    channel = SimpleNamespace(id=111, name="hermes-voice")
+    guild = SimpleNamespace(id=42, get_channel=lambda cid: SimpleNamespace(id=cid, name="hermes"))
+    member = SimpleNamespace(id=999, guild=guild)
+    before = SimpleNamespace(channel=None)
+    after = SimpleNamespace(channel=channel)
+
+    result = await adapter._maybe_auto_join_from_voice_state(member, before, after)
+
+    assert result is True
+    adapter._voice_auto_join_callback.assert_awaited_once_with(
+        guild_id=42,
+        voice_channel=channel,
+        text_channel_id=222,
+        text_channel_name="hermes",
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_voice_join_ignores_unconfigured_user():
+    adapter = _make_adapter({
+        "voice_auto_join": {
+            "enabled": True,
+            "guild_id": "42",
+            "voice_channel_id": "111",
+            "text_channel_id": "222",
+            "user_ids": ["999"],
+        }
+    })
+    adapter._voice_auto_join_callback = AsyncMock(return_value=True)
+
+    channel = SimpleNamespace(id=111, name="hermes-voice")
+    member = SimpleNamespace(id=123, guild=SimpleNamespace(id=42))
+    before = SimpleNamespace(channel=None)
+    after = SimpleNamespace(channel=channel)
+
+    result = await adapter._maybe_auto_join_from_voice_state(member, before, after)
+
+    assert result is False
+    adapter._voice_auto_join_callback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_voice_join_leaves_when_configured_user_leaves_channel():
+    adapter = _make_adapter({
+        "voice_auto_join": {
+            "enabled": True,
+            "guild_id": "42",
+            "voice_channel_id": "111",
+            "text_channel_id": "222",
+            "user_ids": ["999"],
+        }
+    })
+    adapter._voice_auto_join_callback = AsyncMock(return_value=True)
+    adapter._voice_auto_leave_callback = AsyncMock(return_value=True)
+
+    channel = SimpleNamespace(id=111, name="hermes-voice")
+    member = SimpleNamespace(id=999, guild=SimpleNamespace(id=42))
+    before = SimpleNamespace(channel=channel)
+    after = SimpleNamespace(channel=None)
+
+    result = await adapter._maybe_auto_join_from_voice_state(member, before, after)
+
+    assert result is True
+    adapter._voice_auto_join_callback.assert_not_awaited()
+    adapter._voice_auto_leave_callback.assert_awaited_once_with(guild_id=42, text_channel_id=222)
+
+
+@pytest.mark.asyncio
+async def test_auto_voice_join_leaves_when_configured_user_moves_out_of_channel():
+    adapter = _make_adapter({
+        "voice_auto_join": {
+            "enabled": True,
+            "guild_id": "42",
+            "voice_channel_id": "111",
+            "text_channel_id": "222",
+            "user_ids": ["999"],
+        }
+    })
+    adapter._voice_auto_join_callback = AsyncMock(return_value=True)
+    adapter._voice_auto_leave_callback = AsyncMock(return_value=True)
+
+    configured_channel = SimpleNamespace(id=111, name="hermes-voice")
+    other_channel = SimpleNamespace(id=333, name="other")
+    member = SimpleNamespace(id=999, guild=SimpleNamespace(id=42))
+    before = SimpleNamespace(channel=configured_channel)
+    after = SimpleNamespace(channel=other_channel)
+
+    result = await adapter._maybe_auto_join_from_voice_state(member, before, after)
+
+    assert result is True
+    adapter._voice_auto_join_callback.assert_not_awaited()
+    adapter._voice_auto_leave_callback.assert_awaited_once_with(guild_id=42, text_channel_id=222)

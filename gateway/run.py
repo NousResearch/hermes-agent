@@ -69,14 +69,15 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
-_TELEGRAM_NOISY_STATUS_RE = re.compile(
-    r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
+_GATEWAY_NOISY_STATUS_RE = re.compile(
+    r"("  # transient/auxiliary status that should stay in logs, not chat
     r"auxiliary\s+.+\s+failed"
     r"|compression\s+summary\s+failed"
     r"|fallback\s+context\s+marker"
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
+    r"|codex\s+gpt-5\.5\s+caps\s+context"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
     r"|preflight\s+compression"
     r"|rate\s+limited\.\s+waiting\s+\d"
@@ -412,12 +413,15 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
+    platform_value = _gateway_platform_value(platform)
     if _gateway_surface_passes_raw_text(platform):
+        return text
+    if platform_value in {"telegram", "discord"} and _GATEWAY_NOISY_STATUS_RE.search(text):
+        return None
+    if platform_value != "telegram":
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
-        return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
@@ -4372,6 +4376,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "queue"
         if mode == "steer":
             return "steer"
+        if mode in {"choice", "choices", "ask"}:
+            return "choice"
         return "interrupt"
 
     @staticmethod
@@ -4625,6 +4631,76 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    async def handle_busy_turn_choice(
+        self,
+        session_key: str,
+        choice: str,
+        event: MessageEvent,
+    ) -> str:
+        """Apply an explicit busy-turn choice from an interactive gateway UI.
+
+        This is a thin UX wrapper over existing busy-turn primitives.  It keeps
+        queue/steer/interrupt semantics centralized in the runner so Discord
+        buttons do not mutate transcripts or re-enter message handling.
+        """
+        normalized = str(choice or "").strip().lower()
+        adapter = self.adapters.get(event.source.platform)
+        running_agent = self._running_agents.get(session_key)
+
+        if normalized == "cancel":
+            return "Cancelled — your message was not sent to the current run."
+
+        active_now = running_agent is not None
+        if normalized in {"queue", "steer", "interrupt"} and not active_now:
+            if adapter is not None and hasattr(adapter, "handle_message"):
+                maybe_result = adapter.handle_message(event)
+                if inspect.isawaitable(maybe_result):
+                    await maybe_result
+                return "The previous task already finished — starting your message now."
+            await self._handle_message(event)
+            return "The previous task already finished — starting your message now."
+
+        if normalized == "queue":
+            self._queue_or_replace_pending_event(session_key, event)
+            depth = self._queue_depth(session_key, adapter=adapter)
+            suffix = f" ({depth} queued)" if depth > 1 else ""
+            return f"Queued for the next turn{suffix}."
+
+        if normalized == "steer":
+            steer_text = (event.text or "").strip()
+            can_steer = (
+                bool(steer_text)
+                and running_agent is not None
+                and running_agent is not _AGENT_PENDING_SENTINEL
+                and hasattr(running_agent, "steer")
+            )
+            steer_fn = getattr(running_agent, "steer", None) if can_steer else None
+            if steer_fn is not None:
+                try:
+                    if bool(steer_fn(steer_text)):
+                        return "Steered into the current run — it will arrive after the next tool call."
+                except Exception as exc:
+                    logger.warning("Gateway busy-turn steer failed for session %s: %s", session_key, exc)
+            self._queue_or_replace_pending_event(session_key, event)
+            return "Could not steer right now, so I queued it for the next turn."
+
+        if normalized == "interrupt":
+            if adapter is not None and hasattr(adapter, "_pending_messages"):
+                merge_pending_message_event(
+                    adapter._pending_messages,
+                    session_key,
+                    event,
+                    merge_text=event.message_type == MessageType.TEXT,
+                )
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                try:
+                    running_agent.interrupt(event.text)
+                except Exception as exc:
+                    logger.debug("Busy-turn interrupt failed for session %s: %s", session_key, exc)
+            return "Interrupting current task — I'll respond to your message shortly."
+
+        return "Unknown busy-turn choice."
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -4699,6 +4775,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and effective_mode != "steer"
         ):
             return False
+
+        # Choice mode: defer queue/steer/interrupt until the user clicks an
+        # interactive gateway control.  This gives Discord the bridge-style
+        # busy-turn UX without mutating transcript state before a decision.
+        if effective_mode == "choice":
+            reply_anchor = self._reply_anchor_for_event(event)
+            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+            send_choices = getattr(adapter, "send_busy_turn_choices", None)
+            if callable(send_choices):
+                try:
+                    from tools import busy_turn_choice as _busy_turn_choice
+
+                    choice_id = _busy_turn_choice.register(
+                        session_key,
+                        event,
+                        lambda choice, chosen_event: self.handle_busy_turn_choice(
+                            session_key,
+                            choice,
+                            chosen_event,
+                        ),
+                    )
+                    preview = (event.text or "").strip()
+                    if len(preview) > 280:
+                        preview = preview[:277] + "..."
+                    message = "Hermes is still working. What should I do with your message?"
+                    if preview:
+                        message = f"{message}\n\n> {preview}"
+                    _maybe_result = send_choices(
+                        chat_id=event.source.chat_id,
+                        message=message,
+                        session_key=session_key,
+                        choice_id=choice_id,
+                        metadata=thread_meta,
+                    )
+                    result = await _maybe_result if inspect.isawaitable(_maybe_result) else _maybe_result
+                    if result and getattr(result, "success", False):
+                        return True
+                    _busy_turn_choice.discard(choice_id)
+                except Exception as exc:
+                    try:
+                        _busy_turn_choice.discard(choice_id)  # type: ignore[name-defined]
+                    except Exception:
+                        pass
+                    logger.warning("Failed to send busy-turn choices for session %s: %s", session_key, exc)
+            # Non-interactive fallback: queue so the message is not lost and
+            # does not auto-interrupt when the configured intent was to ask.
+            self._queue_or_replace_pending_event(session_key, event)
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content="⏳ Queued for the next turn. This platform could not render busy-turn choices.",
+                reply_to=(
+                    reply_anchor
+                    if event.source.platform == Platform.TELEGRAM
+                    and event.source.chat_type == "dm"
+                    and event.source.thread_id
+                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                ),
+                metadata=thread_meta,
+            )
+            return True
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
@@ -11411,6 +11547,93 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Join failed — clear callback
         adapter._voice_input_callback = None
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+    async def _handle_discord_auto_voice_join(
+        self,
+        *,
+        guild_id: int,
+        voice_channel: Any,
+        text_channel_id: int,
+        text_channel_name: Optional[str] = None,
+    ) -> bool:
+        """Join a configured Discord voice channel without a slash command event.
+
+        Used by the Discord adapter when a configured user joins a configured
+        voice channel. Mirrors /voice join side effects: callbacks are wired,
+        the guild is bound to a text channel, and the text channel is switched
+        to spoken replies ("all" / /voice tts).
+        """
+        adapter = self.adapters.get(Platform.DISCORD)
+        if not adapter or not hasattr(adapter, "join_voice_channel"):
+            return False
+
+        if hasattr(adapter, "is_in_voice_channel") and adapter.is_in_voice_channel(guild_id):
+            return True
+
+        if hasattr(adapter, "_voice_input_callback"):
+            adapter._voice_input_callback = self._handle_voice_channel_input
+        if hasattr(adapter, "_on_voice_disconnect"):
+            adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+        if hasattr(adapter, "_voice_mode_getter"):
+            adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
+                self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+            )
+
+        try:
+            success = await adapter.join_voice_channel(voice_channel)
+        except Exception as e:
+            logger.warning("Failed to auto-join voice channel: %s", e)
+            if hasattr(adapter, "_voice_input_callback"):
+                adapter._voice_input_callback = None
+            return False
+
+        if not success:
+            if hasattr(adapter, "_voice_input_callback"):
+                adapter._voice_input_callback = None
+            return False
+
+        chat_id = str(text_channel_id)
+        if hasattr(adapter, "_voice_text_channels"):
+            adapter._voice_text_channels[int(guild_id)] = int(text_channel_id)
+        if hasattr(adapter, "_voice_sources"):
+            adapter._voice_sources[int(guild_id)] = SessionSource(
+                chat_id=chat_id,
+                user_id="discord-auto-voice",
+                platform=Platform.DISCORD,
+                chat_type="group",
+                chat_name=text_channel_name or f"Discord / #{chat_id}",
+                thread_id=None,
+            ).to_dict()
+        self._voice_mode[self._voice_key(Platform.DISCORD, chat_id)] = "all"
+        self._save_voice_modes()
+        self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+        return True
+
+    async def _handle_discord_auto_voice_leave(
+        self,
+        *,
+        guild_id: int,
+        text_channel_id: int,
+    ) -> bool:
+        """Leave a Discord voice channel when the configured auto-join user leaves."""
+        adapter = self.adapters.get(Platform.DISCORD)
+        if not adapter or not hasattr(adapter, "leave_voice_channel"):
+            return False
+        try:
+            if hasattr(adapter, "is_in_voice_channel") and not adapter.is_in_voice_channel(guild_id):
+                return True
+            await adapter.leave_voice_channel(guild_id)
+        except Exception as e:
+            logger.warning("Failed to auto-leave voice channel: %s", e)
+            return False
+
+        chat_id = str(text_channel_id)
+        self._voice_mode[self._voice_key(Platform.DISCORD, chat_id)] = "off"
+        self._save_voice_modes()
+        self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+        if hasattr(adapter, "_voice_input_callback"):
+            adapter._voice_input_callback = None
+        return True
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""

@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import queue
+import struct
 import sys
 import threading
 import time
@@ -52,6 +53,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+from gateway.config import Platform
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +756,40 @@ class TestVoiceReceiver:
         receiver._on_packet(b"\x00" * 10)
         assert len(receiver._buffers) == 0
 
+    def test_on_packet_uses_fixed_rtp_header_as_aead_associated_data(self, monkeypatch):
+        """rtpsize AEAD authenticates the fixed RTP header, not extension data."""
+        import nacl.secret
+
+        receiver = self._make_receiver()
+        receiver._running = True
+        receiver._secret_key = b"\x00" * 32
+        receiver._bot_ssrc = 9999
+        receiver._dave_session = None
+
+        seen = {}
+
+        class FakeAead:
+            def __init__(self, key):
+                seen["key"] = key
+
+            def decrypt(self, encrypted, aad, nonce):
+                seen["aad_len"] = len(aad)
+                raise RuntimeError("stop after aad assertion")
+
+        monkeypatch.setattr(nacl.secret, "Aead", FakeAead)
+        # RTP V2 + extension bit, payload type 120, no CSRCs. The 4-byte RTP
+        # extension preamble follows the fixed 12-byte RTP header, but must not
+        # be included in AEAD associated data.
+        fixed_header = struct.pack(">BBHII", 0x90, 0x78, 1, 1234, 5909)
+        extension_preamble = struct.pack(">HH", 0xBEDE, 1)
+        extension_payload = b"\x10\x00\x00\x00"
+        encrypted_audio = b"\xAA" * 24
+        nonce_suffix = b"\x01\x02\x03\x04"
+
+        receiver._on_packet(fixed_header + extension_preamble + extension_payload + encrypted_audio + nonce_suffix)
+
+        assert seen["aad_len"] == 12
+
     def test_on_packet_skips_non_rtp(self):
         receiver = self._make_receiver()
         receiver.start()
@@ -845,6 +881,33 @@ class TestVoiceChannelCommands:
         assert runner._voice_mode["discord:123"] == "all"
         assert mock_adapter._voice_sources[111]["chat_id"] == "123"
         assert mock_adapter._voice_sources[111]["chat_type"] == "group"
+
+    @pytest.mark.asyncio
+    async def test_auto_join_specific_channel_binds_configured_text_channel(self, runner):
+        """Auto-join can join a configured VC without a slash command event."""
+        mock_channel = MagicMock()
+        mock_channel.name = "hermes-voice"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=False)
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_input_callback = None
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        result = await runner._handle_discord_auto_voice_join(
+            guild_id=111,
+            voice_channel=mock_channel,
+            text_channel_id=123,
+            text_channel_name="Hermes Server / #hermes",
+        )
+
+        assert result is True
+        mock_adapter.join_voice_channel.assert_awaited_once_with(mock_channel)
+        assert runner._voice_mode["discord:123"] == "all"
+        assert mock_adapter._voice_text_channels[111] == 123
+        assert mock_adapter._voice_sources[111]["chat_id"] == "123"
+        assert mock_adapter._voice_sources[111]["chat_name"] == "Hermes Server / #hermes"
 
     @pytest.mark.asyncio
     async def test_join_failure(self, runner):

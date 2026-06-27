@@ -28,6 +28,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     Platform,
+    SendResult,
     SessionSource,
     build_session_key,
 )
@@ -715,6 +716,196 @@ class TestBusySessionOnboardingHint:
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.
         assert "/busy queue" not in content
+
+    @pytest.mark.asyncio
+    async def test_busy_choice_mode_sends_controls_without_mutating_state(self):
+        """choice mode defers queue/steer/interrupt until the user clicks a control."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "choice"
+        runner._busy_text_mode = "interrupt"
+        runner._thread_metadata_for_source = lambda source, reply_to_message_id=None: {}
+        runner._reply_anchor_for_event = lambda event: None
+
+        adapter = _make_adapter("discord")
+        adapter.send_busy_turn_choices = AsyncMock(
+            return_value=SendResult(success=True, message_id="choice-1")
+        )
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="123",
+            chat_type="group",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="do this next",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-choice",
+        )
+        sk = build_session_key(source)
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter.send_busy_turn_choices.assert_awaited_once()
+        kwargs = adapter.send_busy_turn_choices.await_args.kwargs
+        assert kwargs["session_key"] == sk
+        assert kwargs["choice_id"].startswith("busy-")
+        assert "do this next" in kwargs["message"]
+        assert sk not in adapter._pending_messages
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_busy_turn_choice_queue_steer_interrupt_cancel(self):
+        """The explicit button actions map to the existing busy-turn primitives."""
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter("discord")
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="123",
+            chat_type="group",
+            user_id="user1",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+        runner._running_agents[sk] = MagicMock()
+
+        queue_event = MessageEvent(
+            text="queue me",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="queue",
+        )
+        queue_text = await runner.handle_busy_turn_choice(sk, "queue", queue_event)
+        assert "Queued" in queue_text
+        assert adapter._pending_messages[sk] is queue_event
+
+        steer_event = MessageEvent(
+            text="steer me",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="steer",
+        )
+        steer_agent = MagicMock()
+        steer_agent.steer.return_value = True
+        runner._running_agents[sk] = steer_agent
+        steer_text = await runner.handle_busy_turn_choice(sk, "steer", steer_event)
+        assert "Steered" in steer_text
+        steer_agent.steer.assert_called_once_with("steer me")
+        assert steer_event not in adapter._pending_messages.values()
+
+        interrupt_event = MessageEvent(
+            text="interrupt me",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="interrupt",
+        )
+        interrupt_agent = MagicMock()
+        runner._running_agents[sk] = interrupt_agent
+        interrupt_text = await runner.handle_busy_turn_choice(sk, "interrupt", interrupt_event)
+        assert "Interrupting" in interrupt_text
+        assert interrupt_agent.interrupt.call_args.args == ("interrupt me",)
+        assert sk in adapter._pending_messages
+
+        before_pending = dict(adapter._pending_messages)
+        cancel_event = MessageEvent(
+            text="never mind",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="cancel",
+        )
+        cancel_text = await runner.handle_busy_turn_choice(sk, "cancel", cancel_event)
+        assert "Cancelled" in cancel_text
+        assert adapter._pending_messages == before_pending
+
+    @pytest.mark.asyncio
+    async def test_late_busy_turn_choice_starts_message_instead_of_stranding(self):
+        """If the original run finished before a click, the clicked message starts now."""
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter("discord")
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="123",
+            chat_type="group",
+            user_id="user1",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+        adapter.handle_message = AsyncMock(return_value=None)
+        runner._handle_message = AsyncMock(return_value=None)
+
+        event = MessageEvent(
+            text="do this now",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="late-choice",
+        )
+
+        text = await runner.handle_busy_turn_choice(sk, "queue", event)
+
+        assert "already finished" in text
+        adapter.handle_message.assert_awaited_once_with(event)
+        runner._handle_message.assert_not_awaited()
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_busy_choice_send_failure_discards_registry_entry(self):
+        """If Discord cannot render buttons, fallback queue must not leak a registry entry."""
+        from tools import busy_turn_choice
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "choice"
+        runner._busy_text_mode = "interrupt"
+        runner._thread_metadata_for_source = lambda source, reply_to_message_id=None: {}
+        runner._reply_anchor_for_event = lambda event: None
+        runner._queued_events = {}
+
+        adapter = _make_adapter("discord")
+        adapter.send_busy_turn_choices = AsyncMock(
+            return_value=SendResult(success=False, error="cannot render")
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="123",
+            chat_type="group",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="do this next",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-choice-fail",
+        )
+        sk = build_session_key(source)
+        runner._running_agents[sk] = MagicMock()
+        runner.adapters[source.platform] = adapter
+
+        before = busy_turn_choice.pending_count()
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert busy_turn_choice.pending_count() == before
+        assert sk in adapter._pending_messages
+        adapter._send_with_retry.assert_awaited_once()
+
+    def test_busy_choice_registry_prunes_expired_entries(self, monkeypatch):
+        """Expired button choices are pruned even if Discord never calls timeout."""
+        from tools import busy_turn_choice
+
+        start = busy_turn_choice.time.time()
+        before = busy_turn_choice.pending_count()
+        choice_id = busy_turn_choice.register("s", object(), lambda choice, event: "ok")
+        assert choice_id.startswith("busy-")
+        assert busy_turn_choice.pending_count() == before + 1
+
+        monkeypatch.setattr(busy_turn_choice.time, "time", lambda: start + 301)
+        assert busy_turn_choice.pending_count() <= before
+        assert choice_id not in busy_turn_choice._entries
 
 
 class TestLongRunningNotificationOwnership:

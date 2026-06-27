@@ -480,20 +480,25 @@ class VoiceReceiver:
         if ssrc == self._bot_ssrc:
             return
 
-        # Calculate dynamic RTP header size (RFC 9335 / rtpsize mode)
+        # Calculate RTP header sizes for aead_*_rtpsize.
+        # The fixed RTP header (+ CSRC list) is AEAD associated data. If the
+        # extension bit is set, Discord leaves the 4-byte extension preamble
+        # unencrypted before the encrypted extension payload; do not include
+        # that preamble in AEAD AAD or encrypted bytes.
         cc = first_byte & 0x0F  # CSRC count
         has_extension = bool(first_byte & 0x10)  # extension bit
         has_padding = bool(first_byte & 0x20)  # padding bit (RFC 3550 §5.1)
-        header_size = 12 + (4 * cc) + (4 if has_extension else 0)
+        rtp_header_size = 12 + (4 * cc)
+        extension_preamble_size = 4 if has_extension else 0
+        payload_offset = rtp_header_size + extension_preamble_size
 
-        if len(data) < header_size + 4:  # need at least header + nonce
+        if len(data) < payload_offset + 4:  # need at least header/preamble + nonce
             return
 
         # Read extension length from preamble (for skipping after decrypt)
         ext_data_len = 0
         if has_extension:
-            ext_preamble_offset = 12 + (4 * cc)
-            ext_words = struct.unpack_from(">H", data, ext_preamble_offset + 2)[0]
+            ext_words = struct.unpack_from(">H", data, rtp_header_size + 2)[0]
             ext_data_len = ext_words * 4
 
         if self._packet_debug_count <= 10:
@@ -501,11 +506,11 @@ class VoiceReceiver:
                 known_user = self._ssrc_to_user.get(ssrc, "unknown")
             logger.debug(
                 "RTP packet: ssrc=%d, seq=%d, user=%s, hdr=%d, ext_data=%d",
-                ssrc, seq, known_user, header_size, ext_data_len,
+                ssrc, seq, known_user, rtp_header_size, ext_data_len,
             )
 
-        header = bytes(data[:header_size])
-        payload_with_nonce = data[header_size:]
+        header = bytes(data[:rtp_header_size])
+        payload_with_nonce = data[payload_offset:]
 
         # --- NaCl transport decrypt (aead_xchacha20_poly1305_rtpsize) ---
         if len(payload_with_nonce) < 4:
@@ -520,7 +525,7 @@ class VoiceReceiver:
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
             if self._packet_debug_count <= 10:
-                logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, header_size, len(encrypted))
+                logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, rtp_header_size, len(encrypted))
             return
 
         # Skip encrypted extension data to get the actual opus payload
@@ -762,6 +767,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
+        self._voice_auto_join_callback: Optional[Callable[..., Any]] = None  # set by run.py / gateway_runner
+        self._voice_auto_leave_callback: Optional[Callable[..., Any]] = None  # set by run.py / gateway_runner
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Resolves the current voice-reply mode ("off"|"voice_only"|"all") for a
         # linked text-channel id; set by run.py. Lets the inactivity timer leave
@@ -1092,6 +1099,8 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
+                await adapter_self._maybe_auto_join_from_voice_state(member, before, after)
+
                 # Only track channels where the bot is connected
                 bot_guild_ids = set(adapter_self._voice_clients.keys())
                 if not bot_guild_ids:
@@ -2363,6 +2372,91 @@ class DiscordAdapter(BasePlatformAdapter):
         """True when a continuous mixer is installed for this guild."""
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
+
+    async def _maybe_auto_join_from_voice_state(self, member, before, after) -> bool:
+        """Auto-join a configured Discord voice channel when an allowed user enters it."""
+        cfg = (self.config.extra or {}).get("voice_auto_join") or {}
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return False
+
+        before_channel = getattr(before, "channel", None)
+        after_channel = getattr(after, "channel", None)
+        if before_channel == after_channel:
+            return False
+
+        guild = getattr(member, "guild", None)
+        guild_id = getattr(guild, "id", None)
+        member_id = getattr(member, "id", None)
+
+        def _as_int(value, default=None):
+            try:
+                return int(str(value).strip())
+            except (TypeError, ValueError):
+                return default
+
+        wanted_guild_id = _as_int(cfg.get("guild_id"))
+        wanted_voice_channel_id = _as_int(cfg.get("voice_channel_id"))
+        text_channel_id = _as_int(cfg.get("text_channel_id"))
+        raw_user_ids = cfg.get("user_ids") or []
+        if isinstance(raw_user_ids, str):
+            try:
+                parsed_user_ids = json.loads(raw_user_ids)
+                raw_user_ids = parsed_user_ids if isinstance(parsed_user_ids, list) else [raw_user_ids]
+            except Exception:
+                raw_user_ids = [part.strip() for part in raw_user_ids.split(",")]
+        wanted_user_ids = {_as_int(uid) for uid in raw_user_ids}
+        wanted_user_ids.discard(None)
+
+        if not wanted_guild_id or not wanted_voice_channel_id or not text_channel_id:
+            logger.warning("Discord voice_auto_join enabled but missing guild_id, voice_channel_id, or text_channel_id")
+            return False
+        if int(guild_id or 0) != wanted_guild_id:
+            return False
+        if wanted_user_ids and int(member_id or 0) not in wanted_user_ids:
+            return False
+
+        before_voice_channel_id = _as_int(getattr(before_channel, "id", None))
+        after_voice_channel_id = _as_int(getattr(after_channel, "id", None))
+        moved_out_of_configured = before_voice_channel_id == wanted_voice_channel_id and after_voice_channel_id != wanted_voice_channel_id
+        moved_into_configured = after_voice_channel_id == wanted_voice_channel_id
+
+        if moved_out_of_configured:
+            callback = self._voice_auto_leave_callback
+            if callback is None and self.gateway_runner is not None:
+                callback = getattr(self.gateway_runner, "_handle_discord_auto_voice_leave", None)
+            if callback is None:
+                return False
+            try:
+                return bool(await callback(guild_id=wanted_guild_id, text_channel_id=text_channel_id))
+            except Exception as exc:
+                logger.warning("Discord voice_auto_leave failed: %s", exc, exc_info=True)
+                return False
+
+        if not moved_into_configured:
+            return False
+
+        callback = self._voice_auto_join_callback
+        if callback is None and self.gateway_runner is not None:
+            callback = getattr(self.gateway_runner, "_handle_discord_auto_voice_join", None)
+        if callback is None:
+            return False
+
+        text_channel_name = None
+        get_channel = getattr(guild, "get_channel", None)
+        if callable(get_channel):
+            text_channel = get_channel(text_channel_id)
+            text_channel_name = getattr(text_channel, "name", None)
+
+        try:
+            return bool(await callback(
+                guild_id=wanted_guild_id,
+                voice_channel=after_channel,
+                text_channel_id=text_channel_id,
+                text_channel_name=text_channel_name,
+            ))
+        except Exception as exc:
+            logger.warning("Discord voice_auto_join failed: %s", exc, exc_info=True)
+            return False
 
     async def join_voice_channel(self, channel) -> bool:
         """Join a Discord voice channel. Returns True on success."""
@@ -4778,6 +4872,53 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_busy_turn_choices(
+        self,
+        chat_id: str,
+        message: str,
+        session_key: str,
+        choice_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send bridge-style busy-turn choice buttons for a mid-run message."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            max_desc = 4088
+            body = str(message or "").strip()
+            if len(body) > max_desc:
+                body = body[: max_desc - 3] + "..."
+            embed = discord.Embed(
+                title="Hermes is still working",
+                description=body or "What should I do with your message?",
+                color=discord.Color.blue(),
+            )
+            embed.add_field(
+                name="Choose one",
+                value="Interrupt, steer into the current run, queue it for next turn, or cancel this follow-up.",
+                inline=False,
+            )
+            view = BusyTurnChoiceView(
+                choice_id=choice_id,
+                session_key=session_key,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+            msg = await channel.send(embed=embed, view=view)
+            view._message = msg
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_clarify(
         self,
         chat_id: str,
@@ -5795,7 +5936,7 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, BusyTurnChoiceView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -6019,6 +6160,121 @@ def _define_discord_view_classes() -> None:
                     if embed:
                         embed.color = discord.Color.greyple()
                         embed.set_footer(text="⏱ Prompt expired — no action taken")
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass
+
+    class BusyTurnChoiceView(discord.ui.View):
+        """Four-button busy-turn choice prompt for Discord gateway sessions."""
+
+        def __init__(
+            self,
+            choice_id: str,
+            session_key: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=300)
+            self.choice_id = choice_id
+            self.session_key = session_key
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        async def _resolve(
+            self,
+            interaction: discord.Interaction,
+            choice: str,
+            color: discord.Color,
+            label: str,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This busy-turn choice has already been resolved~",
+                    ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to control this Hermes turn~",
+                    ephemeral=True,
+                )
+                return
+
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
+            embed = interaction.message.embeds[0] if interaction.message and interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+
+            await interaction.response.edit_message(embed=embed, view=self)
+
+            try:
+                from tools import busy_turn_choice as _busy_turn_choice
+                result_text = await _busy_turn_choice.resolve(self.choice_id, choice)
+                if result_text:
+                    await interaction.followup.send(result_text)
+                logger.info(
+                    "Discord busy-turn choice resolved for session %s (choice=%s, user=%s)",
+                    self.session_key,
+                    choice,
+                    interaction.user.display_name,
+                )
+            except Exception as exc:
+                logger.error("Discord busy-turn choice resolve failed: %s", exc, exc_info=True)
+                try:
+                    await interaction.followup.send(f"Failed to apply busy-turn choice: {exc}")
+                except Exception:
+                    pass
+
+        @discord.ui.button(label="Interrupt", style=discord.ButtonStyle.red)
+        async def interrupt(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "interrupt", discord.Color.red(), "Interrupting")
+
+        @discord.ui.button(label="Steer", style=discord.ButtonStyle.blurple)
+        async def steer(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "steer", discord.Color.blue(), "Steering")
+
+        @discord.ui.button(label="Queue Next", style=discord.ButtonStyle.grey)
+        async def queue_next(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "queue", discord.Color.gold(), "Queued")
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+        async def cancel(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "cancel", discord.Color.greyple(), "Cancelled")
+
+        async def on_timeout(self):
+            try:
+                from tools import busy_turn_choice as _busy_turn_choice
+                _busy_turn_choice.discard(self.choice_id)
+            except Exception:
+                pass
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            msg = getattr(self, '_message', None)
+            if msg:
+                try:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.greyple()
+                        embed.set_footer(text="⏱ Busy-turn prompt expired — no action taken")
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass

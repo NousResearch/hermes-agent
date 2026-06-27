@@ -172,6 +172,32 @@ def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
     assert rt["api_key"] == "key-for-minimax"
 
 
+def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
+    """Codex slots must not become custom chat-completions endpoints.
+
+    _resolve_task_provider_model treats any explicit base_url as provider=custom.
+    For openai-codex that bypasses the Codex auxiliary branch, losing the
+    Cloudflare headers and Responses adapter required for chatgpt.com/backend-api/codex.
+    """
+    from agent import moa_loop
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-oauth-token",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "openai-codex", "model": "gpt-5.5"})
+
+    assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
+
+
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     """A slot whose provider can't be resolved still attempts the call with the
     bare provider/model rather than aborting the whole MoA turn."""

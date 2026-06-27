@@ -64,6 +64,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   listWindows: () => ipcRenderer.invoke('hermes:listWindows'),
   captureWindow: title => ipcRenderer.invoke('hermes:captureWindow', title),
+  dockToWindow: title => ipcRenderer.invoke('hermes:dockToWindow', title),
+  undockWindow: () => ipcRenderer.invoke('hermes:undockWindow'),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
   saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),
   saveImageBuffer: (data, ext) => ipcRenderer.invoke('hermes:saveImageBuffer', { data, ext }),

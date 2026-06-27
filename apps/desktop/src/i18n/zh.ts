@@ -1932,6 +1932,8 @@ export const zh: Translations = {
     windowPickerLoading: '正在列出打开的窗口…',
     windowPreviewLive: '实时',
     windowPreviewUnavailable: '无法预览 — 窗口可能已最小化或关闭。',
+    dockControlling: (app: string) => `正在控制 ${app}`,
+    dockUndock: '取消停靠',
     promptSnippets: '提示词片段…',
     tipPre: '提示：输入 ',
     tipPost: ' 以内联引用文件。',

@@ -1757,6 +1757,8 @@ export const en: Translations = {
     windowPickerLoading: 'Listing open windows…',
     windowPreviewLive: 'live',
     windowPreviewUnavailable: 'Preview unavailable — the window may be minimized or closed.',
+    dockControlling: (app: string) => `Controlling ${app}`,
+    dockUndock: 'Undock',
     promptSnippets: 'Prompt snippets…',
     tipPre: 'Tip: type ',
     tipPost: ' to reference files inline.',

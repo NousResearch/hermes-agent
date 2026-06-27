@@ -83,6 +83,11 @@ declare global {
       // Capture a window (by title) as a base64 PNG data URL, or null if it
       // can't be captured. Powers the live preview panel.
       captureWindow: (title: string) => Promise<string | null>
+      // Dock mode: tile the named app on the left and snap Hermes to a narrow
+      // panel on the right. undockWindow restores Hermes's prior geometry.
+      dockToWindow: (title: string) => Promise<{ ok: boolean; error?: string }>
+      undockWindow: () => Promise<{ ok: boolean }>
+
       writeClipboard: (text: string) => Promise<boolean>
       saveImageFromUrl: (url: string) => Promise<boolean>
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>

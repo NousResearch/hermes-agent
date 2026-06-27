@@ -8145,6 +8145,67 @@ ipcMain.handle('hermes:captureWindow', async (_event, title) => {
   }
 })
 
+// Dock mode: tile the selected app on the left and snap Hermes to a narrow
+// panel on the right. dockPrevBounds remembers Hermes's pre-dock geometry so
+// undock can restore it.
+let dockPrevBounds = null
+
+ipcMain.handle('hermes:dockToWindow', async (_event, title) => {
+  const target = String(title || '').trim()
+  if (!target || !mainWindow) return { ok: false, error: 'no target' }
+
+  const python = getNoConsoleVenvPython(VENV_ROOT)
+  if (!fileExists(python) || !directoryExists(SIDECAR_DIR)) {
+    return { ok: false, error: 'sidecar unavailable' }
+  }
+
+  const display = screen.getDisplayMatching(mainWindow.getBounds())
+  const wa = display.workArea // device-independent px
+  const sf = display.scaleFactor || 1
+  const hermesW = Math.max(360, Math.round(wa.width * 0.3))
+  const appW = wa.width - hermesW
+  const hermesDip = { x: wa.x + appW, y: wa.y, width: hermesW, height: wa.height }
+  // The sidecar's SetWindowPos is per-monitor-DPI-aware → physical pixels.
+  const phys = [wa.x * sf, wa.y * sf, appW * sf, wa.height * sf].map(Math.round).join(',')
+
+  const { execFile } = require('node:child_process')
+  const env = {
+    ...process.env,
+    ...buildDesktopBackendEnv({
+      hermesHome: HERMES_HOME,
+      pythonPathEntries: [SIDECAR_DIR, ...getVenvSitePackagesEntries(VENV_ROOT)],
+      venvRoot: VENV_ROOT
+    })
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      execFile(
+        python,
+        ['-m', 'sidecar.service', '--target', target, '--move', phys, '--json'],
+        { cwd: SIDECAR_DIR, env, timeout: 15000, windowsHide: true },
+        (err, out) => (err ? reject(err) : resolve(String(out || '')))
+      )
+    })
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
+
+  if (!dockPrevBounds) dockPrevBounds = mainWindow.getBounds()
+  if (mainWindow.isMaximized?.()) mainWindow.unmaximize()
+  mainWindow.setBounds(hermesDip)
+  return { ok: true }
+})
+
+ipcMain.handle('hermes:undockWindow', async () => {
+  if (mainWindow && dockPrevBounds) {
+    if (mainWindow.isMaximized?.()) mainWindow.unmaximize()
+    mainWindow.setBounds(dockPrevBounds)
+    dockPrevBounds = null
+  }
+  return { ok: true }
+})
+
 ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   clipboard.writeText(String(text || ''))
 

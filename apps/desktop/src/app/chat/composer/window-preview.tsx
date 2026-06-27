@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
@@ -5,6 +6,7 @@ import { useI18n } from '@/i18n'
 import { AppWindow } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
+import { $dockedWindow } from '@/store/dock'
 
 const POLL_INTERVAL_MS = 1500
 
@@ -105,7 +107,9 @@ export function WindowPreview({ attachment, onRemove }: { attachment: ComposerAt
   )
 }
 
-/** Render a live preview for each attached window (usually one). */
+/** Render a live preview for each attached window (usually one). The currently
+ *  docked window is skipped — it's already tiled beside Hermes, so a thumbnail
+ *  would be redundant. */
 export function WindowPreviews({
   attachments,
   onRemove
@@ -113,7 +117,8 @@ export function WindowPreviews({
   attachments: ComposerAttachment[]
   onRemove?: (id: string) => void
 }) {
-  const windows = attachments.filter(a => a.kind === 'window')
+  const docked = useStore($dockedWindow)
+  const windows = attachments.filter(a => a.kind === 'window' && a.label !== docked)
 
   if (windows.length === 0) {
     return null

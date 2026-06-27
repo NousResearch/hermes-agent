@@ -14,6 +14,7 @@ import {
   removeComposerAttachment,
   setComposerTerminalSelection
 } from '@/store/composer'
+import { dockWindow } from '@/store/dock'
 import { notify, notifyError } from '@/store/notifications'
 
 import type { ImageDetachResponse } from '../../types'
@@ -601,7 +602,8 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
   // Attach an open desktop window as a live target. Unlike file/image
   // attachments (static bytes/paths), this is a handle the agent re-resolves
   // and drives via the hermes-eats-world sidecar. The @window: ref carries the
-  // title into the prompt; pid disambiguates same-titled windows.
+  // title into the prompt; pid disambiguates same-titled windows. Selecting a
+  // window also docks Hermes beside it (app tiled left, Hermes snapped right).
   const attachWindow = useCallback((win: HermesWindowInfo) => {
     const title = (win.name || '').trim() || `PID ${win.pid}`
     const refText = `@window:${formatRefValue(title)}`
@@ -614,6 +616,8 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       refText,
       pid: win.pid
     })
+
+    void dockWindow(title)
   }, [])
 
   const removeAttachment = useCallback(

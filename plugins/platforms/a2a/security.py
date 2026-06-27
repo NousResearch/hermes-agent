@@ -126,8 +126,18 @@ PRIVACY_PREFIX = (
 
 
 def wrap_inbound(peer: str, text: str) -> str:
-    """Filter + frame inbound task text for safe injection into the agent."""
-    return PRIVACY_PREFIX.format(peer=peer or "unknown") + filter_inbound(text)
+    """Filter + frame inbound task text for safe injection into the agent.
+
+    Slash commands (text starting with ``/``) are passed through
+    UNWRAPPED so the gateway's command processor sees them — the
+    PRIVACY_PREFIX text would otherwise hide leading-slash commands
+    like ``/sethome``, deadlocking the home-channel onboarding flow.
+    Reported by kuangmi-bit in PR #41711 review (2026-06-26).
+    """
+    stripped = (text or "").strip()
+    if stripped.startswith("/"):
+        return stripped
+    return PRIVACY_PREFIX.format(peer=peer or "unknown") + filter_inbound(stripped)
 
 
 # --------------------------------------------------------------------------

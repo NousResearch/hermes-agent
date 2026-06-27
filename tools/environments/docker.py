@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment, _popen_bash
-from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST, _is_hermes_internal_secret
 
 logger = logging.getLogger(__name__)
 
@@ -925,8 +925,10 @@ class DockerEnvironment(BaseEnvironment):
             pass
         # Explicit docker_forward_env entries are an intentional opt-in and must
         # win over the generic Hermes secret blocklist. Only implicit passthrough
-        # keys are filtered.
-        forward_keys = explicit_forward_keys | (passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST)
+        # keys are filtered. Also strip Hermes-internal secret patterns
+        # (AUXILIARY_*_API_KEY, etc.) that the name-based blocklist doesn't cover.
+        _secret_passthrough = {k for k in passthrough_keys if not _is_hermes_internal_secret(k)}
+        forward_keys = explicit_forward_keys | (_secret_passthrough - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         for key in sorted(forward_keys):
             value = os.getenv(key)

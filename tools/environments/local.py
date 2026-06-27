@@ -186,6 +186,9 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "GATEWAY_RELAY_ID",
+        "GATEWAY_RELAY_SECRET",
+        "GATEWAY_RELAY_DELIVERY_KEY",
     })
     return frozenset(blocked)
 
@@ -203,6 +206,34 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 # Hermes venv stays reachable via PATH (its bin dir is first), so stripping
 # these markers is safe and only prevents the cross-project clobber (#23473).
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
+
+
+def _is_hermes_internal_secret(key: str) -> bool:
+    """Check if an env var name matches a Hermes-internal secret pattern.
+
+    The blocklist above is name-based and built from provider/tool registries,
+    but the gateway and CLI also inject dynamic secrets into ``os.environ``
+    that the registries don't know about:
+
+    - ``AUXILIARY_<TASK>_API_KEY`` — per-task inference credentials injected
+      by ``gateway/run.py`` and ``cli.py`` from ``config.yaml[auxiliary]``.
+      These are separate, often higher-spend API keys (vision, title-gen,
+      web-extract, etc.) that must never reach model-authored shell commands.
+    - ``AUXILIARY_<TASK>_BASE_URL`` — paired base URLs that can point at
+      private endpoints.
+
+    The code-execution sandbox (``code_execution_tool.py``) catches these via
+    substring matching on ``KEY``/``SECRET``/``TOKEN``. The terminal backend
+    uses a narrower name-based blocklist and would inherit these vars unless
+    they are explicitly registered in ``PROVIDER_REGISTRY`` (they are not —
+    they are task-level overrides, not primary provider credentials).
+    """
+    upper = key.upper()
+    if upper.startswith("AUXILIARY_") and (
+        upper.endswith("_API_KEY") or upper.endswith("_BASE_URL")
+    ):
+        return True
+    return False
 
 
 def _inject_context_hermes_home(env: dict) -> None:
@@ -229,6 +260,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
+        if _is_hermes_internal_secret(key) and not _is_passthrough(key):
+            continue
         if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
@@ -236,6 +269,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             sanitized[real_key] = value
+        elif _is_hermes_internal_secret(key) and not _is_passthrough(key):
+            continue
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
@@ -611,6 +646,8 @@ def _make_run_env(env: dict) -> dict:
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             run_env[real_key] = v
+        elif _is_hermes_internal_secret(k) and not _is_passthrough(k):
+            continue
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     path_key = _path_env_key(run_env)

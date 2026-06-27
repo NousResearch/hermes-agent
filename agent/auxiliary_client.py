@@ -754,6 +754,9 @@ class _CodexCompletionsAdapter:
         timeout = kwargs.get("timeout")
         if timeout is not None:
             resp_kwargs["timeout"] = timeout
+        service_tier = kwargs.get("service_tier")
+        if isinstance(service_tier, str) and service_tier.strip():
+            resp_kwargs["service_tier"] = service_tier.strip()
 
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
         # support max_output_tokens or temperature — omit to avoid 400 errors.
@@ -5279,6 +5282,18 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     return {}
 
 
+def _get_task_service_tier(task: str) -> Optional[str]:
+    """Read auxiliary.<task>.service_tier and normalize fast-mode aliases."""
+    task_config = _get_auxiliary_task_config(task)
+    value = str(task_config.get("service_tier") or "").strip().lower()
+    if not value or value in {"normal", "default", "standard", "off", "none"}:
+        return None
+    if value in {"fast", "priority", "on"}:
+        return "priority"
+    logger.warning("Unknown auxiliary.%s.service_tier %r, ignoring", task, value)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------
@@ -5693,6 +5708,9 @@ def call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_base_info or resolved_base_url)
+    service_tier = _get_task_service_tier(task)
+    if service_tier:
+        kwargs["service_tier"] = service_tier
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")

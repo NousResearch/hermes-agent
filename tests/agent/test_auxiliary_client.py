@@ -30,6 +30,7 @@ from agent.auxiliary_client import (
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    CodexAuxiliaryClient,
 )
 
 
@@ -1203,6 +1204,68 @@ class TestAuxiliaryPoolAwareness:
 
         assert client is not None
         assert model == "google/gemini-3-flash-preview"
+
+    def test_call_llm_applies_auxiliary_task_service_tier(self):
+        fake_client = MagicMock()
+        fake_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fake_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(fake_client, "gpt-5.5")),
+            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"service_tier": "fast"}),
+        ):
+            call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert fake_client.chat.completions.create.call_args.kwargs["service_tier"] == "priority"
+
+    def test_codex_auxiliary_client_forwards_service_tier(self):
+        seen = {}
+
+        class _Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return iter([])
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="ok")],
+                    )]
+                )
+
+        class _Responses:
+            def stream(self, **kwargs):
+                seen.update(kwargs)
+                return _Stream()
+
+        real_client = SimpleNamespace(
+            responses=_Responses(),
+            api_key="test",
+            base_url="https://chatgpt.com/backend-api/codex",
+            close=lambda: None,
+        )
+        client = CodexAuxiliaryClient(real_client, "gpt-5.5")
+
+        response = client.chat.completions.create(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            service_tier="priority",
+        )
+
+        assert seen["service_tier"] == "priority"
+        assert response.choices[0].message.content == "ok"
 
     def test_call_llm_retries_nous_after_401(self):
         class _Auth401(Exception):

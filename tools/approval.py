@@ -443,8 +443,15 @@ DANGEROUS_PATTERNS = [
     # The name-based pattern above catches `pkill hermes` but not
     # `kill -9 $(pgrep -f hermes)` because the substitution is opaque
     # to regex at detection time. Catch the structural pattern instead.
-    (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
-    (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
+    # `pidof` is the BSD/Linux alternative to `pgrep` and is equally
+    # opaque, so include it in the same alternation.
+    (r'\bkill\b.*\$\(\s*(pgrep|pidof)\b', "kill process via pgrep/pidof expansion (self-termination)"),
+    (r'\bkill\b.*`\s*(pgrep|pidof)\b', "kill process via backtick pgrep/pidof expansion (self-termination)"),
+    # launchctl-driven gateway stop/restart on macOS. The agent can bypass
+    # the `hermes gateway stop|restart` pattern above by driving launchd
+    # directly against the service label (commonly `ai.hermes.gateway`).
+    # Catch the operations that stop, restart, or unload it.
+    (r'\blaunchctl\s+(stop|kickstart|bootout|unload|kill|disable|remove)\b.*\b(hermes|ai\.hermes)\b', "stop/restart hermes launchd service (kills running agents)"),
     # File copy/move/edit into sensitive system paths (/etc/ and macOS
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
@@ -1593,7 +1600,40 @@ def check_all_command_guards(command: str, env_type: str,
         from tools.tirith_security import check_command_security
         tirith_result = check_command_security(command)
     except ImportError:
-        pass  # tirith module not installed — allow
+        # Tirith module not installed.  When tirith_fail_open is True (the
+        # default) we silently allow, matching the pre-existing behaviour.
+        # When tirith_fail_open is False the operator has explicitly opted into
+        # fail-closed; an import failure must not silently grant access, so we
+        # synthesize a warn result that will be surfaced to the user through the
+        # normal approval flow.  Fixes #20733.
+        _tirith_fail_open = True  # safe default if config is unreadable
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _sec = (_load_cfg() or {}).get("security", {}) or {}
+            _tirith_enabled = _sec.get("tirith_enabled", True)
+            if _tirith_enabled:
+                _tirith_fail_open = _sec.get("tirith_fail_open", True)
+        except Exception:
+            pass
+        if not _tirith_fail_open:
+            tirith_result = {
+                "action": "warn",
+                "findings": [
+                    {
+                        "rule_id": "tirith-import-error",
+                        "severity": "HIGH",
+                        "title": "Tirith security module unavailable",
+                        "description": (
+                            "The Tirith security scanner could not be imported. "
+                            "Because security.tirith_fail_open is false, this "
+                            "command cannot be silently allowed. Approve only if "
+                            "you have verified the command is safe."
+                        ),
+                    }
+                ],
+                "summary": "Tirith unavailable (fail-closed)",
+            }
+        # else: tirith_fail_open is True — allow as before (tirith_result stays "allow")
 
     # Dangerous command check (detection only, no approval)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)

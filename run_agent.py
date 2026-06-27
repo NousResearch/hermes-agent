@@ -599,6 +599,13 @@ class AIAgent:
             return
         source = _session_source_for_agent(self.platform)
         try:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _profile_for_session = get_active_profile_name()
+                if _profile_for_session == "default":
+                    _profile_for_session = None
+            except Exception:
+                _profile_for_session = None
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
@@ -608,6 +615,7 @@ class AIAgent:
                 user_id=None,
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
+                profile_name=_profile_for_session,
             )
             self._session_db_created = True
         except Exception as e:

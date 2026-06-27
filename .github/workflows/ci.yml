@@ -110,6 +110,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker.yml
+    secrets: inherit
 
   supply-chain:
     name: Supply-chain scan

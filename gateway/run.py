@@ -43,7 +43,7 @@ import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -586,6 +586,26 @@ def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+def _align_tz(reference: datetime, other: datetime) -> datetime:
+    """Return ``reference`` aligned to ``other``'s tz-awareness.
+
+    Subtracting an aware datetime from a naive one (or vice versa) raises
+    ``TypeError``.  This helper makes ``reference`` comparable to ``other``
+    without losing wall-clock semantics: a naive value is interpreted as
+    UTC (matching :func:`datetime.now(tz=timezone.utc)` conventions used
+    elsewhere in the codebase), an aware value is converted to UTC.
+
+    Used at boundaries where persisted timestamps may pre-date a
+    naive→aware migration, so a single legacy entry doesn't crash the
+    whole pass.
+    """
+    if (other.tzinfo is None) == (reference.tzinfo is None):
+        return reference
+    if reference.tzinfo is None:
+        return reference.replace(tzinfo=timezone.utc)
+    return reference.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _auto_continue_freshness_window() -> float:
@@ -5682,8 +5702,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         scheduled = 0
         for entry in candidates:
             marker = entry.last_resume_marked_at or entry.updated_at
-            if marker is not None and (now - marker).total_seconds() > window:
-                continue
+            if marker is not None:
+                try:
+                    delta = (_align_tz(now, marker) - marker).total_seconds()
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "resume-pending: skipping %s — incomparable marker %r: %s",
+                        entry.session_key, marker, exc,
+                    )
+                    continue
+                if delta > window:
+                    continue
 
             # Already being resumed (e.g. scheduled at startup and still
             # in-flight) — don't synthesize a second continuation turn.

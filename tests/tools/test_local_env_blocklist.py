@@ -18,6 +18,8 @@ from tools.environments.local import (
     LocalEnvironment,
     _HERMES_PROVIDER_ENV_BLOCKLIST,
     _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _is_auxiliary_secret,
+    _sanitize_subprocess_env,
 )
 
 
@@ -611,3 +613,71 @@ class TestHermesBinDirOnPath:
         entries = result["PATH"].split(os.pathsep)
         assert entries[0] == "/opt/hermes/bin"
         assert "/usr/bin" in entries
+
+
+class TestAuxiliaryEnvBlocklist:
+    """AUXILIARY_*_API_KEY and AUXILIARY_*_BASE_URL env vars written by the
+    gateway for per-task auxiliary config must not leak to subprocesses."""
+
+    def test_is_auxiliary_secret_detects_api_keys(self):
+        assert _is_auxiliary_secret("AUXILIARY_VISION_API_KEY")
+        assert _is_auxiliary_secret("AUXILIARY_COMPRESSION_API_KEY")
+        assert _is_auxiliary_secret("AUXILIARY_APPROVAL_API_KEY")
+        assert _is_auxiliary_secret("AUXILIARY_CUSTOM_RAG_API_KEY")
+
+    def test_is_auxiliary_secret_detects_base_urls(self):
+        assert _is_auxiliary_secret("AUXILIARY_VISION_BASE_URL")
+        assert _is_auxiliary_secret("AUXILIARY_WEB_EXTRACT_BASE_URL")
+
+    def test_is_auxiliary_secret_allows_non_secrets(self):
+        assert not _is_auxiliary_secret("AUXILIARY_VISION_PROVIDER")
+        assert not _is_auxiliary_secret("AUXILIARY_VISION_MODEL")
+        assert not _is_auxiliary_secret("PATH")
+        assert not _is_auxiliary_secret("HOME")
+
+    def test_sanitize_blocks_auxiliary_api_keys(self):
+        env = {
+            "PATH": "/usr/bin",
+            "AUXILIARY_VISION_API_KEY": "sk-vision-secret",
+            "AUXILIARY_COMPRESSION_API_KEY": "sk-compress-secret",
+            "AUXILIARY_APPROVAL_API_KEY": "sk-approval-secret",
+        }
+        result = _sanitize_subprocess_env(env)
+        assert "AUXILIARY_VISION_API_KEY" not in result
+        assert "AUXILIARY_COMPRESSION_API_KEY" not in result
+        assert "AUXILIARY_APPROVAL_API_KEY" not in result
+        assert result["PATH"] == "/usr/bin"
+
+    def test_sanitize_blocks_auxiliary_base_urls(self):
+        env = {
+            "PATH": "/usr/bin",
+            "AUXILIARY_WEB_EXTRACT_BASE_URL": "https://internal.api.example.com",
+        }
+        result = _sanitize_subprocess_env(env)
+        assert "AUXILIARY_WEB_EXTRACT_BASE_URL" not in result
+
+    def test_sanitize_passes_auxiliary_non_secrets(self):
+        env = {
+            "PATH": "/usr/bin",
+            "AUXILIARY_VISION_PROVIDER": "openai-api",
+            "AUXILIARY_VISION_MODEL": "gpt-4o",
+        }
+        result = _sanitize_subprocess_env(env)
+        assert result.get("AUXILIARY_VISION_PROVIDER") == "openai-api"
+        assert result.get("AUXILIARY_VISION_MODEL") == "gpt-4o"
+
+    def test_sanitize_blocks_plugin_auxiliary_keys(self):
+        env = {
+            "PATH": "/usr/bin",
+            "AUXILIARY_CUSTOM_PLUGIN_TASK_API_KEY": "sk-plugin-secret",
+            "AUXILIARY_CUSTOM_PLUGIN_TASK_BASE_URL": "https://plugin.internal",
+        }
+        result = _sanitize_subprocess_env(env)
+        assert "AUXILIARY_CUSTOM_PLUGIN_TASK_API_KEY" not in result
+        assert "AUXILIARY_CUSTOM_PLUGIN_TASK_BASE_URL" not in result
+
+    def test_sanitize_blocks_auxiliary_in_extra_env(self):
+        base = {"PATH": "/usr/bin"}
+        extra = {"AUXILIARY_VISION_API_KEY": "sk-extra-secret"}
+        result = _sanitize_subprocess_env(base, extra)
+        assert "AUXILIARY_VISION_API_KEY" not in result

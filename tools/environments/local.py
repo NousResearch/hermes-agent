@@ -217,6 +217,21 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
+def _is_auxiliary_secret(key: str) -> bool:
+    """True for dynamically-generated AUXILIARY_*_API_KEY / _BASE_URL vars.
+
+    The gateway bridges per-task auxiliary config into env vars named
+    ``AUXILIARY_{TASK}_API_KEY`` and ``AUXILIARY_{TASK}_BASE_URL``
+    (gateway/run.py ~1587-1589). These are generated at runtime for both
+    built-in tasks (vision, compression, approval) and plugin-registered
+    auxiliary tasks, so they cannot be enumerated in the static blocklist.
+    """
+    upper = key.upper()
+    return upper.startswith("AUXILIARY_") and (
+        upper.endswith("_API_KEY") or upper.endswith("_BASE_URL")
+    )
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -229,6 +244,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
+        if _is_auxiliary_secret(key) and not _is_passthrough(key):
+            continue
         if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
@@ -236,6 +253,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             sanitized[real_key] = value
+        elif _is_auxiliary_secret(key) and not _is_passthrough(key):
+            continue
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 

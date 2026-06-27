@@ -203,6 +203,163 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ============================================================================
+# ApexNodes region detection (decides whether CN mirror mode turns on)
+# ============================================================================
+# Goal: a fresh mainland-China machine should auto-pick domestic mirrors for any
+# MISSING dependency, while everyone else keeps the upstream defaults byte-for-
+# byte. This block only ever *decides a region* and, from it, sets
+# HERMES_CN_MIRRORS — the existing "ApexNodes China mirror mode" block below
+# (and the COS download helpers) remain the single source of truth for the
+# actual mirror URLs. Reuse, not a second mirror table.
+#
+# Precedence (highest first):
+#   1. HERMES_CN_MIRRORS already set in the env  -> respect it verbatim, skip
+#      detection entirely. The packaged desktop (bootstrap-runner.cjs) and ops
+#      overrides set this directly, so this keeps current behavior unchanged and
+#      every existing test green.
+#   2. APEXNODES_REGION=cn|global                -> explicit operator/user knob
+#      (escape hatch + testability). cn => mirrors on, global => mirrors off.
+#   3. neither set                              -> auto-detect mainland China
+#      with the heuristic below; default to "global" (no mirrors) on any doubt,
+#      because picking the wrong region only ever slows a download — it must
+#      never break the first-run install path.
+#
+# The detection result is cached in $HERMES_HOME/.apexnodes-region so the
+# per-stage bootstrap (each --stage runs in a fresh process) probes the network
+# at most once instead of once per stage. Delete that file (or set
+# APEXNODES_REGION) to re-decide.
+
+# Lowercase helper that works on bash 3.2 (macOS /bin/bash lacks ${var,,}).
+_an_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# Region diagnostics go to STDERR, never stdout. stdout is the structured
+# channel the bootstrap runner parses for --manifest / --stage --json frames;
+# the runner forwards stderr as ordinary log lines, so the user still sees this.
+_an_log() { echo "$1" >&2; }
+
+# Cheap, offline first pass: is the machine's timezone plausibly mainland China?
+# CST (UTC+8) covers all of China, but also HK / Taiwan / Singapore / Perth, so
+# this is only a *gate* for the network probe below — never decisive on its own.
+# Checked via the IANA zone name first (Asia/Shanghai, Asia/Urumqi) and then the
+# numeric UTC offset as a fallback for minimal images with no zoneinfo names.
+_an_timezone_suggests_cn() {
+    local tz="${TZ:-}"
+    if [ -z "$tz" ] && [ -r /etc/timezone ]; then
+        tz="$(cat /etc/timezone 2>/dev/null)"
+    fi
+    if [ -z "$tz" ] && [ -L /etc/localtime ]; then
+        # e.g. /usr/share/zoneinfo/Asia/Shanghai -> Asia/Shanghai
+        tz="$(readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##')"
+    fi
+    case "$tz" in
+        Asia/Shanghai|Asia/Urumqi|Asia/Chongqing|Asia/Harbin|Asia/Kashgar|PRC)
+            return 0 ;;
+    esac
+    # Fallback: numeric offset. date %z is +0800 across CST; combined with the
+    # network probe this still isolates the mainland from non-CN +0800 regions.
+    local off
+    off="$(date +%z 2>/dev/null)"
+    [ "$off" = "+0800" ] && return 0
+    return 1
+}
+
+# Decisive pass: race a domestic endpoint against a foreign one with short
+# timeouts. In mainland China the foreign endpoint is typically blocked or very
+# slow while the domestic one answers immediately; elsewhere both answer (or the
+# foreign one answers and the domestic one may be slower). We only classify CN
+# when the domestic probe SUCCEEDS *and* the foreign probe FAILS — a deliberately
+# conservative AND so transient flakiness biases toward "global" (defaults).
+# Uses HEAD requests; no payload is downloaded. Returns 0 for CN, 1 otherwise.
+_an_network_suggests_cn() {
+    command -v curl >/dev/null 2>&1 || return 1
+    # Domestic anchor: npmmirror is one of the mirrors we'd actually use and is
+    # reachable nationwide. Foreign anchor: the npm registry we'd otherwise hit.
+    local cn_url="https://registry.npmmirror.com/"
+    local foreign_url="https://registry.npmjs.org/"
+    local cn_ok=1 foreign_ok=1
+    curl -fsS -I --max-time 4 "$cn_url" >/dev/null 2>&1 && cn_ok=0
+    curl -fsS -I --max-time 4 "$foreign_url" >/dev/null 2>&1 && foreign_ok=0
+    # CN iff domestic reachable AND foreign unreachable.
+    [ "$cn_ok" -eq 0 ] && [ "$foreign_ok" -ne 0 ] && return 0
+    return 1
+}
+
+# Resolve the region into HERMES_CN_MIRRORS. No-op when HERMES_CN_MIRRORS is
+# already set (precedence rule 1). Writes/reads the cache file otherwise.
+_resolve_region() {
+    # Rule 1: explicit HERMES_CN_MIRRORS wins; do not touch it, do not probe.
+    if [ -n "${HERMES_CN_MIRRORS:-}" ]; then
+        return 0
+    fi
+
+    # Rule 2: explicit region knob.
+    local region
+    region="$(_an_lower "${APEXNODES_REGION:-}")"
+    case "$region" in
+        cn|china|mainland)
+            export HERMES_CN_MIRRORS=1
+            _an_log "→ ApexNodes region: cn (from APEXNODES_REGION) — using China mirrors"
+            return 0 ;;
+        global|intl|international|foreign|row)
+            export HERMES_CN_MIRRORS=0
+            _an_log "→ ApexNodes region: global (from APEXNODES_REGION) — using default sources"
+            return 0 ;;
+        "") : ;;  # fall through to auto-detect
+        *)
+            _an_log "⚠ Unknown APEXNODES_REGION='${APEXNODES_REGION}' (expected cn|global) — auto-detecting" ;;
+    esac
+
+    # Rule 3: auto-detect. Reuse a cached decision from an earlier stage process.
+    local cache="${HERMES_HOME:-$HOME/.hermes}/.apexnodes-region"
+    if [ -r "$cache" ]; then
+        local cached
+        cached="$(_an_lower "$(cat "$cache" 2>/dev/null)")"
+        case "$cached" in
+            cn)     export HERMES_CN_MIRRORS=1; return 0 ;;
+            global) export HERMES_CN_MIRRORS=0; return 0 ;;
+        esac
+    fi
+
+    # No cache: decide now. Gate the network probe on the cheap timezone hint so
+    # the common (non-CN) case usually skips the probe entirely, but still probe
+    # when the timezone is unknown so headless/UTC images aren't misclassified.
+    local detected="global"
+    if _an_timezone_suggests_cn; then
+        if _an_network_suggests_cn; then
+            detected="cn"
+        fi
+    elif [ -z "${TZ:-}" ] && [ ! -e /etc/timezone ] && [ ! -L /etc/localtime ]; then
+        # Timezone genuinely undeterminable (bare container) — fall back to the
+        # network probe alone rather than assuming global.
+        if _an_network_suggests_cn; then
+            detected="cn"
+        fi
+    fi
+
+    # Persist for sibling stage processes (best-effort; never fail the install).
+    mkdir -p "${HERMES_HOME:-$HOME/.hermes}" 2>/dev/null || true
+    printf '%s\n' "$detected" > "$cache" 2>/dev/null || true
+
+    if [ "$detected" = "cn" ]; then
+        export HERMES_CN_MIRRORS=1
+        _an_log "→ ApexNodes region: cn (auto-detected) — using China mirrors"
+        _an_log "  (override with APEXNODES_REGION=global if this is wrong)"
+    else
+        export HERMES_CN_MIRRORS=0
+        # Quiet on the global path to keep upstream/CI output byte-clean.
+    fi
+}
+
+# Skip region detection for --manifest: it emits pure metadata to stdout and the
+# mirror choice is irrelevant there. Running a network probe at manifest time
+# would also needlessly slow the bootstrap runner's first call. Every other
+# invocation (each --stage, the monolithic curl|bash main) resolves the region
+# so MISSING-dependency downloads pick the right source.
+if [ "$MANIFEST_MODE" != true ]; then
+    _resolve_region
+fi
+
+# ============================================================================
 # ApexNodes China mirror mode (opt-in via HERMES_CN_MIRRORS=1)
 # ============================================================================
 # OFF by default: with the flag unset this entire block is skipped and the
@@ -1438,8 +1595,24 @@ setup_venv() {
 
     log_info "Creating virtual environment with Python $PYTHON_VERSION..."
 
-    if [ -d "venv" ]; then
-        log_info "Virtual environment already exists, recreating..."
+    # Skip recreation when a healthy venv already exists at the right Python
+    # version. Previously this unconditionally `rm -rf venv` + recreated on every
+    # run, which threw away a perfectly good environment (and forced a full dep
+    # reinstall behind it) on re-runs and idempotent stage retries. We re-derive
+    # the venv interpreter pin regardless so the python-deps stage stays correct.
+    if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        local _venv_major_minor
+        _venv_major_minor="$("$INSTALL_DIR/venv/bin/python" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || true)"
+        if [ "$_venv_major_minor" = "$PYTHON_VERSION" ]; then
+            export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+            log_success "Virtual environment already present (Python $_venv_major_minor) — skipping"
+            mark_stage_skipped
+            return 0
+        fi
+        log_info "Existing venv is Python ${_venv_major_minor:-unknown}, need $PYTHON_VERSION — recreating..."
+        rm -rf venv
+    elif [ -d "venv" ]; then
+        log_info "Virtual environment incomplete, recreating..."
         rm -rf venv
     fi
 
@@ -1531,6 +1704,21 @@ install_deps() {
     if [ "$USE_VENV" = true ]; then
         # Tell uv to install into our venv (no need to activate)
         export VIRTUAL_ENV="$INSTALL_DIR/venv"
+    fi
+
+    # Fast path: if the venv already exactly matches the lockfile, skip the whole
+    # install (build-tools probe + multi-tier sync). `uv sync --locked --check`
+    # is read-only — it verifies the environment against uv.lock and exits
+    # non-zero if any package would be added/removed/changed — so this never
+    # masks a stale or partial environment (those fall through and reinstall).
+    # Correctness-preserving by construction: we only skip when uv itself
+    # confirms nothing would change.
+    if [ "$USE_VENV" = true ] && [ -f "uv.lock" ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked --check >/dev/null 2>&1; then
+            log_success "Python dependencies already satisfied (uv.lock) — skipping"
+            mark_stage_skipped
+            return 0
+        fi
     fi
 
     # On Debian/Ubuntu (including WSL), some Python packages need build tools.
@@ -2952,19 +3140,41 @@ run_stage_protocol() {
     # frame below. Without this, a failed --stage would terminate the process
     # before emitting the frame and the Rust/Electron parser would see "no
     # result frame" instead of a clean {ok:false} contract response.
+    #
+    # The subshell can't export STAGE_SKIPPED back to us, so a stage body that
+    # detected everything-already-present signals it by touching $skip_marker.
+    # We read that after the subshell to emit skipped=true (a first-class state
+    # in the bootstrap-runner contract: running/succeeded/skipped/failed).
+    local skip_marker
+    skip_marker="$(mktemp 2>/dev/null || echo "/tmp/hermes-stage-skip.$$")"
+    rm -f "$skip_marker"
     set +e
-    ( run_stage_body "$stage" )
+    ( STAGE_SKIP_MARKER="$skip_marker" run_stage_body "$stage" )
     local code=$?
     set -e
+    local skipped=false
+    [ -f "$skip_marker" ] && skipped=true
+    rm -f "$skip_marker" 2>/dev/null || true
 
     if [ "$JSON_OUTPUT" = true ]; then
         if [ "$code" -eq 0 ]; then
-            emit_stage_json "$stage" true false
+            emit_stage_json "$stage" true "$skipped"
         else
             emit_stage_json "$stage" false false "exit code $code"
         fi
     fi
     return "$code"
+}
+
+# Called by a stage helper (setup_venv, install_deps, ...) when it found
+# everything already present and did no work. Touches the marker file that the
+# subshell-based stage runner (run_stage_protocol) reads after the body returns,
+# so it can emit skipped=true. A no-op outside stage mode (the monolithic main()
+# path leaves STAGE_SKIP_MARKER unset and emits no JSON frames). Safe to call
+# multiple times within one stage.
+mark_stage_skipped() {
+    [ -n "${STAGE_SKIP_MARKER:-}" ] && : > "$STAGE_SKIP_MARKER" 2>/dev/null || true
+    return 0
 }
 
 # ============================================================================

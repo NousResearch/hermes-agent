@@ -1,0 +1,7 @@
+name: openclaw_bridge
+version: 1.0.0
+description: "Local OpenClaw delegation bridge for mock-safe dry-run tasks. Calls the OpenClaw hermes-bridge plugin over localhost/private HTTP."
+author: local
+kind: backend
+provides_tools:
+  - openclaw_delegate

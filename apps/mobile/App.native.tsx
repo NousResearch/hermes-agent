@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 import { bundledRendererHtml } from './src/generated/bundled-renderer-html';
@@ -282,7 +282,7 @@ export default function App() {
   );
 
   return (
-    <SafeAreaView style={styles.root}>
+    <View style={styles.root}>
       <WebView
         ref={webViewRef}
         source={rendererDevUrl ? { uri: rendererDevUrl } : { html: bundledRendererHtml, baseUrl: 'https://hermes.local/' }}
@@ -314,7 +314,7 @@ export default function App() {
           <Text style={styles.debugText}>{diagnostic}</Text>
         </View>
       ) : null}
-    </SafeAreaView>
+    </View>
   );
 }
 

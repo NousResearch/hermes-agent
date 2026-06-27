@@ -248,8 +248,14 @@ class TestHandleVisionAnalyzeFastPath:
         assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
             "Fast path fired for unknown provider; should have fallen through"
 
-    def test_supports_vision_override_bypasses_provider_allowlist(self, tmp_path):
-        """supports_vision=true enables the fast path on an unlisted provider."""
+    def test_supports_vision_override_enables_fast_path_on_known_provider(self, tmp_path):
+        """supports_vision=true enables the fast path on a provider already
+        in the ``_supports_media_in_tool_results`` allowlist (e.g. a
+        custom OpenAI-compatible endpoint).  Providers NOT in the allowlist
+        (e.g. Xiaomi MiMo) still fall through to the aux-LLM path because
+        they reject list-type tool content — see
+        ``test_xiaomi_falls_through_to_aux``.
+        """
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
 
@@ -257,7 +263,9 @@ class TestHandleVisionAnalyzeFastPath:
             return '{"sentinel": "aux-path"}'
 
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
-        set_runtime_main("brand-new-provider", "llava-v1.6")
+        # "openai" is in the _supports_media_in_tool_results allowlist,
+        # so the fast path fires when supports_vision is set.
+        set_runtime_main("openai", "llava-v1.6")
         try:
             with patch(
                 "hermes_cli.config.load_config",
@@ -272,6 +280,37 @@ class TestHandleVisionAnalyzeFastPath:
 
         assert isinstance(result, dict) and result.get("_multimodal") is True
         mock_aux.assert_not_called()
+
+    def test_xiaomi_falls_through_to_aux(self, tmp_path):
+        """Xiaomi MiMo (supports_vision=True but not in
+        _supports_media_in_tool_results allowlist) must fall through to
+        the aux-LLM path.  The native fast path would return a multimodal
+        tool-result envelope that the agent loop degrades to a text
+        summary — defeating the fast path and losing image pixels.
+        """
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("xiaomi", "mimo-v2.5")
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={},
+            ), patch(
+                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+            ) as mock_aux:
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
+            "Fast path fired for Xiaomi; should fall through to aux LLM"
+        mock_aux.assert_called_once()
 
     def test_text_mode_wins_over_supports_vision_override(self, tmp_path):
         """Explicit text routing blocks the fast path even with supports_vision."""

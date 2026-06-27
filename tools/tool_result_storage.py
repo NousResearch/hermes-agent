@@ -22,9 +22,11 @@ Defense against context-window overflow operates at three levels:
    where many medium-sized results combine to overflow context.
 """
 
+import json
 import logging
 import os
 import shlex
+from datetime import datetime, timezone
 import uuid
 
 from tools.budget_config import (
@@ -37,6 +39,7 @@ logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
+INDEX_FILENAME = "index.jsonl"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 
@@ -92,6 +95,70 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
     result = env.execute(cmd, timeout=30, stdin_data=content)
     return result.get("returncode", 1) == 0
+
+
+def _json_safe_session_id(env) -> str | None:
+    """Best-effort session id extraction without leaking mock/proxy objects."""
+    if env is None:
+        return None
+    value = getattr(env, "session_id", None)
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    return None
+
+
+def _append_index_record(record: dict, index_path: str, env) -> bool:
+    """Append a JSONL manifest record next to persisted tool outputs.
+
+    This is intentionally best-effort. The full output persistence is the
+    critical path; a broken manifest must not make Hermes fall back to inline
+    truncation after the expensive content write already succeeded.
+    """
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    if env is not None:
+        try:
+            storage_dir = os.path.dirname(index_path)
+            cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat >> {shlex.quote(index_path)}"
+            result = env.execute(cmd, timeout=30, stdin_data=line)
+            return result.get("returncode", 1) == 0
+        except Exception as exc:
+            logger.debug("Could not append tool result index record via env: %s", exc)
+            return False
+
+    try:
+        os.makedirs(os.path.dirname(index_path), exist_ok=True)
+        with open(index_path, "a", encoding="utf-8") as fh:
+            fh.write(line)
+        return True
+    except Exception as exc:
+        logger.debug("Could not append local tool result index record: %s", exc)
+        return False
+
+
+def _record_persisted_result(
+    *,
+    tool_use_id: str,
+    tool_name: str,
+    file_path: str,
+    original_size: int,
+    preview: str,
+    storage_dir: str,
+    env,
+) -> None:
+    record = {
+        "tool_use_id": tool_use_id,
+        "tool_name": tool_name,
+        "file_path": file_path,
+        "original_size": original_size,
+        "preview": preview,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    session_id = _json_safe_session_id(env)
+    if session_id:
+        record["session_id"] = session_id
+    index_path = f"{storage_dir}/{INDEX_FILENAME}"
+    if not _append_index_record(record, index_path, env):
+        logger.debug("Tool result persisted but index append failed: %s", tool_use_id)
 
 
 def _build_persisted_message(
@@ -163,6 +230,15 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
                 )
+                _record_persisted_result(
+                    tool_use_id=tool_use_id,
+                    tool_name=tool_name,
+                    file_path=remote_path,
+                    original_size=len(content),
+                    preview=preview,
+                    storage_dir=storage_dir,
+                    env=env,
+                )
                 return _build_persisted_message(preview, has_more, len(content), remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
@@ -176,6 +252,111 @@ def maybe_persist_tool_result(
         f"[Truncated: tool response was {len(content):,} chars. "
         f"Full output could not be saved to sandbox.]"
     )
+
+
+def _record_matches(record: dict, query: str, tool_name: str | None) -> bool:
+    if tool_name and record.get("tool_name") != tool_name:
+        return False
+    if not query:
+        return True
+    haystack = "\n".join(
+        str(record.get(key, ""))
+        for key in ("tool_use_id", "tool_name", "file_path", "preview", "session_id")
+    ).lower()
+    return query.lower() in haystack
+
+
+def search_persisted_tool_results(
+    query: str = "",
+    tool_name: str | None = None,
+    limit: int = 20,
+    index_path: str | None = None,
+) -> dict:
+    """Search the JSONL manifest for persisted tool outputs.
+
+    Returns newest matching records first. The records point to full output
+    files that can be opened with read_file, so the model can recover large
+    tool results without keeping the whole blob in context.
+    """
+    index_path = index_path or f"{STORAGE_DIR}/{INDEX_FILENAME}"
+    limit = max(1, min(int(limit or 20), 100))
+    if not os.path.exists(index_path):
+        return {"index_path": index_path, "count": 0, "results": []}
+
+    matches = []
+    try:
+        with open(index_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.debug("Skipping malformed tool result index line")
+                    continue
+                if _record_matches(record, query, tool_name):
+                    matches.append(record)
+    except OSError as exc:
+        return {"index_path": index_path, "count": 0, "results": [], "error": str(exc)}
+
+    matches.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+    return {"index_path": index_path, "count": len(matches[:limit]), "results": matches[:limit]}
+
+
+def search_persisted_tool_results_tool(
+    query: str = "",
+    tool_name: str | None = None,
+    limit: int = 20,
+) -> dict:
+    """Tool wrapper for searching persisted output manifest records."""
+    return search_persisted_tool_results(query=query, tool_name=tool_name, limit=limit)
+
+
+def _register_tools() -> None:
+    try:
+        from tools.registry import registry
+    except Exception as exc:
+        logger.debug("Could not import tool registry for persisted-result search: %s", exc)
+        return
+
+    registry.register(
+        name="search_persisted_tool_results",
+        toolset="file",
+        schema={
+            "description": "Search manifest records for large tool outputs saved outside context. Returns file paths readable with read_file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Case-insensitive substring to search in preview, tool name, id, path, or session id.",
+                    },
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Optional exact tool name filter, such as terminal or search_files.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum records to return, 1-100.",
+                        "default": 20,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        handler=lambda args, **kw: search_persisted_tool_results_tool(
+            query=args.get("query", ""),
+            tool_name=args.get("tool_name"),
+            limit=args.get("limit", 20),
+        ),
+        description="Search saved large tool-result outputs by preview text or metadata.",
+        emoji="🗂️",
+        max_result_size_chars=100_000,
+    )
+
+
+_register_tools()
 
 
 def enforce_turn_budget(

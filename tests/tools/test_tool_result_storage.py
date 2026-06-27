@@ -1,5 +1,7 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -19,8 +21,22 @@ from tools.tool_result_storage import (
     _write_to_sandbox,
     enforce_turn_budget,
     generate_preview,
+    search_persisted_tool_results,
     maybe_persist_tool_result,
 )
+
+
+def _index_records_from_env(env):
+    """Return JSONL index records appended through the mocked environment."""
+    records = []
+    for call in env.execute.call_args_list:
+        command = call.args[0]
+        if "index.jsonl" not in command:
+            continue
+        stdin_data = call.kwargs.get("stdin_data", "")
+        for line in stdin_data.splitlines():
+            records.append(json.loads(line))
+    return records
 
 
 # ── generate_preview ──────────────────────────────────────────────────
@@ -232,7 +248,48 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         assert "tc_456.txt" in result
         assert len(result) < len(content)
-        env.execute.assert_called_once()
+        assert env.execute.call_count >= 1
+
+    def test_persisted_output_writes_searchable_index_record(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        content = "needle line\n" + "x" * 60_000
+
+        maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_indexed",
+            env=env,
+            threshold=30_000,
+        )
+
+        records = _index_records_from_env(env)
+        assert len(records) == 1
+        assert records[0]["tool_use_id"] == "tc_indexed"
+        assert records[0]["tool_name"] == "terminal"
+        assert records[0]["file_path"].endswith("/tc_indexed.txt")
+        assert records[0]["original_size"] == len(content)
+        assert "needle line" in records[0]["preview"]
+        assert "created_at" in records[0]
+
+    def test_index_write_failure_does_not_break_persistence(self):
+        env = MagicMock()
+        env.execute.side_effect = [
+            {"output": "", "returncode": 0},
+            {"output": "permission denied", "returncode": 1},
+        ]
+        content = "x" * 60_000
+
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_index_fail",
+            env=env,
+            threshold=30_000,
+        )
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "tc_index_fail.txt" in result
 
     def test_persists_full_content_as_is(self):
         """Content is persisted verbatim — no JSON extraction."""
@@ -250,8 +307,10 @@ class TestMaybePersistToolResult:
         )
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
-        # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args[1]["stdin_data"] == content
+        # command string — see test_large_content_via_stdin for why). The
+        # manifest append is a second execute call, so assert the content-write
+        # call specifically instead of blindly inspecting the last call.
+        assert env.execute.call_args_list[0].kwargs["stdin_data"] == content
 
     def test_above_threshold_no_env_truncates_inline(self):
         content = "x" * 60_000
@@ -420,6 +479,35 @@ class TestMaybePersistToolResult:
         # Any non-empty content with threshold=0 should be persisted
         assert PERSISTED_OUTPUT_TAG in result
 
+    def test_search_persisted_tool_results_reads_jsonl_index(self, tmp_path):
+        index = tmp_path / "index.jsonl"
+        index.write_text(
+            "\n".join([
+                json.dumps({
+                    "tool_use_id": "tc_old",
+                    "tool_name": "terminal",
+                    "file_path": "/tmp/hermes-results/tc_old.txt",
+                    "original_size": 123,
+                    "preview": "nothing useful",
+                    "created_at": "2026-05-20T00:00:00Z",
+                }),
+                json.dumps({
+                    "tool_use_id": "tc_hit",
+                    "tool_name": "search_files",
+                    "file_path": "/tmp/hermes-results/tc_hit.txt",
+                    "original_size": 456,
+                    "preview": "contains Needle text",
+                    "created_at": "2026-05-21T00:00:00Z",
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        result = search_persisted_tool_results(query="needle", index_path=str(index), limit=5)
+
+        assert result["count"] == 1
+        assert result["results"][0]["tool_use_id"] == "tc_hit"
+
 
 # ── enforce_turn_budget ───────────────────────────────────────────────
 
@@ -444,6 +532,22 @@ class TestEnforceTurnBudget:
         enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
         # The larger one (130K) should be persisted first
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
+
+    def test_over_budget_persisted_result_writes_index_record(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        msgs = [
+            {"role": "tool", "tool_call_id": "t1", "content": "a" * 80_000},
+            {"role": "tool", "tool_call_id": "t2", "content": "budget needle\n" + "b" * 130_000},
+        ]
+
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+
+        records = _index_records_from_env(env)
+        assert len(records) == 1
+        assert records[0]["tool_use_id"] == "t2"
+        assert records[0]["tool_name"] == "__budget_enforcement__"
+        assert "budget needle" in records[0]["preview"]
 
     def test_already_persisted_results_skipped(self):
         env = MagicMock()

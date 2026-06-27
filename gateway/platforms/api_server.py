@@ -3836,7 +3836,79 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
-    def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+    @staticmethod
+    def _count_run_tool_turns(tool_events: List[Dict[str, Any]]) -> int:
+        completed: set[str] = set()
+        started: set[str] = set()
+        completed_without_id = 0
+        started_without_id = 0
+
+        for event in tool_events:
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("event")
+            tool_name = str(event.get("tool") or "")
+            call_id = str(event.get("call_id") or "")
+            key = call_id or tool_name
+            if event_type == "tool.completed":
+                if key:
+                    completed.add(key)
+                else:
+                    completed_without_id += 1
+            elif event_type == "tool.started":
+                if key:
+                    started.add(key)
+                else:
+                    started_without_id += 1
+
+        completed_count = len(completed) + completed_without_id
+        if completed_count:
+            return completed_count
+        return len(started) + started_without_id
+
+    @staticmethod
+    def _summarize_run_tool_result(result: Any) -> Dict[str, Any]:
+        text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+        preview = text[:1000]
+        summary: Dict[str, Any] = {
+            "text": preview,
+            "length": len(text),
+            "truncated": len(text) > len(preview),
+        }
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                if "error" in parsed:
+                    summary["error"] = bool(parsed.get("error"))
+                for key in ("title", "url", "success"):
+                    if key in parsed:
+                        summary[key] = parsed.get(key)
+        except Exception:
+            pass
+        return summary
+
+    def _record_run_tool_event(self, run_id: str, event: Dict[str, Any]) -> None:
+        """Keep compact tool evidence available after the SSE stream closes."""
+        status = self._run_statuses.get(run_id, {})
+        current_status = str(status.get("status") or "running")
+        tool_events = list(status.get("tool_events") or [])
+        tool_events.append(event)
+        compact_tool_events = tool_events[-40:]
+        self._set_run_status(
+            run_id,
+            current_status,
+            tool_events=compact_tool_events,
+            tool_turns=self._count_run_tool_turns(compact_tool_events),
+            last_event=event.get("event"),
+        )
+
+    def _make_run_event_callback(
+        self,
+        run_id: str,
+        loop: "asyncio.AbstractEventLoop",
+        *,
+        include_tool_events: bool = True,
+    ):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
             self._set_run_status(
@@ -3855,6 +3927,8 @@ class APIServerAdapter(BasePlatformAdapter):
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
             if event_type == "tool.started":
+                if not include_tool_events:
+                    return
                 _push({
                     "event": "tool.started",
                     "run_id": run_id,
@@ -3863,6 +3937,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     "preview": preview,
                 })
             elif event_type == "tool.completed":
+                if not include_tool_events:
+                    return
                 _push({
                     "event": "tool.completed",
                     "run_id": run_id,
@@ -3970,7 +4046,11 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
 
-        event_cb = self._make_run_event_callback(run_id, loop)
+        event_cb = self._make_run_event_callback(
+            run_id,
+            loop,
+            include_tool_events=False,
+        )
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
@@ -3983,6 +4063,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": time.time(),
                     "delta": delta,
                 })
+            except Exception:
+                pass
+
+        def _push_tool_event(event: Dict[str, Any]) -> None:
+            self._record_run_tool_event(run_id, event)
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, event)
             except Exception:
                 pass
 
@@ -4005,6 +4092,56 @@ class APIServerAdapter(BasePlatformAdapter):
                     gateway_session_key=gateway_session_key,
                 )
                 self._active_run_agents[run_id] = agent
+
+                original_tool_start_callback = getattr(agent, "tool_start_callback", None)
+                original_tool_complete_callback = getattr(agent, "tool_complete_callback", None)
+
+                def _run_event_tool_start(tool_call_id, function_name, function_args):
+                    event = {
+                        "event": "tool.started",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "tool": function_name,
+                        "call_id": tool_call_id,
+                        "status": "started",
+                    }
+                    _push_tool_event(event)
+                    if original_tool_start_callback:
+                        return original_tool_start_callback(
+                            tool_call_id,
+                            function_name,
+                            function_args,
+                        )
+                    return None
+
+                def _run_event_tool_complete(
+                    tool_call_id,
+                    function_name,
+                    function_args,
+                    function_result,
+                ):
+                    summary = self._summarize_run_tool_result(function_result)
+                    event = {
+                        "event": "tool.completed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "tool": function_name,
+                        "call_id": tool_call_id,
+                        "status": "completed",
+                        "summary": summary,
+                    }
+                    _push_tool_event(event)
+                    if original_tool_complete_callback:
+                        return original_tool_complete_callback(
+                            tool_call_id,
+                            function_name,
+                            function_args,
+                            function_result,
+                        )
+                    return None
+
+                agent.tool_start_callback = _run_event_tool_start
+                agent.tool_complete_callback = _run_event_tool_complete
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})

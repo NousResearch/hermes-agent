@@ -281,6 +281,16 @@ def _fixed_temperature_for_model(
         ``None`` — no override; caller should use its own default.
     """
     if _is_kimi_model(model):
+        # Kimi Coding API (api.kimi.com/coding/v1) models like
+        # kimi-k2.7-code strictly require temperature=1 and 400 on
+        # any other value or omission — see issue #53455.
+        # Only models with "-code" in their name are coding-specific;
+        # regular kimi models on the coding endpoint still get OMIT.
+        if base_url and "/coding/" in base_url and "-code" in (model or ""):
+            logger.debug(
+                "Setting temperature=1 for Kimi coding model %r (coding endpoint)", model
+            )
+            return 1.0
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):

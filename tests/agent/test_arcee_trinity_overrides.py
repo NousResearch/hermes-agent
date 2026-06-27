@@ -14,10 +14,12 @@ from __future__ import annotations
 import pytest
 
 from agent.auxiliary_client import (
+    OMIT_TEMPERATURE,
     _compression_threshold_for_model,
     _fixed_temperature_for_model,
     _is_arcee_trinity_thinking,
     _is_codex_gpt55,
+    _is_kimi_model,
 )
 
 
@@ -157,3 +159,79 @@ def test_compression_threshold_opt_out_does_not_disable_trinity() -> None:
         )
         == 0.75
     )
+
+
+# ---------------------------------------------------------------------------
+# Kimi Coding temperature (issue #53455)
+#
+# Regular Kimi models (e.g. kimi-k2, kimi-k2.5) manage temperature server-side
+# and we omit it (OMIT_TEMPERATURE). But models on the Kimi Coding API
+# (api.kimi.com/coding/v1) like kimi-k2.7-code strictly REQUIRE temperature=1
+# and 400 on any other value or omission.  Detect the coding endpoint by
+# its base_url and return 1.0 instead of OMIT_TEMPERATURE.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "kimi-k2",
+        "kimi-k2.5",
+        "kimi-k2.5-pro",
+        "moonshot-v1-8k",  # starts with moonshot not kimi-, so NOT a match
+        None,
+        "",
+    ],
+)
+def test_is_kimi_model_matches(model) -> None:
+    if model and model.startswith("kimi-"):
+        assert _is_kimi_model(model) is True
+    else:
+        assert _is_kimi_model(model) is False
+
+
+def test_fixed_temperature_kimi_regular_omits() -> None:
+    """Regular Kimi API (non-coding) models omit temperature."""
+    from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
+
+    # Regular kimi models: OMIT_TEMPERATURE
+    assert _fixed_temperature_for_model("kimi-k2") is OMIT_TEMPERATURE
+    assert _fixed_temperature_for_model("kimi-k2.5") is OMIT_TEMPERATURE
+    # No base_url → treat as regular kimi
+    assert _fixed_temperature_for_model("kimi-k2.7-code") is OMIT_TEMPERATURE
+
+
+def test_fixed_temperature_kimi_coding_requires_1() -> None:
+    """Kimi Coding API models (base_url contains /coding/) must use temperature=1."""
+    from agent.auxiliary_client import _fixed_temperature_for_model
+
+    # kimi-k2.7-code on the coding endpoint → must be 1.0
+    assert (
+        _fixed_temperature_for_model(
+            "kimi-k2.7-code", base_url="https://api.kimi.com/coding/v1"
+        )
+        == 1.0
+    )
+    # Same model with no base_url → OMIT (treated as regular kimi)
+    assert (
+        _fixed_temperature_for_model("kimi-k2.7-code") is OMIT_TEMPERATURE
+    )
+    # kimi-k2.5 on coding endpoint → still OMIT (only coding models need T=1)
+    assert (
+        _fixed_temperature_for_model(
+            "kimi-k2.5", base_url="https://api.kimi.com/coding/v1"
+        )
+        is OMIT_TEMPERATURE
+    )
+
+
+def test_fixed_temperature_kimi_coding_variants() -> None:
+    """Various kimi models tested with coding/non-coding base URLs."""
+    from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
+
+    # Non-kimi model unaffected
+    assert _fixed_temperature_for_model("claude-sonnet-4.6", "https://api.kimi.com/coding/v1") is None
+    # kimi-k2 on coding — only coding-* models should get the override
+    assert _fixed_temperature_for_model("kimi-k2", "https://api.kimi.com/coding/v1") is OMIT_TEMPERATURE
+    # kimi-k2.7-code with /coding in path gets 1.0
+    assert _fixed_temperature_for_model("kimi-k2.7-code", "https://api.kimi.com/coding/v1") == 1.0

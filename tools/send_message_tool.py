@@ -903,6 +903,22 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- QQBot: native media attachment support via REST API ---
+    if platform == Platform.QQBOT and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_qqbot(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
@@ -1587,12 +1603,16 @@ def _check_send_message():
         return False
 
 
-async def _send_qqbot(pconfig, chat_id, message):
+async def _send_qqbot(pconfig, chat_id, message, media_files=None):
     """Send via QQBot using the REST API directly (no WebSocket needed).
 
     Uses the QQ Bot Open Platform REST endpoints to get an access token
     and post a message. Supports guild channels, C2C (private) chats,
     and group chats by trying the appropriate endpoints.
+
+    When *media_files* is provided, each ``(path, is_voice)`` tuple is
+    uploaded via the file-upload endpoint and sent as a rich-media message
+    (msg_type 7).
     """
     try:
         import httpx
@@ -1606,8 +1626,19 @@ async def _send_qqbot(pconfig, chat_id, message):
     if not appid or not secret:
         return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
 
+    media_files = media_files or []
+
+    # Map file extensions to QQ Bot media types
+    _EXT_TO_QQ_TYPE = {}
+    for _ext in _IMAGE_EXTS:
+        _EXT_TO_QQ_TYPE[_ext] = 1  # MEDIA_TYPE_IMAGE
+    for _ext in _VIDEO_EXTS:
+        _EXT_TO_QQ_TYPE[_ext] = 2  # MEDIA_TYPE_VIDEO
+    for _ext in _VOICE_EXTS:
+        _EXT_TO_QQ_TYPE[_ext] = 3  # MEDIA_TYPE_VOICE
+
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             # Step 1: Get access token
             token_resp = await client.post(
                 "https://bots.qq.com/app/getAppAccessToken",
@@ -1620,41 +1651,97 @@ async def _send_qqbot(pconfig, chat_id, message):
             if not access_token:
                 return _error(f"QQBot: no access_token in response")
 
-            # Step 2: Send message via REST
-            # QQ Bot API has separate endpoints for channels, C2C, and groups.
-            # We try them in order: channel first, then fallback to C2C.
             headers = {
                 "Authorization": f"QQBot {access_token}",
                 "Content-Type": "application/json",
             }
-            payload = {"content": message[:4000], "msg_type": 0}
 
-            # Try channel endpoint first (works for guild channels)
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code in {200, 201}:
-                data = resp.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
+            # --- Helper: try multiple endpoints to send a payload ---
+            async def _try_send(payload):
+                """Try channel → C2C → group endpoints. Return result dict."""
+                url_ch = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
+                resp = await client.post(url_ch, json=payload, headers=headers)
+                if resp.status_code in {200, 201}:
+                    data = resp.json()
+                    return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                            "message_id": data.get("id")}
 
-            # If channel endpoint failed (likely "频道不存在"), try C2C endpoint
-            url_c2c = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
-            resp_c2c = await client.post(url_c2c, json=payload, headers=headers)
-            if resp_c2c.status_code in {200, 201}:
-                data = resp_c2c.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
+                url_c2c = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
+                resp_c2c = await client.post(url_c2c, json=payload, headers=headers)
+                if resp_c2c.status_code in {200, 201}:
+                    data = resp_c2c.json()
+                    return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                            "message_id": data.get("id")}
 
-            # If C2C also failed, try group endpoint
-            url_group = f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"
-            resp_group = await client.post(url_group, json=payload, headers=headers)
-            if resp_group.status_code in {200, 201}:
-                data = resp_group.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
+                url_grp = f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"
+                resp_grp = await client.post(url_grp, json=payload, headers=headers)
+                if resp_grp.status_code in {200, 201}:
+                    data = resp_grp.json()
+                    return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                            "message_id": data.get("id")}
 
-            # All endpoints failed — return the most informative error
-            return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
+                return _error(
+                    f"QQBot send failed: channel={resp.status_code} "
+                    f"c2c={resp_c2c.status_code} group={resp_grp.status_code}"
+                )
+
+            # --- Helper: upload media and return file_info ---
+            async def _upload_media_file(file_path):
+                """Upload a local file via base64 or a URL, return file_info."""
+                import base64 as _b64
+                ext = os.path.splitext(file_path)[1].lower()
+                file_type = _EXT_TO_QQ_TYPE.get(ext, 4)  # default: FILE
+
+                # Try both C2C and group upload endpoints
+                for upload_base in [
+                    f"https://api.sgroup.qq.com/v2/users/{chat_id}/files",
+                    f"https://api.sgroup.qq.com/v2/groups/{chat_id}/files",
+                ]:
+                    if file_path.startswith(("http://", "https://")):
+                        body = {"file_type": file_type, "url": file_path, "srv_send_msg": False}
+                    else:
+                        with open(file_path, "rb") as f:
+                            file_data = _b64.b64encode(f.read()).decode()
+                        body = {"file_type": file_type, "file_data": file_data, "srv_send_msg": False}
+
+                    resp = await client.post(upload_base, json=body, headers=headers)
+                    if resp.status_code in {200, 201}:
+                        data = resp.json()
+                        fi = data.get("file_info") or (data.get("data") or {}).get("file_info")
+                        if fi:
+                            return fi
+
+                return None
+
+            # --- Send text first (if any) ---
+            last_result = None
+            if message.strip():
+                payload = {"content": message[:4000], "msg_type": 0}
+                last_result = await _try_send(payload)
+                if isinstance(last_result, dict) and last_result.get("error"):
+                    return last_result
+
+            # --- Send each media file ---
+            for media_path, is_voice in media_files:
+                if not os.path.exists(media_path) and not media_path.startswith(("http://", "https://")):
+                    return _error(f"Media file not found: {media_path}")
+
+                file_info = await _upload_media_file(media_path)
+                if not file_info:
+                    return _error(f"QQBot media upload failed for: {media_path}")
+
+                payload = {
+                    "msg_type": 7,  # MSG_TYPE_MEDIA
+                    "media": {"file_info": file_info},
+                }
+                last_result = await _try_send(payload)
+                if isinstance(last_result, dict) and last_result.get("error"):
+                    return last_result
+
+            if last_result is None:
+                return _error("No deliverable text or media remained after processing MEDIA tags")
+
+            return last_result
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
 

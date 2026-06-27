@@ -225,6 +225,41 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_update_shallow_without_merge_base_does_not_count_history(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """Shallow/diverged installs should not show bogus full-history counts."""
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse" in joined and "--is-shallow-repository" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+            if "merge-base" in joined:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            if "rev-parse" in joined and "HEAD" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="localsha\n", stderr="")
+            if "rev-parse" in joined and "origin/main" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="remotesha\n", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="12104\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        cmd_update(mock_args)
+
+        captured = capsys.readouterr()
+        assert "12104" not in captured.out
+        assert "Update available" in captured.out
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("rev-list" in c for c in commands), commands
+        assert any("pull" in c and "origin" in c and "main" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_update_on_fork_checks_upstream_when_origin_up_to_date(
         self, mock_run, _mock_which, mock_args, capsys
     ):

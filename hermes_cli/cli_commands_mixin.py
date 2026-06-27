@@ -2260,11 +2260,11 @@ class CLICommandsMixin:
                 if initial_text:
                     fh.write(initial_text)
             try:
-                subprocess.call([*shlex.split(editor), path])  # windows-footgun: ok — $EDITOR launch is interactive/foreground
+                subprocess.call([*shlex.split(editor), path])
             except Exception:
                 # Fall back to a bare invocation (editor value may not be a
                 # simple argv-splittable string on some platforms).
-                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)  # windows-footgun: ok — $EDITOR launch is interactive/foreground
+                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
             with open(path, "r", encoding="utf-8") as fh:
                 raw = fh.read()
         finally:

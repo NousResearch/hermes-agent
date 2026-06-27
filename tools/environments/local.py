@@ -749,7 +749,6 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True,
             cwd=_popen_cwd,
-            **_popen_kwargs,
         )
         if not _IS_WINDOWS:
             try:

@@ -100,33 +100,6 @@ def apply_windows_utf8_bootstrap() -> bool:
     except Exception:
         pass
 
-    # 1b. Drop a stray console window. uv-created venvs ship a
-    #     ``Scripts\\pythonw.exe`` redirector that re-execs the *base* console
-    #     ``python.exe``, which allocates its own conhost/Windows Terminal
-    #     window even though the launcher intended a windowless process. Any
-    #     non-interactive Hermes backend (gateway, dashboard backend, slash
-    #     worker, cron) that lands on that auto-allocated console should detach
-    #     so no terminal lingers.
-    #
-    #     Discriminator: GetConsoleProcessList. A console freshly allocated for
-    #     this process alone reports exactly ONE attached process (us) — that is
-    #     the unwanted re-exec / double-click case, so we free it. An
-    #     interactive ``hermes`` in a user's shell shares the shell's console
-    #     (2+ processes attached), so we leave it untouched. isatty() is NOT a
-    #     reliable signal here: a brand-new console reports stdin as a tty even
-    #     when nobody asked for the window.
-    try:
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32
-        if kernel32.GetConsoleWindow():
-            buf = (ctypes.c_uint * 4)()
-            attached = kernel32.GetConsoleProcessList(buf, 4)
-            if attached == 1:
-                kernel32.FreeConsole()
-    except Exception:
-        pass
-
     # 2. Reconfigure the current process's stdio to UTF-8.  Needed
     #    because os.environ changes don't retroactively rebind sys.stdout
     #    — those were bound at interpreter startup based on the console
@@ -167,6 +140,44 @@ def apply_windows_utf8_bootstrap() -> bool:
 
     _bootstrap_applied = True
     return True
+
+
+def detach_orphan_console() -> bool:
+    """Free a console window that was auto-allocated for this process alone.
+
+    Background-only entry points (gateway daemon, dashboard backend, cron
+    runner, TUI/desktop stdio backends) call this explicitly. uv-created venvs
+    ship a ``Scripts\\pythonw.exe`` redirector that re-execs the *base* console
+    ``python.exe``; that re-exec allocates its own conhost/Windows Terminal
+    window even though the launcher wanted no console. We drop it so nothing
+    lingers.
+
+    This is NOT wired into the import-time bootstrap on purpose: the discriminator
+    (``GetConsoleProcessList() == 1``) cannot tell a phantom console apart from a
+    user who deliberately opened the *interactive* CLI/TUI in its own fresh
+    console (double-click, Start-menu shortcut, a ConPTY), since both report a
+    single attached process with a tty. Intent is only knowable from the entry
+    point — so only known-background mains call this, never the interactive CLI.
+
+    A properly detached daemon (``DETACHED_PROCESS``) has no console at all, so
+    ``GetConsoleWindow()`` is NULL and this is a no-op. Returns True iff a console
+    was actually freed. No-op (returns False) on non-Windows.
+    """
+    if not _IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        if not kernel32.GetConsoleWindow():
+            return False
+        buf = (ctypes.c_uint * 4)()
+        if kernel32.GetConsoleProcessList(buf, 4) == 1:
+            kernel32.FreeConsole()
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def harden_import_path(src_root: str | None = None) -> None:

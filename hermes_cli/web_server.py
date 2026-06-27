@@ -13588,6 +13588,15 @@ def start_server(
     — used when a profile alias (``<profile> dashboard``) routes to the
     machine dashboard.
     """
+    # Desktop spawns this backend via a no-console venv python; a uv
+    # pythonw→python re-exec can still auto-allocate a console. Drop it.
+    # No-op on POSIX and when launched from an interactive shell.
+    try:
+        import hermes_bootstrap
+        hermes_bootstrap.detach_orphan_console()
+    except Exception:
+        pass
+
     import uvicorn
 
     try:

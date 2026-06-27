@@ -5146,9 +5146,11 @@ def _resolve_task_provider_model(
       3. "auto" (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key, api_mode) where model may
-    be None (use provider default). When base_url is set, provider is forced
-    to "custom" and the task uses that direct endpoint. api_mode is one of
-    "chat_completions", "codex_responses", or None (auto-detect).
+    be None (use provider default). When base_url is set without an explicit
+    provider, provider is forced to "custom". When both provider and base_url
+    are given, the provider is preserved so credentials can be resolved from
+    its env vars. api_mode is one of "chat_completions", "codex_responses",
+    or None (auto-detect).
     """
     cfg_provider = None
     cfg_model = None
@@ -5187,6 +5189,13 @@ def _resolve_task_provider_model(
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
     if base_url:
+        # When both an explicit provider and base_url are given, keep the
+        # provider name so resolve_provider_client can resolve credentials
+        # from env vars (e.g. ZAI_API_KEY, OPENROUTER_API_KEY). Only fall
+        # back to "custom" when no provider was specified. Mirrors the
+        # config-based logic below (cfg_base_url + cfg_provider).
+        if provider and provider not in {"", "auto", "custom"}:
+            return provider, resolved_model, base_url, api_key, resolved_api_mode
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode

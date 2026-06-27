@@ -155,6 +155,34 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     assert json.loads(choice.message.tool_calls[0].function.arguments) == {"q": "hermes"}
 
 
+@pytest.mark.parametrize(
+    "reason",
+    ["BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY"],
+)
+def test_content_safety_finish_reasons_map_to_content_filter(reason):
+    """Gemini's BLOCKLIST/PROHIBITED_CONTENT/SPII/IMAGE_SAFETY FinishReason
+    values are content-safety blocks — siblings of SAFETY/RECITATION — and must
+    map to content_filter, not fall through to the "stop" default."""
+    from agent.gemini_native_adapter import _map_gemini_finish_reason
+
+    assert _map_gemini_finish_reason(reason) == "content_filter"
+
+
+def test_translate_native_response_surfaces_content_block_as_content_filter():
+    """A content-blocked native-Gemini turn carries no parts; without the block
+    reason mapped to content_filter it would surface as an empty normal
+    completion (finish_reason="stop"), the content_filter handler would never
+    fire, and the agent would retry a deterministically-blocked prompt."""
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    payload = {"candidates": [{"finishReason": "PROHIBITED_CONTENT"}]}
+
+    response = translate_gemini_response(payload, model="gemini-2.5-flash")
+    choice = response.choices[0]
+    assert choice.finish_reason == "content_filter"
+    assert choice.message.content is None
+
+
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):
     from agent.gemini_native_adapter import GeminiNativeClient
 

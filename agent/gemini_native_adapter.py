@@ -462,6 +462,15 @@ def _map_gemini_finish_reason(reason: str) -> str:
         "MAX_TOKENS": "length",
         "SAFETY": "content_filter",
         "RECITATION": "content_filter",
+        # Remaining content-safety block reasons in Gemini's FinishReason enum.
+        # Siblings of SAFETY/RECITATION: the candidate carries no content, so
+        # without these they fall through to the "stop" default and surface as
+        # an empty normal completion — the content_filter handler never fires
+        # and the agent retries a deterministically-blocked prompt.
+        "BLOCKLIST": "content_filter",
+        "PROHIBITED_CONTENT": "content_filter",
+        "SPII": "content_filter",
+        "IMAGE_SAFETY": "content_filter",
         "OTHER": "stop",
     }
     return mapping.get(str(reason or "").upper(), "stop")

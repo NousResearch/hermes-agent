@@ -2072,6 +2072,14 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    # 0. Coerce non-string tool message content to strings so the API never
+    # receives a dict/list in ``content`` (which OpenAI rejects with 400).
+    for msg in messages:
+        if msg.get("role") == "tool":
+            content = msg.get("content")
+            if not isinstance(content, str):
+                msg["content"] = json.dumps(content, ensure_ascii=False, default=str)
+
     surviving_call_ids: set = set()
     for msg in messages:
         if msg.get("role") == "assistant":

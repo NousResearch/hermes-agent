@@ -4645,6 +4645,13 @@ class AIAgent:
         the agent has a chance to recover.
         """
         if not _is_multimodal_tool_result(result):
+            # Non-multimodal results must be string-safe for the API.  MCP tools
+            # (and a few native helpers) can return Python dicts/lists that the
+            # OpenAI SDK serializes as nested objects, causing HTTP 400
+            # "invalid message content type: map[string]interface {}" because
+            # the API expects `content` to be a string or a content-parts list.
+            if not isinstance(result, str):
+                return json.dumps(result, ensure_ascii=False, default=str)
             return result
 
         content = result.get("content") or []
@@ -5060,6 +5067,10 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
+            or (
+                "kimi" in (self.model or "").lower()
+                and self.provider == "ollama-cloud"
+            )
         )
 
     def _needs_deepseek_tool_reasoning(self) -> bool:

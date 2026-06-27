@@ -363,16 +363,32 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     # Query systemctl for TimeoutStopUSec.  Use --user OR system depending
     # on which manager actually owns the unit.  Try user first since
     # that's the common case for hermes.
+    #
+    # Skip iterations where the unit isn't actually loaded in this manager
+    # -- `systemctl show` returns rc=0 and emits compiled-in defaults for
+    # nonexistent units (notably TimeoutStopUSec=1min 30s), which would
+    # produce a false-positive 'stale unit' warning when the gateway is
+    # deployed via a system-level unit but the user manager is reachable.
     timeout_us: Optional[int] = None
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=LoadState",
+                 "--property=TimeoutStopUSec"],
                 capture_output=True, text=True, timeout=2.0,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue
         if result.returncode != 0:
+            continue
+        # Skip if the unit isn't actually loaded
+        load_state: Optional[str] = None
+        for line in result.stdout.splitlines():
+            if line.startswith("LoadState="):
+                load_state = line.split("=", 1)[1].strip()
+                break
+        if load_state and load_state != "loaded":
             continue
         # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
         for line in result.stdout.splitlines():

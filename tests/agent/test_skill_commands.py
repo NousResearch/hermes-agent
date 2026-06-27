@@ -803,3 +803,37 @@ class TestInlineShellExpansion:
         # The command's intended stdout never made it through — only the
         # timeout marker (which echoes the command text) survives.
         assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")
+
+
+class TestSkillCommandCollisionDedupe:
+    """Skills whose name matches a core CommandDef should not auto-register
+    a duplicate /command that would shadow the manual registry entry."""
+
+    def test_skill_matching_core_command_is_skipped(self, tmp_path):
+        # Pick a name that exists in COMMAND_REGISTRY on upstream main.
+        from hermes_cli.commands import COMMAND_REGISTRY
+        core_name = next(
+            cd.name for cd in COMMAND_REGISTRY if cd.name and "_" not in cd.name
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, core_name)
+            result = scan_skill_commands()
+        assert f"/{core_name}" not in result
+
+    def test_non_colliding_skill_still_registered(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "my-custom-skill")
+            result = scan_skill_commands()
+        assert "/my-custom-skill" in result
+
+    def test_colliding_skill_does_not_block_others(self, tmp_path):
+        from hermes_cli.commands import COMMAND_REGISTRY
+        core_name = next(
+            cd.name for cd in COMMAND_REGISTRY if cd.name and "_" not in cd.name
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, core_name)
+            _make_skill(tmp_path, "non-colliding-skill")
+            result = scan_skill_commands()
+        assert f"/{core_name}" not in result
+        assert "/non-colliding-skill" in result

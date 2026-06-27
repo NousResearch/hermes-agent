@@ -402,6 +402,19 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
+                    # Skip skills whose name collides with a core CommandDef.
+                    # The manual registry entry owns the /command; a skill
+                    # with the same name would otherwise auto-register a
+                    # duplicate that doubles the /help entry and can shadow
+                    # the manual command (which may carry subcommands or
+                    # custom dispatch the auto-skill path lacks).
+                    try:
+                        from hermes_cli.commands import COMMAND_REGISTRY
+                        _core_names = {cd.name for cd in COMMAND_REGISTRY}
+                    except Exception:
+                        _core_names = set()
+                    if name in _core_names or cmd_name in _core_names:
+                        continue
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",

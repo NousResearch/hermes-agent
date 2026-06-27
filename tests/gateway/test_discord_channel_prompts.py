@@ -209,6 +209,121 @@ async def test_retry_preserves_channel_prompt(monkeypatch):
     assert retried_event.channel_prompt == "Channel prompt"
 
 
+def test_channel_reasoning_effort_overrides_global_for_matching_discord_channel(monkeypatch):
+    runner = _make_runner()
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="1512369272607866890",
+        chat_type="channel",
+        user_id="user-1",
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {
+            "agent": {"reasoning_effort": "high"},
+            "discord": {
+                "channel_reasoning_efforts": {
+                    "1512369272607866890": "xhigh",
+                },
+            },
+        },
+    )
+
+    assert runner._resolve_session_reasoning_config(source=source) == {
+        "enabled": True,
+        "effort": "xhigh",
+    }
+
+
+def test_channel_reasoning_effort_inherits_from_parent_channel(monkeypatch):
+    runner = _make_runner()
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        parent_chat_id="parent-1",
+        user_id="user-1",
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {
+            "agent": {"reasoning_effort": "high"},
+            "discord": {
+                "channel_reasoning_efforts": {
+                    "parent-1": "xhigh",
+                },
+            },
+        },
+    )
+
+    assert runner._resolve_session_reasoning_config(source=source) == {
+        "enabled": True,
+        "effort": "xhigh",
+    }
+
+
+def test_channel_reasoning_effort_exact_channel_overrides_parent(monkeypatch):
+    runner = _make_runner()
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        parent_chat_id="parent-1",
+        user_id="user-1",
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {
+            "agent": {"reasoning_effort": "high"},
+            "discord": {
+                "channel_reasoning_efforts": {
+                    "thread-1": "low",
+                    "parent-1": "xhigh",
+                },
+            },
+        },
+    )
+
+    assert runner._resolve_session_reasoning_config(source=source) == {
+        "enabled": True,
+        "effort": "low",
+    }
+
+
+def test_session_reasoning_override_wins_over_channel_default(monkeypatch):
+    runner = _make_runner()
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="1512369272607866890",
+        chat_type="channel",
+        user_id="user-1",
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {
+            "agent": {"reasoning_effort": "high"},
+            "discord": {
+                "channel_reasoning_efforts": {
+                    "1512369272607866890": "xhigh",
+                },
+            },
+        },
+    )
+    session_key = runner._session_key_for_source(source)
+    runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "low"}
+
+    assert runner._resolve_session_reasoning_config(source=source) == {
+        "enabled": True,
+        "effort": "low",
+    }
+
+
 @pytest.mark.asyncio
 async def test_run_agent_appends_channel_prompt_to_ephemeral_system_prompt(monkeypatch, tmp_path):
     _install_fake_agent(monkeypatch)

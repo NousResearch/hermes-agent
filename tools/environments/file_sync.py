@@ -50,10 +50,10 @@ GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_pa
 def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
     """Enumerate all files that should be synced to a remote environment.
 
-    Combines credentials, skills, and cache into a single flat list of
-    (host_path, remote_path) pairs.  Credential paths are remapped from
-    the hardcoded /root/.hermes to *container_base* because the remote
-    user's home may differ (e.g. /home/daytona, /home/user).
+    Combines credentials, profile registry files, skills, and cache into a
+    single flat list of (host_path, remote_path) pairs. Credential paths are
+    remapped from the hardcoded /root/.hermes to *container_base* because the
+    remote user's home may differ (e.g. /home/daytona, /home/user).
     """
     # Late import: credential_files imports agent modules that create
     # circular dependencies if loaded at file_sync module level.
@@ -69,10 +69,65 @@ def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, st
             "/root/.hermes", container_base, 1
         )
         files.append((entry["host_path"], remote))
+
+    files.extend(_iter_profile_sync_files(container_base))
+
     for entry in iter_skills_files(container_base=container_base):
         files.append((entry["host_path"], entry["container_path"]))
     for entry in iter_cache_files(container_base=container_base):
         files.append((entry["host_path"], entry["container_path"]))
+    return files
+
+
+def _iter_profile_sync_files(container_base: str) -> list[tuple[str, str]]:
+    """Enumerate named profile metadata/files that remote sandboxes need.
+
+    Remote terminal backends run Hermes under their own ``HOME``, so the
+    local profile registry must be mirrored to the remote ``.hermes`` root.
+    We sync:
+
+    - ``active_profile`` so sticky profile selection matches locally
+    - ``profiles/<name>/...`` file trees so remote ``profile list`` and
+      ``hermes -p <name>`` can resolve named profiles
+    - profile wrapper scripts under ``~/.local/bin`` when they exist locally
+    """
+    from hermes_cli.profiles import (
+        _get_active_profile_path,
+        _get_default_hermes_home,
+        _get_profiles_root,
+        _get_wrapper_dir,
+    )
+
+    files: list[tuple[str, str]] = []
+    remote_root = Path(container_base)
+    remote_home = remote_root.parent
+
+    active_profile_path = _get_active_profile_path()
+    if active_profile_path.is_file():
+        files.append(
+            (str(active_profile_path), str(remote_root / active_profile_path.name))
+        )
+
+    default_home = _get_default_hermes_home()
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        for item in profiles_root.rglob("*"):
+            if item.is_symlink() or not item.is_file():
+                continue
+            rel = item.relative_to(default_home)
+            files.append((str(item), str(remote_root / rel)))
+
+        wrapper_dir = _get_wrapper_dir()
+        for profile_dir in profiles_root.iterdir():
+            if not profile_dir.is_dir():
+                continue
+            wrapper_path = wrapper_dir / profile_dir.name
+            if not wrapper_path.is_file() or wrapper_path.is_symlink():
+                continue
+            files.append(
+                (str(wrapper_path), str(remote_home / ".local" / "bin" / profile_dir.name))
+            )
+
     return files
 
 

@@ -43,6 +43,9 @@ yarn-error.*
 # `npm run renderer:bundle`; keep only the declaration file committed.
 /src/bundled-renderer-html.ts
 /src/generated/bundled-renderer-html.ts
+# Vite build output that bundle-renderer-html.mjs inlines into the .ts above.
+# Hashed filenames per build → enormous PR diffs if tracked.
+/assets/renderer/
 
 # generated native folders
 /ios

@@ -130,6 +130,19 @@ _SANE_PATH_DIRS = (
     "/bin",
 )
 _SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
+_BROWSER_PROXY_ENV_NAMES = frozenset({
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+})
+
+
+def _strip_browser_proxy_env(env: dict[str, str]) -> None:
+    """Prevent parent proxy settings from hijacking agent-browser IPC traffic."""
+    for key in list(env):
+        if key.lower() in _BROWSER_PROXY_ENV_NAMES:
+            env.pop(key, None)
 
 
 @functools.lru_cache(maxsize=1)
@@ -2126,6 +2139,7 @@ def _run_browser_command(
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
         browser_env = {**os.environ}
+        _strip_browser_proxy_env(browser_env)
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
         # used during CLI discovery.

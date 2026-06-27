@@ -465,6 +465,59 @@ class TestRunBrowserCommandPathConstruction:
         assert "/opt/homebrew/bin" in result_path
         assert "/opt/homebrew/sbin" in result_path
 
+    def test_subprocess_env_strips_proxy_vars(self, tmp_path):
+        """Parent proxy settings must not be inherited by agent-browser."""
+        captured_env = {}
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+        fake_json = json.dumps({"success": True})
+        hermes_home = str(tmp_path / "hermes-home")
+
+        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "HERMES_HOME": hermes_home,
+                     "HTTP_PROXY": "http://127.0.0.1:7890",
+                     "https_proxy": "http://127.0.0.1:7890",
+                     "ALL_PROXY": "socks5://127.0.0.1:7891",
+                     "no_proxy": "localhost,127.0.0.1",
+                     "HtTp_PrOxY": "http://mixed-case.invalid",
+                     "BROWSERBASE_API_KEY": "bb-test-key",
+                 },
+                 clear=True,
+             ):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        assert captured_env["HERMES_HOME"] == hermes_home
+        assert captured_env["BROWSERBASE_API_KEY"] == "bb-test-key"
+        assert all(
+            key.lower() not in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+            for key in captured_env
+        )
+
     def test_subprocess_path_includes_termux_fallback_dirs(self, tmp_path):
         """Termux fallback dirs should survive browser PATH rebuilding."""
         captured_env = {}

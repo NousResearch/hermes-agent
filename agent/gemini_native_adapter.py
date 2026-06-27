@@ -429,9 +429,13 @@ def build_gemini_request(
     if google_search_grounding:
         if "tools" not in request:
             request["tools"] = []
-        request["tools"].append({"googleSearchRetrieval": {}})
+        request["tools"].append({"googleSearch": {}})
 
     tool_config = _translate_tool_choice_to_gemini(tool_choice)
+    if google_search_grounding and gemini_tools:
+        if not isinstance(tool_config, dict):
+            tool_config = {}
+        tool_config["includeServerSideToolInvocations"] = True
     if tool_config:
         request["toolConfig"] = tool_config
 
@@ -567,18 +571,9 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
     )
     reasoning = "".join(reasoning_pieces) or None
     content_text = "".join(text_pieces) if text_pieces else None
-    if grounding_metadata and grounding_metadata.get("groundingChunks"):
-        chunks = grounding_metadata.get("groundingChunks") or []
-        sources = []
-        for i, chunk in enumerate(chunks):
-            web = chunk.get("web") or {}
-            uri = web.get("uri")
-            title = web.get("title") or uri
-            if uri:
-                sources.append(f"[{i + 1}] {title} - {uri}")
-        if sources:
-            sources_block = "\n\n**Sources:**\n" + "\n".join(sources)
-            content_text = (content_text or "") + sources_block
+    sources_block = _format_grounding_sources(grounding_metadata)
+    if sources_block:
+        content_text = (content_text or "") + sources_block
 
     message = SimpleNamespace(
         role="assistant",
@@ -597,6 +592,31 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
         choices=[choice],
         usage=usage,
     )
+
+
+def _format_grounding_sources(grounding_metadata: Any) -> str:
+    if not isinstance(grounding_metadata, dict):
+        return ""
+    chunks = grounding_metadata.get("groundingChunks") or []
+    if not isinstance(chunks, list):
+        return ""
+    sources = []
+    seen_uris = set()
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        web = chunk.get("web") or {}
+        if not isinstance(web, dict):
+            continue
+        uri = web.get("uri")
+        if not uri or uri in seen_uris:
+            continue
+        seen_uris.add(uri)
+        title = web.get("title") or uri
+        sources.append(f"[{len(sources) + 1}] {title} - {uri}")
+    if not sources:
+        return ""
+    return "\n\n**Sources:**\n" + "\n".join(sources)
 
 
 class _GeminiStreamChunk(SimpleNamespace):
@@ -746,6 +766,11 @@ def translate_stream_event(
                     },
                 )
             )
+
+    sources_block = _format_grounding_sources(cand.get("groundingMetadata"))
+    if sources_block and not tool_call_indices.get("__grounding_sources_emitted__"):
+        chunks.append(_make_stream_chunk(model=model, content=sources_block))
+        tool_call_indices["__grounding_sources_emitted__"] = {"emitted": True}
 
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:

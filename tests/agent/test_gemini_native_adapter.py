@@ -455,7 +455,23 @@ def test_google_search_grounding_request_and_response():
         google_search_grounding=True,
     )
     assert "tools" in req
-    assert {"googleSearchRetrieval": {}} in req["tools"]
+    assert {"googleSearch": {}} in req["tools"]
+
+    req_with_functions = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "dummy",
+                    "description": "Dummy tool",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        google_search_grounding=True,
+    )
+    assert req_with_functions["toolConfig"]["includeServerSideToolInvocations"] is True
 
     # Test response translation with groundingMetadata
     mock_resp = {
@@ -483,3 +499,82 @@ def test_google_search_grounding_request_and_response():
     assert "According to research, the sky is blue." in content
     assert "**Sources:**" in content
     assert "[1] Why the sky is blue - https://example.com/sky" in content
+
+
+def test_google_search_grounding_stream_response_appends_sources_once():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [{"text": "According to research, the sky is blue."}]
+                },
+                "finishReason": "STOP",
+                "groundingMetadata": {
+                    "groundingChunks": [
+                        {
+                            "web": {
+                                "uri": "https://example.com/sky",
+                                "title": "Why the sky is blue",
+                            }
+                        },
+                        {
+                            "web": {
+                                "uri": "https://example.com/sky",
+                                "title": "Duplicate source",
+                            }
+                        },
+                    ]
+                },
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "totalTokenCount": 15,
+        },
+    }
+
+    state = {}
+    chunks = translate_stream_event(event, "gemini-2.5-flash", state)
+    content = "".join(
+        chunk.choices[0].delta.content or "" for chunk in chunks
+    )
+
+    assert "According to research, the sky is blue." in content
+    assert content.count("**Sources:**") == 1
+    assert "[1] Why the sky is blue - https://example.com/sky" in content
+
+    repeated_chunks = translate_stream_event(event, "gemini-2.5-flash", state)
+    repeated_content = "".join(
+        chunk.choices[0].delta.content or "" for chunk in repeated_chunks
+    )
+    assert "**Sources:**" not in repeated_content
+
+
+def test_native_gemini_transport_preserves_google_search_grounding_extra_body():
+    from agent.transports.chat_completions import ChatCompletionsTransport
+    from providers.base import ProviderProfile
+
+    transport = ChatCompletionsTransport()
+    gemini_profile = ProviderProfile(
+        name="gemini",
+        api_mode="chat_completions",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+    )
+    kwargs = transport.build_kwargs(
+        model="gemini-3.5-flash",
+        messages=[{"role": "user", "content": "hi"}],
+        provider_profile=gemini_profile,
+        provider_name="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        request_overrides={
+            "extra_body": {
+                "google_search_grounding": True,
+                "tags": ["should-be-filtered"],
+            }
+        },
+    )
+
+    assert kwargs["extra_body"] == {"google_search_grounding": True}

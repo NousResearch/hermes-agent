@@ -34,6 +34,12 @@ from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+# Upper bound for the off-thread DNS/socket work performed by
+# async_is_safe_url(). Without this, a slow or non-responsive DNS
+# server can leave the awaiting coroutine blocked indefinitely,
+# stalling gateway SSRF checks and web/vision tool calls.
+ASYNC_SAFETY_CHECK_TIMEOUT_SECONDS = 5.0
+
 
 def normalize_url_for_request(url: str) -> str:
     """Return an ASCII-safe HTTP URL for Hermes-owned URL tools.
@@ -405,5 +411,21 @@ async def async_is_safe_url(url: str) -> bool:
 
     ``socket.getaddrinfo`` can block; call this from async code paths (gateway,
     ``web_extract_tool``, vision download hooks) instead of ``is_safe_url``.
+
+    The underlying DNS resolution is bounded by
+    :data:`ASYNC_SAFETY_CHECK_TIMEOUT_SECONDS`. If resolution doesn't complete
+    in time, the URL is treated as unsafe (fail closed) rather than letting
+    the caller hang indefinitely.
     """
-    return await asyncio.to_thread(is_safe_url, url)
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(is_safe_url, url),
+            timeout=ASYNC_SAFETY_CHECK_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "async_is_safe_url: DNS resolution timed out after %.1fs for %s",
+            ASYNC_SAFETY_CHECK_TIMEOUT_SECONDS,
+            url,
+        )
+        return False

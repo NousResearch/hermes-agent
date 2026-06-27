@@ -1,9 +1,11 @@
 """Tests for SSRF protection in url_safety module."""
 
 import socket
+import time
 from unittest.mock import patch
 
 from tools.url_safety import (
+    ASYNC_SAFETY_CHECK_TIMEOUT_SECONDS,
     is_safe_url,
     async_is_safe_url,
     is_always_blocked_url,
@@ -264,6 +266,26 @@ class TestAsyncIsSafeUrl:
             (2, 1, 6, "", ("127.0.0.1", 0)),
         ]):
             assert await async_is_safe_url("http://localhost:8080/") is False
+
+    @pytest.mark.asyncio
+    async def test_dns_timeout_fails_closed(self, monkeypatch):
+        """If the DNS lookup exceeds the timeout, treat the URL as unsafe
+        instead of hanging the awaiting coroutine indefinitely."""
+        monkeypatch.setattr(
+            "tools.url_safety.ASYNC_SAFETY_CHECK_TIMEOUT_SECONDS", 0.05
+        )
+
+        def slow_getaddrinfo(*args, **kwargs):
+            time.sleep(0.5)
+            return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+        with patch("socket.getaddrinfo", side_effect=slow_getaddrinfo):
+            assert await async_is_safe_url("https://example.com/x") is False
+
+    def test_timeout_constant_is_reasonable(self):
+        """Sanity check the bound itself: short enough to avoid hangs,
+        long enough not to false-positive on normal DNS latency."""
+        assert 0 < ASYNC_SAFETY_CHECK_TIMEOUT_SECONDS <= 10
 
 
 class TestIsBlockedIp:

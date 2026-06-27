@@ -3789,11 +3789,20 @@ def refresh_launchd_plist_if_needed() -> bool:
         return True
 
     # Bootout/bootstrap so launchd picks up the new definition
+    try:
+        from gateway.status import get_running_pid, write_planned_stop_marker
+
+        pid = get_running_pid(cleanup_stale=False)
+        if pid is not None:
+            write_planned_stop_marker(pid)
+    except Exception:
+        pass
     subprocess.run(
         ["launchctl", "bootout", target],
         check=False,
         timeout=90,
     )
+    _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     subprocess.run(
         ["launchctl", "bootstrap", domain, str(plist_path)],
         check=False,

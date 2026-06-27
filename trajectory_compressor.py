@@ -1457,7 +1457,7 @@ def main(
         if sample_percent is not None:
             random.seed(seed)
             sample_size = max(1, int(total_entries * sample_percent / 100))
-            entries = random.sample(entries, sample_size)
+            entries = random.sample(entries, min(sample_size, total_entries))
             print(f"   Sampled {len(entries):,} trajectories ({sample_percent}% of {total_entries:,})")
         
         if dry_run:

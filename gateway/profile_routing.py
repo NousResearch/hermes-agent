@@ -130,10 +130,15 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
                 name,
             )
             continue
-        # Validate profile name to prevent path traversal
+        # Validate profile name to prevent path traversal. Lazy import avoids a
+        # circular dependency at module load time.
         try:
-            from hermes_constants import validate_profile_name as _validate
-            profile = _validate(profile)
+            from hermes_cli.profiles import (
+                normalize_profile_name,
+                validate_profile_name,
+            )
+            profile = normalize_profile_name(profile)
+            validate_profile_name(profile)
         except (ValueError, ImportError):
             logger.warning("Skipping profile route %s: invalid profile name %r", name, profile)
             continue

@@ -73,13 +73,16 @@ const {
 } = require('./connection-config.cjs')
 const {
   accessTokenFromLogin,
+  apexWebLoginUrl,
   buildManagedModelConfig,
   defaultModelPath,
+  googleStartUrl,
   isManagedEnabled,
   managedModelConfigYaml,
   parseProvisionResponse,
   resolveApexEndpoints
 } = require('./apex-managed.cjs')
+const { startLoopbackLogin } = require('./apex-loopback.cjs')
 const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -4400,38 +4403,29 @@ function apexAuthPostJson(url, { body, bearer, timeoutMs = 12_000 } = {}) {
   })
 }
 
-/**
- * Sign in to ApexNodes with email + password and provision the managed relay
- * key for this install via the P0 contract:
- *   POST {API_BASE}/api/v1/desktop/provision-key  (Bearer JWT, body {})
- *   200 → { api_key, base_url, model }
- *
- * Returns { ok, hasRelayKey }:
- *   - ok=true, hasRelayKey=true  → key + base_url + model stored; managed live.
- *   - ok=true, hasRelayKey=false → login worked but provision-key isn't
- *     available yet (404/501) — caller falls back to BYOK.
- *
- * provision-key is isolated here so the desktop degrades gracefully until the
- * server endpoint lands: a missing endpoint is NOT a login failure.
- */
-async function apexManagedSignIn({ email, password }) {
-  const endpoints = resolveApexEndpoints(process.env)
-
-  const loginBody = await apexAuthPostJson(endpoints.loginUrl, {
-    body: { email: String(email || '').trim(), password: String(password || '') }
-  })
-  const accessToken = accessTokenFromLogin(loginBody)
-  if (!accessToken) {
+// Shared post-auth path for EVERY managed sign-in route (email/password,
+// Google, APEX-web). Given a platform access-token JWT, provision a relay-valid
+// key for this user and persist it. Tolerates "provision-key not deployed yet"
+// (404/501 or any fetch error): keeps the BYOK fallback rather than failing the
+// sign-in, so a missing endpoint is NOT a login failure. base_url + model come
+// FROM THE RESPONSE (server-truth).
+//
+// Returns { ok, hasRelayKey }:
+//   - ok=true, hasRelayKey=true  → key + base_url + model stored; managed live.
+//   - ok=true, hasRelayKey=false → token valid but provision-key unavailable —
+//     caller falls back to BYOK.
+async function provisionManagedFromAccessToken(accessToken) {
+  const token = String(accessToken || '').trim()
+  if (!token) {
     throw new Error('ApexNodes sign-in did not return an access token.')
   }
 
-  // Provision a relay-valid key for this user. Tolerate "endpoint not deployed
-  // yet" (404/501 or any fetch error): keep the BYOK fallback rather than
-  // failing the sign-in. Use base_url + model FROM THE RESPONSE (server-truth).
+  const endpoints = resolveApexEndpoints(process.env)
+
   let provisioned = null
   try {
     const body = await apexAuthPostJson(endpoints.provisionKeyUrl, {
-      bearer: accessToken,
+      bearer: token,
       body: {}
     })
     provisioned = parseProvisionResponse(body, process.env)
@@ -4447,6 +4441,61 @@ async function apexManagedSignIn({ email, password }) {
     return { ok: true, hasRelayKey: true }
   }
   return { ok: true, hasRelayKey: false }
+}
+
+/**
+ * Sign in to ApexNodes with email + password and provision the managed relay
+ * key for this install via the P0 contract:
+ *   POST {AUTH_BASE}/api/v1/auth/login  → { access_token }
+ *   POST {API_BASE}/api/v1/desktop/provision-key  (Bearer JWT, body {})
+ *
+ * login-or-register (mirrors web public-login-page.tsx): if /auth/login returns
+ * 401 the email may simply not be registered yet, so we POST /auth/register with
+ * the same credentials. A successful register yields a token we continue with; a
+ * register that also fails (e.g. 202 magic-link / already-registered → wrong
+ * password) surfaces as a login failure (the Chinese message is applied in the
+ * renderer). Any other login error (non-401) is rethrown as-is.
+ */
+async function apexManagedSignIn({ email, password }) {
+  const endpoints = resolveApexEndpoints(process.env)
+  const cleanEmail = String(email || '').trim()
+  const cleanPassword = String(password || '')
+
+  let accessToken = ''
+  try {
+    const loginBody = await apexAuthPostJson(endpoints.loginUrl, {
+      body: { email: cleanEmail, password: cleanPassword }
+    })
+    accessToken = accessTokenFromLogin(loginBody) || ''
+  } catch (error) {
+    // Only a 401 means "wrong creds OR unknown email" — try registering. Any
+    // other status (network, 5xx, …) is a real error: rethrow.
+    if (error && error.statusCode === 401) {
+      const registerBody = await apexAuthPostJson(endpoints.registerUrl, {
+        body: { email: cleanEmail, password: cleanPassword, name: '', locale: 'zh' }
+      }).catch(() => {
+        // Register failed too (e.g. 202 magic-link for an already-registered
+        // email → the 401 above was a wrong password; or any other reject).
+        // Either way the user-facing outcome is "check credentials" — throw a
+        // marker the renderer maps to the Chinese login-failed string.
+        const wrongCreds = new Error('INVALID_CREDENTIALS')
+        wrongCreds.code = 'INVALID_CREDENTIALS'
+        throw wrongCreds
+      })
+      accessToken = accessTokenFromLogin(registerBody) || ''
+      if (!accessToken) {
+        // register returned 2xx but no token (e.g. 202 magic-link path) → treat
+        // as invalid credentials, same as the web flow's 202 branch.
+        const wrongCreds = new Error('INVALID_CREDENTIALS')
+        wrongCreds.code = 'INVALID_CREDENTIALS'
+        throw wrongCreds
+      }
+    } else {
+      throw error
+    }
+  }
+
+  return provisionManagedFromAccessToken(accessToken)
 }
 
 // Returns the desktop's chosen profile name, or null when unset. "default" is
@@ -5754,42 +5803,100 @@ ipcMain.handle('hermes:managed:status', async () => {
     baseUrl: managed.baseUrl || endpoints.relayBaseUrl
   }
 })
-// signIn: email+password → provision relay key (POST /api/v1/desktop/provision-key).
-// Returns the model assignment the renderer should apply via /api/model/set (the
-// SAME path the BYOK local-endpoint flow uses), so applying managed needs no new
-// runtime plumbing. When provision-key isn't deployed yet, hasRelayKey=false and
-// `assignment` is null — the renderer then falls back to the BYOK onboarding.
+// Shape a managed sign-in result into the IPC payload the renderer applies. When
+// a relay key was provisioned, build the assignment from the STORED provision
+// result (server-truth base_url + model), not env defaults. When provision-key
+// wasn't available, assignment is null and the renderer falls back to BYOK.
+function managedSignInResultPayload(result) {
+  if (!result.hasRelayKey) {
+    return { ok: true, hasRelayKey: false, assignment: null }
+  }
+  const managed = resolveManagedConfig()
+  const block = buildManagedModelConfig(managed.key, process.env, {
+    baseUrl: managed.baseUrl,
+    model: managed.model
+  })
+  return {
+    ok: true,
+    hasRelayKey: true,
+    assignment: {
+      scope: 'main',
+      provider: block.provider,
+      model: block.default,
+      base_url: block.base_url,
+      api_key: block.api_key
+    }
+  }
+}
+
+// Map an error thrown by a sign-in path to the IPC `message`. The renderer turns
+// these into Chinese copy. INVALID_CREDENTIALS is the login-or-register
+// "wrong email/password" marker; everything else passes its message through.
+function managedSignInErrorMessage(error) {
+  if (error && error.code === 'INVALID_CREDENTIALS') {
+    return 'INVALID_CREDENTIALS'
+  }
+  return error && error.message ? error.message : String(error)
+}
+
+// signIn: email+password → login-or-register → provision relay key
+// (POST /api/v1/desktop/provision-key). Returns the model assignment the renderer
+// should apply via /api/model/set (the SAME path the BYOK local-endpoint flow
+// uses), so applying managed needs no new runtime plumbing. When provision-key
+// isn't deployed yet, hasRelayKey=false and `assignment` is null — the renderer
+// then falls back to the BYOK onboarding.
 ipcMain.handle('hermes:managed:signIn', async (_event, payload) => {
   const email = String(payload?.email || '').trim()
   const password = String(payload?.password || '')
   if (!email || !password) {
-    return { ok: false, message: 'Email and password are required.' }
+    // EMPTY_FIELDS marker → renderer shows the Chinese "请输入邮箱和密码".
+    return { ok: false, message: 'EMPTY_FIELDS' }
   }
   try {
     const result = await apexManagedSignIn({ email, password })
-    if (!result.hasRelayKey) {
-      return { ok: true, hasRelayKey: false, assignment: null }
-    }
-    // Build the assignment from the STORED provision result (server-truth
-    // base_url + model), not env defaults.
-    const managed = resolveManagedConfig()
-    const block = buildManagedModelConfig(managed.key, process.env, {
-      baseUrl: managed.baseUrl,
-      model: managed.model
-    })
-    return {
-      ok: true,
-      hasRelayKey: true,
-      assignment: {
-        scope: 'main',
-        provider: block.provider,
-        model: block.default,
-        base_url: block.base_url,
-        api_key: block.api_key
-      }
-    }
+    return managedSignInResultPayload(result)
+  } catch (error) {
+    return { ok: false, message: managedSignInErrorMessage(error) }
+  }
+})
+
+// browserSignIn: "用 Google 登录" / "用 APEX 登录". Open a loopback listener +
+// random state, launch the system browser at the provider's start URL with our
+// loopback redirect_uri, and wait for the browser to redirect back with
+// `?token=<JWT>&state=<s>`. Validate state (CSRF), then run the SAME post-auth
+// path (provision-key → assignment) as the email/password flow. Loopback is
+// 127.0.0.1 only; the backend MUST also validate redirect_uri/desktop_cb.
+ipcMain.handle('hermes:managed:browserSignIn', async (_event, payload) => {
+  const provider = String(payload?.provider || '').trim()
+  if (provider !== 'google' && provider !== 'apex') {
+    return { ok: false, message: `Unknown browser sign-in provider: ${provider}` }
+  }
+
+  let loopback = null
+  try {
+    loopback = await startLoopbackLogin()
   } catch (error) {
     return { ok: false, message: error && error.message ? error.message : String(error) }
+  }
+
+  try {
+    const startUrl =
+      provider === 'google'
+        ? googleStartUrl(loopback.redirectUri, loopback.state, process.env)
+        : apexWebLoginUrl(loopback.redirectUri, loopback.state, process.env)
+
+    if (!openExternalUrl(startUrl)) {
+      loopback.close()
+      return { ok: false, message: 'Could not open the system browser for sign-in.' }
+    }
+
+    // Block until the browser redirects back (or the watchdog/abort fires).
+    const { token } = await loopback.result
+    const result = await provisionManagedFromAccessToken(token)
+    return managedSignInResultPayload(result)
+  } catch (error) {
+    loopback.close()
+    return { ok: false, message: managedSignInErrorMessage(error) }
   }
 })
 // signOut: forget the relay key. The renderer is responsible for re-pointing the

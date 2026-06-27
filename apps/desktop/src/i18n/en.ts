@@ -1440,7 +1440,10 @@ export const en: Translations = {
       passwordPlaceholder: 'Password',
       signIn: 'Sign in & start',
       signingIn: 'Signing in…',
-      useOwnProvider: 'Use my own provider'
+      useOwnProvider: 'Use my own provider',
+      dividerOr: 'or',
+      signInGoogle: 'Sign in with Google',
+      signInApex: 'Sign in with APEX'
     },
     addKeyToStart: 'Your provider is selected — just add its API key to start chatting.',
     preparingInstall: 'ApexNodes is finishing install. This usually takes under a minute on first run.',

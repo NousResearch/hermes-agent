@@ -47,6 +47,10 @@ declare global {
       managed: {
         status: () => Promise<DesktopManagedStatus>
         signIn: (payload: { email: string; password: string }) => Promise<DesktopManagedSignInResult>
+        // Browser (loopback) sign-in: "用 Google 登录" / "用 APEX 登录". Opens
+        // the system browser, catches the loopback redirect, and resolves with
+        // the same managed assignment shape the email/password flow returns.
+        browserSignIn: (payload: { provider: 'apex' | 'google' }) => Promise<DesktopManagedSignInResult>
         signOut: () => Promise<{ ok: boolean }>
       }
       api: <T>(request: HermesApiRequest) => Promise<T>

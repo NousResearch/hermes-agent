@@ -1103,6 +1103,12 @@ export interface Translations {
       signIn: string
       signingIn: string
       useOwnProvider: string
+      /** Divider between the email/password form and the browser-login buttons. */
+      dividerOr: string
+      /** "用 Google 登录" browser (loopback) sign-in button. */
+      signInGoogle: string
+      /** "用 APEX 登录" browser (loopback) sign-in button. */
+      signInApex: string
     }
     /** Clean prompt shown when a provider is seeded (DeepSeek) but its key is
      *  missing — replaces the raw "no usable credentials" runtime error. */

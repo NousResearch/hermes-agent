@@ -1625,7 +1625,10 @@ export const zh: Translations = {
       passwordPlaceholder: '密码',
       signIn: '登录并开始',
       signingIn: '正在登录…',
-      useOwnProvider: '使用我自己的提供方'
+      useOwnProvider: '使用我自己的提供方',
+      dividerOr: '或',
+      signInGoogle: '用 Google 登录',
+      signInApex: '用 APEX 登录'
     },
     addKeyToStart: '已选好提供方 — 填入它的 API Key 即可开始对话。',
     preparingInstall: 'ApexNodes 正在完成安装。首次运行通常不到一分钟。',

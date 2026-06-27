@@ -1520,7 +1520,10 @@ export const zhHant = defineLocale({
       passwordPlaceholder: '密碼',
       signIn: '登入並開始',
       signingIn: '正在登入…',
-      useOwnProvider: '使用我自己的提供方'
+      useOwnProvider: '使用我自己的提供方',
+      dividerOr: '或',
+      signInGoogle: '用 Google 登入',
+      signInApex: '用 APEX 登入'
     },
     addKeyToStart: '已選好提供方 — 填入它的 API 金鑰即可開始聊天。',
     preparingInstall: 'ApexNodes 正在完成安裝。首次執行通常不到一分鐘。',

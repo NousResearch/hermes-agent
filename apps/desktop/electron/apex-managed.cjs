@@ -81,9 +81,19 @@ const MANAGED_MODEL_DISPLAY = 'deepseek-v4-pro-APEX'
 // `custom` means zero new runtime provider plumbing.
 const MANAGED_PROVIDER = 'custom'
 
-// Endpoint paths. LOGIN_PATH is on AUTH_BASE; PROVISION_KEY_PATH is on API_BASE.
+// Endpoint paths. LOGIN_PATH / REGISTER_PATH are on AUTH_BASE; PROVISION_KEY_PATH
+// is on API_BASE. GOOGLE_START_PATH is the backend's browser OAuth entry (on
+// API_BASE — see the shared login-rework contract).
 const LOGIN_PATH = '/api/v1/auth/login'
+const REGISTER_PATH = '/api/v1/auth/register'
 const PROVISION_KEY_PATH = '/api/v1/desktop/provision-key'
+const GOOGLE_START_PATH = '/api/v1/auth/google/start'
+
+// User-facing site path of the web login page. The desktop "用 APEX 登录" flow
+// opens `${AUTH_BASE}/zh/login?desktop_cb=<loopback>&state=<s>`; the web login
+// page honors desktop_cb and redirects the browser back to the loopback with the
+// minted token. Locale-pinned to zh (the desktop is China-first).
+const WEB_LOGIN_PATH = '/zh/login'
 
 function trimTrailingSlash(value) {
   return String(value || '').replace(/\/+$/, '')
@@ -113,8 +123,117 @@ function resolveApexEndpoints(env = {}) {
     modelDisplay: MANAGED_MODEL_DISPLAY,
     provider: MANAGED_PROVIDER,
     loginUrl: `${authBase}${LOGIN_PATH}`,
+    registerUrl: `${authBase}${REGISTER_PATH}`,
     provisionKeyUrl: `${apiBase}${PROVISION_KEY_PATH}`
   }
+}
+
+/**
+ * Build the browser start URL for "用 Google 登录" (Deliverable 2). The desktop
+ * opens this in the system browser; the backend bounces through Google and
+ * redirects to the loopback `redirect_uri` with `?token=<JWT>&state=<state>`.
+ * Lives on API_BASE per the shared contract.
+ *
+ * @param {string} redirectUri  the loopback callback (http://127.0.0.1:<port>/cb)
+ * @param {string} state        random CSRF token echoed back on the callback
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {string}
+ */
+function googleStartUrl(redirectUri, state, env = {}) {
+  const { apiBase } = resolveApexEndpoints(env)
+  const u = new URL(`${apiBase}${GOOGLE_START_PATH}`)
+  u.searchParams.set('redirect_uri', String(redirectUri || ''))
+  u.searchParams.set('state', String(state || ''))
+  return u.toString()
+}
+
+/**
+ * Build the browser start URL for "用 APEX 登录" (Deliverable 3). Opens the web
+ * login page with `desktop_cb` + `state`; the web page redirects the browser
+ * back to the loopback with `?token=<access_token>&state=<state>` after a
+ * successful login/register. Lives on AUTH_BASE (the user-facing site).
+ *
+ * @param {string} redirectUri  the loopback callback (http://127.0.0.1:<port>/cb)
+ * @param {string} state        random CSRF token echoed back on the callback
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {string}
+ */
+function apexWebLoginUrl(redirectUri, state, env = {}) {
+  const { authBase } = resolveApexEndpoints(env)
+  const u = new URL(`${authBase}${WEB_LOGIN_PATH}`)
+  u.searchParams.set('desktop_cb', String(redirectUri || ''))
+  u.searchParams.set('state', String(state || ''))
+  return u.toString()
+}
+
+/**
+ * Parse + validate a browser loopback callback request URL for the Google / APEX
+ * flows. The browser is redirected to `http://127.0.0.1:<port>/cb?token=<JWT>&state=<s>`.
+ * We require the path to be `/cb`, the `state` to match the one we generated
+ * (CSRF defense), and a non-empty `token`. Anything else → { ok:false, ... } so
+ * the loopback handler can respond with an error page and never apply a token.
+ *
+ * Pure: the caller passes the request URL (Node sets req.url to a path+query for
+ * an http server, so we parse against a dummy origin) and the expected state.
+ *
+ * @param {string} requestUrl   req.url from the loopback server (path + query)
+ * @param {string} expectedState the state we generated when starting the flow
+ * @returns {{ ok: true, token: string } | { ok: false, reason: string, isCallback: boolean }}
+ */
+function parseLoopbackCallback(requestUrl, expectedState) {
+  let parsed
+  try {
+    // req.url is path-relative; a dummy origin lets URL parse the query.
+    parsed = new URL(String(requestUrl || ''), 'http://127.0.0.1')
+  } catch {
+    return { ok: false, reason: 'invalid_request', isCallback: false }
+  }
+  // Only the /cb path is the OAuth callback. Other paths (e.g. /favicon.ico the
+  // browser auto-requests) must be ignored, not treated as a failed login.
+  const isCallback = parsed.pathname === '/cb'
+  if (!isCallback) {
+    return { ok: false, reason: 'not_callback', isCallback: false }
+  }
+  const error = parsed.searchParams.get('error')
+  if (error) {
+    return { ok: false, reason: error, isCallback: true }
+  }
+  const state = parsed.searchParams.get('state') || ''
+  const expected = String(expectedState || '')
+  // Constant-ish comparison; states are random opaque tokens, lengths usually
+  // equal, so a plain !== is acceptable here (no secret-dependent branch leak of
+  // value, only of equality — same as the rest of the OAuth state checks).
+  if (!expected || state !== expected) {
+    return { ok: false, reason: 'state_mismatch', isCallback: true }
+  }
+  const token = (parsed.searchParams.get('token') || '').trim()
+  if (!token) {
+    return { ok: false, reason: 'missing_token', isCallback: true }
+  }
+  return { ok: true, token }
+}
+
+/**
+ * True when a redirect/callback URL targets the loopback interface (127.0.0.1 /
+ * ::1 / localhost) over http. The desktop only ever points the browser at its
+ * own loopback; this guards against accidentally opening a non-loopback start
+ * URL (defense in depth — the backend MUST also validate redirect_uri).
+ *
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isLoopbackUrl(url) {
+  let parsed
+  try {
+    parsed = new URL(String(url || ''))
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'http:') return false
+  // URL normalizes an IPv6 host to its bracketed form ("[::1]"); strip the
+  // brackets so the bare-address comparison matches.
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost'
 }
 
 /**
@@ -260,12 +379,19 @@ module.exports = {
   MANAGED_MODEL_DISPLAY,
   MANAGED_PROVIDER,
   LOGIN_PATH,
+  REGISTER_PATH,
   PROVISION_KEY_PATH,
+  GOOGLE_START_PATH,
+  WEB_LOGIN_PATH,
   accessTokenFromLogin,
+  apexWebLoginUrl,
   buildManagedModelConfig,
   defaultModelPath,
+  googleStartUrl,
+  isLoopbackUrl,
   isManagedEnabled,
   managedModelConfigYaml,
+  parseLoopbackCallback,
   parseProvisionResponse,
   relayKeyFromResponse,
   resolveApexEndpoints

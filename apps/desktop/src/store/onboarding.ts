@@ -555,16 +555,93 @@ async function refreshManagedStatus(): Promise<{ enabled: boolean; signedIn: boo
   }
 }
 
-// Sign in to ApexNodes managed LLM (zero-key). On success with a provisioned
-// relay key, apply the returned model assignment via the SAME /api/model/set
-// path the BYOK local-endpoint flow uses, reload env, and complete onboarding.
-// If the backend relay-key endpoint isn't deployed yet (hasRelayKey=false), fall
-// back to the BYOK provider picker rather than stranding the user.
+// User-facing Chinese copy for managed sign-in. All managed-login messages are
+// Chinese (Desktop V0.2 China-first), and we never surface a raw `401: {...}`
+// body — login failures collapse to a single friendly line, mirroring the web
+// public-login-page errors block (createbot.json).
+const MANAGED_COPY = {
+  // Empty email/password.
+  emptyFields: '请输入邮箱和密码',
+  // Login (and the login-or-register retry) failed → bad email/password.
+  loginFailed: '登录失败,请检查邮箱或密码',
+  // Bridge absent (web dashboard / dev preview) — managed sign-in is desktop-only.
+  desktopOnly: '托管登录仅在桌面应用中可用',
+  // Signed in, but the local runtime couldn't reach the relay after applying it.
+  relayUnreachable: '登录成功,但运行时无法连接 ApexNodes 中转服务,请重试',
+  // Browser flow could not be started / was cancelled.
+  browserFailed: '浏览器登录未完成,请重试'
+}
+
+// Map an electron managed-sign-in `res.message` to user-facing Chinese. The
+// electron layer returns opaque markers (EMPTY_FIELDS / INVALID_CREDENTIALS) for
+// the known cases and a raw string otherwise; we collapse the credential cases
+// to loginFailed and never echo a raw `NNN: {...}` body to the user.
+function managedErrorCopy(message: string | undefined): string {
+  const raw = (message ?? '').trim()
+
+  if (raw === 'EMPTY_FIELDS') {
+    return MANAGED_COPY.emptyFields
+  }
+
+  // INVALID_CREDENTIALS marker, any raw HTTP-status body (e.g. `401: {...}`),
+  // or anything else → the single friendly login-failed line. We never echo the
+  // electron message verbatim, so a raw status/JSON body can't reach the user.
+  return MANAGED_COPY.loginFailed
+}
+
+// Shared tail for every managed sign-in path (email/password, Google, APEX):
+// given a successful electron result, either degrade to BYOK (no relay key yet),
+// or apply the assignment through the SAME /api/model/set path the BYOK
+// local-endpoint flow uses, verify the runtime, and complete onboarding.
+async function applyManagedSignInResult(
+  res: { assignment?: unknown; hasRelayKey?: boolean; message?: string; ok: boolean },
+  ctx: OnboardingContext
+): Promise<void> {
+  if (!res.ok) {
+    patch({ managedSubmitting: false, managedError: managedErrorCopy(res.message) })
+
+    return
+  }
+
+  if (!res.hasRelayKey || !res.assignment) {
+    // Logged in, but managed isn't wired server-side yet — degrade to BYOK.
+    patch({ managedSubmitting: false, managedAvailable: false, mode: 'apikey' })
+    await refreshProviders()
+    patch({ mode: 'apikey' })
+
+    return
+  }
+
+  // Apply the managed relay assignment through the existing model-set path
+  // (provider=custom + base_url + api_key + model), then verify + finish.
+  await setModelAssignment(res.assignment as Parameters<typeof setModelAssignment>[0])
+  await ctx.requestGateway('reload.env').catch(() => undefined)
+
+  const runtime = await checkRuntime(ctx)
+
+  if (!runtime.ready) {
+    patch({ managedSubmitting: false, managedError: MANAGED_COPY.relayUnreachable })
+
+    return
+  }
+
+  patch({ managedSubmitting: false })
+  notifyReady('ApexNodes')
+  completeDesktopOnboarding()
+  ctx.onCompleted?.()
+}
+
+// Sign in to ApexNodes managed LLM (zero-key) with email + password. The electron
+// layer does login-or-register (mirrors web): an unknown email auto-registers; a
+// registered email with the wrong password returns the Chinese login-failed line.
+// On success with a provisioned relay key, apply the returned model assignment,
+// reload env, and complete onboarding. If the backend relay-key endpoint isn't
+// deployed yet (hasRelayKey=false), fall back to the BYOK provider picker.
 export async function managedSignIn(email: string, password: string, ctx: OnboardingContext) {
   const trimmedEmail = email.trim()
 
   if (!trimmedEmail || !password) {
-    patch({ managedError: 'Enter your email and password.' })
+    patch({ managedError: MANAGED_COPY.emptyFields })
 
     return
   }
@@ -572,7 +649,7 @@ export async function managedSignIn(email: string, password: string, ctx: Onboar
   const bridge = typeof window !== 'undefined' ? window.hermesDesktop?.managed : undefined
 
   if (!bridge) {
-    patch({ managedError: 'Managed sign-in is only available in the desktop app.' })
+    patch({ managedError: MANAGED_COPY.desktopOnly })
 
     return
   }
@@ -581,46 +658,35 @@ export async function managedSignIn(email: string, password: string, ctx: Onboar
 
   try {
     const res = await bridge.signIn({ email: trimmedEmail, password })
-
-    if (!res.ok) {
-      patch({ managedSubmitting: false, managedError: res.message || 'Sign-in failed. Check your credentials.' })
-
-      return
-    }
-
-    if (!res.hasRelayKey || !res.assignment) {
-      // Logged in, but managed isn't wired server-side yet — degrade to BYOK.
-      patch({ managedSubmitting: false, managedAvailable: false, mode: 'apikey' })
-      await refreshProviders()
-      patch({ mode: 'apikey' })
-
-      return
-    }
-
-    // Apply the managed relay assignment through the existing model-set path
-    // (provider=custom + base_url + api_key + model), then verify + finish.
-    await setModelAssignment(res.assignment)
-    await ctx.requestGateway('reload.env').catch(() => undefined)
-
-    const runtime = await checkRuntime(ctx)
-
-    if (!runtime.ready) {
-      patch({
-        managedSubmitting: false,
-        managedError:
-          (runtime.reason ?? '').trim() ||
-          'Signed in, but the runtime could not reach the ApexNodes relay. Try again.'
-      })
-
-      return
-    }
-
-    patch({ managedSubmitting: false })
-    notifyReady('ApexNodes')
-    completeDesktopOnboarding()
-    ctx.onCompleted?.()
+    await applyManagedSignInResult(res, ctx)
   } catch (error) {
-    patch({ managedSubmitting: false, managedError: errMessage(error) })
+    // Network/IPC throw — keep it friendly and never leak a raw status body.
+    void error
+    patch({ managedSubmitting: false, managedError: MANAGED_COPY.loginFailed })
+  }
+}
+
+// Browser (loopback) managed sign-in: "用 Google 登录" / "用 APEX 登录". The
+// electron layer opens the system browser, catches the loopback redirect with
+// the minted JWT, then runs the SAME provision-key → assignment path as the
+// email/password flow. Reuses the existing OAuth/loopback + openExternal infra.
+export async function managedBrowserSignIn(provider: 'apex' | 'google', ctx: OnboardingContext) {
+  const bridge = typeof window !== 'undefined' ? window.hermesDesktop?.managed : undefined
+
+  if (!bridge?.browserSignIn) {
+    patch({ managedError: MANAGED_COPY.desktopOnly })
+
+    return
+  }
+
+  patch({ managedSubmitting: true, managedError: null })
+
+  try {
+    const res = await bridge.browserSignIn({ provider })
+    await applyManagedSignInResult(res, ctx)
+  } catch (error) {
+    void error
+    patch({ managedSubmitting: false, managedError: MANAGED_COPY.browserFailed })
   }
 }
 

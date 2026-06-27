@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   managed: {
     status: () => ipcRenderer.invoke('hermes:managed:status'),
     signIn: payload => ipcRenderer.invoke('hermes:managed:signIn', payload),
+    browserSignIn: payload => ipcRenderer.invoke('hermes:managed:browserSignIn', payload),
     signOut: () => ipcRenderer.invoke('hermes:managed:signOut')
   },
   api: request => ipcRenderer.invoke('hermes:api', request),

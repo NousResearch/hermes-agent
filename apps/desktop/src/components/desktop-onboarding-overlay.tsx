@@ -35,6 +35,7 @@ import {
   DEFAULT_MANUAL_ONBOARDING_REASON,
   DEFAULT_ONBOARDING_REASON,
   dismissFirstRunOnboarding,
+  managedBrowserSignIn,
   managedSignIn,
   type OnboardingContext,
   type OnboardingFlow,
@@ -42,10 +43,10 @@ import {
   recheckExternalSignin,
   refreshOnboarding,
   saveOnboardingApiKey,
-  skipManagedForByok,
   setOnboardingCode,
   setOnboardingMode,
   setOnboardingModel,
+  skipManagedForByok,
   startProviderOAuth,
   submitOnboardingCode
 } from '@/store/onboarding'
@@ -667,6 +668,35 @@ function ManagedSignInPanel({ ctx }: { ctx: OnboardingContext }) {
         {managedSubmitting && <Loader2 className="size-3.5 animate-spin" />}
         {managedSubmitting ? m.signingIn : m.signIn}
       </Button>
+
+      {/* Divider, then the two browser (loopback) sign-in options. The
+          email/password form above stays — these are additional one-tap paths. */}
+      <div className="flex items-center gap-3 py-0.5 text-[0.6875rem] uppercase tracking-wider text-(--ui-text-tertiary)">
+        <span className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+        {m.dividerOr}
+        <span className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+      </div>
+      <div className="grid gap-2">
+        <Button
+          className="w-full"
+          disabled={managedSubmitting}
+          onClick={() => void managedBrowserSignIn('google', ctx)}
+          type="button"
+          variant="outline"
+        >
+          {m.signInGoogle}
+        </Button>
+        <Button
+          className="w-full"
+          disabled={managedSubmitting}
+          onClick={() => void managedBrowserSignIn('apex', ctx)}
+          type="button"
+          variant="outline"
+        >
+          {m.signInApex}
+        </Button>
+      </div>
+
       <div className="flex items-center justify-between border-t border-(--ui-stroke-tertiary) pt-3">
         <Button
           className="font-medium"

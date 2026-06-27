@@ -20,10 +20,14 @@ const {
   MANAGED_MODEL_DISPLAY,
   MANAGED_PROVIDER,
   accessTokenFromLogin,
+  apexWebLoginUrl,
   buildManagedModelConfig,
   defaultModelPath,
+  googleStartUrl,
+  isLoopbackUrl,
   isManagedEnabled,
   managedModelConfigYaml,
+  parseLoopbackCallback,
   parseProvisionResponse,
   relayKeyFromResponse,
   resolveApexEndpoints
@@ -40,6 +44,8 @@ test('resolveApexEndpoints returns prod defaults with empty env', () => {
   assert.equal(e.modelDisplay, MANAGED_MODEL_DISPLAY)
   assert.equal(e.provider, MANAGED_PROVIDER)
   assert.equal(e.loginUrl, 'https://apex-nodes.com/api/v1/auth/login')
+  // register lives on the auth host alongside login (login-or-register).
+  assert.equal(e.registerUrl, 'https://apex-nodes.com/api/v1/auth/register')
   // provision-key is on the API host per the P0 contract.
   assert.equal(e.provisionKeyUrl, 'https://api.apex-nodes.com/api/v1/desktop/provision-key')
 })
@@ -193,4 +199,96 @@ test('accessTokenFromLogin extracts the JWT or null', () => {
   assert.equal(accessTokenFromLogin({}), null)
   assert.equal(accessTokenFromLogin({ access_token: '' }), null)
   assert.equal(accessTokenFromLogin(null), null)
+})
+
+// --- googleStartUrl / apexWebLoginUrl (browser-login start URLs) ---
+
+test('googleStartUrl points at the API host with loopback redirect_uri + state', () => {
+  const url = googleStartUrl('http://127.0.0.1:51234/cb', 'st-abc', {})
+  const u = new URL(url)
+  assert.equal(u.origin, 'https://api.apex-nodes.com')
+  assert.equal(u.pathname, '/api/v1/auth/google/start')
+  assert.equal(u.searchParams.get('redirect_uri'), 'http://127.0.0.1:51234/cb')
+  assert.equal(u.searchParams.get('state'), 'st-abc')
+})
+
+test('googleStartUrl honors APEXNODES_API_BASE override', () => {
+  const url = googleStartUrl('http://127.0.0.1:1/cb', 's', {
+    APEXNODES_API_BASE: 'https://api.staging.apex-nodes.com/'
+  })
+  assert.equal(new URL(url).origin, 'https://api.staging.apex-nodes.com')
+})
+
+test('apexWebLoginUrl opens the zh web login page with desktop_cb + state', () => {
+  const url = apexWebLoginUrl('http://127.0.0.1:51234/cb', 'st-xyz', {})
+  const u = new URL(url)
+  assert.equal(u.origin, 'https://apex-nodes.com')
+  assert.equal(u.pathname, '/zh/login')
+  assert.equal(u.searchParams.get('desktop_cb'), 'http://127.0.0.1:51234/cb')
+  assert.equal(u.searchParams.get('state'), 'st-xyz')
+})
+
+test('apexWebLoginUrl honors APEXNODES_AUTH_BASE override', () => {
+  const url = apexWebLoginUrl('http://127.0.0.1:1/cb', 's', {
+    APEXNODES_AUTH_BASE: 'https://staging.apex-nodes.com'
+  })
+  assert.equal(new URL(url).origin, 'https://staging.apex-nodes.com')
+})
+
+// --- parseLoopbackCallback (CSRF-validated browser redirect) ---
+
+test('parseLoopbackCallback accepts a /cb hit with matching state + token', () => {
+  const out = parseLoopbackCallback('/cb?token=jwt.123&state=s1', 's1')
+  assert.deepEqual(out, { ok: true, token: 'jwt.123' })
+})
+
+test('parseLoopbackCallback trims the token', () => {
+  const out = parseLoopbackCallback('/cb?token=%20jwt.trim%20&state=s1', 's1')
+  assert.deepEqual(out, { ok: true, token: 'jwt.trim' })
+})
+
+test('parseLoopbackCallback rejects a state mismatch (CSRF)', () => {
+  const out = parseLoopbackCallback('/cb?token=jwt.123&state=evil', 's1')
+  assert.equal(out.ok, false)
+  assert.equal(out.reason, 'state_mismatch')
+  assert.equal(out.isCallback, true)
+})
+
+test('parseLoopbackCallback rejects an empty expected state', () => {
+  const out = parseLoopbackCallback('/cb?token=jwt.123&state=', '')
+  assert.equal(out.ok, false)
+  assert.equal(out.reason, 'state_mismatch')
+})
+
+test('parseLoopbackCallback rejects a missing token even when state matches', () => {
+  const out = parseLoopbackCallback('/cb?state=s1', 's1')
+  assert.equal(out.ok, false)
+  assert.equal(out.reason, 'missing_token')
+})
+
+test('parseLoopbackCallback surfaces an explicit ?error= from the backend', () => {
+  const out = parseLoopbackCallback('/cb?error=access_denied&state=s1', 's1')
+  assert.equal(out.ok, false)
+  assert.equal(out.reason, 'access_denied')
+  assert.equal(out.isCallback, true)
+})
+
+test('parseLoopbackCallback ignores non-/cb requests (e.g. favicon)', () => {
+  const out = parseLoopbackCallback('/favicon.ico', 's1')
+  assert.equal(out.ok, false)
+  assert.equal(out.isCallback, false)
+  assert.equal(out.reason, 'not_callback')
+})
+
+// --- isLoopbackUrl ---
+
+test('isLoopbackUrl is true only for http loopback hosts', () => {
+  assert.equal(isLoopbackUrl('http://127.0.0.1:1234/cb'), true)
+  assert.equal(isLoopbackUrl('http://localhost:1234/cb'), true)
+  assert.equal(isLoopbackUrl('http://[::1]:1234/cb'), true)
+  // https or non-loopback hosts are rejected.
+  assert.equal(isLoopbackUrl('https://127.0.0.1/cb'), false)
+  assert.equal(isLoopbackUrl('http://example.com/cb'), false)
+  assert.equal(isLoopbackUrl('http://169.254.169.254/cb'), false)
+  assert.equal(isLoopbackUrl('not a url'), false)
 })

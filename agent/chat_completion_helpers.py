@@ -37,6 +37,7 @@ from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
+_OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 
 
 def _ra():
@@ -113,6 +114,23 @@ def _is_openai_codex_backend(agent) -> bool:
             and "/backend-api/codex" in base_url_lower
         )
     )
+
+
+def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
+    """Return a normalized OpenRouter provider.sort value or None."""
+    if not isinstance(raw_sort, str):
+        return None
+    sort_value = raw_sort.strip().lower()
+    if not sort_value:
+        return None
+    if sort_value in _OPENROUTER_PROVIDER_SORT_VALUES:
+        return sort_value
+    logger.warning(
+        "Ignoring invalid OpenRouter provider.sort value %r (allowed: %s)",
+        raw_sort,
+        ", ".join(sorted(_OPENROUTER_PROVIDER_SORT_VALUES)),
+    )
+    return None
 
 
 def _env_float(name: str, default: float) -> float:
@@ -698,8 +716,9 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _prefs["ignore"] = agent.providers_ignored
     if agent.providers_order:
         _prefs["order"] = agent.providers_order
-    if agent.provider_sort:
-        _prefs["sort"] = agent.provider_sort
+    _provider_sort = _validated_openrouter_provider_sort(agent.provider_sort)
+    if _provider_sort:
+        _prefs["sort"] = _provider_sort
     if agent.provider_require_parameters:
         _prefs["require_parameters"] = True
     if agent.provider_data_collection:
@@ -1476,8 +1495,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 provider_preferences["ignore"] = agent.providers_ignored
             if agent.providers_order:
                 provider_preferences["order"] = agent.providers_order
-            if agent.provider_sort:
-                provider_preferences["sort"] = agent.provider_sort
+            _provider_sort = _validated_openrouter_provider_sort(agent.provider_sort)
+            if _provider_sort:
+                provider_preferences["sort"] = _provider_sort
             if provider_preferences and (
                 (agent.provider or "").strip().lower() == "openrouter"
                 or agent._is_openrouter_url()

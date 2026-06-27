@@ -8435,7 +8435,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 quick_commands = getattr(self.config, "quick_commands", {}) or {}
             if isinstance(quick_commands, dict) and command in quick_commands:
                 qcmd = quick_commands[command]
-                if qcmd.get("type") == "alias":
+                if not isinstance(qcmd, dict):
+                    logger.warning(
+                        "quick_commands entry for /%s is not a dict (got %s); skipping early alias resolution",
+                        command,
+                        type(qcmd).__name__,
+                    )
+                elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
@@ -8816,8 +8822,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 quick_commands = getattr(self.config, "quick_commands", {}) or {}
             if not isinstance(quick_commands, dict):
                 quick_commands = {}
-            if command in quick_commands:
-                qcmd = quick_commands[command]
+            qcmd = quick_commands.get(command)
+            if qcmd is not None and not isinstance(qcmd, dict):
+                logger.warning(
+                    "quick_commands entry for /%s is not a dict (got %s); skipping and falling through to plugin/skill commands",
+                    command,
+                    type(qcmd).__name__,
+                )
+                qcmd = None
+            if isinstance(qcmd, dict):
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:

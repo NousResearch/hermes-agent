@@ -8477,8 +8477,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             skill_commands = _ensure_skill_commands()
             skill_bundles = get_skill_bundles()
             quick_commands = self.config.get("quick_commands", {})
-            if base_cmd.lstrip("/") in quick_commands:
-                qcmd = quick_commands[base_cmd.lstrip("/")]
+            if not isinstance(quick_commands, dict):
+                quick_commands = {}
+            qcmd_raw = quick_commands.get(base_cmd.lstrip("/"))
+            if qcmd_raw is not None and not isinstance(qcmd_raw, dict):
+                logger.warning(
+                    "quick_commands entry for %s is not a dict (got %s); skipping and falling through to plugin/skill commands",
+                    base_cmd,
+                    type(qcmd_raw).__name__,
+                )
+                qcmd_raw = None
+            if isinstance(qcmd_raw, dict):
+                qcmd = qcmd_raw
                 if qcmd.get("type") == "exec":
                     import subprocess
                     exec_cmd = qcmd.get("command", "")

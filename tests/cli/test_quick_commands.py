@@ -128,6 +128,43 @@ class TestCLIQuickCommands:
         args = cli.console.print.call_args[0][0]
         assert "timed out" in args.lower()
 
+    def test_string_value_does_not_crash(self, caplog):
+        """A non-dict quick_commands entry must not crash the dispatcher.
+
+        Regression test for #18816 — `qcmd.get('type')` raised AttributeError
+        when the entry was a string.
+        """
+        import logging
+        cli = self._make_cli({"foo": ""})
+        with caplog.at_level(logging.WARNING):
+            with patch("cli._cprint"):
+                cli.process_command("/foo")
+        assert any(
+            "not a dict" in record.getMessage()
+            for record in caplog.records
+        ), f"expected warning about non-dict entry, got: {[r.getMessage() for r in caplog.records]}"
+
+    def test_string_value_does_not_block_skill_command_with_same_name(self, caplog):
+        """When a quick_commands entry overlaps a skill command name but is
+        malformed (e.g., a string), the skill command must still be dispatched —
+        the broken quick_commands entry must not poison skill dispatch.
+
+        Regression test for #18816.
+        """
+        import logging
+        cli = self._make_cli({"mygif": "broken"})
+        cli._pending_input = MagicMock()
+        with caplog.at_level(logging.WARNING):
+            with patch("cli._skill_commands", {"/mygif": {"name": "gif-search"}}):
+                with patch("cli.build_skill_invocation_message", return_value="msg") as build_msg:
+                    cli.process_command("/mygif")
+        build_msg.assert_called_once()
+        cli._pending_input.put.assert_called_once_with("msg")
+        assert any(
+            "not a dict" in record.getMessage()
+            for record in caplog.records
+        )
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
@@ -245,3 +282,35 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_string_value_does_not_crash_gateway(self, caplog):
+        """A non-dict quick_commands entry must not crash the gateway dispatcher.
+
+        Regression test for #18816 — same crash pattern as cli.py existed in
+        gateway/run.py.
+        """
+        import logging
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"foo": "broken-string"}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("foo")
+        with caplog.at_level(logging.WARNING):
+            with patch("hermes_cli.plugins.get_plugin_command_handler", return_value=None):
+                # Should not raise AttributeError; falls through to plugin/skill dispatch.
+                # Whatever final return value comes from downstream is not asserted —
+                # this test covers the crash regression only.
+                try:
+                    await runner._handle_message(event)
+                except AttributeError as e:
+                    if "'str' object has no attribute 'get'" in str(e):
+                        pytest.fail(f"regression: gateway crashed on string quick_commands value: {e}")
+                    raise
+        assert any(
+            "not a dict" in record.getMessage()
+            for record in caplog.records
+        ), f"expected warning about non-dict entry, got: {[r.getMessage() for r in caplog.records]}"

@@ -126,7 +126,7 @@ def _place_by_heuristic(path: str) -> Optional[dict]:
         repo_path = _with_base_name(path, m.group(1))
         return _placement(repo_path, path, m.group(2), path, False, False)
 
-    return _placement(path, path, base, path, True, False)
+    return _placement(path, _branch_lane_id(path, DEFAULT_BRANCH_LABEL), base, path, True, False)
 
 
 def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: str) -> Optional[dict]:

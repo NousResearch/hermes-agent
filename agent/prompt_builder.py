@@ -889,6 +889,17 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
+_SSH_HOST_PATH_ROUTING_HINT = (
+    "Path routing: with the `ssh` terminal backend, every `terminal`, "
+    "`read_file`, `write_file`, `patch`, and `search_files` call runs on the "
+    "remote host. If the user gives an obvious host-local path such as "
+    "`/Users/...`, `/home/...`, `C:\\Users\\...`, or `C:/Users/...`, do NOT "
+    "answer by saying the path is simply missing on the remote machine. "
+    "First explain that the active execution target is remote over SSH, then "
+    "ask whether they want to switch to local execution or provide the "
+    "corresponding path on the remote host."
+)
+
 
 # Cache the backend probe result per process so we only pay the probe cost
 # on the first prompt build of a session. Keyed by (env_type, cwd_hint) so
@@ -1072,6 +1083,8 @@ def build_environment_hints() -> str:
                 f"them, probe directly with a terminal call like "
                 f"`uname -a && whoami && pwd`."
             )
+        if backend == "ssh":
+            hints.append(_SSH_HOST_PATH_ROUTING_HINT)
 
     # Hermes desktop GUI — any agent running under the desktop app should know
     # it. HERMES_DESKTOP marks the backend powering the chat; HERMES_DESKTOP_TERMINAL

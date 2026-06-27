@@ -1219,6 +1219,19 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in result
         assert "/workspace" in result
 
+    def test_build_environment_hints_on_ssh_warns_about_host_local_paths(self, monkeypatch):
+        """SSH backends must warn the agent not to misdiagnose host-local paths as remote misses."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: None)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Terminal backend: ssh" in result
+        assert "/Users/..." in result
+        assert "remote over SSH" in result
+        assert "switch to local execution" in result
+
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
         import agent.prompt_builder as _pb
@@ -1567,5 +1580,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

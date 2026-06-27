@@ -43,9 +43,9 @@ def test_full_session_lifecycle_produces_rows(wired):
         session_id="sess1", platform="telegram",
         function_name="web_search", duration_ms=812, result="{\"data\": \"...\"}",
     )
+    # Production finalize callers pass `reason` (e.g. "shutdown"), not cost.
     plug._on_session_finalize(
-        session_id="sess1", platform="telegram",
-        turn_exit_reason="completed", estimated_cost_usd=0.042, cost_status="known",
+        session_id="sess1", platform="telegram", reason="shutdown",
     )
     em.flush()
 
@@ -58,7 +58,6 @@ def test_full_session_lifecycle_produces_rows(wired):
     assert run["end_reason"] == "completed"
     assert run["model_call_count"] == 1
     assert run["tool_call_count"] == 1
-    assert abs(run["estimated_cost_usd"] - 0.042) < 1e-9
 
     mc = conn.execute("SELECT * FROM tel_model_calls").fetchone()
     assert mc["provider"] == "anthropic"
@@ -78,7 +77,7 @@ def test_tool_error_result_classified_and_counted(wired):
         session_id="s2", function_name="terminal", duration_ms=10,
         result="{\"error\": \"command failed\"}",
     )
-    plug._on_session_finalize(session_id="s2", turn_exit_reason="completed")
+    plug._on_session_finalize(session_id="s2", reason="shutdown")
     em.flush()
     conn = sqlite3.connect(db)
     conn.row_factory = sqlite3.Row

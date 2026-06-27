@@ -54,10 +54,9 @@ def _default_db_path() -> Path:
 _TABLE_COLUMNS: Dict[str, tuple] = {
     "run": (
         "tel_runs",
-        ("run_id", "trace_id", "session_id", "profile_id", "entrypoint",
+        ("run_id", "trace_id", "session_id", "entrypoint",
          "platform", "start_ns", "end_ns", "end_reason",
-         "model_call_count", "tool_call_count", "error_count",
-         "estimated_cost_usd", "cost_status"),
+         "model_call_count", "tool_call_count", "error_count"),
     ),
     "span": (
         "tel_spans",
@@ -68,14 +67,11 @@ _TABLE_COLUMNS: Dict[str, tuple] = {
         "tel_model_calls",
         ("span_id", "run_id", "provider", "model", "base_url",
          "input_tokens", "output_tokens", "cache_read_tokens",
-         "cache_write_tokens", "reasoning_tokens", "latency_ms", "ttft_ms",
-         "estimated_cost_usd", "cost_status", "cost_source", "end_reason",
-         "retry_count"),
+         "cache_write_tokens", "reasoning_tokens", "latency_ms"),
     ),
     "tool_call": (
         "tel_tool_calls",
-        ("span_id", "run_id", "tool_name", "backend",
-         "duration_ms", "result_class", "retry_count", "approval"),
+        ("span_id", "run_id", "tool_name", "duration_ms", "result_class"),
     ),
     "error": (
         "tel_error_events",

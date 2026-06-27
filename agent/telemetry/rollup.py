@@ -52,7 +52,7 @@ def _run_events(c: sqlite3.Connection, since_ns: Optional[int]) -> List[Dict[str
         where += f" AND start_ns >= {int(since_ns)}"
     rows = c.execute(
         "SELECT run_id, entrypoint, platform, end_reason, start_ns, end_ns, "
-        "model_call_count, tool_call_count, error_count, estimated_cost_usd "
+        "model_call_count, tool_call_count, error_count "
         "FROM tel_runs" + where
     ).fetchall()
 
@@ -98,7 +98,6 @@ def _run_events(c: sqlite3.Connection, since_ns: Optional[int]) -> List[Dict[str
             "duration_ms": round(duration_ms, 1) if duration_ms is not None else None,
             "input_tokens": int((trow["inp"] if trow else 0) or 0),
             "output_tokens": int((trow["outp"] if trow else 0) or 0),
-            "estimated_cost_usd": r["estimated_cost_usd"],
         })
     return events
 

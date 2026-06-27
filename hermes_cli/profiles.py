@@ -27,6 +27,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional, Tuple
@@ -58,6 +59,9 @@ _CLONE_CONFIG_FILES = [
     ".env",
     "SOUL.md",
 ]
+
+_SKILL_COUNT_CACHE_TTL_SECONDS = 300.0
+_skill_count_cache: dict[Path, tuple[float, int]] = {}
 
 # Subdirectory files copied during --clone (path relative to profile root).
 # Memory files are part of the agent's curated identity — just as important
@@ -647,13 +651,21 @@ def _check_gateway_running(profile_dir: Path) -> bool:
 def _count_skills(profile_dir: Path) -> int:
     """Count installed skills in a profile."""
     skills_dir = profile_dir / "skills"
+    now = time.monotonic()
+    cached = _skill_count_cache.get(skills_dir)
+    if cached is not None:
+        cached_at, cached_count = cached
+        if now - cached_at < _SKILL_COUNT_CACHE_TTL_SECONDS:
+            return cached_count
     if not skills_dir.is_dir():
-        return 0
-    count = 0
-    for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
-            continue
-        count += 1
+        count = 0
+    else:
+        count = 0
+        for md in skills_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(md):
+                continue
+            count += 1
+    _skill_count_cache[skills_dir] = (now, count)
     return count
 
 

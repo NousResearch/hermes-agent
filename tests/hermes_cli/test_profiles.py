@@ -13,6 +13,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 import yaml
+import hermes_cli.profiles as profiles_mod
 
 from hermes_cli.profiles import (
     normalize_profile_name,
@@ -36,6 +37,7 @@ from hermes_cli.profiles import (
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
     profiles_to_serve,
+    _count_skills,
 )
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -616,6 +618,32 @@ class TestListProfiles:
         profiles = list_profiles()
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
+
+
+class TestCountSkills:
+    """Tests for _count_skills()."""
+
+    def test_uses_ttl_cache_until_expiry(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / "profile"
+        skills_dir = profile_dir / "skills"
+        (skills_dir / "alpha").mkdir(parents=True)
+        (skills_dir / "alpha" / "SKILL.md").write_text("alpha", encoding="utf-8")
+
+        now = [100.0]
+        monkeypatch.setattr(profiles_mod.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(profiles_mod, "_SKILL_COUNT_CACHE_TTL_SECONDS", 300.0)
+        monkeypatch.setattr(profiles_mod, "_skill_count_cache", {})
+
+        assert _count_skills(profile_dir) == 1
+
+        (skills_dir / "beta").mkdir()
+        (skills_dir / "beta" / "SKILL.md").write_text("beta", encoding="utf-8")
+
+        now[0] = 399.0
+        assert _count_skills(profile_dir) == 1
+
+        now[0] = 401.0
+        assert _count_skills(profile_dir) == 2
 
 
 # ===================================================================

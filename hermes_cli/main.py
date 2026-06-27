@@ -5650,9 +5650,23 @@ def cmd_gui(args: argparse.Namespace):
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
         return
 
+    # Electron has a hard guard that aborts (FATAL electron_main_delegate.cc)
+    # when launched as root unless --no-sandbox is passed. The SUID
+    # chrome-sandbox helper does not satisfy this check — root is rejected
+    # outright. On this single-user VPS everything runs as root, so detect that
+    # and disable the sandbox. (geteuid is POSIX-only; guard for Windows.)
+    electron_extra_args: list[str] = []
+    if sys.platform != "win32" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        electron_extra_args.append("--no-sandbox")
+
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        if electron_extra_args:
+            print(f"  (running as root — passing {' '.join(electron_extra_args)})")
+        launch_result = subprocess.run(
+            [npm, "exec", "--", "electron", ".", *electron_extra_args],
+            cwd=desktop_dir, env=env, check=False,
+        )
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:
@@ -5664,7 +5678,12 @@ def cmd_gui(args: argparse.Namespace):
         sys.exit(1)
 
     print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
-    launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)
+    if electron_extra_args:
+        print(f"  (running as root — passing {' '.join(electron_extra_args)})")
+    launch_result = subprocess.run(
+        [str(packaged_executable), *electron_extra_args],
+        cwd=desktop_dir, env=env, check=False,
+    )
     sys.exit(launch_result.returncode)
 
 

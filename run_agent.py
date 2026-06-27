@@ -523,7 +523,7 @@ class AIAgent:
             return None
 
     def _ensure_db_session(self) -> None:
-        """Create session DB row on first use. Disables _session_db on failure."""
+        """Create session DB row on first use. Recreates SessionDB on persistent failure."""
         if self._session_db_created or not self._session_db:
             return
         source = _session_source_for_agent(self.platform)
@@ -539,12 +539,34 @@ class AIAgent:
                 cwd=_launch_cwd_for_session(source),
             )
             self._session_db_created = True
+            self._session_db_create_failures = 0
         except Exception as e:
-            # Transient failure (e.g. SQLite lock). Keep _session_db alive —
-            # _session_db_created stays False so next run_conversation() retries.
-            logger.warning(
-                "Session DB creation failed (will retry next turn): %s", e
-            )
+            self._session_db_create_failures = getattr(self, '_session_db_create_failures', 0) + 1
+            # After 3 consecutive failures, the connection may be stale
+            # (e.g. VACUUM replaced the database file on disk).  Tear it
+            # down and create a fresh SessionDB for the next attempt.
+            if self._session_db_create_failures >= 3:
+                logger.warning(
+                    "Session DB creation failed %d times — recreating connection. "
+                    "Last error: %s",
+                    self._session_db_create_failures, e,
+                )
+                try:
+                    self._session_db.close()
+                except Exception:
+                    pass
+                try:
+                    from hermes_state import SessionDB
+                    self._session_db = SessionDB()
+                    self._session_db_create_failures = 0
+                except Exception as recreate_err:
+                    logger.warning(
+                        "Session DB recreation also failed: %s", recreate_err
+                    )
+            else:
+                logger.warning(
+                    "Session DB creation failed (will retry next turn): %s", e
+                )
 
     def _transition_context_engine_session(
         self,

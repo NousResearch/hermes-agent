@@ -325,6 +325,21 @@ class ToolRegistry:
                         name, toolset, existing.toolset,
                     )
                 elif override:
+                    _scope = getattr(self, "_active_plugin_override", None)
+                    if _scope is not None and not _scope[1]:
+                        logger.error(
+                            "Tool registration REJECTED: plugin %r attempted to "
+                            "override built-in tool %r (existing toolset %r) without "
+                            "operator opt-in. Set "
+                            "plugins.entries.%s.allow_tool_override: true in "
+                            "config.yaml to allow it.",
+                            _scope[0], name, existing.toolset, _scope[0],
+                        )
+                        raise PermissionError(
+                            f"Plugin {_scope[0]!r} cannot override built-in tool "
+                            f"{name!r} without operator opt-in "
+                            f"(plugins.entries.{_scope[0]}.allow_tool_override: true)."
+                        )
                     # Explicit plugin opt-in: replace the existing tool.
                     # Logged at INFO so the override is auditable in agent.log.
                     logger.info(

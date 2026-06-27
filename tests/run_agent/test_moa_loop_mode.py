@@ -61,6 +61,117 @@ moa:
     assert calls[1]["tools"] is not None
 
 
+def test_moa_does_not_cap_output_tokens(monkeypatch, tmp_path):
+    """MoA must not inject an output cap on reference or aggregator calls.
+
+    The preset's old hardcoded max_tokens=4096 truncated long aggregator
+    syntheses. MoA now passes max_tokens=None (no caller cap), so call_llm
+    omits the parameter and each model uses its real maximum. Regression for
+    the "no limit on MoA models" fix.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      max_tokens: 4096
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if kwargs["task"] == "moa_reference":
+            return _response("reference advice")
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        max_iterations=1,
+    )
+    agent.run_conversation("solve this")
+
+    # Even with a preset max_tokens: 4096 present in config, neither the
+    # reference nor the aggregator call carries a cap — MoA passes None and
+    # call_llm omits the parameter so the model uses its full output budget.
+    ref_call = next(c for c in calls if c["task"] == "moa_reference")
+    agg_call = next(c for c in calls if c["task"] == "moa_aggregator")
+    assert ref_call.get("max_tokens") is None
+    assert agg_call.get("max_tokens") is None
+
+
+def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
+    """Reference + aggregator slots must be called via their provider's real
+    runtime (resolve_runtime_provider), not a bare provider/model call.
+
+    This is the "call any model the way it's called elsewhere" contract: each
+    slot's resolved base_url/api_key is passed through to call_llm so the
+    provider's actual API surface (anthropic_messages, max_completion_tokens,
+    custom endpoints) applies — same as if the model were the acting model.
+    """
+    from agent import moa_loop
+
+    resolved = []
+
+    def fake_resolve(*, requested, target_model=None):
+        resolved.append((requested, target_model))
+        return {
+            "provider": requested,
+            "api_mode": "chat_completions",
+            "base_url": f"https://{requested}.example/v1",
+            "api_key": f"key-for-{requested}",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "minimax", "model": "MiniMax-M2"})
+    assert ("minimax", "MiniMax-M2") in resolved
+    assert rt["provider"] == "minimax"
+    assert rt["model"] == "MiniMax-M2"
+    assert rt["base_url"] == "https://minimax.example/v1"
+    assert rt["api_key"] == "key-for-minimax"
+
+
+def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
+    """A slot whose provider can't be resolved still attempts the call with the
+    bare provider/model rather than aborting the whole MoA turn."""
+    from agent import moa_loop
+
+    def boom(*, requested, target_model=None):
+        raise RuntimeError("unknown provider")
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", boom
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "mystery", "model": "x"})
+    assert rt == {"provider": "mystery", "model": "x"}
+    assert "base_url" not in rt
+    assert "api_key" not in rt
+
+
 def test_reference_messages_strips_system_and_tool_history():
     from agent.moa_loop import _reference_messages
 

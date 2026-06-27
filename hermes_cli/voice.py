@@ -737,14 +737,69 @@ def _continuous_on_silence() -> None:
 # ── TTS API ──────────────────────────────────────────────────────────
 
 
+def voice_max_tts_chars() -> Optional[int]:
+    """Return ``voice.max_tts_chars`` when set to a positive int.
+
+    ``None`` means defer to the active TTS provider's cap inside
+    ``text_to_speech_tool`` (e.g. cascade ``max_text_length: 50000``).
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        voice_cfg = load_config().get("voice", {})
+        if not isinstance(voice_cfg, dict):
+            return None
+        raw = voice_cfg.get("max_tts_chars")
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            return None
+        cap = int(raw)
+        return cap if cap > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def strip_markdown_for_voice_tts(text: str) -> str:
+    """Remove markdown/formatting that should not be spoken aloud."""
+    import re
+
+    tts_text = text
+    tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)
+    tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)
+    tts_text = re.sub(r'https?://\S+', '', tts_text)
+    tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)
+    tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)
+    tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)
+    tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)
+    tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)
+    tts_text = re.sub(r'---+', '', tts_text)
+    tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)
+    return tts_text.strip()
+
+
+def prepare_voice_tts_text(text: str) -> str:
+    """Markdown-strip and apply optional ``voice.max_tts_chars`` cap."""
+    tts_text = strip_markdown_for_voice_tts(text)
+    cap = voice_max_tts_chars()
+    if cap is not None and len(tts_text) > cap:
+        logger.debug(
+            "voice TTS text truncated from %d to %d chars (voice.max_tts_chars)",
+            len(tts_text),
+            cap,
+        )
+        tts_text = tts_text[:cap]
+    return tts_text
+
+
 def speak_text(text: str) -> None:
     """Synthesize ``text`` with the configured TTS provider and play it.
 
     Mirrors cli.py:_voice_speak_response exactly — same markdown strip
-    pipeline, same 4000-char cap, same explicit mp3 output path, same
-    MP3-over-OGG playback choice (afplay misbehaves on OGG), same cleanup
-    of both extensions. Keeping these in sync means a voice-mode TTS
-    session in the TUI sounds identical to one in the classic CLI.
+    pipeline, same explicit mp3 output path, same MP3-over-OGG playback
+    choice (afplay misbehaves on OGG), same cleanup of both extensions.
+    Text length: ``voice.max_tts_chars`` when set (after markdown strip);
+    otherwise deferred to ``text_to_speech_tool`` / provider caps.
 
     While playback is in flight the module-level _tts_playing Event is
     cleared so the continuous-recording loop knows to wait before
@@ -754,7 +809,6 @@ def speak_text(text: str) -> None:
     if not text or not text.strip():
         return
 
-    import re
     import tempfile
     import time
 
@@ -781,18 +835,7 @@ def speak_text(text: str) -> None:
     try:
         from tools.tts_tool import text_to_speech_tool
 
-        tts_text = text[:4000] if len(text) > 4000 else text
-        tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
-        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
-        tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
-        tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
-        tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
-        tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
-        tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-        tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
-        tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
-        tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
-        tts_text = tts_text.strip()
+        tts_text = prepare_voice_tts_text(text)
         if not tts_text:
             return
 

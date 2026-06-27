@@ -1465,6 +1465,34 @@ class TestSubprocessTimeoutKill:
         assert proc.returncode is not None
 
 
+class TestPlayAudioFfplayWaitTimeout:
+    """Regression: flat 300s ffplay wait cut voice TTS at ~5–6 minutes (#50081)."""
+
+    def test_ffplay_wait_uses_probed_duration(self, monkeypatch):
+        import tools.voice_mode as vm
+
+        captured = {}
+
+        def _fake_wait(timeout=None):
+            captured["timeout"] = timeout
+            return 0
+
+        mock_proc = MagicMock()
+        mock_proc.wait.side_effect = _fake_wait
+
+        def _no_sd():
+            raise ImportError("no sd")
+
+        monkeypatch.setattr(vm, "_import_audio", _no_sd)
+        monkeypatch.setattr(vm.os.path, "isfile", lambda p: True)
+        monkeypatch.setattr(vm.shutil, "which", lambda cmd: "/usr/bin/ffplay")
+        monkeypatch.setattr(vm.subprocess, "Popen", lambda *a, **k: mock_proc)
+        monkeypatch.setattr(vm, "_audio_file_duration_seconds", lambda p: 420.0)
+
+        assert vm.play_audio_file("/tmp/long.mp3") is True
+        assert captured["timeout"] > 300.0
+
+
 class TestStreamLeakOnStartFailure:
     """Bug: stream.start() failure left stream unclosed."""
 

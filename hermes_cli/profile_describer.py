@@ -246,7 +246,7 @@ def describe_profile(
             temperature=0.3,
             max_tokens=400,
             timeout=timeout or 60,
-            extra_body=get_auxiliary_extra_body() or None,
+            extra_body=get_auxiliary_extra_body(client=client) or None,
         )
     except Exception as exc:
         logger.info("describe: API call failed for %s (%s)", canon, exc)

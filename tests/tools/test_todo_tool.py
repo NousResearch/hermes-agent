@@ -2,7 +2,7 @@
 
 import json
 
-from tools.todo_tool import TodoStore, todo_tool
+from tools.todo_tool import TODO_SCHEMA, TodoStore, todo_tool
 
 
 class TestWriteAndRead:
@@ -113,10 +113,19 @@ class TestTodoToolFunction:
             store=store,
         ))
         assert result["summary"]["in_progress"] == 1
+        assert result["scope"] == "session_execution_plan"
+        assert result["durability"] == "session_only"
+        assert "GBrain ops/tasks.md" in result["routing_hint"]
 
     def test_no_store_returns_error(self):
         result = json.loads(todo_tool())
         assert "error" in result
+
+    def test_schema_rejects_durable_task_routing(self):
+        description = TODO_SCHEMA["description"]
+        assert "session-only execution plan" in description
+        assert "Do NOT use this for the user's durable tasks" in description
+        assert "ops/tasks.md" in description
 
 
 class TestTodoStoreBounds:

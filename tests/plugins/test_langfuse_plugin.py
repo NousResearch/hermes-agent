@@ -264,13 +264,26 @@ class TestTurnTraceIsolation:
     def _fake_client(started):
         """A minimal Langfuse stand-in that records each root trace opened.
 
-        ``_start_root_trace`` calls ``create_trace_id`` then opens a root via
-        ``start_as_current_observation(...)`` (a context manager whose
-        ``__enter__`` returns the root span).  We record one entry per root
-        actually opened so the test can count distinct traces.
+        ``_start_root_trace`` calls ``create_trace_id`` then opens the root via
+        ``start_observation(...)`` — a plain, non-current span (no context
+        manager) — and stamps trace attributes through ``root_span._otel_span``.
+        We record one entry per root actually opened so the test can count
+        distinct traces.
         """
 
+        class _OtelSpan:
+            def is_recording(self):
+                return True
+
+            def set_attributes(self, attrs):
+                pass
+
         class _Span:
+            def __init__(self):
+                self._otel_span = _OtelSpan()
+                self.id = f"span-{len(started)}"
+                self.trace_id = f"trace-{len(started)}"
+
             def update(self, **kw):
                 pass
 
@@ -281,22 +294,19 @@ class TestTurnTraceIsolation:
                 pass
 
             def start_observation(self, **kw):
-                return _Span()
-
-        class _RootCM:
-            def __enter__(self):
-                return _Span()
-
-            def __exit__(self, *exc):
-                return False
+                raise AssertionError(
+                    "child observations must be opened from the Langfuse client, "
+                    "not from the root span context-manager path"
+                )
 
         class _Client:
             def create_trace_id(self, seed=None):
                 return f"trace::{seed}"
 
-            def start_as_current_observation(self, **kw):
-                started.append(kw.get("trace_context", {}).get("trace_id"))
-                return _RootCM()
+            def start_observation(self, **kw):
+                if kw.get("name") == "Hermes turn":
+                    started.append(kw.get("trace_context", {}).get("trace_id"))
+                return _Span()
 
             def flush(self):
                 pass
@@ -353,6 +363,7 @@ class TestTurnTraceIsolation:
         # Each turn opened its OWN root trace.  On the pre-fix code the second
         # turn reused turn 1's lingering state and only one trace was opened.
         assert len(started) == 2
+        assert len(set(started)) == 2
 
         # Turn 2 finalized and was popped by _finish_trace; only turn 1's
         # (non-finalizing) state lingers.  Assert the surviving key is turn 1's
@@ -713,6 +724,44 @@ class TestRequestMessageCoercion:
 
 
 class TestToolCallOutputBackfill:
+    def test_finish_trace_exits_root_context_before_flush(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        events = []
+
+        class _RootCtx:
+            def __exit__(self, exc_type, exc, tb):
+                events.append("exit")
+
+        class _RootSpan:
+            def set_trace_io(self, **kwargs):
+                events.append(("set_trace_io", kwargs))
+
+            def update(self, **kwargs):
+                events.append(("update", kwargs))
+
+            def end(self):
+                events.append("end")
+
+        class _Client:
+            def flush(self):
+                events.append("flush")
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        task_key = mod._trace_key("task-1", "session-1")
+        state = mod.TraceState(trace_id="trace-1", root_ctx=_RootCtx(), root_span=_RootSpan())
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        mod._finish_trace(task_key, output={"content": "done"})
+
+        assert events[-3:] == [
+            "end",
+            "exit",
+            "flush",
+        ]
+        assert task_key not in mod._TRACE_STATE
+
     def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):
         sys.modules.pop("plugins.observability.langfuse", None)
         mod = importlib.import_module("plugins.observability.langfuse")

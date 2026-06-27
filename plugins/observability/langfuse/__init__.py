@@ -22,6 +22,7 @@ Optional env vars:
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -38,6 +39,21 @@ try:
 except Exception:  # pragma: no cover - fail-open when optional dep is missing
     Langfuse = None
     propagate_attributes = None
+
+try:
+    # Private path, but it is the same attribute-key registry the SDK's own
+    # set_trace_io() writes through. Used to stamp trace name/tags/session on
+    # the root span directly, without the context-propagating
+    # propagate_attributes() (whose OTel token detach is unsafe across the
+    # agent's asyncio task boundaries — see _start_root_trace).
+    from langfuse._client.attributes import LangfuseOtelSpanAttributes as _LFAttr
+except Exception:  # pragma: no cover - fail-open if the private path moves
+    _LFAttr = None
+
+try:
+    from opentelemetry import trace as _otel_trace_api
+except Exception:  # pragma: no cover - fail-open when optional dep is missing
+    _otel_trace_api = None
 
 
 @dataclass
@@ -224,6 +240,27 @@ def _get_langfuse() -> Optional[Langfuse]:
         logger.warning("Could not initialize Langfuse client: %s", exc)
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
+
+    # Deterministically flush + close the OTel span processor at interpreter
+    # exit. Without this, long-lived span context managers (use_span generators)
+    # are GC'd during shutdown AFTER opentelemetry.trace.Span is torn down ->
+    # "isinstance() arg 2 must be a type" noise on every SIGTERM. atexit runs
+    # before that teardown, so spans close cleanly. Fail-open: observability
+    # must never break gateway shutdown. (arch review 2026-06-19)
+    def _shutdown_langfuse(_client: Langfuse = _LANGFUSE_CLIENT) -> None:
+        try:
+            _client.flush()
+        except Exception:
+            pass
+        try:
+            _client.shutdown()
+        except Exception:
+            pass
+
+    try:
+        atexit.register(_shutdown_langfuse)
+    except Exception:  # pragma: no cover - fail-open
+        pass
 
     return _LANGFUSE_CLIENT
 
@@ -603,7 +640,15 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
                       turn_id: str = "", api_request_id: str = "") -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+    # Langfuse trace ids are deterministic for a seed. Include the scoped
+    # turn/request key so repeated turns in one gateway session do not collapse
+    # into one exported trace even though in-process state is isolated.
+    trace_seed = (
+        f"{session_id or 'sessionless'}::"
+        f"{task_id or 'taskless'}::"
+        f"{turn_id or api_request_id or task_key}"
+    )
+    trace_id = client.create_trace_id(seed=trace_seed)
     trace_input = _extract_last_user_message(messages)
     metadata = {
         "source": "hermes",
@@ -621,56 +666,86 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     if session_id:
         trace_ctx["session_id"] = session_id
 
-    if propagate_attributes is not None:
-        try:
-            with propagate_attributes(
-                session_id=session_id or task_key,
-                trace_name="Hermes turn",
-                tags=["hermes", "langfuse"],
-            ):
-                root_ctx = client.start_as_current_observation(
-                    trace_context=trace_ctx,
-                    name="Hermes turn",
-                    as_type="chain",
-                    input=trace_input,
-                    metadata=metadata,
-                    end_on_exit=False,
-                )
-                root_span = root_ctx.__enter__()
-        except Exception:
-            root_ctx = client.start_as_current_observation(
-                trace_context=trace_ctx,
-                name="Hermes turn",
-                as_type="chain",
-                input=trace_input,
-                metadata=metadata,
-                end_on_exit=False,
-            )
-            root_span = root_ctx.__enter__()
-    else:
-        root_ctx = client.start_as_current_observation(
-            trace_context=trace_ctx,
-            name="Hermes turn",
-            as_type="chain",
-            input=trace_input,
-            metadata=metadata,
-            end_on_exit=False,
-        )
-        root_span = root_ctx.__enter__()
+    # Create the root observation as a PLAIN (non-current) span. We deliberately
+    # avoid both start_as_current_observation() and propagate_attributes(): each
+    # attaches an OpenTelemetry context token that must be detached in the very
+    # same asyncio task it was created in. Hermes runs a single turn's hooks
+    # (pre_api_request / tool calls / finish) across different async tasks, so
+    # those tokens end up detached — or GC-finalized — in a foreign context and
+    # the SDK raises "Token was created in a different Context". That left the
+    # OTel context corrupted and dropped the root CHAIN + LLM-call generations
+    # from export, so traces had no `name="Hermes turn"` CHAIN — which is exactly
+    # what the Langfuse LLM-as-a-judge evaluators filter on, so scoring silently
+    # stopped (regression first observed 2026-06-18). Children are parented
+    # explicitly via root_span.start_observation() (the path tool spans already
+    # used — the only observations that kept exporting), so no current-span
+    # context is needed and there is nothing to detach across tasks.
+    root_span = client.start_observation(
+        trace_context=trace_ctx,
+        name="Hermes turn",
+        as_type="chain",
+        input=trace_input,
+        metadata=metadata,
+    )
 
+    # Trace-level input/output (read by the legacy LLM-as-a-judge evaluators) plus
+    # name/tags/session, written straight to the span's OTel attributes — the same
+    # low-level mechanism set_trace_io() uses internally — so we keep full trace
+    # fidelity without any context propagation. All best-effort / fail-open.
     try:
         root_span.set_trace_io(input=trace_input)
-    except Exception:
+    except Exception:  # pragma: no cover - fail-open
         pass
+    if _LFAttr is not None:
+        try:
+            trace_attrs = {
+                _LFAttr.TRACE_NAME: "Hermes turn",
+                _LFAttr.TRACE_TAGS: ["hermes", "langfuse"],
+            }
+            if session_id:
+                trace_attrs[_LFAttr.TRACE_SESSION_ID] = session_id
+            root_span._otel_span.set_attributes(trace_attrs)
+        except Exception:  # pragma: no cover - fail-open
+            pass
 
     _debug(f"started trace {trace_id} for {task_key}")
-    return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span)
+    return TraceState(trace_id=trace_id, root_ctx=None, root_span=root_span)
 
 
 def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, as_type: str,
                              input_value: Any, metadata: Optional[dict] = None,
                              model: Optional[str] = None, model_parameters: Optional[dict] = None) -> Any:
-    return state.root_span.start_observation(
+    # Langfuse v4's observation.start_observation() returns a context manager
+    # backed by _create_span_with_parent_context(). Hermes hooks can finish in a
+    # different asyncio task than they start in, so that generator/context path
+    # leaks OTel detach/GC errors and can drop child observations. Start a plain
+    # non-current span through the client instead, explicitly parented to the
+    # root OTel span when the SDK internals are available.
+    if _otel_trace_api is not None:
+        try:
+            root_otel_span = getattr(state.root_span, "_otel_span", None)
+            tracer = getattr(client, "_otel_tracer", None)
+            factory = getattr(client, "_create_observation_from_otel_span", None)
+            if root_otel_span is not None and tracer is not None and factory is not None:
+                parent_context = _otel_trace_api.set_span_in_context(root_otel_span)
+                otel_span = tracer.start_span(name=name, context=parent_context)
+                return factory(
+                    otel_span=otel_span,
+                    as_type=as_type,
+                    input=input_value,
+                    metadata=metadata or {},
+                    model=model,
+                    model_parameters=model_parameters,
+                )
+        except Exception as exc:  # pragma: no cover - fallback keeps tracing alive
+            _debug(f"direct child observation failed: {exc}")
+
+    trace_context = {"trace_id": state.trace_id}
+    parent_span_id = getattr(state.root_span, "id", None)
+    if parent_span_id:
+        trace_context["parent_span_id"] = parent_span_id
+    return client.start_observation(
+        trace_context=trace_context,
         name=name,
         as_type=as_type,
         input=input_value,
@@ -699,6 +774,20 @@ def _end_observation(observation: Any, *, output: Any = None, metadata: Optional
         observation.end()
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"end observation failed: {exc}")
+
+
+def _exit_root_context(state: TraceState) -> None:
+    """Detach the manually-entered Langfuse/OpenTelemetry root context."""
+    root_ctx = getattr(state, "root_ctx", None)
+    if root_ctx is None:
+        return
+    exit_fn = getattr(root_ctx, "__exit__", None)
+    if exit_fn is None:
+        return
+    try:
+        exit_fn(None, None, None)
+    except Exception as exc:  # pragma: no cover - fail-open
+        _debug(f"exit root context failed: {exc}")
 
 
 def _merge_trace_output(output: Any, state: TraceState) -> Any:
@@ -760,6 +849,7 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"finish trace failed: {exc}")
     finally:
+        _exit_root_context(state)
         try:
             client.flush()
         except Exception:

@@ -809,6 +809,68 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     return argv, working_dir, env_overlay
 
 
+def _visible_profile_args(argv: list[str]) -> list[str]:
+    """Return an explicit ``--profile``/``-p`` selector from a captured argv."""
+    for index, token in enumerate(argv):
+        lowered = token.lower()
+        if lowered in ("--profile", "-p"):
+            if index + 1 < len(argv):
+                return [token, argv[index + 1]]
+            return []
+        if lowered.startswith("--profile=") or lowered.startswith("-p="):
+            return [token]
+    return []
+
+
+def _gateway_run_tail(argv: list[str]) -> list[str] | None:
+    """Return the ``gateway run ...`` tail from a captured launcher argv."""
+    lowered = [token.lower() for token in argv]
+    for index, token in enumerate(lowered):
+        if token == "gateway" and index + 1 < len(lowered) and lowered[index + 1] == "run":
+            return argv[index:]
+    return None
+
+
+def _looks_like_python_executable(value: str) -> bool:
+    name = Path(value).name.lower()
+    return name in {
+        "python",
+        "python.exe",
+        "pythonw",
+        "pythonw.exe",
+        "python3",
+        "python3.exe",
+    }
+
+
+def _canonical_gateway_restart_from_wrapper(
+    run_argv: list[str],
+) -> tuple[list[str], str, dict[str, str]] | None:
+    """Return a direct windowless gateway argv for captured Hermes launchers."""
+    if not run_argv:
+        return None
+    launcher = Path(run_argv[0]).name.lower()
+    if launcher not in {"hermes", "hermes.exe", "hermes.cmd", "hermes.bat"}:
+        return None
+    gateway_tail = _gateway_run_tail(run_argv)
+    if gateway_tail is None:
+        return None
+
+    base_argv, working_dir, env_overlay = _build_gateway_argv()
+    try:
+        gateway_index = next(
+            index for index, token in enumerate(base_argv) if token.lower() == "gateway"
+        )
+    except StopIteration:
+        return None
+
+    prefix = base_argv[:gateway_index]
+    profile_args = _visible_profile_args(run_argv)
+    if profile_args:
+        prefix = [base_argv[0], "-m", "hermes_cli.main", *profile_args]
+    return [*prefix, *gateway_tail], working_dir, env_overlay
+
+
 def windowless_gateway_restart_spec(
     run_argv: list[str],
 ) -> tuple[list[str], str, dict[str, str]]:
@@ -829,11 +891,12 @@ def windowless_gateway_restart_spec(
     (VIRTUAL_ENV, PYTHONPATH) the base interpreter needs to resolve the
     ``hermes_cli`` package without the venv launcher's site config.
 
-    Returns ``(new_argv, working_dir, env_overlay)``.  ``new_argv``
-    preserves every argument after the interpreter (``-m hermes_cli.main
-    [--profile X] gateway run [--replace]``) verbatim.  On non-Windows, or
-    if ``run_argv`` doesn't start with a resolvable python, the argv is
-    returned unchanged with an empty overlay.
+    Returns ``(new_argv, working_dir, env_overlay)``.  Python-led argv preserve
+    every argument after the interpreter (``-m hermes_cli.main [--profile X]
+    gateway run [--replace]``) verbatim.  Captured Windows wrapper argv such as
+    ``hermes.exe gateway run`` are normalized to the same direct ``pythonw``
+    command used by a fresh gateway start, so post-update resume does not
+    relaunch a terminal/console wrapper.
     """
     if not run_argv:
         return run_argv, "", {}
@@ -846,15 +909,22 @@ def windowless_gateway_restart_spec(
     python_exe = run_argv[0]
     rest = run_argv[1:]
 
-    # Only rewrite when the leading token actually looks like a python
-    # interpreter we can find a windowless sibling for.  If a caller passed
-    # something else (a captured argv whose argv[0] is already pythonw, or a
-    # non-python launcher), leave it alone.
+    # Only rewrite Python interpreters or real Hermes launcher wrappers.  Other
+    # captured commands are left untouched so the respawn path stays conservative.
+    if not _looks_like_python_executable(python_exe):
+        wrapper_spec = _canonical_gateway_restart_from_wrapper(run_argv)
+        if wrapper_spec is not None:
+            return wrapper_spec
+        return run_argv, "", {}
+
     try:
         windowless_python, venv_dir, extra_pythonpath = _resolve_detached_python(
             python_exe
         )
     except Exception:
+        wrapper_spec = _canonical_gateway_restart_from_wrapper(run_argv)
+        if wrapper_spec is not None:
+            return wrapper_spec
         return run_argv, "", {}
 
     new_argv = [windowless_python, *rest]

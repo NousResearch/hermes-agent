@@ -628,3 +628,15 @@ class TestCompressionToolPairIntegrity:
             {"from": "tool", "value": "<tool_response>a</tool_response>"},
         ]
         assert tc._snap_boundary(trajectory, 1, 0, 1) == 0
+
+
+def test_file_mode_sampling_clamps_to_entry_count_on_empty_input(tmp_path):
+    """File-mode --sample_percent on an empty JSONL must not raise
+    'Sample larger than population' (mirrors the directory path's min() clamp)."""
+    from trajectory_compressor import main
+
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    # dry_run keeps it headless (no tokenizer / network); the sampling block
+    # runs before the dry-run return, so the clamp is what's under test here.
+    main(input=str(empty), sample_percent=10, dry_run=True)

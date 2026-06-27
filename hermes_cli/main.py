@@ -9351,7 +9351,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
-            if build_result.returncode != 0:
+            if build_result.returncode == 0:
+                packaged_exe = _desktop_packaged_executable(desktop_dir)
+                if packaged_exe and packaged_exe.exists():
+                    size_mb = packaged_exe.stat().st_size / (1024 * 1024)
+                    if size_mb < 50:
+                        print(f"  ⚠ Desktop build verified, but file size is suspiciously small ({size_mb:.1f}MB)")
+                    else:
+                        print(f"  ✓ Desktop build verified ({size_mb:.1f}MB)")
+                else:
+                    print("  ⚠ Desktop build completed but no packaged executable was found")
+            else:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
 
         print()

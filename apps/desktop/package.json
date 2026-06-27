@@ -136,7 +136,6 @@
     "globals": "^16.5.0",
     "jsdom": "^29.1.1",
     "prettier": "^3.8.3",
-    "rcedit": "^5.0.2",
     "typescript": "^6.0.3",
     "vite": "^8.0.10",
     "vitest": "^4.1.5",

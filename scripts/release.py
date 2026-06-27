@@ -2222,8 +2222,10 @@ def main():
             update_version_files(new_version, calver_date)
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
-            # Commit version bump
             add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
+            desktop_pkg = REPO_ROOT / "apps" / "desktop" / "package.json"
+            if desktop_pkg.exists():
+                add_files.append(str(desktop_pkg))
             if ACP_REGISTRY_MANIFEST.exists():
                 add_files.append(str(ACP_REGISTRY_MANIFEST))
             add_result = git_result("add", *add_files)

@@ -42,8 +42,9 @@ import re
 import sqlite3
 import time
 import uuid
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 try:
     from aiohttp import web
@@ -782,6 +783,13 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
+        # Bounded per-run ring buffer of recently emitted SSE events, retained
+        # past disconnect so a reconnecting client can replay anything it
+        # missed (W3C SSE Last-Event-ID).  Lifetime is governed by
+        # _RUN_STATUS_TTL via the orphaned-run sweep, not the queue's finally.
+        self._run_event_logs: Dict[str, Deque[Dict[str, Any]]] = {}
+        # Monotonic per-run SSE event id counter.  Paired with _run_event_logs.
+        self._run_event_seq: Dict[str, int] = {}
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
@@ -3820,6 +3828,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
+    _RUN_EVENT_LOG_MAXLEN = 500  # per-run ring buffer size for SSE replay
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
@@ -3836,6 +3845,31 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    def _emit_run_event(self, run_id: str, event: Dict[str, Any]) -> None:
+        """Tag, log, and dispatch a structured event for a run.
+
+        Must be called on the event loop thread — emitters in worker threads
+        should route through loop.call_soon_threadsafe.  The event dict is
+        mutated in place to carry the monotonic SSE id; callers must not
+        share the dict with anything that re-reads it after emission.
+        The ring buffer outlives the queue so reconnecting SSE consumers can
+        replay missed events (see _handle_run_events).
+        """
+        seq = self._run_event_seq.get(run_id, 0) + 1
+        self._run_event_seq[run_id] = seq
+        event["id"] = seq
+        log = self._run_event_logs.get(run_id)
+        if log is None:
+            log = deque(maxlen=self._RUN_EVENT_LOG_MAXLEN)
+            self._run_event_logs[run_id] = log
+        log.append(event)
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            try:
+                q.put_nowait(event)
+            except Exception:
+                pass
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -3844,11 +3878,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_statuses.get(run_id, {}).get("status", "running"),
                 last_event=event.get("event"),
             )
-            q = self._run_streams.get(run_id)
-            if q is None:
-                return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                loop.call_soon_threadsafe(self._emit_run_event, run_id, event)
             except Exception:
                 pass
 
@@ -3977,7 +4008,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if delta is None:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, {
+                loop.call_soon_threadsafe(self._emit_run_event, run_id, {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
@@ -4028,7 +4059,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="approval.request",
                     )
                     try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
+                        loop.call_soon_threadsafe(self._emit_run_event, run_id, event)
                     except Exception:
                         pass
 
@@ -4085,7 +4116,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 # block below never fires — issue #15561).
                 if isinstance(result, dict) and result.get("failed"):
                     error_msg = result.get("error") or "agent run failed"
-                    q.put_nowait({
+                    self._emit_run_event(run_id, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -4099,7 +4130,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    q.put_nowait({
+                    self._emit_run_event(run_id, {
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -4120,7 +4151,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.cancelled",
                 )
                 try:
-                    q.put_nowait({
+                    self._emit_run_event(run_id, {
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -4137,7 +4168,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.failed",
                 )
                 try:
-                    q.put_nowait({
+                    self._emit_run_event(run_id, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -4200,7 +4231,14 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(status)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
-        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
+        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events.
+
+        Supports W3C SSE resume via the Last-Event-ID header (with
+        ?last_event_id= as a query-string fallback for clients that can't set
+        the header on reconnect).  A run whose live queue has already been
+        torn down may still have a buffered event log within the status TTL;
+        in that case the handler replays the log and closes cleanly.
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4209,13 +4247,34 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Allow subscribing slightly before the run is registered (race condition window)
         for _ in range(20):
-            if run_id in self._run_streams:
+            if run_id in self._run_streams or run_id in self._run_event_logs:
                 break
             await asyncio.sleep(0.05)
         else:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
-        q = self._run_streams[run_id]
+        # Parse Last-Event-ID for replay.  Header takes precedence; the
+        # query-param fallback covers EventSource clients that can't customise
+        # headers on auto-reconnect.  Anything non-integer → 0 (replay all).
+        last_id_raw = request.headers.get("Last-Event-ID") or request.query.get("last_event_id")
+        try:
+            last_id = int(last_id_raw) if last_id_raw is not None else 0
+        except (TypeError, ValueError):
+            last_id = 0
+
+        q = self._run_streams.get(run_id)
+
+        # Mid-run reconnect: a prior consumer's finally-block popped the queue
+        # while the run task kept emitting (events still land in the log via
+        # _emit_run_event).  Recreate the queue so we can tail live again —
+        # _emit_run_event looks up self._run_streams[run_id] freshly on every
+        # call, so the ongoing emitters pick up the new queue automatically.
+        if q is None:
+            run_status = self._run_statuses.get(run_id, {}).get("status", "")
+            if run_status not in {"completed", "failed", "cancelled"}:
+                q = asyncio.Queue()
+                self._run_streams[run_id] = q
+                self._run_streams_created[run_id] = time.time()
 
         response = web.StreamResponse(
             status=200,
@@ -4228,21 +4287,108 @@ class APIServerAdapter(BasePlatformAdapter):
         await response.prepare(request)
 
         try:
-            while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=30.0)
-                except asyncio.TimeoutError:
-                    await response.write(b": keepalive\n\n")
+            # Replay any buffered events the client hasn't seen yet.  Snapshot
+            # the log so concurrent appends from the run task don't perturb
+            # iteration (we'll pick those up via the live queue below).  Track
+            # the highest id we emit so the live loop can dedupe events that
+            # were still sitting in an undrained queue at reconnect time.
+            max_emitted_id = last_id
+            buffered = list(self._run_event_logs.get(run_id, ()))
+            for event in buffered:
+                eid = event.get("id")
+                if not isinstance(eid, int) or eid <= last_id:
                     continue
-                if event is None:
-                    # Run finished — send final SSE comment and close
+                payload = f"id: {eid}\ndata: {json.dumps(event)}\n\n"
+                await response.write(payload.encode())
+                if eid > max_emitted_id:
+                    max_emitted_id = eid
+
+            if q is None:
+                # Terminal run with a populated log but no live queue —
+                # replay is the whole response.
+                await response.write(b": stream closed\n\n")
+                return response
+
+            # Live loop.  The log is the source of truth; the queue is just a
+            # wake-up signal.  This survives the concurrent-handler race where
+            # a stalled prior handler is still holding a reference to the
+            # original queue: each handler reads its own progress out of the
+            # shared log instead of competing for queue items, and a handler
+            # whose queue was popped by a sibling simply times out on q.get()
+            # and re-snapshots the log.
+            _TERMINAL_EVENTS = {"run.completed", "run.failed", "run.cancelled"}
+            _TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+            _KEEPALIVE_INTERVAL = 30.0
+            _QUEUE_WAIT = 1.5
+            last_write = time.monotonic()
+            terminal_retry = False
+            while True:
+                # 1. Drain anything new in the log.  The log can be replaced
+                # under us (sweep / new run reusing the id is impossible
+                # mid-run, but defensively re-fetch every iteration).
+                log_snapshot = tuple(self._run_event_logs.get(run_id, ()))
+                emitted_terminal = False
+                for event in log_snapshot:
+                    eid = event.get("id")
+                    if not isinstance(eid, int) or eid <= max_emitted_id:
+                        continue
+                    payload = f"id: {eid}\ndata: {json.dumps(event)}\n\n"
+                    await response.write(payload.encode())
+                    max_emitted_id = eid
+                    last_write = time.monotonic()
+                    if event.get("event") in _TERMINAL_EVENTS:
+                        emitted_terminal = True
+                        break
+                if emitted_terminal:
                     await response.write(b": stream closed\n\n")
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
-                await response.write(payload.encode())
+
+                # 2. Belt-and-suspenders: if the run is already terminal and
+                # the log is fully drained, give the queue one short window in
+                # case a final log append is still in flight, then close.
+                run_status = self._run_statuses.get(run_id, {}).get("status", "")
+                if run_status in _TERMINAL_STATUSES:
+                    if terminal_retry:
+                        await response.write(b": stream closed\n\n")
+                        break
+                    terminal_retry = True
+                    try:
+                        await asyncio.wait_for(q.get(), timeout=0.5)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+                    continue
+                terminal_retry = False
+
+                # 3. Wait on the queue purely as a wake-up notification — the
+                # returned value is discarded because the log read above is
+                # the actual source of truth.  A concurrent handler may have
+                # popped our queue from self._run_streams; our local `q`
+                # reference is still a live asyncio.Queue object, so wait_for
+                # will simply time out and we'll loop back to the log.
+                try:
+                    if q is None:
+                        await asyncio.sleep(_QUEUE_WAIT)
+                    else:
+                        await asyncio.wait_for(q.get(), timeout=_QUEUE_WAIT)
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
+                    # Defensive: any other failure on the wake-up channel
+                    # shouldn't kill the stream — we'll re-read the log next.
+                    await asyncio.sleep(_QUEUE_WAIT)
+
+                # 4. Wall-clock keepalive.  With a 1.5s queue timeout we'd
+                # otherwise spam comments, so only emit when no real event
+                # has been written for the full keepalive interval.
+                if time.monotonic() - last_write >= _KEEPALIVE_INTERVAL:
+                    await response.write(b": keepalive\n\n")
+                    last_write = time.monotonic()
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
+            # Drop only the queue/queue-timestamp; the event log persists so a
+            # later reconnect can still replay.  The sweep enforces the
+            # eventual upper bound on log lifetime.
             self._run_streams.pop(run_id, None)
             self._run_streams_created.pop(run_id, None)
 
@@ -4317,18 +4463,16 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         self._set_run_status(run_id, "running", last_event="approval.responded")
-        q = self._run_streams.get(run_id)
-        if q is not None:
-            try:
-                q.put_nowait({
-                    "event": "approval.responded",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "choice": choice,
-                    "resolved": resolved,
-                })
-            except Exception:
-                pass
+        try:
+            self._emit_run_event(run_id, {
+                "event": "approval.responded",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "choice": choice,
+                "resolved": resolved,
+            })
+        except Exception:
+            pass
 
         return web.json_response({
             "object": "hermes.run.approval_response",
@@ -4411,6 +4555,11 @@ class APIServerAdapter(BasePlatformAdapter):
             ]
             for run_id in stale_statuses:
                 self._run_statuses.pop(run_id, None)
+                # Event log/seq share the status TTL: once the run has been
+                # terminal for an hour the SSE replay window has long since
+                # closed for any reasonable iOS reconnect.
+                self._run_event_logs.pop(run_id, None)
+                self._run_event_seq.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

@@ -1090,15 +1090,19 @@ def handle_function_call(
         # ACP/Zed edit approval runs before any file mutation.  The requester
         # is bound via ContextVar only for ACP sessions, so CLI/gateway paths
         # are unaffected when it is unset.
+        edit_approval_requester_active = False
         try:
-            from acp_adapter.edit_approval import maybe_require_edit_approval
+            from acp_adapter import edit_approval as _edit_approval
 
-            edit_block_message = maybe_require_edit_approval(function_name, function_args)
+            edit_approval_requester_active = _edit_approval.get_edit_approval_requester() is not None
+            edit_block_message = _edit_approval.maybe_require_edit_approval(function_name, function_args)
             if edit_block_message is not None:
                 return edit_block_message
         except Exception as _edit_approval_err:
             logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
-            if function_name in {"write_file", "patch"}:
+            if function_name in {"write_file", "patch"} or (
+                edit_approval_requester_active and function_name in {"terminal", "execute_code"}
+            ):
                 return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
 
         # Notify the read-loop tracker when a non-read/search tool runs,

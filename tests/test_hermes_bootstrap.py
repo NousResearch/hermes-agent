@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import os
+import platform
 import subprocess
 import sys
 import textwrap
@@ -229,6 +230,22 @@ class TestStdioReconfigureErrorHandling:
         monkeypatch.setattr(sys, "stderr", _BrokenStream())
         # Must not raise.
         hb.apply_windows_utf8_bootstrap()
+
+
+class TestWindowsPlatformProbeGuard:
+    def test_windows_bootstrap_disables_platform_syscmd_subprocess(self):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        hb._bootstrap_applied = False
+
+        original = getattr(platform, "_syscmd_ver", None)
+        try:
+            hb.apply_windows_utf8_bootstrap()
+
+            assert platform._syscmd_ver("Windows", "", "") == ("Windows", "", "")
+        finally:
+            if original is not None:
+                platform._syscmd_ver = original
 
 
 class TestEntryPointsImportBootstrap:

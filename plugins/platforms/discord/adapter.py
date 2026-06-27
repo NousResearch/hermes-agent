@@ -665,7 +665,9 @@ class VoiceReceiver:
             f.write(pcm_data)
             pcm_path = f.name
         try:
-            subprocess.run(
+            from hermes_cli import _subprocess_compat
+
+            _subprocess_compat.run(
                 [
                     "ffmpeg", "-y", "-loglevel", "error",
                     "-f", "s16le",

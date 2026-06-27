@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli import _subprocess_compat
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -720,9 +720,7 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_cwd = self.cwd
 
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
-
-        proc = subprocess.Popen(
+        proc = _subprocess_compat.popen(
             args,
             text=True,
             env=run_env,

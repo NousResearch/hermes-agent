@@ -80,6 +80,53 @@ def apply_windows_utf8_bootstrap() -> bool:
     os.environ.setdefault("PYTHONUTF8", "1")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
+    # Python's platform.win32_ver()/platform.platform() can shell out to
+    # ``cmd.exe /c ver`` on Windows.  In pythonw-launched background processes
+    # that still creates a visible terminal handoff on machines where Windows
+    # Terminal is the default console host.  Disable that subprocess path early.
+    try:
+        import platform
+
+        def _no_subprocess_syscmd_ver(
+            system: str = "",
+            release: str = "",
+            version: str = "",
+            *_args,
+            **_kwargs,
+        ) -> tuple[str, str, str]:
+            return system or "Windows", release, version
+
+        platform._syscmd_ver = _no_subprocess_syscmd_ver  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    # 1b. Drop a stray console window. uv-created venvs ship a
+    #     ``Scripts\\pythonw.exe`` redirector that re-execs the *base* console
+    #     ``python.exe``, which allocates its own conhost/Windows Terminal
+    #     window even though the launcher intended a windowless process. Any
+    #     non-interactive Hermes backend (gateway, dashboard backend, slash
+    #     worker, cron) that lands on that auto-allocated console should detach
+    #     so no terminal lingers.
+    #
+    #     Discriminator: GetConsoleProcessList. A console freshly allocated for
+    #     this process alone reports exactly ONE attached process (us) — that is
+    #     the unwanted re-exec / double-click case, so we free it. An
+    #     interactive ``hermes`` in a user's shell shares the shell's console
+    #     (2+ processes attached), so we leave it untouched. isatty() is NOT a
+    #     reliable signal here: a brand-new console reports stdin as a tty even
+    #     when nobody asked for the window.
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        if kernel32.GetConsoleWindow():
+            buf = (ctypes.c_uint * 4)()
+            attached = kernel32.GetConsoleProcessList(buf, 4)
+            if attached == 1:
+                kernel32.FreeConsole()
+    except Exception:
+        pass
+
     # 2. Reconfigure the current process's stdio to UTF-8.  Needed
     #    because os.environ changes don't retroactively rebind sys.stdout
     #    — those were bound at interpreter startup based on the console

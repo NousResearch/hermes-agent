@@ -1461,6 +1461,11 @@ class PluginManager:
             manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,
         )
 
+        from tools.registry import registry as _registry
+        _registry._active_plugin_override = (
+            manifest.key or manifest.name,
+            PluginContext(manifest, self)._tool_override_allowed(""),
+        )
         try:
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
@@ -1519,6 +1524,8 @@ class PluginManager:
                 "Failed to load plugin '%s': %s",
                 manifest.name, exc, exc_info=_PLUGINS_DEBUG,
             )
+        finally:
+            _registry._active_plugin_override = None
 
         self._plugins[manifest.key or manifest.name] = loaded
 

@@ -223,13 +223,30 @@ def _get_command_timeout() -> int:
     return result
 
 
+def _auxiliary_task_model_configured(task: str) -> bool:
+    """Return True when config.yaml sets auxiliary.<task>.model."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        model = cfg_get(cfg, "auxiliary", task, "model")
+        return bool(str(model or "").strip())
+    except Exception as e:
+        logger.debug("Could not read auxiliary.%s.model from config: %s", task, e)
+        return False
+
+
 def _get_vision_model() -> Optional[str]:
     """Model for browser_vision (screenshot analysis — multimodal)."""
+    if _auxiliary_task_model_configured("vision"):
+        return None
     return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
 
 
 def _get_extraction_model() -> Optional[str]:
     """Model for page snapshot text summarization — same as web_extract."""
+    if _auxiliary_task_model_configured("web_extract"):
+        return None
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 

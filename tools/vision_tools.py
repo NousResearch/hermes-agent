@@ -74,6 +74,25 @@ _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 
+def _auxiliary_task_model_configured(task: str) -> bool:
+    """Return True when config.yaml sets auxiliary.<task>.model."""
+    try:
+        from hermes_cli.config import cfg_get, read_raw_config
+
+        cfg = read_raw_config()
+        model = cfg_get(cfg, "auxiliary", task, "model")
+        return bool(str(model or "").strip())
+    except Exception as e:
+        logger.debug("Could not read auxiliary.%s.model from config: %s", task, e)
+        return False
+
+
+def _resolve_vision_model_for_handler() -> Optional[str]:
+    if _auxiliary_task_model_configured("vision"):
+        return None
+    return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+
+
 def _image_url_shape_ok(url: str) -> bool:
     """HTTP(S) shape check only (scheme, netloc). No DNS."""
     if not url or not isinstance(url, str):
@@ -1213,7 +1232,7 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    model = _resolve_vision_model_for_handler()
     return vision_analyze_tool(image_url, full_prompt, model)
 
 

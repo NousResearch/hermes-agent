@@ -307,6 +307,20 @@ def _web_requires_env() -> list[str]:
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
+
+def _auxiliary_task_model_configured(task: str) -> bool:
+    """Return True when config.yaml sets auxiliary.<task>.model."""
+    try:
+        from hermes_cli.config import cfg_get, read_raw_config
+
+        cfg = read_raw_config()
+        model = cfg_get(cfg, "auxiliary", task, "model")
+        return bool(str(model or "").strip())
+    except Exception as e:
+        logger.debug("Could not read auxiliary.%s.model from config: %s", task, e)
+        return False
+
+
 def _is_nous_auxiliary_client(client: Any) -> bool:
     """Return True when the resolved auxiliary backend is Nous Portal."""
     from urllib.parse import urlparse
@@ -319,8 +333,12 @@ def _is_nous_auxiliary_client(client: Any) -> bool:
 def _resolve_web_extract_auxiliary(model: Optional[str] = None) -> tuple[Optional[Any], Optional[str], Dict[str, Any]]:
     """Resolve the current web-extract auxiliary client, model, and extra body."""
     client, default_model = get_async_text_auxiliary_client("web_extract")
-    configured_model = os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip()
-    effective_model = model or configured_model or default_model
+    env_model = (
+        None
+        if _auxiliary_task_model_configured("web_extract")
+        else os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip()
+    )
+    effective_model = model or env_model or default_model
 
     extra_body: Dict[str, Any] = {}
     if client is not None and _is_nous_auxiliary_client(client):

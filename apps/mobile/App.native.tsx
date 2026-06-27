@@ -195,6 +195,15 @@ const mobileBridgeScript = `
     repairBootstrap: resolved({ ok: false }),
     revealLogs: resolved({ ok: false, path: '', error: 'Logs are unavailable in mobile standalone' })
   };
+  // Wrap the bridge so renderer code that calls a method we never stubbed
+  // (e.g. fetchLinkTitle) gets a Promise back instead of undefined — which
+  // would otherwise blow up at \`.then\` and tank the whole view.
+  window.hermesDesktop = new Proxy(window.hermesDesktop, {
+    get: function (target, prop) {
+      if (prop in target) return target[prop];
+      return function () { return Promise.resolve(undefined); };
+    }
+  });
 })();
 true;
 `;

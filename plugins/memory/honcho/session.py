@@ -143,7 +143,6 @@ class HonchoSessionManager:
         # Async write queue — started lazily on first enqueue
         self._async_queue: queue.Queue | None = None
         self._async_thread: threading.Thread | None = None
-        self._shutting_down = False
         if write_frequency == "async":
             self._async_queue = queue.Queue()
             self._async_thread = threading.Thread(
@@ -507,8 +506,6 @@ class HonchoSessionManager:
           "session" — defer until flush_session() is called explicitly
           N (int)   — flush every N turns
         """
-        if self._shutting_down:
-            return
         self._turn_counter += 1
         wf = self._write_frequency
 
@@ -549,14 +546,7 @@ class HonchoSessionManager:
                     break
 
     def shutdown(self) -> None:
-        """Gracefully shut down the async writer thread.
-
-        Sets ``_shutting_down`` so concurrent ``save()`` calls drop new
-        items instead of racing the shutdown sentinel, preventing the
-        flush-then-sentinel gap where unsynced messages could arrive
-        between ``flush_all()`` and the sentinel being consumed.
-        """
-        self._shutting_down = True
+        """Gracefully shut down the async writer thread."""
         if self._async_queue is not None and self._async_thread is not None:
             self.flush_all()
             self._async_queue.put(_ASYNC_SHUTDOWN)

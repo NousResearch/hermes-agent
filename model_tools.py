@@ -215,6 +215,7 @@ TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.
 _last_resolved_tool_names: List[str] = []
+_last_resolved_tool_names_lock = threading.Lock()
 
 
 # =============================================================================
@@ -325,7 +326,8 @@ def get_tool_definitions(
             # Update _last_resolved_tool_names so downstream callers see
             # consistent state even on a cache hit.
             global _last_resolved_tool_names
-            _last_resolved_tool_names = [t["function"]["name"] for t in cached]
+            with _last_resolved_tool_names_lock:
+                _last_resolved_tool_names = [t["function"]["name"] for t in cached]
             # Return a shallow copy of the list but share the dict references —
             # schemas are treated as read-only by all known callers.
             return list(cached)
@@ -513,7 +515,8 @@ def _compute_tool_definitions(
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
     global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+    with _last_resolved_tool_names_lock:
+        _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
     # Sanitize schemas for broad backend compatibility. llama.cpp's
     # json-schema-to-grammar converter (used by its OAI server to build
@@ -1134,7 +1137,11 @@ def handle_function_call(
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
-                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                if enabled_tools is not None:
+                    sandbox_enabled = enabled_tools
+                else:
+                    with _last_resolved_tool_names_lock:
+                        sandbox_enabled = list(_last_resolved_tool_names)
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
                     return registry.dispatch(
                         function_name, next_args,

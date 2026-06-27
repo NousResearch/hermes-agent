@@ -1,5 +1,8 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
+import subprocess
+from unittest import mock
+
 import pytest
 from unittest.mock import patch
 
@@ -105,6 +108,46 @@ class TestResolveToken:
             token, source = resolve_copilot_token()
         assert token == ""
         assert source == ""
+
+    def test_gh_cli_token_uses_windows_hide_flags(self, monkeypatch):
+        from hermes_cli.copilot_auth import _try_gh_cli_token
+
+        monkeypatch.setattr(
+            "hermes_cli.copilot_auth.shutil.which",
+            lambda command: "C:/Program Files/GitHub CLI/gh.exe",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.copilot_auth.windows_hide_flags",
+            lambda: 0x08000000,
+        )
+
+        calls = []
+
+        class _Result:
+            returncode = 0
+            stdout = "gho_from_cli\n"
+
+        def _fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return _Result()
+
+        monkeypatch.setattr("hermes_cli.copilot_auth.subprocess.run", _fake_run)
+
+        assert _try_gh_cli_token() == "gho_from_cli"
+        assert calls == [
+            (
+                ["C:/Program Files/GitHub CLI/gh.exe", "auth", "token"],
+                {
+                    "capture_output": True,
+                    "text": True,
+                    "timeout": 5,
+                    "env": mock.ANY,
+                    "creationflags": subprocess.CREATE_NO_WINDOW
+                    if hasattr(subprocess, "CREATE_NO_WINDOW")
+                    else 0x08000000,
+                },
+            )
+        ]
 
 
 class TestRequestHeaders:

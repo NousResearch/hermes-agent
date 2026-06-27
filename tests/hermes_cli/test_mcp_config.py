@@ -477,6 +477,45 @@ class TestProbeEnvResolution:
         })
         assert resolved["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
+    def test_resolve_loads_env_file_before_interpolating(self, tmp_path, monkeypatch):
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+
+        env_file = tmp_path / "omi.env"
+        env_file.write_text("OMI_API_KEY=env-file-token\n")
+        monkeypatch.delenv("OMI_API_KEY", raising=False)
+
+        resolved = _resolve_mcp_server_config({
+            "env_file": str(env_file),
+            "headers": {"Authorization": "Bearer ${OMI_API_KEY}"},
+        })
+
+        assert resolved["headers"]["Authorization"] == "Bearer env-file-token"
+
+    def test_resolve_env_file_overrides_stale_shell_export(self, tmp_path, monkeypatch):
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+
+        env_file = tmp_path / "omi.env"
+        env_file.write_text("OMI_API_KEY=env-file-token\n")
+        monkeypatch.setenv("OMI_API_KEY", "stale-shell-token")
+
+        resolved = _resolve_mcp_server_config({
+            "env_file": str(env_file),
+            "headers": {"Authorization": "Bearer ${OMI_API_KEY}"},
+        })
+
+        assert resolved["headers"]["Authorization"] == "Bearer env-file-token"
+
+    def test_resolve_leaves_unset_var_literal(self, monkeypatch):
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+
+        monkeypatch.delenv("MCP_UNSET_API_KEY", raising=False)
+        resolved = _resolve_mcp_server_config({
+            "headers": {"Authorization": "Bearer ${MCP_UNSET_API_KEY}"},
+        })
+        # Unresolved placeholder stays literal (no crash) — matches
+        # _interpolate_env_vars semantics.
+        assert resolved["headers"]["Authorization"] == "Bearer ${MCP_UNSET_API_KEY}"
+
     def test_active_secret_scope_does_not_load_dotenv_into_process_env(
         self, tmp_path, monkeypatch
     ):

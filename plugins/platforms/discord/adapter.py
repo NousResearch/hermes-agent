@@ -1082,7 +1082,23 @@ class DiscordAdapter(BasePlatformAdapter):
                         _channel_ids = {_channel_id}
                         if _parent_id:
                             _channel_ids.add(_parent_id)
-                        if "*" not in _free_channels and not (_channel_ids & _free_channels):
+
+                        # When thread mention gating is disabled, any thread should
+                        # keep flowing without @mention. The later _handle_message
+                        # mention gate has the same thread exception; mirror it here
+                        # so this early multi-agent filter does not accidentally
+                        # re-require @mention inside threads.
+                        _thread_cls = getattr(discord, "Thread", None)
+                        _in_bot_thread = (
+                            _thread_cls is not None
+                            and isinstance(message.channel, _thread_cls)
+                            and not adapter_self._discord_thread_require_mention()
+                        )
+                        if (
+                            not _in_bot_thread
+                            and "*" not in _free_channels
+                            and not (_channel_ids & _free_channels)
+                        ):
                             return
 
                 await self._handle_message(message, role_authorized=_role_authorized)
@@ -5260,7 +5276,6 @@ class DiscordAdapter(BasePlatformAdapter):
             # a thread.
             in_bot_thread = (
                 is_thread
-                and thread_id in self._threads
                 and not self._discord_thread_require_mention()
             )
 

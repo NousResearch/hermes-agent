@@ -450,19 +450,28 @@ async def test_discord_bot_thread_skips_mention_requirement(adapter, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_discord_unknown_thread_still_requires_mention(adapter, monkeypatch):
-    """Messages in a thread the bot hasn't participated in should still require @mention."""
+async def test_discord_unknown_thread_skips_mention_requirement_by_default(adapter, monkeypatch):
+    """Default thread behavior should not require @mention, even before tracking.
+
+    Discord threads already scope the conversation. Requiring the thread to be
+    present in the persisted participation set makes legitimate replies brittle
+    after restarts or when Discord sends a thread message before local tracking
+    catches up.
+    """
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
-    # Bot has NOT participated in thread 789
+    # Bot has NOT participated in thread 789 yet.
     thread = FakeThread(channel_id=789, name="some thread")
     message = make_message(channel=thread, content="hello from unknown thread")
 
     await adapter._handle_message(message)
 
-    adapter.handle_message.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello from unknown thread"
+    assert event.source.chat_type == "thread"
 
 
 @pytest.mark.asyncio
@@ -553,8 +562,8 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_discord_voice_linked_parent_thread_still_requires_mention(adapter, monkeypatch):
-    """Threads under a voice-linked channel should still require @mention."""
+async def test_discord_voice_linked_parent_thread_skips_mention_by_default(adapter, monkeypatch):
+    """Threads under a voice-linked channel follow default thread mention gating."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
@@ -566,7 +575,10 @@ async def test_discord_voice_linked_parent_thread_still_requires_mention(adapter
 
     await adapter._handle_message(message)
 
-    adapter.handle_message.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "thread reply without mention"
+    assert event.source.chat_type == "thread"
 
 
 @pytest.mark.asyncio

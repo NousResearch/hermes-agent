@@ -366,26 +366,43 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _allow_unauthenticated_lan_dashboard() -> bool:
+    """True when the operator explicitly accepts an unauthenticated LAN bind.
+
+    The default stays fail-closed for non-loopback dashboard binds. This opt-in
+    is intentionally config-backed (not a quiet resurrection of ``--insecure``)
+    so installs that need a trusted-LAN dashboard can declare that policy once
+    without filling logs with repeated safety warnings.
+    """
+    try:
+        cfg = load_config()
+        return bool(cfg_get(cfg, "dashboard", "allow_unauthenticated_lan", default=False))
+    except Exception:
+        return False
+
+
 def should_require_auth(host: str, allow_public: bool = False) -> bool:
     """Return True iff the dashboard auth gate must be active.
 
     Truth table:
       host == loopback        → False (no auth — local-only, trusted operator)
       host != loopback        → True  (gate engages — OAuth or password required)
+      host != loopback and
+        dashboard.allow_unauthenticated_lan=true
+                              → False (explicit trusted-LAN opt-in)
 
     "Loopback" is 127.0.0.1, localhost, ::1. RFC1918 / CGNAT / link-local are
-    deliberately treated as PUBLIC — a hostile device on the same LAN is exactly
+    treated as public by default — a hostile device on the same LAN is exactly
     the threat model the gate is designed for.
 
-    ``allow_public`` (the legacy ``--insecure`` escape hatch) NO LONGER disables
-    the gate. It is accepted for backward-compat with old launch scripts and
-    desktop shells but is ignored: a non-loopback bind ALWAYS requires an auth
-    provider (OAuth or the bundled password provider). This closes the
-    unauthenticated-public-dashboard hole behind the June 2026 ``hermes-0day``
-    MCP-persistence campaign, where ``--insecure --host 0.0.0.0`` left the
-    config/MCP/agent surface open to internet scanners.
+    ``allow_public`` (the legacy ``--insecure`` escape hatch) does not by
+    itself disable the gate. Operators who intentionally want an
+    unauthenticated LAN dashboard must also set
+    ``dashboard.allow_unauthenticated_lan: true`` in config.yaml.
     """
-    return host not in _LOOPBACK_HOST_VALUES
+    if host in _LOOPBACK_HOST_VALUES:
+        return False
+    return not _allow_unauthenticated_lan_dashboard()
 
 
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
@@ -12926,17 +12943,22 @@ def start_server(
     # banner, and enable uvicorn proxy_headers.
     app.state.auth_required = should_require_auth(host)
 
-    # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
-    # the hermes-0day MCP-persistence campaign abused unauthenticated public
-    # dashboards). If a caller still passes it, warn that it is now a no-op
-    # rather than silently changing their expectation of an open bind.
-    if allow_public and host not in _LOOPBACK_HOST_VALUES:
+    # ``--insecure`` no longer disables the auth gate by itself (June 2026
+    # hardening: the hermes-0day MCP-persistence campaign abused
+    # unauthenticated public dashboards). If a caller still passes it on a
+    # non-loopback bind, warn only when the explicit trusted-LAN config flag is
+    # absent; otherwise the operator has intentionally accepted this mode.
+    if (
+        allow_public
+        and host not in _LOOPBACK_HOST_VALUES
+        and not _allow_unauthenticated_lan_dashboard()
+    ):
         _log.warning(
-            "--insecure no longer bypasses dashboard authentication. A "
-            "non-loopback bind (%s) now ALWAYS requires an auth provider "
-            "(OAuth or the bundled password provider). Configure one — see "
-            "below — or bind to 127.0.0.1 and reach it over an SSH tunnel / "
-            "Tailscale.", host,
+            "--insecure no longer bypasses dashboard authentication by itself. A "
+            "non-loopback bind (%s) requires an auth provider unless "
+            "dashboard.allow_unauthenticated_lan is true. Configure auth, set "
+            "that explicit trusted-LAN flag, or bind to 127.0.0.1 and reach it "
+            "over an SSH tunnel / Tailscale.", host,
         )
 
     if app.state.auth_required:

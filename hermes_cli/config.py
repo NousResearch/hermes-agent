@@ -1814,10 +1814,15 @@ DEFAULT_CONFIG = {
         "basic_auth": {
             "username": "",  # blank → plugin no-op (no password provider)
             "password_hash": "",  # scrypt$... (preferred — no plaintext at rest)
-            "password": "",  # plaintext fallback (hashed in-memory at load)
+            "password": "",  # plaintext fallback (hashed in-memory)
             "secret": "",  # token-signing key; blank → random per-process
             "session_ttl_seconds": 0,  # 0 → plugin default (12h)
         },
+        # Explicit local-operator escape hatch for trusted LAN/VPN installs.
+        # Default remains fail-closed for every non-loopback bind; set true only
+        # when the dashboard is intentionally exposed without auth and network
+        # controls are the security boundary.
+        "allow_unauthenticated_lan": False,
         # Public URL override (env: ``HERMES_DASHBOARD_PUBLIC_URL``).
         # When set, this is the complete authority — scheme + host +
         # optional path prefix (e.g. ``https://example.com/hermes``) —

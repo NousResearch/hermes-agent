@@ -2768,6 +2768,163 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     assert available == []
 
 
+def test_codex_manual_device_code_adopts_sibling_profile_refresh_before_spending_token(
+    tmp_path, monkeypatch
+):
+    """Copied profile Codex pools must resync before spending stale refresh tokens.
+
+    Operators commonly clone profiles or copy auth.json to recover a named
+    gateway.  That duplicates ``manual:device_code`` entries across profile
+    auth stores.  Codex refresh tokens rotate on every refresh, so once one
+    profile refreshes, sibling profiles holding the copied refresh token must
+    adopt the newer sibling entry before calling the token endpoint.
+    """
+    home = tmp_path
+    global_root = home / ".hermes"
+    profile_a = global_root / "profiles" / "alpha"
+    profile_b = global_root / "profiles" / "beta"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_OAUTH_ACCESS_TOKEN", raising=False)
+
+    entry_id = "copied"
+    source = "manual:device_code"
+    profile_b_store = {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": entry_id,
+                "label": "copied-codex",
+                "source": source,
+                "auth_type": "oauth",
+                "access_token": "stale-access",
+                "refresh_token": "stale-refresh",
+                "last_refresh": "2026-06-01T00:00:00Z",
+            }],
+        },
+    }
+    profile_a_store = {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": entry_id,
+                "label": "copied-codex",
+                "source": source,
+                "auth_type": "oauth",
+                "access_token": "fresh-access",
+                "refresh_token": "fresh-refresh",
+                "last_refresh": "2026-06-02T00:00:00Z",
+            }],
+        },
+    }
+    (profile_b / "auth.json").write_text(json.dumps(profile_b_store, indent=2))
+    (profile_a / "auth.json").write_text(json.dumps(profile_a_store, indent=2))
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+
+    refresh_args = []
+
+    def _fake_refresh(access_token, refresh_token, **_kwargs):
+        refresh_args.append((access_token, refresh_token))
+        assert refresh_token != "stale-refresh"
+        return {
+            "access_token": "rotated-access",
+            "refresh_token": "rotated-refresh",
+            "last_refresh": "2026-06-03T00:00:00Z",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _fake_refresh)
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+    assert selected is not None
+
+    refreshed = pool.try_refresh_current()
+
+    assert refreshed is not None
+    assert refresh_args == [("fresh-access", "fresh-refresh")]
+    assert refreshed.access_token == "rotated-access"
+    assert refreshed.refresh_token == "rotated-refresh"
+
+    persisted = json.loads((profile_b / "auth.json").read_text())
+    persisted_entry = persisted["credential_pool"]["openai-codex"][0]
+    assert persisted_entry["access_token"] == "rotated-access"
+    assert persisted_entry["refresh_token"] == "rotated-refresh"
+
+
+def test_codex_manual_device_code_ignores_older_sibling_profile_refresh(
+    tmp_path, monkeypatch
+):
+    """A matching copied profile entry must not roll the current profile backward."""
+    home = tmp_path
+    global_root = home / ".hermes"
+    profile_a = global_root / "profiles" / "alpha"
+    profile_b = global_root / "profiles" / "beta"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_OAUTH_ACCESS_TOKEN", raising=False)
+
+    entry_id = "copied"
+    source = "manual:device_code"
+    (profile_b / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": entry_id,
+                "label": "copied-codex",
+                "source": source,
+                "auth_type": "oauth",
+                "access_token": "current-access",
+                "refresh_token": "current-refresh",
+                "last_refresh": "2026-06-03T00:00:00Z",
+            }],
+        },
+    }, indent=2))
+    (profile_a / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": entry_id,
+                "label": "copied-codex",
+                "source": source,
+                "auth_type": "oauth",
+                "access_token": "older-access",
+                "refresh_token": "older-refresh",
+                "last_refresh": "2026-06-02T00:00:00Z",
+            }],
+        },
+    }, indent=2))
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+
+    refresh_args = []
+
+    def _fake_refresh(access_token, refresh_token, **_kwargs):
+        refresh_args.append((access_token, refresh_token))
+        return {
+            "access_token": "rotated-access",
+            "refresh_token": "rotated-refresh",
+            "last_refresh": "2026-06-04T00:00:00Z",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _fake_refresh)
+
+    pool = load_pool("openai-codex")
+    assert pool.select() is not None
+    refreshed = pool.try_refresh_current()
+
+    assert refreshed is not None
+    assert refresh_args == [("current-access", "current-refresh")]
+
+
 # ---------------------------------------------------------------------------
 # xAI OAuth terminal error quarantine
 # ---------------------------------------------------------------------------

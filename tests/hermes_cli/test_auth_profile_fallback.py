@@ -367,6 +367,37 @@ def test_load_provider_state_malformed_global_does_not_break_profile(profile_env
     assert state["access_token"] == "profile-token"
 
 
+def test_codex_runtime_uses_global_pool_when_profile_singleton_is_empty(profile_env):
+    """Stale empty profile Codex state must not block the global credential pool."""
+    from hermes_cli.auth import resolve_codex_runtime_credentials
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "glob-codex",
+            "label": "global-codex",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "global-codex-access-token",
+            "refresh_token": "global-codex-refresh-token",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(
+        providers={
+            "openai-codex": {
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "", "refresh_token": ""},
+            },
+        },
+        pool={"openai-codex": []},
+    ))
+
+    creds = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+
+    assert creds["source"] == "credential_pool"
+    assert creds["api_key"] == "global-codex-access-token"
+
+
 # ---------------------------------------------------------------------------
 # Classic mode — no fallback path should ever trigger
 # ---------------------------------------------------------------------------

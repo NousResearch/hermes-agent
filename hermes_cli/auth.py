@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -97,6 +97,7 @@ STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+CODEX_DEVICE_CODE_POOL_SOURCES = frozenset({"device_code", "manual:device_code"})
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -1258,6 +1259,127 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     # Profile has no entries for this provider — fall back to global.
     global_entries = global_pool.get(provider_id)
     return list(global_entries) if isinstance(global_entries, list) else []
+
+
+def _shared_auth_store_paths() -> List[Path]:
+    """Return other Hermes auth stores that may hold fresher rotating OAuth state."""
+    try:
+        current = _auth_file_path().resolve(strict=False)
+    except Exception:
+        current = _auth_file_path()
+    seen: Set[str] = set()
+    paths: List[Path] = []
+
+    def _add(path: Path) -> None:
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        key = str(resolved)
+        if key in seen or resolved == current:
+            return
+        seen.add(key)
+        paths.append(path)
+
+    global_path = _global_auth_file_path()
+    if global_path is not None:
+        _add(global_path)
+
+    try:
+        from hermes_constants import get_default_hermes_root
+        _add(get_default_hermes_root() / "auth.json")
+    except Exception:
+        pass
+
+    profiles_root = Path.home() / ".hermes" / "profiles"
+    try:
+        if profiles_root.is_dir():
+            for child in sorted(profiles_root.iterdir()):
+                if child.is_dir():
+                    _add(child / "auth.json")
+    except Exception:
+        pass
+
+    return paths
+
+
+def _parse_auth_timestamp(value: Any) -> float:
+    if not isinstance(value, str) or not value.strip():
+        return 0.0
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return 0.0
+
+
+def find_shared_codex_pool_entry(
+    *,
+    entry_id: str,
+    source: str,
+    current_refresh_token: str = "",
+    current_last_refresh: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Find a matching Codex pool entry with a fresher rotating refresh token.
+
+    Codex device-code refresh tokens are single-use.  When users clone profiles
+    or copy auth.json as a recovery step, multiple profile stores can hold the
+    same pool entry id/source.  If one profile refreshes first, siblings must
+    adopt that rotated pair before spending their stale copied refresh token.
+    """
+    entry_id = str(entry_id or "").strip()
+    source = str(source or "").strip()
+    current_refresh_token = str(current_refresh_token or "").strip()
+    if not entry_id or source not in CODEX_DEVICE_CODE_POOL_SOURCES:
+        return None
+
+    current_time = _parse_auth_timestamp(current_last_refresh)
+    candidates: List[Tuple[float, float, Dict[str, Any]]] = []
+    for path in _shared_auth_store_paths():
+        if not path.exists():
+            continue
+        try:
+            auth_store = _load_auth_store(path)
+        except Exception:
+            continue
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            continue
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            continue
+        for raw_entry in entries:
+            if not isinstance(raw_entry, dict):
+                continue
+            if str(raw_entry.get("id") or "").strip() != entry_id:
+                continue
+            if str(raw_entry.get("source") or "").strip() != source:
+                continue
+            access_token = str(raw_entry.get("access_token") or "").strip()
+            refresh_token = str(raw_entry.get("refresh_token") or "").strip()
+            if not access_token or not refresh_token:
+                continue
+            if current_refresh_token and refresh_token == current_refresh_token:
+                continue
+            candidate_time = _parse_auth_timestamp(raw_entry.get("last_refresh"))
+            if current_time and candidate_time and candidate_time <= current_time:
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except Exception:
+                mtime = 0.0
+            candidates.append((
+                candidate_time,
+                mtime,
+                dict(raw_entry),
+            ))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates[0][2]
 
 
 def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
@@ -3884,19 +4006,16 @@ def _pool_codex_access_token() -> str:
     """Return the most-recent usable access_token from the openai-codex pool.
 
     Used as a fallback by ``resolve_codex_runtime_credentials`` when the
-    singleton has no creds.  Reads ``credential_pool.openai-codex`` entries
-    directly from auth.json and picks the first non-empty access_token,
-    preferring entries that are not currently in an exhaustion cooldown.
+    singleton has no creds.  Reads through ``read_credential_pool`` instead of
+    directly from the active profile store so named profiles with an empty
+    local Codex pool still inherit the global-root credential pool.  Picks the
+    first non-empty access_token, preferring entries that are not currently in
+    an exhaustion cooldown.
     Returns ``""`` when no usable entry is found (caller handles by raising
     the original AuthError).
     """
     try:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-        pool = auth_store.get("credential_pool")
-        if not isinstance(pool, dict):
-            return ""
-        entries = pool.get("openai-codex")
+        entries = read_credential_pool("openai-codex")
         if not isinstance(entries, list):
             return ""
 

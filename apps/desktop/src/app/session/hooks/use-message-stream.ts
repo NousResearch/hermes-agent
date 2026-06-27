@@ -12,6 +12,7 @@ import {
   chatMessageText,
   type GatewayEventPayload,
   reasoningPart,
+  reconcileCompletedTextParts,
   renderMediaTags,
   textPart,
   upsertToolPart
@@ -19,11 +20,7 @@ import {
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
-import {
-  dedupeGeneratedImageEchoesInParts,
-  generatedImageEchoSources,
-  stripGeneratedImageEchoes
-} from '@/lib/generated-images'
+import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { parseTodos } from '@/lib/todos'
@@ -560,28 +557,6 @@ export function useMessageStream({
         const streamId = state.streamId
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
-        const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
-
-        const replaceTextPart = (parts: ChatMessagePart[]) => {
-          const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
-          const dedupeReference = normalize(visibleFinalText)
-
-          const kept = parts.filter(part => {
-            if (part.type === 'text') {
-              return false
-            }
-
-            if (part.type !== 'reasoning' || !dedupeReference) {
-              return true
-            }
-
-            const r = normalize(part.text)
-
-            return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
-          })
-
-          return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
-        }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
           completionError
@@ -593,7 +568,7 @@ export function useMessageStream({
               }
             : {
                 ...message,
-                parts: replaceTextPart(message.parts),
+                parts: reconcileCompletedTextParts(message.parts, finalText),
                 pending: false
               }
 

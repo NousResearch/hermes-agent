@@ -14,6 +14,7 @@ import functools
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -498,10 +499,10 @@ DANGEROUS_PATTERNS = [
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
     # Git destructive operations that can lose uncommitted work or rewrite
-    # shared history. Not captured by rm/chmod/etc patterns.
+    # shared history. Not captured by rm/chmod/etc patterns. Git-push history
+    # rewrite detection is command-segment aware in _detect_dangerous_git_push()
+    # so unrelated later shell text/flags do not contaminate a plain push.
     (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # Script execution after chmod +x — catches the two-step pattern where
@@ -711,6 +712,97 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     return _fold_home_prefixes(command, candidates, "~/.hermes")
 
 
+_GIT_PUSH_FORCE_DESC = "git force push (rewrites remote history)"
+_GIT_PUSH_FORCE_SHORT_DESC = "git force push short flag (rewrites remote history)"
+_GIT_PUSH_MIRROR_DESC = "git mirror push (rewrites remote history)"
+_GIT_PUSH_ALL_DESC = "git push --all (updates multiple remote refs)"
+_GIT_PUSH_TAGS_DESC = "git push --tags (updates remote tags)"
+_GIT_PUSH_DELETE_REFSPEC_DESC = "git push delete refspec (deletes remote branch/tag)"
+
+
+def _shell_command_segments(command: str) -> list[str]:
+    """Split a shell-ish command into command segments outside quotes.
+
+    This intentionally recognizes only separators needed by the approval
+    detector: newline, semicolon, pipe, and ampersand outside quotes. It does
+    not execute or expand shell syntax; it only prevents broad regex matching
+    from letting an unrelated later segment contaminate an earlier command.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for ch in command:
+        if escaped:
+            current.append(ch)
+            escaped = False
+            continue
+        if ch == "\\" and quote != "'":
+            current.append(ch)
+            escaped = True
+            continue
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in {"'", '"'}:
+            current.append(ch)
+            quote = ch
+            continue
+        if ch in "\n;|&":
+            segment = "".join(current).strip()
+            if segment:
+                segments.append(segment)
+            current = []
+            continue
+        current.append(ch)
+    segment = "".join(current).strip()
+    if segment:
+        segments.append(segment)
+    return segments
+
+
+def _detect_dangerous_git_push(command: str) -> tuple[bool, Optional[str], Optional[str]]:
+    """Detect dangerous git-push args within the actual git-push segment.
+
+    The old regex used ``git push.*-f`` across the whole script, so a safe push
+    followed by unrelated ``grep -F``, ``curl -f``, or body text mentioning
+    ``--force`` was treated as a force push. Tokenizing each command segment
+    with shlex keeps force/history checks scoped to the push invocation.
+    """
+    for segment in _shell_command_segments(command):
+        try:
+            tokens = shlex.split(segment, posix=True)
+        except ValueError:
+            # Fall back to whitespace splitting if a partial shell fragment is
+            # malformed; this keeps detection conservative without executing it.
+            tokens = segment.split()
+        for git_index, token in enumerate(tokens):
+            if token != "git":
+                continue
+            try:
+                push_index = tokens.index("push", git_index + 1)
+            except ValueError:
+                continue
+            push_args = tokens[push_index + 1:]
+            for arg in push_args:
+                if arg == "-f":
+                    return True, _GIT_PUSH_FORCE_SHORT_DESC, _GIT_PUSH_FORCE_SHORT_DESC
+                if arg == "--force" or arg.startswith("--force=") or arg == "--force-with-lease" or arg.startswith("--force-with-lease="):
+                    return True, _GIT_PUSH_FORCE_DESC, _GIT_PUSH_FORCE_DESC
+                if arg == "--mirror":
+                    return True, _GIT_PUSH_MIRROR_DESC, _GIT_PUSH_MIRROR_DESC
+                if arg == "--all":
+                    return True, _GIT_PUSH_ALL_DESC, _GIT_PUSH_ALL_DESC
+                if arg == "--tags":
+                    return True, _GIT_PUSH_TAGS_DESC, _GIT_PUSH_TAGS_DESC
+                if re.match(r"^:[^\s:]+$", arg):
+                    return True, _GIT_PUSH_DELETE_REFSPEC_DESC, _GIT_PUSH_DELETE_REFSPEC_DESC
+            break
+    return False, None, None
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -722,6 +814,9 @@ def detect_dangerous_command(command: str) -> tuple:
         if pattern_re.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
+    git_push = _detect_dangerous_git_push(command_lower)
+    if git_push[0]:
+        return git_push
     return (False, None, None)
 
 

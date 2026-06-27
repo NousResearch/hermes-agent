@@ -146,6 +146,88 @@ class TestApproveAndCheckSession:
         assert is_approved(key, "rm") is True
 
 
+class TestGitPushForceDetection:
+    """FGD-215: detect force-push risk from the git-push command segment only."""
+
+    def test_plain_branch_push_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command('git push origin "$BRANCH"')
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_plain_push_followed_by_grep_dash_f_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'git push origin "$BRANCH"\n'
+            'git diff --name-only main...HEAD | grep -F "plugin/file.php"'
+        )
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_plain_push_followed_by_curl_dash_f_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'git push origin "$BRANCH"\n'
+            'curl -f https://example.invalid/status'
+        )
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_plain_push_followed_by_force_prose_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'git push origin "$BRANCH"\n'
+            'python3 create_issue.py --body '
+            "'Force push was forbidden; --force was not used'"
+        )
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_force_short_flag_is_dangerous(self):
+        dangerous, key, desc = detect_dangerous_command("git push -f origin branch")
+        assert dangerous is True
+        assert key is not None
+        assert "force" in desc.lower()
+
+    def test_force_long_flag_is_dangerous(self):
+        dangerous, key, desc = detect_dangerous_command("git push --force origin branch")
+        assert dangerous is True
+        assert key is not None
+        assert "force" in desc.lower()
+
+    def test_force_with_lease_is_dangerous(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "git push --force-with-lease origin branch"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "force" in desc.lower()
+
+    def test_mirror_push_is_dangerous(self):
+        dangerous, key, desc = detect_dangerous_command("git push --mirror origin")
+        assert dangerous is True
+        assert key is not None
+        assert "mirror" in desc.lower() or "history" in desc.lower()
+
+    def test_all_push_is_dangerous(self):
+        dangerous, key, desc = detect_dangerous_command("git push --all origin")
+        assert dangerous is True
+        assert key is not None
+        assert "all" in desc.lower() or "history" in desc.lower()
+
+    def test_tags_push_is_dangerous(self):
+        dangerous, key, desc = detect_dangerous_command("git push --tags origin")
+        assert dangerous is True
+        assert key is not None
+        assert "tags" in desc.lower() or "history" in desc.lower()
+
+    def test_delete_refspec_is_dangerous(self):
+        dangerous, key, desc = detect_dangerous_command("git push origin :branch")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower() or "history" in desc.lower()
+
+
 class TestSessionKeyContext:
     def test_context_session_key_overrides_process_env(self):
         token = approval_module.set_current_session_key("alice")

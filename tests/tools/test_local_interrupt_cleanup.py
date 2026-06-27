@@ -22,6 +22,11 @@ import pytest
 
 from tools.environments.local import LocalEnvironment
 
+pytestmark = pytest.mark.skipif(
+    not hasattr(os, "getpgid") or not hasattr(os, "killpg"),
+    reason="POSIX process-group cleanup semantics",
+)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_hermes_home(tmp_path, monkeypatch):
@@ -96,6 +101,7 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+@pytest.mark.timeout(75)
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""

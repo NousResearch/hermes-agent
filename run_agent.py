@@ -1816,6 +1816,7 @@ class AIAgent:
             and (
                 messages[-1].get("_empty_recovery_synthetic")
                 or messages[-1].get("_empty_terminal_sentinel")
+                or messages[-1].get("_undelivered_interim_synthetic")
             )
         ):
             messages.pop()

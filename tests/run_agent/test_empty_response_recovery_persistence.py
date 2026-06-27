@@ -82,6 +82,47 @@ def test_persist_session_strips_trailing_empty_recovery_scaffolding():
     assert all(not msg.get("_empty_recovery_synthetic") for msg in messages)
 
 
+def test_persist_session_strips_undelivered_interim_recovery_scaffolding():
+    agent = _agent_with_stubbed_persistence()
+    messages = [
+        {"role": "user", "content": "quote this"},
+        {
+            "role": "assistant",
+            "content": "Total = RM519",
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "x", "arguments": "{}"}}],
+        },
+        {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+        {
+            "role": "assistant",
+            "content": "When do you need them by?",
+            "_undelivered_interim_synthetic": True,
+        },
+        {
+            "role": "user",
+            "content": "Hidden assistant text:\nTotal = RM519",
+            "_undelivered_interim_synthetic": True,
+        },
+        {
+            "role": "assistant",
+            "content": "(empty)",
+            "_empty_terminal_sentinel": True,
+        },
+    ]
+
+    AIAgent._persist_session(agent, messages, conversation_history=[])
+
+    assert messages == [
+        {"role": "user", "content": "quote this"},
+    ]
+    assert agent.flushed_session_db_messages[-1] == messages
+    assert all(
+        not msg.get("_undelivered_interim_synthetic")
+        and not msg.get("_empty_terminal_sentinel")
+        for msg in messages
+    )
+
+
 def test_persist_session_keeps_unmarked_terminal_empty_response():
     agent = _agent_with_stubbed_persistence()
     messages = [

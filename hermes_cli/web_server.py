@@ -3774,10 +3774,15 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
                 pass
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=400,
-            detail=result.get("error") or "Transcription failed",
-        )
+        err = result.get("error") or "Transcription failed"
+        # An empty transcript means no speech was detected — a normal outcome
+        # for VAD/continuous voice loops (e.g. a wake-word conversation
+        # re-listening on silence), not an error. Return an empty transcript so
+        # the client quietly re-listens instead of surfacing a "transcription
+        # failed" toast on every silent gap.
+        if "empty transcript" in err.lower():
+            return {"ok": True, "transcript": "", "provider": result.get("provider")}
+        raise HTTPException(status_code=400, detail=err)
 
     return {
         "ok": True,

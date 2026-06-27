@@ -4,10 +4,12 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+import json
 import os
 import sys
 import subprocess
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -53,6 +55,15 @@ _PROVIDER_ENV_HINTS = (
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
 )
+
+_DEFAULT_MEMORY_LIMITS = {
+    "MEMORY.md": 2200,
+    "USER.md": 1375,
+}
+_MEMORY_HEADROOM_WARN_RATIO = 0.80
+_SKILL_SPRAWL_WARN_COUNT = 120
+_AGENT_SKILL_REVIEW_WARN_COUNT = 10
+_CURATOR_STALE_WARN_DAYS = 14
 
 
 from hermes_constants import is_termux as _is_termux
@@ -197,6 +208,251 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     """Emit a check_fail and append the corresponding fix instruction."""
     check_fail(text, detail)
     issues.append(fix)
+
+
+def _read_doctor_config() -> dict:
+    """Read the active profile config for lightweight doctor checks."""
+    config_path = HERMES_HOME / "config.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        import yaml
+
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _configured_memory_limits(config: dict | None = None) -> dict[str, int]:
+    """Return MEMORY.md/USER.md limits, honoring profile config overrides."""
+    cfg = config if isinstance(config, dict) else _read_doctor_config()
+    limits = dict(_DEFAULT_MEMORY_LIMITS)
+    memory_cfg = cfg.get("memory") if isinstance(cfg, dict) else {}
+    if not isinstance(memory_cfg, dict):
+        return limits
+
+    for key, filename in (
+        ("memory_char_limit", "MEMORY.md"),
+        ("user_char_limit", "USER.md"),
+    ):
+        try:
+            value = int(memory_cfg.get(key, limits[filename]))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            limits[filename] = value
+    return limits
+
+
+def _display_home_child(*parts: str) -> str:
+    return "/".join([_DHH.rstrip("/"), *parts])
+
+
+def _read_memory_char_count(path: Path) -> int | None:
+    try:
+        return len(path.read_text(encoding="utf-8", errors="replace").strip())
+    except OSError:
+        return None
+
+
+def _read_skill_frontmatter_name(skill_md: Path) -> str:
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+    except OSError:
+        return skill_md.parent.name
+    in_frontmatter = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "---":
+            if in_frontmatter:
+                break
+            in_frontmatter = True
+            continue
+        if in_frontmatter and stripped.startswith("name:"):
+            value = stripped.split(":", 1)[1].strip().strip("\"'")
+            if value:
+                return value
+    return skill_md.parent.name
+
+
+def _is_doctor_excluded_skill_path(path: Path) -> bool:
+    if ".curator_backups" in path.parts:
+        return True
+    try:
+        from agent.skill_utils import is_excluded_skill_path
+
+        return bool(is_excluded_skill_path(path))
+    except Exception:
+        excluded = {
+            ".git",
+            ".github",
+            ".hub",
+            ".archive",
+            ".curator_backups",
+            ".venv",
+            "venv",
+            "node_modules",
+            "site-packages",
+            "__pycache__",
+        }
+        return any(part in excluded for part in path.parts)
+
+
+def _active_skill_names(skills_dir: Path) -> set[str]:
+    if not skills_dir.exists():
+        return set()
+    names: set[str] = set()
+    for skill_md in skills_dir.rglob("SKILL.md"):
+        if _is_doctor_excluded_skill_path(skill_md):
+            continue
+        names.add(_read_skill_frontmatter_name(skill_md))
+    return names
+
+
+def _read_skill_usage(skills_dir: Path) -> dict:
+    usage_path = skills_dir / ".usage.json"
+    if not usage_path.exists():
+        return {}
+    try:
+        data = json.loads(usage_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _is_agent_created_skill_record(record: object) -> bool:
+    return isinstance(record, dict) and (
+        record.get("created_by") == "agent" or record.get("agent_created") is True
+    )
+
+
+def _parse_doctor_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _pending_skill_write_count() -> int:
+    pending_dir = HERMES_HOME / "pending" / "skills"
+    if not pending_dir.exists():
+        return 0
+    try:
+        return sum(1 for path in pending_dir.glob("*.json") if path.is_file())
+    except OSError:
+        return 0
+
+
+def _curator_last_run_age_days(skills_dir: Path) -> int | None:
+    state_path = skills_dir / ".curator_state"
+    if not state_path.exists():
+        return None
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    last_run = _parse_doctor_datetime(state.get("last_run_at"))
+    if last_run is None:
+        return None
+    now = datetime.now(timezone.utc)
+    return max(0, (now - last_run.astimezone(timezone.utc)).days)
+
+
+def _check_long_term_optimization(issues: list[str]) -> None:
+    """Surface slow setup drift that makes long-running Hermes profiles worse."""
+    _section("Long-Term Optimization")
+
+    cfg = _read_doctor_config()
+    limits = _configured_memory_limits(cfg)
+    memories_dir = HERMES_HOME / "memories"
+    for filename, limit in limits.items():
+        path = memories_dir / filename
+        display_path = _display_home_child("memories", filename)
+        if not path.exists():
+            check_info(f"{filename} not created yet (no Tier-1 memory pressure)")
+            continue
+        char_count = _read_memory_char_count(path)
+        if char_count is None:
+            check_warn(f"{filename} could not be read", f"({display_path})")
+            continue
+        ratio = char_count / limit if limit else 0
+        detail = f"({char_count:,}/{limit:,} chars, {ratio:.0%})"
+        if ratio >= 1:
+            check_warn(f"{filename} is over its configured Tier-1 memory budget", detail)
+            issues.append(f"Trim {display_path}; it is {char_count:,}/{limit:,} chars.")
+        elif ratio >= _MEMORY_HEADROOM_WARN_RATIO:
+            check_warn(f"{filename} is close to its Tier-1 memory budget", detail)
+            issues.append(f"Curate {display_path}; keep it below about 80% of its configured limit.")
+        else:
+            check_ok(f"{filename} has Tier-1 memory headroom", detail)
+
+    skills_dir = HERMES_HOME / "skills"
+    active_skills = _active_skill_names(skills_dir)
+    active_count = len(active_skills)
+    if not skills_dir.exists():
+        check_info("Local skills directory not created yet")
+    elif active_count > _SKILL_SPRAWL_WARN_COUNT:
+        check_warn(
+            f"Large active skill library ({active_count} skills)",
+            "(review overlap with: hermes curator status)",
+        )
+        issues.append(
+            "Review skill sprawl with 'hermes curator status' and archive overlapping or stale skills."
+        )
+    else:
+        check_ok(f"Active skill library size looks manageable ({active_count} skills)")
+
+    pending_count = _pending_skill_write_count()
+    if pending_count:
+        check_warn(
+            f"{pending_count} pending skill write(s) need review",
+            "(run: /skills pending)",
+        )
+        issues.append("Review pending skill writes with '/skills pending' before they pile up.")
+
+    usage = _read_skill_usage(skills_dir)
+    agent_created = {
+        name
+        for name, record in usage.items()
+        if name in active_skills and _is_agent_created_skill_record(record)
+    }
+    if agent_created:
+        check_ok(f"{len(agent_created)} curator-managed agent-created skill(s) tracked")
+    elif active_count:
+        check_info("No curator-managed agent-created skills tracked yet")
+
+    curator_cfg = cfg.get("curator") if isinstance(cfg, dict) else {}
+    curator_enabled = True
+    if isinstance(curator_cfg, dict) and "enabled" in curator_cfg:
+        curator_enabled = bool(curator_cfg.get("enabled"))
+
+    if agent_created and not curator_enabled:
+        check_warn("Skill curator disabled while agent-created skills exist", "(curator.enabled: false)")
+        issues.append("Enable the skill curator or periodically run 'hermes curator run --dry-run'.")
+    elif len(agent_created) >= _AGENT_SKILL_REVIEW_WARN_COUNT:
+        age_days = _curator_last_run_age_days(skills_dir)
+        if age_days is None:
+            check_warn(
+                "Skill curator has not recorded a review run",
+                f"({len(agent_created)} agent-created skills tracked)",
+            )
+            issues.append("Run 'hermes curator status' or 'hermes curator run --dry-run' to review agent-created skills.")
+        elif age_days > _CURATOR_STALE_WARN_DAYS:
+            check_warn(
+                "Skill curator review looks stale",
+                f"(last run {age_days} days ago)",
+            )
+            issues.append("Run 'hermes curator run --dry-run' to review stale or overlapping skills.")
+        else:
+            check_ok(f"Skill curator ran recently ({age_days} days ago)")
 
 
 def _read_pyproject_version() -> str | None:
@@ -2310,6 +2566,8 @@ def run_doctor(args):
                 check_warn(f"{_active_memory_provider} plugin not found", "run: hermes memory setup")
         except Exception as _e:
             check_warn(f"{_active_memory_provider} check failed", str(_e))
+
+    _check_long_term_optimization(issues)
 
     try:
         from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists

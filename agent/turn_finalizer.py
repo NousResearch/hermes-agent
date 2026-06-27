@@ -393,6 +393,21 @@ def finalize_turn(
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
+    # Tool-failure verifier footer.
+    # When one or more non-file-mutating tools failed or were blocked during
+    # this turn, add a historical record without retaining raw tool arguments
+    # or result text. A later successful result may have recovered the operation;
+    # the footer deliberately does not claim otherwise.
+    if final_response and not interrupted:
+        try:
+            _failed_tools = getattr(agent, "_turn_failed_tools", None) or []
+            if _failed_tools:
+                footer = agent._format_failed_tool_footer(_failed_tools)
+                if footer:
+                    final_response = final_response.rstrip() + "\n\n" + footer
+        except Exception as _ver_err:
+            logger.debug("failed-tool verifier footer failed: %s", _ver_err)
+
     # Turn-completion explainer.
     # When a turn ends abnormally after substantive work — empty content
     # after retries, a partial/truncated stream, a still-pending tool

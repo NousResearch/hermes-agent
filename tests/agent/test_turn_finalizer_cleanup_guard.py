@@ -43,6 +43,7 @@ class _StubAgent:
         self._response_was_previewed = False
         self._skill_nudge_interval = 0
         self._iters_since_skill = 0
+        self._turn_failed_tools = []
         for attr in (
             "session_input_tokens",
             "session_output_tokens",
@@ -86,6 +87,11 @@ class _StubAgent:
 
     def _file_mutation_verifier_enabled(self):
         return False
+
+    def _format_failed_tool_footer(self, failed_tools):
+        if not failed_tools:
+            return ""
+        return "TOOL FAILURE FOOTER"
 
     def _turn_completion_explainer_enabled(self):
         return False
@@ -182,3 +188,24 @@ def test_text_response_on_last_allowed_call_is_completed():
     )
     assert result["final_response"] == "final report"
     assert result["completed"] is True
+
+
+def test_failed_tool_footer_is_appended_to_final_response():
+    agent = _StubAgent(raise_in=())
+    agent._turn_failed_tools = [
+        {
+            "tool": "terminal",
+            "blocked": True,
+            "error_preview": "Blocked by policy",
+            "command_preview": "git push origin main",
+        }
+    ]
+
+    result = _run(
+        agent,
+        final_response="reported success",
+        api_call_count=1,
+        turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert result["final_response"] == "reported success\n\nTOOL FAILURE FOOTER"

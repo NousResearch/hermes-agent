@@ -2991,6 +2991,63 @@ class AIAgent:
             for path in targets:
                 state.pop(path, None)
 
+    def _record_failed_tool_result(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        *,
+        is_error: bool,
+        blocked: bool = False,
+    ) -> None:
+        """Record a failed or blocked tool call for the turn-end verifier.
+
+        File-mutation tools already have a dedicated verifier footer, so this
+        broader tracker focuses on the remaining tools whose failures can make
+        later external-state claims unreliable.
+        """
+        state = getattr(self, "_turn_failed_tools", None)
+        if state is None or tool_name in _FILE_MUTATING_TOOLS:
+            return
+        if not (is_error or blocked):
+            return
+        if not self._failed_tool_needs_external_state_verification(
+            tool_name, blocked=blocked
+        ):
+            return
+
+        # Retain only categorical metadata. Tool arguments and error payloads
+        # can contain credentials, authorization headers, or signed URLs and
+        # must never flow into the final user-visible verifier footer.
+        state.append(
+            {
+                "tool": tool_name,
+                "blocked": bool(blocked),
+            }
+        )
+
+    @staticmethod
+    def _failed_tool_needs_external_state_verification(
+        tool_name: str,
+        *,
+        blocked: bool = False,
+    ) -> bool:
+        """Return whether a failed tool should trigger external-state caution."""
+        if tool_name in {
+            "terminal",
+            "execute_code",
+            "web_extract",
+            "send_message",
+            "process",
+            "computer_use",
+        }:
+            return True
+        if tool_name.startswith("browser_"):
+            return True
+        if blocked and tool_name == "read_file":
+            return True
+        return False
+
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.
 
@@ -3086,6 +3143,37 @@ class AIAgent:
         # Neutralize any path the preview text echoed (the bullet path is
         # already backticked above; the lookbehind keeps it from being
         # double-wrapped).
+        return cls._neutralize_footer_paths("\n".join(lines))
+
+    @classmethod
+    def _format_failed_tool_footer(cls, failed_tools: List[Dict[str, Any]]) -> str:
+        """Render a concise footer when this turn had tool failures/blocks.
+
+        This makes it structurally harder for the final prose to imply that an
+        external side effect definitely happened when one or more prerequisite
+        tools actually failed or were blocked.
+        """
+        if not failed_tools:
+            return ""
+        lines = [
+            "⚠️ Tool-failure verifier (historical record): one or more tool calls failed or were "
+            "blocked this turn. These entries do not establish whether a later call recovered. "
+            "Treat any external side effect mentioned above (for example repo creation, push, "
+            "publish, deploy, or remote edits) as unverified unless a later successful tool "
+            "result explicitly confirmed it."
+        ]
+        shown = 0
+        for info in failed_tools:
+            if shown >= 5:
+                break
+            tool = str(info.get("tool") or "tool")
+            blocked = bool(info.get("blocked"))
+            detail = "blocked before execution" if blocked else "failed"
+            lines.append(f"  • `{tool}` — {detail}")
+            shown += 1
+        remaining = len(failed_tools) - shown
+        if remaining > 0:
+            lines.append(f"  • … and {remaining} more")
         return cls._neutralize_footer_paths("\n".join(lines))
 
     def _turn_completion_explainer_enabled(self) -> bool:
@@ -6177,11 +6265,37 @@ class AIAgent:
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
+        if failed:
+            function_result = self._append_failed_tool_verification_notice(
+                tool_name, function_result
+            )
         return function_result
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
+
+    @staticmethod
+    def _append_failed_tool_verification_notice(
+        tool_name: str,
+        function_result: str,
+    ) -> str:
+        """Append a short anti-false-success notice to failed tool results."""
+        if not isinstance(function_result, str) or not function_result.strip():
+            return function_result
+        if tool_name in _FILE_MUTATING_TOOLS:
+            return function_result
+        if not AIAgent._failed_tool_needs_external_state_verification(tool_name):
+            return function_result
+        marker = "External-state verification"
+        if marker in function_result:
+            return function_result
+        return (
+            function_result
+            + "\n\n[External-state verification: this tool call failed, so any claimed external side effect "
+              "(for example repo creation, push, publish, deploy, or remote edits) remains unverified "
+              "unless a later successful tool result explicitly confirms it.]"
+        )
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.

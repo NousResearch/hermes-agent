@@ -765,8 +765,9 @@ def build_turn_context(
                 else _gateway_notes
             )
 
-    # Per-turn file-mutation verifier state.
+    # Per-turn verifier state.
     agent._turn_failed_file_mutations = {}
+    agent._turn_failed_tools = []
     agent._turn_file_mutation_paths = set()
     agent._verification_stop_nudges = 0
     agent._pre_verify_nudges = 0

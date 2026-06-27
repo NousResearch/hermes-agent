@@ -295,6 +295,7 @@ export default function App() {
         scalesPageToFit={false}
         automaticallyAdjustContentInsets={false}
         contentInsetAdjustmentBehavior="never"
+        hideKeyboardAccessoryView
         allowsBackForwardNavigationGestures
         setSupportMultipleWindows={false}
         onMessage={handleMessage}

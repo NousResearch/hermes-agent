@@ -153,6 +153,13 @@ export function useRouteResume({
       return
     }
 
+    // A sleep/wake WS reconnect can reopen on /new while the active runtime
+    // session is still the user's current chat. Preserve it instead of turning
+    // the reconnect into an explicit New Session action.
+    if (isNewChatRoute(locationPathname) && gatewayBecameOpen && activeSessionId && !freshDraftReady) {
+      return
+    }
+
     if (
       isNewChatRoute(locationPathname) &&
       !creatingSessionRef.current &&

@@ -14,7 +14,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner, _parse_session_key
+from gateway.run import (
+    GatewayRunner,
+    _format_background_process_user_notification,
+    _parse_session_key,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +158,7 @@ class TestLoadBackgroundNotificationsMode:
             "result",
             [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)],
             1,
-            "finished with exit code 0",
+            "completed (exit 0)",
         ),
         # error mode: exit 0 → no notification
         (
@@ -168,14 +172,14 @@ class TestLoadBackgroundNotificationsMode:
             "error",
             [SimpleNamespace(output_buffer="traceback\n", exited=True, exit_code=1)],
             1,
-            "finished with exit code 1",
+            "failed (exit 1)",
         ),
         # all mode: exited → notifies
         (
             "all",
             [SimpleNamespace(output_buffer="ok\n", exited=True, exit_code=0)],
             1,
-            "finished with exit code 0",
+            "completed (exit 0)",
         ),
     ],
 )
@@ -202,6 +206,53 @@ async def test_run_process_watcher_respects_notification_mode(
     if expected_fragment is not None:
         sent_message = adapter.send.await_args.args[1]
         assert expected_fragment in sent_message
+
+
+@pytest.mark.asyncio
+async def test_finished_notification_strips_ansi_and_bounds_output(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    raw_output = (
+        "\x1b[0;1;31mFAILED\x1b[0m noisy banner\n"
+        + "\n".join(f"line {i}" for i in range(30))
+        + "\n"
+    )
+    sessions = [SimpleNamespace(output_buffer=raw_output, exited=True, exit_code=1)]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "error")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    sent_message = adapter.send.await_args.args[1]
+    assert sent_message.startswith("❌ Background process `proc_test` failed (exit 1).")
+    assert "```text" in sent_message
+    assert "\x1b" not in sent_message
+    assert "Here's the final output" not in sent_message
+    assert "FAILED noisy banner" not in sent_message
+    assert "line 18" in sent_message
+    assert "line 0" not in sent_message
+    assert len(sent_message) < 1200
+
+
+def test_finished_notification_redacts_and_escapes_user_facing_tail():
+    sent_message = _format_background_process_user_notification(
+        "proc_test",
+        1,
+        "leak sk-testSECRET1234567890 and @everyone\n```\nbreakout\n```\n",
+    )
+
+    assert "sk-testSECRET" not in sent_message
+    assert "[REDACTED]" in sent_message
+    assert "@everyone" not in sent_message
+    assert "@\u200beveryone" in sent_message
+    assert "\n```\nbreakout" not in sent_message
+    assert "`\u200b``" in sent_message
 
 
 @pytest.mark.asyncio

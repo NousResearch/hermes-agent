@@ -38,6 +38,8 @@ export function PageHeaderProvider({
   /** Env jump-nav is wide — stack below title on small screens so KEYS stays readable. */
   const isEnvRoute =
     pathname === "/env" || pathname.startsWith("/env/");
+  const isMissionControlRoute =
+    pathname === "/mission-control" || pathname === "/mission-control/";
 
   const value = useMemo(
     () => ({
@@ -51,6 +53,7 @@ export function PageHeaderProvider({
   return (
     <PageHeaderContext.Provider value={value}>
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+        {!isMissionControlRoute && (
         <header
           className={cn(
             "z-1 w-full shrink-0",
@@ -120,6 +123,7 @@ export function PageHeaderProvider({
             ) : null}
           </div>
         </header>
+        )}
 
         <main
           className={cn(

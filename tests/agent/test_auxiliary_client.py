@@ -3445,6 +3445,54 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert fake_client.responses.kwargs["stream"] is True
         assert response.choices[0].message.content == "summary"
 
+    def test_backfills_when_completed_response_output_is_null(self):
+        output_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="backfilled summary")],
+        )
+
+        class NullOutputStream:
+            def __iter__(self):
+                return iter((SimpleNamespace(type="response.output_item.done", item=output_item),))
+
+            def close(self):
+                pass
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                assert kwargs.get("stream") is True
+                return NullOutputStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "title this"}])
+
+        assert response.choices[0].message.content == "backfilled summary"
+
+    def test_synthesizes_text_delta_when_completed_response_output_is_null(self):
+        class NullOutputDeltaStream:
+            def __iter__(self):
+                return iter((
+                    SimpleNamespace(type="response.output_text.delta", delta="delta "),
+                    SimpleNamespace(type="response.output_text.delta", delta="summary"),
+                ))
+
+            def close(self):
+                pass
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                assert kwargs.get("stream") is True
+                return NullOutputDeltaStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "title this"}])
+
+        assert response.choices[0].message.content == "delta summary"
+
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class _SlowAliveCreateStream:
             def __iter__(self):

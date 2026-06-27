@@ -533,6 +533,64 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
 
 
+def _format_background_process_user_notification(
+    session_id: str,
+    exit_code: Optional[int],
+    output: str,
+    *,
+    max_lines: int = 12,
+    max_chars: int = 900,
+) -> str:
+    """Render a bounded, human-readable background-process notification.
+
+    Gateway notifications go directly to messaging platforms, so they must not
+    look like synthetic model instructions and must not dump raw terminal walls.
+    """
+    from tools.ansi_strip import strip_ansi
+
+    status_icon = "✅" if exit_code == 0 else "❌"
+    status_word = "completed" if exit_code == 0 else "failed"
+    clean = strip_ansi(output or "")
+    clean = clean.replace("\r\n", "\n").replace("\r", "\n")
+    clean = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", clean)
+
+    lines = [line.rstrip() for line in clean.splitlines() if line.strip()]
+    omitted_lines = max(0, len(lines) - max_lines)
+    tail = "\n".join(lines[-max_lines:]) if lines else ""
+    omitted_chars = 0
+    if len(tail) > max_chars:
+        omitted_chars = len(tail) - max_chars
+        tail = tail[-max_chars:]
+        # Avoid starting mid-line when possible.
+        first_newline = tail.find("\n")
+        if first_newline != -1:
+            tail = tail[first_newline + 1 :]
+
+    summary = f"{status_icon} Background process `{session_id}` {status_word} (exit {exit_code})."
+    if not tail:
+        return f"{summary}\nNo output captured."
+
+    omission_parts = []
+    if omitted_lines:
+        omission_parts.append(f"{omitted_lines} earlier line{'s' if omitted_lines != 1 else ''}")
+    if omitted_chars:
+        omission_parts.append(f"{omitted_chars} earlier char{'s' if omitted_chars != 1 else ''}")
+    # This text is sent directly to messaging platforms, not back through the
+    # model. Keep it inert: redact common secret shapes, prevent markdown code
+    # fence breakout, and neutralize mass/ping mentions.
+    tail = _redact_gateway_user_facing_secrets(tail)
+    tail = tail.replace("```", "`\u200b``")
+    tail = re.sub(
+        r"@(everyone|here)\b",
+        lambda match: f"@\u200b{match.group(1)}",
+        tail,
+        flags=re.IGNORECASE,
+    )
+
+    omission_note = f" ({', '.join(omission_parts)} omitted)" if omission_parts else ""
+    return f"{summary}\nLast output{omission_note}:\n```text\n{tail}\n```"
+
+
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
@@ -14019,10 +14077,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or (notify_mode == "error" and session.exit_code not in {0, None})
                 )
                 if should_notify:
-                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
-                    message_text = (
-                        f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                        f"Here's the final output:\n{new_output}]"
+                    message_text = _format_background_process_user_notification(
+                        session_id,
+                        session.exit_code,
+                        session.output_buffer or "",
                     )
                     adapter = None
                     for p, a in self.adapters.items():

@@ -1786,17 +1786,34 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
-    cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
-    )
+    # Jobs with delivery_policy="always" skip the generic [SILENT] suppression
+    # instruction.  Recurring briefing / report jobs that always need to
+    # deliver a concise update (even an all-clear) set this flag so the
+    # scheduler does not inject contradictory "suppress when nothing new"
+    # guidance that conflicts with their task-specific prompt.  See #53230.
+    _always_deliver = job.get("delivery_policy") == "always"
+    if _always_deliver:
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the user — do NOT use send_message or try to deliver "
+            "the output yourself. Just produce your report/output as your "
+            "final response and the system handles the rest. "
+            "This job requires delivery on every run — do NOT suppress "
+            "output. Always produce a concise report, even an all-clear.]\n\n"
+        )
+    else:
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the user — do NOT use send_message or try to deliver "
+            "the output yourself. Just produce your report/output as your "
+            "final response and the system handles the rest. "
+            "SILENT: If there is genuinely nothing new to report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more.]\n\n"
+        )
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")
@@ -2781,7 +2798,11 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
         # #46917).  Keeps the intentional bracketed-prefix / trailing-line
         # tolerance the cron contract relies on.
-        if should_deliver and success and _is_cron_silence_response(deliver_content):
+        # Jobs with delivery_policy="always" bypass silence suppression —
+        # they are committed to delivering on every run (#53230).
+        if (should_deliver and success
+                and job.get("delivery_policy") != "always"
+                and _is_cron_silence_response(deliver_content)):
             logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
             should_deliver = False
 

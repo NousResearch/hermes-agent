@@ -2500,6 +2500,84 @@ class TestBuildJobPromptSilentHint:
         prompt_pos = result.index("My custom prompt")
         assert system_pos < prompt_pos
 
+    def test_hint_omitted_when_delivery_policy_always(self):
+        """delivery_policy='always' suppresses the [SILENT] instruction (#53230)."""
+        job = {"prompt": "Send daily briefing", "delivery_policy": "always"}
+        result = _build_job_prompt(job)
+        assert "[SILENT]" not in result
+        assert "do NOT suppress" in result
+        assert "Send daily briefing" in result
+
+    def test_hint_present_when_delivery_policy_auto(self):
+        """delivery_policy='auto' (or absent) keeps the [SILENT] instruction."""
+        job = {"prompt": "Check for updates", "delivery_policy": "auto"}
+        result = _build_job_prompt(job)
+        assert "[SILENT]" in result
+
+    def test_hint_present_when_delivery_policy_absent(self):
+        """No delivery_policy key => default [SILENT] behaviour."""
+        job = {"prompt": "Check for updates"}
+        result = _build_job_prompt(job)
+        assert "[SILENT]" in result
+
+    def test_delivery_guidance_present_with_always(self):
+        """delivery_policy='always' still tells agent about auto-delivery."""
+        job = {"prompt": "Report", "delivery_policy": "always"}
+        result = _build_job_prompt(job)
+        assert "do NOT use send_message" in result
+        assert "automatically delivered" in result
+
+
+class TestDeliveryPolicyAlwaysSuppressesSilent:
+    """delivery_policy='always' bypasses [SILENT] delivery suppression (#53230)."""
+
+    def _make_job(self, delivery_policy=None):
+        job = {
+            "id": "briefing-job",
+            "name": "daily briefing",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+        if delivery_policy:
+            job["delivery_policy"] = delivery_policy
+        return job
+
+    def test_always_policy_delivers_despite_silent_marker(self):
+        """Agent returned [SILENT] but delivery_policy='always' forces delivery."""
+        job = self._make_job(delivery_policy="always")
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+
+    def test_default_policy_still_suppresses(self):
+        """Without delivery_policy, [SILENT] still suppresses as before."""
+        job = self._make_job()
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_not_called()
+
+    def test_always_policy_delivers_normal_report(self):
+        """Normal (non-SILENT) report still delivered with delivery_policy='always'."""
+        job = self._make_job(delivery_policy="always")
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# report", "3 items merged", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+
 
 class TestParseWakeGate:
     """Unit tests for _parse_wake_gate — pure function, no side effects."""

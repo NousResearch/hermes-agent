@@ -72,9 +72,9 @@ for (const fullPath of walkFiles(distDir)) {
   // a CSS asset at dist root. Preserve neither ?query nor #hash because the data
   // URI fully identifies the embedded asset.
   html = html.replace(new RegExp(`(?<![A-Za-z0-9+/=])(?:\\./)?${relPattern}(?:[?#][^\\"'\\)<>]*)?`, 'g'), uri);
-  if (!rel.includes('/')) {
-    html = html.replace(new RegExp(`(?<![A-Za-z0-9+/=])(?:\\./)?${basenamePattern}(?:[?#][^\\"'\\)<>]*)?`, 'g'), uri);
-  }
+  // CSS lives next to its sibling assets inside dist/assets/, so url() refs use
+  // ./basename — match the basename too, not just the dist-relative path.
+  html = html.replace(new RegExp(`(?<![A-Za-z0-9+/=])(?:\\./)?${basenamePattern}(?:[?#][^\\"'\\)<>]*)?`, 'g'), uri);
 }
 
 const outPath = join(srcDir, 'generated', 'bundled-renderer-html.ts');

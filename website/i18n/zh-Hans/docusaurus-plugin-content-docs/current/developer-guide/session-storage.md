@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls TEXT,
     tool_name TEXT,
     timestamp REAL NOT NULL,
+    ended_at REAL,
+    duration_ms INTEGER,
     token_count INTEGER,
     finish_reason TEXT,
     reasoning TEXT,
@@ -96,7 +98,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 - `tool_calls` 以 JSON 字符串存储（序列化的 tool call 对象列表）
 - `reasoning_details`、`codex_reasoning_items` 和 `codex_message_items` 以 JSON 字符串存储
 - `reasoning` 存储提供商暴露的原始推理文本
-- 时间戳为 Unix epoch 浮点数（`time.time()`）
+- `timestamp` 是消息开始/排序时间，使用 Unix epoch 浮点数（`time.time()`）
+- `ended_at` 和 `duration_ms` 是可空的工具结果 span 元数据；只有 Hermes 测到真实工具执行耗时时才会写入。它们只用于本地持久化/回放，不会发送给模型提供商
 
 ### FTS5 全文搜索
 

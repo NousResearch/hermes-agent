@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls TEXT,
     tool_name TEXT,
     timestamp REAL NOT NULL,
+    ended_at REAL,
+    duration_ms INTEGER,
     token_count INTEGER,
     finish_reason TEXT,
     reasoning TEXT,
@@ -98,7 +100,8 @@ Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
 - `reasoning` stores the raw reasoning text for providers that expose it
-- Timestamps are Unix epoch floats (`time.time()`)
+- `timestamp` is the message start/ordering time as a Unix epoch float (`time.time()`)
+- `ended_at` and `duration_ms` are nullable tool-result span metadata, populated only when Hermes measured real tool execution timing; they are local persistence/replay fields and are stripped from provider payloads
 
 ### FTS5 Full-Text Search
 

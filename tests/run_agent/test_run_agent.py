@@ -6178,6 +6178,45 @@ class TestCredentialPoolRecovery:
         agent._swap_credential.assert_called_once_with(next_entry)
 
 
+    def test_recover_with_pool_rotates_gemini_free_tier_429_without_same_key_retry(self, agent):
+        next_entry = SimpleNamespace(label="secondary")
+        captured = {}
+
+        class _Pool:
+            provider = "gemini"
+
+            def current(self):
+                return SimpleNamespace(label="primary")
+
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                captured["status_code"] = status_code
+                captured["error_context"] = error_context
+                return next_entry
+
+        agent.provider = "gemini"
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
+            error_context={
+                "reason": "RESOURCE_EXHAUSTED",
+                "message": (
+                    "Quota exceeded for metric: "
+                    "generativelanguage.googleapis.com/"
+                    "generate_content_free_tier_requests"
+                ),
+            },
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        assert captured["status_code"] == 429
+        assert captured["error_context"]["reason"] == "RESOURCE_EXHAUSTED"
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+
     def test_recover_with_pool_refreshes_on_401(self, agent):
         """401 with successful refresh should swap to refreshed credential."""
         refreshed_entry = SimpleNamespace(label="refreshed-primary", id="abc")

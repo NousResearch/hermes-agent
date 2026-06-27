@@ -35,7 +35,7 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
-from agent.credential_pool import STATUS_EXHAUSTED
+from agent.credential_pool import STATUS_EXHAUSTED, is_gemini_daily_quota_error
 from agent.error_classifier import FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
@@ -840,7 +840,12 @@ def recover_with_credential_pool(
                 or "usage limit reached" in context_message
                 or "usage limit has been reached" in context_message
             )
-        if not has_retried_429 and not usage_limit_reached:
+        gemini_daily_quota = is_gemini_daily_quota_error(
+            getattr(agent, "provider", None),
+            status_code,
+            error_context,
+        )
+        if not has_retried_429 and not usage_limit_reached and not gemini_daily_quota:
             return False, True
         rotate_status = status_code if status_code is not None else 429
         next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)

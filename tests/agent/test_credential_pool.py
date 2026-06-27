@@ -334,6 +334,136 @@ def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatc
     assert pool.select() is None
 
 
+def test_gemini_free_tier_daily_quota_stays_exhausted_after_one_hour(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    now = 1_700_000_000.0
+    monkeypatch.setattr("agent.credential_pool.time.time", lambda: now)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "gemini": [
+                    {
+                        "id": "gemini-free-tier",
+                        "label": "free-tier",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "AIza-free-tier",
+                        "last_status": "exhausted",
+                        "last_status_at": now - (2 * 60 * 60),
+                        "last_error_code": 429,
+                        "last_error_reason": "RESOURCE_EXHAUSTED",
+                        "last_error_message": (
+                            "Quota exceeded for metric: "
+                            "generativelanguage.googleapis.com/"
+                            "generate_content_free_tier_requests"
+                        ),
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("gemini")
+
+    assert pool.has_available() is False
+    assert pool.select() is None
+
+
+def test_gemini_daily_quota_preserves_shorter_provider_reset(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    now = [1_700_000_000.0]
+    monkeypatch.setattr("agent.credential_pool.time.time", lambda: now[0])
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "gemini": [
+                    {
+                        "id": "gemini-provider-reset",
+                        "label": "provider-reset",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "AIza-provider-reset",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("gemini")
+    assert pool.select().id == "gemini-provider-reset"
+
+    provider_reset_at = now[0] + 5 * 60
+    assert pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={
+            "reason": "RESOURCE_EXHAUSTED",
+            "message": (
+                "Quota exceeded for metric: "
+                "generativelanguage.googleapis.com/"
+                "generate_content_free_tier_requests"
+            ),
+            "reset_at": provider_reset_at,
+        },
+    ) is None
+
+    exhausted = pool.entries()[0]
+    assert exhausted.last_error_reset_at == provider_reset_at
+    now[0] = provider_reset_at + 1
+
+    recovered = pool.select()
+    assert recovered is not None
+    assert recovered.id == "gemini-provider-reset"
+    assert recovered.last_status == "ok"
+
+
+def test_gemini_transient_retry_delay_does_not_use_daily_quota_cooldown(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    now = 1_700_000_000.0
+    monkeypatch.setattr("agent.credential_pool.time.time", lambda: now)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "gemini": [
+                    {
+                        "id": "gemini-transient",
+                        "label": "transient",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "AIza-transient",
+                        "last_status": "exhausted",
+                        "last_status_at": now - 60,
+                        "last_error_code": 429,
+                        "last_error_message": "Rate limit exceeded. Please retry in 6.19s.",
+                        "last_error_reset_at": now - 1,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("gemini")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.id == "gemini-transient"
+    assert entry.last_status == "ok"
+
+
 def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

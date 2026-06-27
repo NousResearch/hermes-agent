@@ -8223,65 +8223,15 @@ async def list_mcp_catalog(profile: Optional[str] = None):
         _log.exception("mcp_catalog import failed")
         raise HTTPException(status_code=500, detail=f"Catalog unavailable: {exc}")
 
-    entries = []
     try:
         with _profile_scope(profile):
-            catalog_entries = list(mcp_catalog.list_catalog())
-            installed_state = {
-                e.name: (mcp_catalog.is_installed(e.name), mcp_catalog.is_enabled(e.name))
-                for e in catalog_entries
-            }
-        for entry in catalog_entries:
-            auth = entry.auth
-            transport = entry.transport
-            install = entry.install
-            entries.append({
-                "name": entry.name,
-                "description": entry.description,
-                "source": entry.source,
-                "transport": transport.type,
-                "auth_type": getattr(auth, "type", "none"),
-                # Env vars the user must supply (names + prompts only, never values).
-                "required_env": [
-                    {"name": e.name, "prompt": e.prompt, "required": e.required}
-                    for e in getattr(auth, "env", []) or []
-                ],
-                # Transport details so the UI can show exactly what connects/runs.
-                # The trust model (docs: user-guide/features/mcp) tells users to
-                # inspect command/args/url and the install bootstrap before
-                # installing — surface them rather than hiding them in the repo.
-                "command": transport.command,
-                "args": list(transport.args or []),
-                "url": transport.url,
-                # Git bootstrap (present only for entries that clone + build).
-                "install_url": install.url if install else None,
-                "install_ref": install.ref if install else None,
-                "bootstrap": list(install.bootstrap) if install else [],
-                # Default tool pre-selection hint and post-install guidance.
-                "default_enabled": list(entry.tools.default_enabled)
-                if entry.tools.default_enabled is not None
-                else None,
-                "post_install": entry.post_install or "",
-                "needs_install": entry.install is not None,
-                "installed": installed_state.get(entry.name, (False, False))[0],
-                "enabled": installed_state.get(entry.name, (False, False))[1],
-            })
+            return mcp_catalog.catalog_api_payload()
     except HTTPException:
         # Unknown/invalid profile → 404, not a silently-empty catalog.
         raise
     except Exception:
         _log.exception("list_mcp_catalog failed")
-
-    diagnostics = []
-    try:
-        diagnostics = [
-            {"name": n, "kind": k, "message": m}
-            for (n, k, m) in mcp_catalog.catalog_diagnostics()
-        ]
-    except Exception:
-        pass
-
-    return {"entries": entries, "diagnostics": diagnostics}
+        return {"entries": [], "diagnostics": []}
 
 
 class MCPCatalogInstall(BaseModel):

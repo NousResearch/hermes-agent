@@ -311,6 +311,57 @@ def catalog_diagnostics() -> List[tuple]:
     return list(_CATALOG_DIAGNOSTICS)
 
 
+def catalog_api_payload() -> Dict[str, Any]:
+    """Return the machine-readable catalog contract used by dashboard + CLI.
+
+    Keep this payload in sync with ``GET /api/mcp/catalog`` so command-line
+    consumers can build against the same stable shape as the control-center UI.
+    Secret values are never included; required env specs expose names/prompts
+    only.
+    """
+    catalog_entries = list_catalog()
+    installed_state = {
+        e.name: (is_installed(e.name), is_enabled(e.name))
+        for e in catalog_entries
+    }
+
+    entries = []
+    for entry in catalog_entries:
+        auth = entry.auth
+        transport = entry.transport
+        install = entry.install
+        entries.append({
+            "name": entry.name,
+            "description": entry.description,
+            "source": entry.source,
+            "transport": transport.type,
+            "auth_type": getattr(auth, "type", "none"),
+            "required_env": [
+                {"name": e.name, "prompt": e.prompt, "required": e.required}
+                for e in getattr(auth, "env", []) or []
+            ],
+            "command": transport.command,
+            "args": list(transport.args or []),
+            "url": transport.url,
+            "install_url": install.url if install else None,
+            "install_ref": install.ref if install else None,
+            "bootstrap": list(install.bootstrap) if install else [],
+            "default_enabled": list(entry.tools.default_enabled)
+            if entry.tools.default_enabled is not None
+            else None,
+            "post_install": entry.post_install or "",
+            "needs_install": entry.install is not None,
+            "installed": installed_state.get(entry.name, (False, False))[0],
+            "enabled": installed_state.get(entry.name, (False, False))[1],
+        })
+
+    diagnostics = [
+        {"name": n, "kind": k, "message": m}
+        for (n, k, m) in catalog_diagnostics()
+    ]
+    return {"entries": entries, "diagnostics": diagnostics}
+
+
 def get_entry(name: str) -> Optional[CatalogEntry]:
     """Look up a single entry by name. ``official/<name>`` prefix accepted."""
     if name.startswith("official/"):

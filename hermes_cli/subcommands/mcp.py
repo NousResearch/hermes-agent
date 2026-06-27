@@ -91,9 +91,14 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "picker",
         help="Interactive catalog picker (also the default for `hermes mcp`)",
     )
-    mcp_sub.add_parser(
+    mcp_catalog_p = mcp_sub.add_parser(
         "catalog",
         help="List Nous-approved MCPs available for one-click install",
+    )
+    mcp_catalog_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the same machine-readable payload as GET /api/mcp/catalog",
     )
     mcp_install_p = mcp_sub.add_parser(
         "install",

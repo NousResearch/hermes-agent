@@ -18,6 +18,7 @@ entries in one session.
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass
 from typing import List, Optional
@@ -28,6 +29,7 @@ from hermes_cli.curses_ui import curses_single_select
 from hermes_cli.mcp_catalog import (
     CatalogEntry,
     CatalogError,
+    catalog_api_payload,
     catalog_diagnostics,
     install_entry,
     is_enabled,
@@ -266,8 +268,11 @@ def _print_rows_text(rows: List[_Row]) -> None:
     print()
 
 
-def show_catalog() -> None:
+def show_catalog(*, json_output: bool = False) -> None:
     """`hermes mcp catalog` — print the curated list + custom servers, no interaction."""
+    if json_output:
+        print(json.dumps(catalog_api_payload(), indent=2))
+        return
     _print_rows_text(_build_rows())
 
 

@@ -7,6 +7,7 @@ launch an MCP is mocked.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -812,3 +813,73 @@ class TestShippedCatalog:
             assert entry.name
             assert entry.description
             assert entry.transport.type in ("stdio", "http")
+
+
+class TestCatalogJsonOutput:
+    def test_catalog_payload_matches_dashboard_contract(self, catalog_dir):
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(
+                auth={
+                    "type": "api_key",
+                    "env": [
+                        {
+                            "name": "DEMO_KEY",
+                            "prompt": "API key",
+                            "required": True,
+                            "secret": True,
+                        }
+                    ],
+                },
+                install={
+                    "type": "git",
+                    "url": "https://example.com/demo.git",
+                    "ref": "v1.0.0",
+                    "bootstrap": ["uv sync"],
+                },
+                tools={"default_enabled": ["search"]},
+                post_install="Restart Hermes.",
+            ),
+        )
+
+        from hermes_cli.mcp_catalog import catalog_api_payload
+
+        assert catalog_api_payload() == {
+            "entries": [
+                {
+                    "name": "demo",
+                    "description": "Demo MCP",
+                    "source": "https://example.com",
+                    "transport": "stdio",
+                    "auth_type": "api_key",
+                    "required_env": [
+                        {"name": "DEMO_KEY", "prompt": "API key", "required": True}
+                    ],
+                    "command": "npx",
+                    "args": ["-y", "demo-mcp"],
+                    "url": None,
+                    "install_url": "https://example.com/demo.git",
+                    "install_ref": "v1.0.0",
+                    "bootstrap": ["uv sync"],
+                    "default_enabled": ["search"],
+                    "post_install": "Restart Hermes.",
+                    "needs_install": True,
+                    "installed": False,
+                    "enabled": False,
+                }
+            ],
+            "diagnostics": [],
+        }
+
+    def test_catalog_json_cli_prints_payload(self, catalog_dir, capsys):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+
+        from hermes_cli.mcp_picker import show_catalog
+
+        show_catalog(json_output=True)
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["entries"][0]["name"] == "demo"
+        assert payload["entries"][0]["transport"] == "stdio"
+        assert payload["diagnostics"] == []

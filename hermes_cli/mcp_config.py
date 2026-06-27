@@ -868,7 +868,7 @@ def mcp_command(args):
         return
     if action == "catalog":
         from hermes_cli.mcp_picker import show_catalog
-        show_catalog()
+        show_catalog(json_output=getattr(args, "json", False))
         return
     if action == "install":
         from hermes_cli.mcp_picker import install_by_name

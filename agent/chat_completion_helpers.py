@@ -34,7 +34,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
 )
 from tools.terminal_tool import is_persistent_env
-from utils import base_url_host_matches, base_url_hostname, env_int
+from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
 
@@ -1042,6 +1042,35 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
 
 
+def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
+    """Point the cached system prompt's ``Model:``/``Provider:`` lines at
+    the active runtime after a provider switch.
+
+    The system prompt is session-stable and replayed verbatim for prefix-cache
+    warmth, but after a failover the new backend's cache is cold anyway —
+    while a stale identity line makes the agent misreport which model it is
+    when asked.  Rewrite the lines in place WITHOUT persisting to the session
+    DB: the stored row keeps the primary's labels, so when the primary is
+    restored the prompt is byte-identical to the stored copy again and its
+    prefix cache still matches.
+
+    Only the LAST occurrence of each line is touched — the identity lines
+    live in the volatile tail of the prompt, and earlier matches could be
+    user content (memory snapshots, context files).
+    """
+    sp = getattr(agent, "_cached_system_prompt", None)
+    if not isinstance(sp, str) or not sp:
+        return
+    for label, value in (("Model", model), ("Provider", provider)):
+        if not value:
+            continue
+        matches = list(re.finditer(rf"(?m)^{label}: .*$", sp))
+        if matches:
+            last = matches[-1]
+            sp = f"{sp[:last.start()]}{label}: {value}{sp[last.end():]}"
+    agent._cached_system_prompt = sp
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -1181,14 +1210,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._transport_cache.clear()
         agent._fallback_activated = True
 
-        # Clear the credential pool when the fallback provider doesn't match
-        # the pool's provider.  The pool was seeded for the primary provider;
-        # leaving it attached means downstream recovery (rate_limit / billing /
-        # auth) calls ``_swap_credential`` with a primary entry which overwrites
-        # the agent's ``base_url`` back to the primary's endpoint — every
-        # fallback request then 404s against the wrong host.  See #33163.
+        # Rebind the credential pool to the fallback provider when the provider
+        # changes.  Keeping the primary pool attached would make downstream
+        # recovery (rate_limit / billing / auth) mutate the wrong credential
+        # set and can overwrite the fallback's base_url back to the primary
+        # endpoint.  See #33163.
+        #
         # When the fallback shares the pool's provider (e.g. both openrouter
-        # entries with different routing) the pool is preserved.
+        # entries with different routing) the pool is preserved.  When the
+        # providers differ, load the fallback provider's own pool if one exists
+        # so provider-specific rotation continues to work after the switch.
         _existing_pool = getattr(agent, "_credential_pool", None)
         if _existing_pool is not None:
             _pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
@@ -1199,6 +1230,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                     fb_provider, fb_model, _pool_provider,
                 )
                 agent._credential_pool = None
+        if getattr(agent, "_credential_pool", None) is None:
+            try:
+                from agent.credential_pool import load_pool
+
+                fallback_pool = load_pool(fb_provider)
+                if fallback_pool and fallback_pool.has_credentials():
+                    agent._credential_pool = fallback_pool
+                    logger.info(
+                        "Fallback to %s/%s: attached fallback credential pool",
+                        fb_provider, fb_model,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Fallback to %s/%s: could not attach credential pool: %s",
+                    fb_provider, fb_model, exc,
+                )
 
         # Honor per-provider / per-model request_timeout_seconds for the
         # fallback target (same knob the primary client uses).  None = use
@@ -1286,6 +1333,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 provider=agent.provider,
                 api_mode=agent.api_mode,
             )
+
+        # Keep the prompt's self-identity in sync with the model actually
+        # answering, so "what model are you?" doesn't report the primary.
+        rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
         agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "
@@ -1761,14 +1812,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _base_timeout = (
             _provider_timeout_cfg
             if _provider_timeout_cfg is not None
-            else float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+            else env_float("HERMES_API_TIMEOUT", 1800.0)
         )
         # Read timeout: config wins here too.  Otherwise use
         # HERMES_STREAM_READ_TIMEOUT (default 120s) for cloud providers.
         if _provider_timeout_cfg is not None:
             _stream_read_timeout = _provider_timeout_cfg
         else:
-            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
+            _stream_read_timeout = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
             # Local providers (Ollama, llama.cpp, vLLM) can take minutes for
             # prefill on large contexts before producing the first token.
             # Auto-increase the httpx read timeout unless the user explicitly
@@ -2508,7 +2559,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if _cfg_stale is not None:
         _stream_stale_timeout_base = _cfg_stale
     else:
-        _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
+        _stream_stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
     # for prefill on large contexts.  Disable the stale detector unless
     # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
@@ -2528,6 +2579,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
         else:
             _stream_stale_timeout = _stream_stale_timeout_base
+        # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
+        # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
+        # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
+        # model threshold during their thinking phase.  The cloud gateway
+        # upstream kills the socket first, surfacing as BrokenPipeError.
+        # Raises the floor only — never overrides explicit user config
+        # (handled by get_provider_stale_timeout above).
+        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
+        if _reasoning_floor is not None:
+            _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()

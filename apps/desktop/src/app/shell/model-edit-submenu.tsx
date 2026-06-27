@@ -166,7 +166,11 @@ export function ModelEditSubmenu({
       }
       void (async () => {
         try {
-          await requestGateway('config.set', { key: 'fast', session_id: activeSessionId, value: enabled ? 'fast' : 'normal' })
+          await requestGateway('config.set', {
+            key: 'fast',
+            session_id: activeSessionId,
+            value: enabled ? 'fast' : 'normal'
+          })
         } catch (err) {
           setCurrentFastMode(!enabled)
           setModelPreset(provider, model, { fast: !enabled })

@@ -11,7 +11,6 @@ import {
   useMessageRuntime
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { IconPlayerStopFilled } from '@tabler/icons-react'
 import {
   type ClipboardEvent,
   type ComponentProps,
@@ -64,6 +63,7 @@ import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { ThreadMessageList } from '@/components/assistant-ui/thread-list'
+import { ThreadTimeline } from '@/components/assistant-ui/thread-timeline'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
@@ -91,19 +91,25 @@ import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runti
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
-import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
+import { GitBranchIcon, Loader2Icon, StopFilled, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { $backgroundResume } from '@/store/background-delegation'
 import { $compactionActive } from '@/store/compaction'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
+import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $connection } from '@/store/session'
 import { notifyThreadEditClose, notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
 
 type ThreadLoadingState = 'response' | 'session'
+interface RestoreMessageTarget {
+  text: string
+  userOrdinal: number | null
+}
 
 interface MessageActionProps {
   messageId: string
@@ -170,7 +176,7 @@ export const Thread: FC<{
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => Promise<void> | void
   onDismissError?: (messageId: string) => void
-  onRestoreToMessage?: (messageId: string) => Promise<void> | void
+  onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
 }> = ({
@@ -186,14 +192,47 @@ export const Thread: FC<{
   sessionId = null,
   sessionKey
 }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+
+  const [restoreConfirmTarget, setRestoreConfirmTarget] = useState<
+    (RestoreMessageTarget & { messageId: string }) | null
+  >(null)
+
+  const closeRestoreConfirm = useCallback(() => setRestoreConfirmTarget(null), [])
+
+  const confirmRestore = useCallback(() => {
+    if (!restoreConfirmTarget || !onRestoreToMessage) {
+      throw new Error('Restore is unavailable for this message.')
+    }
+
+    const { messageId, text, userOrdinal } = restoreConfirmTarget
+
+    closeRestoreConfirm()
+    void Promise.resolve(onRestoreToMessage(messageId, { text, userOrdinal })).catch((error: unknown) => {
+      notifyError(error, 'Restore failed')
+    })
+  }, [closeRestoreConfirm, onRestoreToMessage, restoreConfirmTarget])
+
+  const requestRestoreConfirm = useCallback((messageId: string, target: RestoreMessageTarget) => {
+    setRestoreConfirmTarget({ messageId, ...target })
+  }, [])
+
   const messageComponents = useMemo(
     () => ({
-      AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} onDismissError={onDismissError} />,
+      AssistantMessage: () => (
+        <AssistantMessage onBranchInNewChat={onBranchInNewChat} onDismissError={onDismissError} />
+      ),
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
-      UserMessage: () => <UserMessage onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
+      UserMessage: () => (
+        <UserMessage
+          onCancel={onCancel}
+          onRequestRestoreConfirm={onRestoreToMessage ? requestRestoreConfirm : undefined}
+        />
+      )
     }),
-    [cwd, gateway, onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage, sessionId]
+    [cwd, gateway, onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage, requestRestoreConfirm, sessionId]
   )
 
   const emptyPlaceholder = intro ? (
@@ -208,10 +247,20 @@ export const Thread: FC<{
         clampToComposer={clampToComposer}
         components={messageComponents}
         emptyPlaceholder={emptyPlaceholder}
-        loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : null}
+        loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : <BackgroundResumeNotice />}
         sessionKey={sessionKey}
       />
       {loading === 'session' && <CenteredThreadSpinner />}
+      <ThreadTimeline />
+      <ConfirmDialog
+        confirmLabel={copy.restoreConfirm}
+        description={copy.restoreBody}
+        destructive
+        onClose={closeRestoreConfirm}
+        onConfirm={confirmRestore}
+        open={Boolean(restoreConfirmTarget)}
+        title={copy.restoreTitle}
+      />
     </div>
   )
 }
@@ -377,6 +426,36 @@ const ResponseLoadingIndicator: FC = () => {
   )
 }
 
+// Parked-background affordance: a top-level delegate_task runs in the
+// background, so the parent turn ends and the app goes idle while the subagent
+// keeps working and its result re-enters as a fresh turn later. Instead of a
+// spinner (reads as "stuck"), reuse the same compact, centered system-note
+// chrome as the steer / slash-status lines (SystemMessage above) so it sits in
+// the thread like every other meta line. Idle-only (gated upstream). Null when
+// nothing is parked.
+const BackgroundResumeNotice: FC = () => {
+  const { t } = useI18n()
+  const resume = useStore($backgroundResume)
+
+  if (!resume) {
+    return null
+  }
+
+  const label = resume.activity ?? t.assistant.thread.resumeWhenBackgroundDone(resume.count)
+
+  return (
+    <div
+      aria-live="polite"
+      className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/55"
+      data-slot="aui_background-resume"
+      role="status"
+    >
+      <Codicon className="text-muted-foreground/55" name="sync" size="0.75rem" />
+      <span className="shimmer min-w-0 truncate">{label}</span>
+    </div>
+  )
+}
+
 // Seconds of no visible output (text or part count) before a still-running turn
 // is treated as stalled and the thinking indicator returns at the tail.
 const STREAM_STALL_S = 2
@@ -407,6 +486,10 @@ const StreamStallIndicator: FC = () => {
 
   const [stalled, setStalled] = useState(false)
   const compacting = useStore($compactionActive)
+  // A pending clarify / approval / sudo / secret means the turn is paused on the
+  // user, not working — so don't resurrect the "thinking" timer while they
+  // decide (matches the pet's awaitingInput pose taking priority over busy).
+  const awaitingInput = useStore($activeSessionAwaitingInput)
 
   useEffect(() => {
     setStalled(false)
@@ -415,7 +498,7 @@ const StreamStallIndicator: FC = () => {
     return () => window.clearTimeout(id)
   }, [activity])
 
-  const active = stalled || compacting
+  const active = (stalled || compacting) && !awaitingInput
   const elapsed = useElapsedSeconds(active)
 
   if (!active) {
@@ -797,7 +880,15 @@ function messageAttachmentRefs(value: unknown): string[] {
   return value.every(ref => typeof ref === 'string') ? value : EMPTY_ATTACHMENT_REFS
 }
 
-function StickyHumanMessageContainer({ attachments, children }: { attachments?: ReactNode; children: ReactNode }) {
+function StickyHumanMessageContainer({
+  attachments,
+  children,
+  messageId
+}: {
+  attachments?: ReactNode
+  children: ReactNode
+  messageId?: string
+}) {
   return (
     // Fragment, not a wrapper: a wrapping element becomes the sticky's
     // containing block (it'd stick within its own height = never). The bubble
@@ -806,6 +897,7 @@ function StickyHumanMessageContainer({ attachments, children }: { attachments?: 
     <>
       <div
         className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-1"
+        data-message-id={messageId}
         data-role="user"
         data-slot="aui_user-message-root"
       >
@@ -827,13 +919,13 @@ function StickyHumanMessageContainer({ attachments, children }: { attachments?: 
 // so without the carve-out, clicking a stuck bubble drags the window instead of
 // opening the edit composer.
 const USER_BUBBLE_BASE_CLASS =
-  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
+  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-y-auto rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
 
 const USER_ACTION_ICON_BUTTON_CLASS =
   'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
 
 const USER_ACTION_ICON_SIZE = '0.6875rem'
-const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -translate-y-px" />
+const StopGlyph = <StopFilled aria-hidden className="size-3.5 -translate-y-px" />
 
 // Background-process notifications are injected into the conversation as user
 // messages (the agent must react to them, and message-role alternation forbids
@@ -859,7 +951,10 @@ const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
           <summary className="cursor-pointer select-none text-muted-foreground/45 hover:text-muted-foreground/70">
             output
           </summary>
-          <pre className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55">
+          <pre
+            className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55"
+            data-selectable-text="true"
+          >
             {detail}
           </pre>
         </details>
@@ -870,11 +965,10 @@ const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
 
 const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
-  onRestoreToMessage?: (messageId: string) => Promise<void> | void
-}> = ({ onCancel, onRestoreToMessage }) => {
+  onRequestRestoreConfirm?: (messageId: string, target: RestoreMessageTarget) => void
+}> = ({ onCancel, onRequestRestoreConfirm }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
-  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false)
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -887,6 +981,24 @@ const UserMessage: FC<{
       if (message.role === 'user') {
         return message.id ?? null
       }
+    }
+
+    return null
+  })
+
+  const runtimeUserOrdinal = useAuiState(s => {
+    let ordinal = 0
+
+    for (const message of s.thread.messages) {
+      if (message.role !== 'user') {
+        continue
+      }
+
+      if (message.id === s.message.id) {
+        return ordinal
+      }
+
+      ordinal += 1
     }
 
     return null
@@ -962,7 +1074,7 @@ const UserMessage: FC<{
   // Restore (re-run this exact prompt) is available everywhere the Stop button
   // isn't — including mid-stream on older prompts, since the action interrupts
   // the live turn before rewinding.
-  const showRestore = !showStop && Boolean(onRestoreToMessage) && hasBody
+  const showRestore = !showStop && Boolean(onRequestRestoreConfirm) && hasBody
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
@@ -997,6 +1109,7 @@ const UserMessage: FC<{
             </div>
           ) : null
         }
+        messageId={messageId}
       >
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
@@ -1039,7 +1152,14 @@ const UserMessage: FC<{
                         event.preventDefault()
                         event.stopPropagation()
                         triggerHaptic('selection')
-                        setRestoreConfirmOpen(true)
+                        onRequestRestoreConfirm?.(messageId, {
+                          text: messageText,
+                          userOrdinal: runtimeUserOrdinal
+                        })
+                      }}
+                      onPointerDown={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
                       }}
                       title={copy.restoreFromHere}
                       type="button"
@@ -1073,17 +1193,6 @@ const UserMessage: FC<{
             </BranchPickerPrimitive.Root>
           </div>
         </ActionBarPrimitive.Root>
-        {showRestore && (
-          <ConfirmDialog
-            confirmLabel={copy.restoreConfirm}
-            description={copy.restoreBody}
-            destructive
-            onClose={() => setRestoreConfirmOpen(false)}
-            onConfirm={() => onRestoreToMessage?.(messageId)}
-            open={restoreConfirmOpen}
-            title={copy.restoreTitle}
-          />
-        )}
       </StickyHumanMessageContainer>
     </MessagePrimitive.Root>
   )

@@ -2924,24 +2924,36 @@ class GatewaySlashCommandsMixin:
             if summary["note"]:
                 lines.append(summary["note"])
             if _summary_aborted:
+                from gateway.run import _redact_gateway_user_facing_secrets, _looks_like_gateway_provider_error
+                _safe_err = _redact_gateway_user_facing_secrets(str(_summary_err or "unknown error"))
+                if _looks_like_gateway_provider_error(_safe_err):
+                    _safe_err = "provider error (see gateway logs)"
                 lines.append(
                     t(
                         "gateway.compress.aborted",
-                        error=(_summary_err or "unknown error"),
+                        error=_safe_err,
                     )
                 )
             elif _aux_fail_model:
+                from gateway.run import _redact_gateway_user_facing_secrets, _looks_like_gateway_provider_error
+                _safe_aux_err = _redact_gateway_user_facing_secrets(str(_aux_fail_err or "unknown error"))
+                if _looks_like_gateway_provider_error(_safe_aux_err):
+                    _safe_aux_err = "provider error (see gateway logs)"
                 lines.append(
                     t(
                         "gateway.compress.aux_failed",
                         model=_aux_fail_model,
-                        error=(_aux_fail_err or "unknown error"),
+                        error=_safe_aux_err,
                     )
                 )
             return "\n".join(lines)
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
-            return t("gateway.compress.failed", error=e)
+            from gateway.run import _redact_gateway_user_facing_secrets, _looks_like_gateway_provider_error
+            _safe_e = _redact_gateway_user_facing_secrets(str(e)[:300])
+            if _looks_like_gateway_provider_error(_safe_e):
+                _safe_e = "provider error (see gateway logs)"
+            return t("gateway.compress.failed", error=_safe_e)
 
     async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
         """Handle /topic for Telegram DM user-managed topic sessions."""

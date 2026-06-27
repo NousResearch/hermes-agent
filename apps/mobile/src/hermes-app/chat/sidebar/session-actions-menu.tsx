@@ -239,77 +239,23 @@ interface SessionContextMenuProps extends SessionActions {
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
   const { renameDialog, renderItems } = useSessionActions(actions)
-  const [open, setOpen] = useState(false)
-  const wrapperRef = useRef<HTMLDivElement | null>(null)
-
-  // iOS WebKit arms the long-press text-selection loupe before React's
-  // synthetic Pointer Events fire, so we have to intercept the native
-  // `touchstart` itself with `{ passive: false }` and call preventDefault
-  // to keep the loupe from ever starting. The same handler starts our
-  // 500ms hold timer that opens the menu.
-  useEffect(() => {
-    const node = wrapperRef.current
-    if (!node) return
-    let timer: number | null = null
-    let origin: { x: number; y: number } | null = null
-    const clear = () => {
-      if (timer !== null) {
-        window.clearTimeout(timer)
-        timer = null
-      }
-      origin = null
-    }
-    const startTimer = (x: number, y: number) => {
-      origin = { x, y }
-      timer = window.setTimeout(() => {
-        setOpen(true)
-        timer = null
-      }, 500)
-    }
-    const moveCheck = (x: number, y: number) => {
-      if (!origin) return
-      const dx = x - origin.x
-      const dy = y - origin.y
-      if (dx * dx + dy * dy > 100) clear()
-    }
-    // Pointer Events cover mouse (simulator + dev) AND touch (real device).
-    // No preventDefault — CSS handles the loupe via data-session-row.
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0 && event.button !== undefined) return
-      startTimer(event.clientX, event.clientY)
-    }
-    const onPointerMove = (event: PointerEvent) => moveCheck(event.clientX, event.clientY)
-    node.addEventListener('pointerdown', onPointerDown)
-    node.addEventListener('pointermove', onPointerMove)
-    node.addEventListener('pointerup', clear)
-    node.addEventListener('pointercancel', clear)
-    node.addEventListener('pointerleave', clear)
-    return () => {
-      clear()
-      node.removeEventListener('pointerdown', onPointerDown)
-      node.removeEventListener('pointermove', onPointerMove)
-      node.removeEventListener('pointerup', clear)
-      node.removeEventListener('pointercancel', clear)
-      node.removeEventListener('pointerleave', clear)
-    }
-  }, [])
-
-  const onContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    setOpen(true)
+  // Mobile shell: no long-press context menu — would surface a desktop-sized
+  // dropdown over the session list.
+  if (
+    typeof window !== 'undefined' &&
+    Boolean((window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__)
+  ) {
+    return <>{children}</>
   }
+
   return (
     <>
-      <DropdownMenu onOpenChange={setOpen} open={open}>
-        <DropdownMenuTrigger asChild>
-          <div data-session-row="" onContextMenu={onContextMenu} ref={wrapperRef}>
-            {children}
-          </div>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-40">
-          {renderItems(DropdownMenuItem)}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-40">
+          {renderItems(ContextMenuItem)}
+        </ContextMenuContent>
+      </ContextMenu>
       {renameDialog}
     </>
   )

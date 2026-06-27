@@ -688,13 +688,6 @@ textarea,
   user-select: text;
 }
 
-[data-session-row],
-[data-session-row] * {
-  -webkit-user-select: none !important;
-  user-select: none !important;
-  -webkit-touch-callout: none !important;
-}
-
 button,
 [role='button'] {
   -webkit-user-select: none;

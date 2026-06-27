@@ -236,13 +236,22 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
 
 def _find_bash() -> str:
-    """Find bash for command execution."""
+    """Find bash for command execution.
+
+    The ``$SHELL`` fallback is gated on the path basename containing ``"bash"``
+    so that callers who genuinely need bash (e.g. ``_run_bash``) don't silently
+    receive fish, zsh, or csh when bash isn't installed.  Previously ``$SHELL``
+    was used unconditionally — on a system without bash but with
+    ``$SHELL=/usr/bin/fish``, ``_find_bash`` would return fish and ``_run_bash``
+    would execute commands through a non-bash shell.
+    """
     if not _IS_WINDOWS:
+        shell = os.environ.get("SHELL")
         return (
             shutil.which("bash")
             or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
             or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
-            or os.environ.get("SHELL")
+            or (shell if shell and "bash" in os.path.basename(shell) else None)
             or "/bin/sh"
         )
 

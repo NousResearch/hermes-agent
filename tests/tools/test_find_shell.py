@@ -103,15 +103,81 @@ class TestFindShellReturnsString:
         assert len(result) > 0
 
 
+class TestFindBashShellFallback:
+    """_find_bash should only use $SHELL as fallback if it's actually bash."""
+
+    def test_returns_bash_shell_from_env(self, tmp_path):
+        """$SHELL pointing to a bash binary is accepted as fallback."""
+        fake_bash = tmp_path / "bash"
+        fake_bash.touch()
+        fake_bash.chmod(0o755)
+        # Block the normal bash-lookup chain so $SHELL is the only path
+        with patch("shutil.which", return_value=None), \
+             patch("os.path.isfile", return_value=False), \
+             patch.dict(os.environ, {"SHELL": str(fake_bash)}):
+            assert _find_bash() == str(fake_bash)
+
+    def test_rejects_non_bash_shell_from_env(self, tmp_path):
+        """$SHELL pointing to fish/zsh/etc must NOT be returned by _find_bash."""
+        for name in ("fish", "zsh", "tcsh", "nushell", "elvish"):
+            fake = tmp_path / name
+            fake.touch()
+            fake.chmod(0o755)
+            with patch("shutil.which", return_value=None), \
+                 patch("os.path.isfile", return_value=False), \
+                 patch.dict(os.environ, {"SHELL": str(fake)}):
+                result = _find_bash()
+                # Should NOT be the non-bash shell
+                assert result != str(fake), f"_find_bash returned {name} via $SHELL"
+                # Should fall through to /bin/sh
+                assert result == "/bin/sh", f"Expected /bin/sh fallback, got {result}"
+
+    def test_rejects_bash_in_path_with_non_bash_name(self, tmp_path):
+        """/usr/local/bin/myshell is not bash even if $SHELL points there."""
+        fake = tmp_path / "myshell"
+        fake.touch()
+        fake.chmod(0o755)
+        with patch("shutil.which", return_value=None), \
+             patch("os.path.isfile", return_value=False), \
+             patch.dict(os.environ, {"SHELL": str(fake)}):
+            result = _find_bash()
+            assert result == "/bin/sh"
+
+    def test_accepts_bash_symlink_name(self, tmp_path):
+        """/usr/local/bin/bash-5.2 should be accepted — basename contains 'bash'."""
+        fake = tmp_path / "bash-5.2"
+        fake.touch()
+        fake.chmod(0o755)
+        with patch("shutil.which", return_value=None), \
+             patch("os.path.isfile", return_value=False), \
+             patch.dict(os.environ, {"SHELL": str(fake)}):
+            assert _find_bash() == str(fake)
+
+    def test_shell_env_none_falls_through(self):
+        """When $SHELL is unset, _find_bash should fall to /bin/sh (or find bash normally)."""
+        env = {k: v for k, v in os.environ.items() if k != "SHELL"}
+        with patch("shutil.which", return_value=None), \
+             patch("os.path.isfile", return_value=False), \
+             patch.dict(os.environ, env, clear=True):
+            assert _find_bash() == "/bin/sh"
+
+    def test_shell_env_empty_falls_through(self):
+        """When $SHELL is empty string, _find_bash should not use it."""
+        with patch("shutil.which", return_value=None), \
+             patch("os.path.isfile", return_value=False), \
+             patch.dict(os.environ, {"SHELL": ""}):
+            assert _find_bash() == "/bin/sh"
+
+
 class TestFindBashUnchanged:
-    """_find_bash should be unaffected by the _find_shell change."""
+    """_find_bash should still prefer actual bash over $SHELL."""
 
     def test_find_bash_still_prefers_bash(self):
         """_find_bash still returns bash (not $SHELL) on POSIX."""
         result = _find_bash()
         # On any system, _find_bash should return something containing "bash"
-        # or fall back to $SHELL or /bin/sh — but it should NOT prefer $SHELL
-        # over bash the way _find_shell does.
+        # or fall back to /bin/sh — but it should NOT prefer $SHELL over bash
+        # the way _find_shell does.
         assert isinstance(result, str)
         assert len(result) > 0
 

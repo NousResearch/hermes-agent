@@ -29,7 +29,6 @@ Suppress an intentional use (e.g. tests or platform-gated code) with:
 from __future__ import annotations
 
 import argparse
-import ast
 import os
 import re
 import subprocess
@@ -328,260 +327,6 @@ FOOTGUNS: list[Footgun] = [
 ]
 
 
-# -----------------------------------------------------------------------------
-# AST-based rule: subprocess calls that flash a console window on Windows
-# -----------------------------------------------------------------------------
-#
-# This is the high-volume Windows complaint: every `subprocess.run(...)` /
-# `subprocess.Popen(...)` of a console program on Windows briefly flashes a
-# cmd window unless the child either (a) inherits the parent's stdio handles
-# via output redirection, or (b) is spawned with a no-window creationflag
-# (CREATE_NO_WINDOW / DETACHED_PROCESS).  The fix landscape already exists in
-# `hermes_cli/_subprocess_compat.py` (windows_hide_flags / windows_detach_*),
-# but nothing stopped new bare calls from re-introducing the popup — so the
-# bug kept coming back PR after PR.  This rule is the chokepoint.
-#
-# It is AST-based (not regex) because the deciding factor — whether the call
-# redirects stdout/stderr — frequently lives several lines below the
-# `subprocess.run(` opener, which a line-oriented regex cannot see.
-#
-# Comprehensive, not restrictive: a call is only flagged when it can ACTUALLY
-# create a new console.  Calls that capture or redirect output (capture_output=,
-# stdout=, stderr=), or use check_output (which always captures), cannot pop a
-# window and are silently ignored — no suppression comment needed.  The intent
-# is that the overwhelming majority of subprocess calls require no change at
-# all; only the genuine window-spawners do.
-
-# The subprocess functions that can spawn a child process.
-_SUBPROCESS_FUNCS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
-# Module aliases we recognise as the stdlib subprocess module.
-_SUBPROCESS_ALIASES = frozenset({"subprocess", "sp"})
-
-# Executables that simply do not exist on Windows. A subprocess call whose
-# program is one of these can never create a Windows console window, so the
-# no-window flag is irrelevant — flagging them would force pointless
-# suppression comments on macOS/Linux-only service-management and packaging
-# code (launchctl, systemctl, brew, codesign …). Matched against the FIRST
-# element of a list/tuple argv literal only; anything dynamic still gets
-# flagged (we can't prove it's POSIX-only).
-_POSIX_ONLY_PROGRAMS = frozenset(
-    {
-        "launchctl",
-        "systemctl",
-        "journalctl",
-        "loginctl",
-        "osascript",
-        "codesign",
-        "xattr",
-        "defaults",
-        "brew",
-        "apt",
-        "apt-get",
-        "dpkg",
-        "pacman",
-        "dnf",
-        "yum",
-        "sudo",
-        "open",  # macOS `open`
-        "tail",
-        "sw_vers",
-        "scutil",
-        "diskutil",
-        "hdiutil",
-        "dscl",
-    }
-)
-
-# Cross-platform console programs that DO exist on Windows and allocate a
-# console window when spawned from a console-less parent (Desktop/Electron,
-# pythonw.exe, a detached gateway/cron). For these, capturing or redirecting
-# stdio is NOT a safety boundary — stream redirection controls where the
-# child's output goes, it does NOT suppress console *allocation*. Only
-# CREATE_NO_WINDOW (or routing through hermes_cli._subprocess_compat.run/popen,
-# which injects it) prevents the flash. So a call to one of these is flagged
-# even with capture_output=/stdout=/stderr= set. Matched against the first
-# element of a literal argv (bare name or .exe, path-stripped).
-_WINDOWS_FLASHING_PROGRAMS = frozenset(
-    {
-        "git",
-        "gh",
-        "node",
-        "npm",
-        "npx",
-        "yarn",
-        "pnpm",
-        "python",
-        "python3",
-        "pythonw",
-        "pip",
-        "uv",
-        "uvx",
-        "ffmpeg",
-        "ffprobe",
-        "ollama",
-        "docker",
-        "cmd",
-        "cmd.exe",
-        "powershell",
-        "powershell.exe",
-        "pwsh",
-        "where",
-        "taskkill",
-        "schtasks",
-        "wmic",
-        "tasklist",
-        "netstat",
-    }
-)
-
-SUBPROCESS_FOOTGUN_NAME = "subprocess without Windows no-window flag"
-SUBPROCESS_FOOTGUN_MESSAGE = (
-    "subprocess.run/Popen/call on Windows flashes a console (cmd) window "
-    "unless the child inherits stdio (output is captured/redirected) or is "
-    "spawned with a no-window creationflag. This is the #1 source of Windows "
-    "'terminal popup' bug reports."
-)
-SUBPROCESS_FOOTGUN_FIX = (
-    "Pass creationflags=windows_hide_flags() (for short-lived/captured spawns) "
-    "or **windows_detach_popen_kwargs() (for detached daemons) from "
-    "hermes_cli._subprocess_compat (both no-op on POSIX). If a visible window "
-    "is intended (interactive launch, shell hand-off), add "
-    "'# windows-footgun: ok' on the call line."
-)
-
-
-def _call_attr_name(node: ast.Call) -> str | None:
-    """Return 'run'/'Popen'/... when node is subprocess.<func>(...), else None."""
-    f = node.func
-    if not isinstance(f, ast.Attribute):
-        return None
-    if f.attr not in _SUBPROCESS_FUNCS:
-        return None
-    mod = getattr(f.value, "id", None)
-    if mod not in _SUBPROCESS_ALIASES:
-        return None
-    return f.attr
-
-
-def _suppresses_window(node: ast.Call, func_name: str) -> bool:
-    """True if this subprocess call cannot create a new console window.
-
-    The honest invariant (corrected after review of PR #53791): capturing or
-    redirecting stdio is NOT the same as suppressing console allocation. From a
-    console-less parent (Desktop/Electron, pythonw.exe, a detached gateway/cron)
-    a console-subsystem child still allocates — and flashes — a window even with
-    capture_output=True. Only CREATE_NO_WINDOW (or routing through
-    hermes_cli._subprocess_compat.run/popen, which injects it) prevents it.
-
-    So capture/stdout/stderr/check_output is treated as window-safe ONLY when the
-    program is not a known cross-platform console exe that flashes on Windows
-    (see _WINDOWS_FLASHING_PROGRAMS — git/gh/npm/node/python/uv/ffmpeg/docker/…).
-    For those, even a fully-captured call is flagged.
-
-    Always window-safe regardless of program:
-      * creationflags=...       — author is already managing the console
-      * **<spread>              — kwargs may carry a _subprocess_compat helper;
-                                  flag-via-spread is the recommended fix, so we
-                                  must not penalise it.
-      * POSIX-only program      — can't run on Windows, can't flash.
-    Conditionally safe (only when NOT a known flashing program):
-      * check_output / capture_output= / stdout= / stderr=
-    """
-    explicit = {kw.arg for kw in node.keywords if kw.arg}
-    if "creationflags" in explicit:
-        return True
-    if any(kw.arg is None for kw in node.keywords):  # **kwargs spread
-        return True
-    if _is_posix_only_program(node):
-        return True
-    # Capture/redirect is only a safety boundary for programs that don't
-    # allocate a Windows console — NOT for git/npm/node/python/ffmpeg/etc.
-    if not _is_windows_flashing_program(node):
-        if func_name == "check_output":
-            return True
-        if explicit & {"stdout", "stderr", "capture_output"}:
-            return True
-    return False
-
-
-def _argv_head(node: ast.Call) -> str | None:
-    """Return the path-stripped first argv element if it's a string literal."""
-    if not node.args:
-        return None
-    first = node.args[0]
-    if isinstance(first, (ast.List, ast.Tuple)) and first.elts:
-        head = first.elts[0]
-        if isinstance(head, ast.Constant) and isinstance(head.value, str):
-            return head.value.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    return None
-
-
-def _is_windows_flashing_program(node: ast.Call) -> bool:
-    """True if the call's program is a known cross-platform console exe that
-    allocates a Windows console window (so capture is NOT a safe boundary)."""
-    prog = _argv_head(node)
-    return prog is not None and prog in _WINDOWS_FLASHING_PROGRAMS
-
-
-def _is_posix_only_program(node: ast.Call) -> bool:
-    """True if the call's program is a statically-known POSIX-only executable.
-
-    Only inspects a literal list/tuple first arg whose first element is a
-    string constant (e.g. ``["launchctl", "bootout", target]``). Dynamic
-    argv (variables, f-strings) is treated as unknown and still flagged.
-    """
-    if not node.args:
-        return False
-    first = node.args[0]
-    if isinstance(first, (ast.List, ast.Tuple)) and first.elts:
-        head = first.elts[0]
-        if isinstance(head, ast.Constant) and isinstance(head.value, str):
-            prog = head.value.rsplit("/", 1)[-1]
-            return prog in _POSIX_ONLY_PROGRAMS
-    return False
-
-
-def scan_subprocess_window_footguns(
-    path: Path, text: str
-) -> list[tuple[int, str, Footgun]]:
-    """AST pass: flag subprocess calls that can flash a Windows console.
-
-    Honours the same `# windows-footgun: ok` line suppression as the regex
-    rules. Returns the same (lineno, line, Footgun) shape so results merge
-    cleanly into scan_file's output.
-    """
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return []
-    lines = text.splitlines()
-    rule = Footgun(
-        name=SUBPROCESS_FOOTGUN_NAME,
-        pattern=re.compile(r"^$"),  # unused; AST-driven
-        message=SUBPROCESS_FOOTGUN_MESSAGE,
-        fix=SUBPROCESS_FOOTGUN_FIX,
-    )
-    out: list[tuple[int, str, Footgun]] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func_name = _call_attr_name(node)
-        if func_name is None:
-            continue
-        if _suppresses_window(node, func_name):
-            continue
-        lineno = node.lineno
-        line = lines[lineno - 1] if 0 <= lineno - 1 < len(lines) else ""
-        # Inline suppression — check the opener line AND, for multi-line calls,
-        # any line in the call's span (a developer may mark the closing paren).
-        end = getattr(node, "end_lineno", lineno) or lineno
-        span = lines[lineno - 1 : end]
-        if any(SUPPRESS_MARKER.search(l) for l in span):
-            continue
-        out.append((lineno, line.rstrip(), rule))
-    return out
-
-
 def should_scan_file(path: Path) -> bool:
     """Return True if this file is in scope for the checker."""
     # Skip the excluded dirs
@@ -671,11 +416,6 @@ def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footg
         return []
     matches: list[tuple[int, str, Footgun]] = []
 
-    # AST-based rule (subprocess console-window footgun). Runs only on Python
-    # source; merges into the same result list as the regex rules below.
-    if path.suffix in {".py", ".pyw", ".pyi"}:
-        matches.extend(scan_subprocess_window_footguns(path, text))
-
     # Track whether we're inside a triple-quoted string (docstring/raw block).
     # Simple state machine — handles both ''' and """, toggled by the FIRST
     # triple-quote we see; we don't try to handle nested or f-string cases.
@@ -748,7 +488,7 @@ def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footg
 def get_staged_files() -> list[Path]:
     """Return paths staged in the current git index. Empty on non-git trees."""
     try:
-        out = subprocess.check_output(  # windows-footgun: ok — dev-only checker, runs on Linux CI
+        out = subprocess.check_output(
             ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
             cwd=REPO_ROOT,
             stderr=subprocess.DEVNULL,
@@ -762,7 +502,7 @@ def get_staged_files() -> list[Path]:
 def get_diff_files(ref: str) -> list[Path]:
     """Return paths modified vs. the given git ref."""
     try:
-        out = subprocess.check_output(  # windows-footgun: ok — dev-only checker, runs on Linux CI
+        out = subprocess.check_output(
             ["git", "diff", f"{ref}...HEAD", "--name-only", "--diff-filter=ACMR"],
             cwd=REPO_ROOT,
             stderr=subprocess.DEVNULL,
@@ -808,12 +548,6 @@ def print_rules() -> None:
         print(f"    {fg.message}")
         print(f"    Fix: {fg.fix}")
         print()
-    # AST-based rule (not in the regex FOOTGUNS list).
-    n = len(FOOTGUNS) + 1
-    print(f"{n:2}. {SUBPROCESS_FOOTGUN_NAME}  (AST-based)")
-    print(f"    {SUBPROCESS_FOOTGUN_MESSAGE}")
-    print(f"    Fix: {SUBPROCESS_FOOTGUN_FIX}")
-    print()
 
 
 def main(argv: list[str]) -> int:

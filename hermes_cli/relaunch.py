@@ -185,7 +185,7 @@ def relaunch(
         # Windows: subprocess + exit, because execvp can't swap to .cmd/.exe shims.
         import subprocess
         try:
-            result = subprocess.run(new_argv)  # windows-footgun: ok — re-exec replaces the foreground process
+            result = subprocess.run(new_argv)
             sys.exit(result.returncode)
         except KeyboardInterrupt:
             sys.exit(130)

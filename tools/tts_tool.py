@@ -52,7 +52,6 @@ from pathlib import Path
 from typing import Callable, Dict, Any, Optional
 from urllib.parse import urljoin
 
-from hermes_cli import _subprocess_compat
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -715,7 +714,7 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
 
     if os.name == "nt":
         try:
-            _subprocess_compat.run(
+            subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -773,7 +772,7 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
     else:
         popen_kwargs["start_new_session"] = True
 
-    proc = _subprocess_compat.popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
+    proc = subprocess.Popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -906,7 +905,7 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
 
     ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
     try:
-        result = _subprocess_compat.run(
+        result = subprocess.run(
             ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
              "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
             capture_output=True, timeout=30,
@@ -1777,7 +1776,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
                 ]
             else:
                 cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            result = _subprocess_compat.run(cmd, capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+            result = subprocess.run(cmd, capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
                 raise RuntimeError(f"ffmpeg conversion failed: {stderr}")
@@ -1860,7 +1859,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         "--device", device,
     ]
 
-    result = _subprocess_compat.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         stderr = result.stderr.strip()
         # Filter out the "OK:" line from stderr
@@ -1872,7 +1871,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            _subprocess_compat.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
             os.remove(wav_path)
         else:
             # No ffmpeg — just rename the WAV to the expected path
@@ -1939,7 +1938,7 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
     import sys as _sys
     logger.info("[Piper] Downloading voice '%s' to %s (first use)", voice, download_dir)
     try:
-        result = _subprocess_compat.run(
+        result = subprocess.run(
             [_sys.executable, "-m", "piper.download_voices", voice,
              "--download-dir", str(download_dir)],
             capture_output=True, text=True, timeout=300,
@@ -2051,7 +2050,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            _subprocess_compat.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
             try:
                 os.remove(wav_path)
             except OSError:
@@ -2117,7 +2116,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            _subprocess_compat.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
             os.remove(wav_path)
         else:
             # No ffmpeg — rename the WAV to the expected path

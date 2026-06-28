@@ -1168,8 +1168,22 @@ export function ChatBar({
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
       event.preventDefault()
 
-      if (canSteer) {
-        steerDraft()
+      // Read live DOM text, same pattern as plain Enter below.  `canSteer`
+      // derives from React state (`trimmedDraft`) which lags the
+      // contentEditable DOM by a render — fast typing followed immediately by
+      // Ctrl+Enter can miss the steer because React hasn't flushed yet.
+      if (onSteer && busy && attachments.length === 0) {
+        const liveText = editorRef.current
+          ? composerPlainText(editorRef.current)
+          : draftRef.current
+        const trimmedLive = liveText.trim()
+
+        if (trimmedLive.length > 0 && !SLASH_COMMAND_RE.test(trimmedLive)) {
+          // Sync draftRef so steerDraft() reads the just-typed text instead
+          // of a stale ref (same re-sync pattern as submitDraft).
+          draftRef.current = liveText
+          steerDraft()
+        }
       }
 
       return
@@ -1623,12 +1637,20 @@ export function ChatBar({
   // Steer the live turn (nudge without interrupting). Clears the draft up front
   // for snappy feedback; if the gateway rejects (no live tool window) the words
   // are re-queued so nothing is lost — same safety net as a plain queue.
+  //
+  // Does NOT gate on `canSteer` (React-state-derived) — the Ctrl+Enter key
+  // handler already validates steer conditions using the live DOM text, and the
+  // Steer button's visibility is separately gated on `canSteer`.
   const steerDraft = useCallback(() => {
-    if (!onSteer || !canSteer) {
+    if (!onSteer) {
       return
     }
 
     const text = draftRef.current.trim()
+
+    if (text.length === 0) {
+      return
+    }
 
     triggerHaptic('submit')
     clearDraft()
@@ -1638,7 +1660,7 @@ export function ChatBar({
         enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
       }
     })
-  }, [activeQueueSessionKey, canSteer, clearDraft, onSteer])
+  }, [activeQueueSessionKey, clearDraft, onSteer])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.

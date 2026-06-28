@@ -1235,11 +1235,34 @@ def dump_api_request_debug(
         body.pop("timeout", None)
         body = {k: v for k, v in body.items() if v is not None}
 
+        # Resolve the effective API key from the active transport.
+        # For anthropic_messages mode agent.client is None (the Anthropic
+        # SDK client lives at agent._anthropic_client); for bedrock_converse
+        # there is no OpenAI-compatible client either.  Fall back to the
+        # stored key when the primary client is absent.
         api_key = None
         try:
             api_key = getattr(agent.client, "api_key", None)
         except Exception as e:
             _ra().logger.debug("Could not extract API key for debug dump: %s", e)
+        if not api_key:
+            if agent.api_mode == "anthropic_messages":
+                api_key = getattr(agent, "_anthropic_api_key", None)
+            elif agent.api_mode == "bedrock_converse":
+                api_key = "aws-sdk"
+            else:
+                api_key = getattr(agent, "api_key", None)
+
+        # Build the request URL that matches the actual transport path.
+        _base = agent.base_url.rstrip("/")
+        if agent.api_mode == "codex_responses":
+            _url = f"{_base}/responses"
+        elif agent.api_mode == "anthropic_messages":
+            _url = f"{_base}/v1/messages"
+        elif agent.api_mode == "bedrock_converse":
+            _url = f"{_base}/converse"
+        else:
+            _url = f"{_base}/chat/completions"
 
         dump_payload: Dict[str, Any] = {
             "timestamp": datetime.now().isoformat(),
@@ -1247,12 +1270,13 @@ def dump_api_request_debug(
             "reason": reason,
             "request": {
                 "method": "POST",
-                "url": f"{agent.base_url.rstrip('/')}{'/responses' if agent.api_mode == 'codex_responses' else '/chat/completions'}",
+                "url": _url,
                 "headers": {
                     "Authorization": f"Bearer {agent._mask_api_key_for_logs(api_key)}",
                     "Content-Type": "application/json",
                 },
                 "body": body,
+                "api_mode": agent.api_mode,
             },
         }
 

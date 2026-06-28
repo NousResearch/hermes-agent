@@ -1913,6 +1913,66 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 
+def test_dump_api_request_debug_uses_anthropic_messages_url(monkeypatch, tmp_path):
+    """Debug dumps should show /v1/messages URL when in anthropic_messages mode."""
+    import json
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="claude-sonnet-4-20250514",
+        base_url="https://api.anthropic.com",
+        api_key="sk-ant-api03-test12345678",
+        provider="anthropic",
+        api_mode="anthropic_messages",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+    # Simulate the anthropic_messages init path: agent.client is None
+    # and the key lives at agent._anthropic_api_key.
+    agent.client = None
+    agent._anthropic_api_key = "sk-ant-api03-test12345678"
+
+    dump_file = agent._dump_api_request_debug(
+        {"model": "claude-sonnet-4-20250514", "messages": [{"role": "user", "content": "hi"}]},
+        reason="non_retryable_client_error",
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["request"]["url"] == "https://api.anthropic.com/v1/messages"
+    assert payload["request"]["api_mode"] == "anthropic_messages"
+    # The Authorization header should show a masked key, not "Bearer None".
+    auth = payload["request"]["headers"]["Authorization"]
+    assert auth.startswith("Bearer ")
+    assert "None" not in auth
+
+
+def test_dump_api_request_debug_includes_api_mode(monkeypatch, tmp_path):
+    """Debug dumps should include the api_mode field for all transports."""
+    import json
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-4o",
+        base_url="http://127.0.0.1:9208/v1",
+        api_key="test-key-12345678901234",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug(
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        reason="preflight",
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert "api_mode" in payload["request"]
+    assert payload["request"]["api_mode"] == "chat_completions"
+
+
 def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, tmp_path, capsys):
     """Request debug dumps should redact secrets before disk/stdout output."""
     import json

@@ -51,8 +51,8 @@ def repo(tmp_path):
 def test_status_reports_branch_and_change_counts(client, repo):
     body = client.get("/api/git/status", params={"path": str(repo)}).json()
 
-    assert body["branch"] == "main"
-    assert body["defaultBranch"] == "main"
+    assert body["branch"] == body["defaultBranch"]
+    assert body["branch"]
     assert body["detached"] is False
     # 1 tracked-modified + 1 untracked = 2 changed paths.
     assert body["changed"] == 2
@@ -148,7 +148,8 @@ def test_worktree_add_initializes_plain_folder(client, tmp_path):
     _git(folder, "rev-parse", "--verify", "HEAD")
 
     status = client.get("/api/git/status", params={"path": str(folder)}).json()
-    assert status["branch"] == "main"
+    assert status["branch"] == status["defaultBranch"]
+    assert status["branch"]
     # Existing files are not silently committed by repo initialization.
     assert any(file["path"] == "notes.txt" and file["untracked"] for file in status["files"])
 

@@ -3451,11 +3451,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Drafts have no message_id; we report success without one
                     # so the caller knows the animation frame landed.
                     return SendResult(success=True, message_id=None)
-                return SendResult(success=False, error="draft_rejected")
+                # ok=False: Bot API rejected the frame (typing action expired,
+                # unsupported client, etc.).  Suppress silently — returning
+                # success=True keeps the consumer in draft mode so it never
+                # cascades to rapid editMessageText calls that exhaust the quota.
+                logger.debug(
+                    "[%s] sendMessageDraft ok=False, frame suppressed "
+                    "(chat=%s draft_id=%s)",
+                    self.name, chat_id, draft_id,
+                )
+                return SendResult(success=True, message_id=None)
             except Exception as e:
                 # Short flood-control wait (≤5s): sleep inline and retry the
-                # same frame so this single hiccup doesn't count as a failure
-                # or trigger the edit-mode fallback.
+                # same frame so this single hiccup is invisible to the caller.
                 retry_after = getattr(e, "retry_after", None)
                 if retry_after is not None:
                     wait = float(retry_after)
@@ -3472,7 +3480,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                 return SendResult(success=True, message_id=None)
                         except Exception:
                             pass
-                        return SendResult(success=False, error="draft_rejected")
+                        # Retry failed after sleeping — suppress this frame rather
+                        # than counting it as a failure and risking edit cascade.
+                        return SendResult(success=True, message_id=None)
                     # Long wait — signal retryable so the caller doesn't count
                     # this against the permanent-disable threshold.
                     logger.debug(
@@ -3480,11 +3490,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name, wait, chat_id, draft_id,
                     )
                     return SendResult(success=False, error=f"flood_control:{wait:.0f}", retryable=True)
-                # A MarkdownV2 parse failure (BadRequest "can't parse entities")
-                # is recoverable: retry once as plain text.  Any other failure
-                # (chat doesn't allow drafts, transient hiccup) — or a failure
-                # on the plain-text attempt — propagates to the caller, which
-                # treats it as "fall back to edit-based for this response".
+                # MarkdownV2 parse failure: retry once as plain text.
                 if use_markdown and self._is_bad_request_error(e):
                     logger.debug(
                         "[%s] sendMessageDraft MarkdownV2 rejected, retrying "
@@ -3492,13 +3498,17 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name, chat_id, draft_id, e,
                     )
                     continue
+                # Any other failure (expired typing action, unsupported chat,
+                # network hiccup, plain-text retry failure): suppress silently.
+                # Returning success=True keeps the consumer in draft mode and
+                # prevents the editMessageText cascade that exhausts the quota.
                 logger.debug(
-                    "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
+                    "[%s] sendMessageDraft suppressed (chat=%s draft_id=%s): %s",
                     self.name, chat_id, draft_id, e,
                 )
-                return SendResult(success=False, error=str(e))
+                return SendResult(success=True, message_id=None)
 
-        return SendResult(success=False, error="draft_rejected")
+        return SendResult(success=True, message_id=None)
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a Telegram message, retrying once without message_thread_id

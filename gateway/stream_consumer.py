@@ -1152,20 +1152,19 @@ class GatewayStreamConsumer:
             logger.error("Segment-break tail flush error: %s", e)
 
     async def _try_strip_cursor(self) -> None:
-        """Best-effort attempt to remove the cursor from the last visible message.
+        """Best-effort edit to remove the cursor from the last visible message.
 
         Called when entering fallback mode so the user doesn't see a stuck
-        cursor (▉) in the partial message.  First tries a content edit; if
-        that is flood-controlled, falls back to deleting the partial so at
-        least the cursor disappears (the full response will follow via
-        _send_fallback_final / the base gateway path).
+        cursor (▉) in the partial message.  If the edit is flood-controlled or
+        fails for any other reason, we leave the message intact: a partial with
+        a stuck cursor is better UX than deleting it and leaving the user with
+        nothing for the duration of the flood-control wait.
         """
         if not self._message_id or self._message_id == "__no_edit__":
             return
         prefix = self._visible_prefix()
         if not prefix or not prefix.strip():
             return
-        edit_flood_controlled = False
         try:
             result = await self._edit_message(
                 message_id=self._message_id,
@@ -1173,21 +1172,8 @@ class GatewayStreamConsumer:
             )
             if getattr(result, "success", False):
                 self._last_sent_text = prefix
-                return
-            edit_flood_controlled = self._is_flood_error(result)
         except Exception:
-            edit_flood_controlled = True  # edit raised — treat as flood-controlled for delete fallback
-
-        # Edit failed (most likely flood control) — try to delete the partial
-        # message so the stuck ▉ disappears before the full response arrives.
-        if edit_flood_controlled:
-            delete_fn = getattr(self.adapter, "delete_message", None)
-            if delete_fn is not None:
-                try:
-                    await delete_fn(self.chat_id, self._message_id)
-                    self._message_id = None
-                except Exception:
-                    pass
+            pass  # best-effort — leave message intact on any failure
 
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""

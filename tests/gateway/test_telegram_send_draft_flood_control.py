@@ -80,9 +80,9 @@ async def test_short_flood_control_sleeps_and_retries_successfully():
 
 
 @pytest.mark.asyncio
-async def test_short_flood_control_retry_failure_returns_non_retryable():
-    """If the post-sleep retry also fails, return a non-retryable failure
-    so the consumer counts it against _draft_failures."""
+async def test_short_flood_control_retry_failure_is_suppressed():
+    """If the post-sleep retry also fails, suppress the frame with success=True
+    so the consumer stays in draft mode and never cascades to editMessageText."""
     adapter = _make_adapter()
     adapter.format_message = lambda c: c
 
@@ -94,8 +94,8 @@ async def test_short_flood_control_retry_failure_returns_non_retryable():
     with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await adapter.send_draft("123", 5, "hello")
 
-    assert result.success is False
-    assert not getattr(result, "retryable", False)
+    assert result.success is True
+    assert result.message_id is None
     mock_sleep.assert_awaited_once_with(3.0)
 
 

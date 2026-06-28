@@ -805,7 +805,9 @@ export function useMessageStream({
 
         if (apply) {
           if (runningChanged && sessionId) {
-            updateSessionState(sessionId, state => {
+            let hydrateIdleFallback = false
+
+            const updatedState = updateSessionState(sessionId, state => {
               const busy = Boolean(payload!.running)
 
               if (state.busy === busy && (busy || !state.awaitingResponse)) {
@@ -821,7 +823,17 @@ export function useMessageStream({
               }
 
               if (state.awaitingResponse && !state.sawAssistantPayload) {
-                return state
+                hydrateIdleFallback = true
+
+                return {
+                  ...state,
+                  awaitingResponse: false,
+                  busy: false,
+                  needsInput: false,
+                  pendingBranchGroup: null,
+                  streamId: null,
+                  turnStartedAt: null
+                }
               }
 
               return {
@@ -833,6 +845,14 @@ export function useMessageStream({
                 turnStartedAt: null
               }
             })
+
+            if (hydrateIdleFallback) {
+              clearAllPrompts(sessionId)
+              setSessionCompacting(sessionId, false)
+              compactedTurnRef.current.delete(sessionId)
+              void refreshSessions().catch(() => undefined)
+              void hydrateFromStoredSession(3, updatedState.storedSessionId, sessionId)
+            }
           }
         }
 
@@ -1258,8 +1278,10 @@ export function useMessageStream({
       completeAssistantMessage,
       failAssistantMessage,
       flushQueuedDeltas,
+      hydrateFromStoredSession,
       queryClient,
       refreshHermesConfig,
+      refreshSessions,
       sessionInterrupted,
       updateSessionState,
       upsertToolCall

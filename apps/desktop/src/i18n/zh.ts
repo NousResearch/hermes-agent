@@ -2235,6 +2235,7 @@ export const zh: Translations = {
         reading: '正在读取',
         opened: '已打开',
         opening: '正在打开',
+        failedToOpen: '打开失败',
         searched: '已搜索',
         searching: '正在搜索',
         ran: '已运行',

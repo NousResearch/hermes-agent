@@ -1940,6 +1940,9 @@ def resolve_runtime_provider(
             resolve_aws_auth_env_var,
             resolve_bedrock_region,
             is_anthropic_bedrock_model,
+            is_openai_bedrock_model,
+            bedrock_openai_base_url,
+            resolve_bedrock_bearer_token,
         )
         # When the user explicitly selected bedrock (not auto-detected),
         # trust boto3's credential chain — it handles IMDS, ECS task roles,
@@ -1972,9 +1975,12 @@ def resolve_runtime_provider(
                 guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
             if _gr.get("trace"):
                 guardrail_config["trace"] = _gr["trace"]
-        # Dual-path routing: Claude models use AnthropicBedrock SDK for full
-        # feature parity (prompt caching, thinking budgets, adaptive thinking).
-        # Non-Claude models use the Converse API for multi-model support.
+        # Triple-path routing:
+        # - OpenAI GPT-5.5 on Bedrock uses Bedrock Mantle's OpenAI Responses
+        #   endpoint (not Converse / bedrock-runtime).
+        # - Claude models use AnthropicBedrock SDK for prompt caching,
+        #   thinking budgets, and adaptive thinking.
+        # - Other models use the native Converse API.
         #
         # Exception: Bearer Token auth (AWS_BEARER_TOKEN_BEDROCK) is NOT
         # supported by the AnthropicBedrock SDK (it only does SigV4 signing —
@@ -1983,7 +1989,20 @@ def resolve_runtime_provider(
         # API regardless of model. Ref: #28156.
         _current_model = str(target_model or model_cfg.get("default") or "").strip()
         _has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
-        if is_anthropic_bedrock_model(_current_model) and not _has_bearer_token:
+        if is_openai_bedrock_model(_current_model):
+            bearer = resolve_bedrock_bearer_token()
+            runtime = {
+                "provider": "bedrock",
+                "api_mode": "codex_responses",
+                "base_url": bedrock_openai_base_url(region),
+                "api_key": bearer or "aws-sdk",
+                "source": "AWS_BEARER_TOKEN_BEDROCK" if bearer else auth_source,
+                "region": region,
+                "model": _current_model,
+                "bedrock_openai": True,
+                "requested_provider": requested_provider,
+            }
+        elif is_anthropic_bedrock_model(_current_model) and not _has_bearer_token:
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
                 "provider": "bedrock",
@@ -1996,7 +2015,7 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
         else:
-            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
+            # Non-Claude/OpenAI (Nova, DeepSeek, Llama, GPT-OSS, etc.) → Converse API
             runtime = {
                 "provider": "bedrock",
                 "api_mode": "bedrock_converse",

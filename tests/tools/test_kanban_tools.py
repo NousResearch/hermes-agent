@@ -798,6 +798,36 @@ def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
         conn.close()
 
 
+def test_create_worktree_subtask_gets_own_path(monkeypatch, worker_env):
+    """A worker scoped to a worktree task that spawns a child should give
+    the child its own workspace_path, not the parent's worktree dir."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    parent_wt = "/tmp/fake-worktree"
+    conn = kb.connect()
+    try:
+        self_tid = kb.create_task(
+            conn, title="wt worker", assignee="test-worker",
+            workspace_kind="worktree", workspace_path=parent_wt,
+        )
+        kb.claim_task(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)
+
+    d = json.loads(kt._handle_create({"title": "wt child", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.workspace_kind == "worktree"
+        # The child must NOT inherit the parent's worktree path.
+        assert child.workspace_path != parent_wt
+    finally:
+        conn.close()
+
+
 def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
     """An explicit workspace arg overrides worker-task inheritance."""
     from tools import kanban_tools as kt

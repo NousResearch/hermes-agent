@@ -823,7 +823,13 @@ def _handle_create(args: dict, **kw) -> str:
                     _self_task = kb.get_task(conn, _self_tid)
                     if _self_task is not None and _self_task.workspace_kind:
                         workspace_kind = _self_task.workspace_kind
-                        workspace_path = _self_task.workspace_path
+                        # For worktree workspaces, don't inherit the parent's
+                        # path — each subtask needs its own worktree so
+                        # concurrent workers don't collide on the same
+                        # directory.  create_task will derive a fresh
+                        # <repo>/.worktrees/<task-id> from the project repo.
+                        if workspace_kind != "worktree":
+                            workspace_path = _self_task.workspace_path
                         # Keep follow-up children inside the same project so the
                         # whole subtree shares one repo + branch convention.
                         if project_id is None and _self_task.project_id:

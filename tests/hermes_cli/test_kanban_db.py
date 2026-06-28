@@ -2968,6 +2968,120 @@ def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_s
 
     assert len(spawns) == 4, f"expected 4 spawns (unlimited), got {len(spawns)}"
 
+
+def test_dispatch_memory_gate_throttles_when_low(kanban_home, monkeypatch):
+    """Dispatcher skips spawning when available memory is below threshold."""
+    from hermes_cli.kanban_db import (
+        _dispatch_once_unlocked,
+        DispatchResult,
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="test task", assignee="test-profile")
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db._system_available_memory_mb",
+        lambda: 1024,  # 1GB \u2014 below default 4GB threshold
+    )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db._resolve_dispatch_memory_min_mb",
+        lambda: 4096,
+    )
+
+    with kb.connect() as conn:
+        result = _dispatch_once_unlocked(conn, dry_run=True)
+        assert result.memory_throttled is True
+        assert len(result.spawned) == 0
+
+
+def test_dispatch_memory_gate_allows_when_enough(kanban_home, monkeypatch):
+    """Dispatcher spawns normally when memory is above threshold."""
+    from hermes_cli.kanban_db import (
+        _dispatch_once_unlocked,
+        DispatchResult,
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="test task", assignee="test-profile")
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db._system_available_memory_mb",
+        lambda: 8192,  # 8GB \u2014 above 4GB threshold
+    )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db._resolve_dispatch_memory_min_mb",
+        lambda: 4096,
+    )
+
+    with kb.connect() as conn:
+        result = _dispatch_once_unlocked(conn, dry_run=True)
+        assert result.memory_throttled is False
+
+
+def test_system_available_memory_mb_reads_proc(monkeypatch):
+    """_system_available_memory_mb reads MemAvailable from /proc/meminfo."""
+    import io
+    from hermes_cli.kanban_db import _system_available_memory_mb
+
+    fake_meminfo = io.StringIO(
+        "MemTotal:       16384000 kB\n"
+        "MemFree:         2048000 kB\n"
+        "MemAvailable:    8192000 kB\n"
+        "Buffers:         1024000 kB\n"
+    )
+    monkeypatch.setattr("builtins.open", lambda *a, **k: fake_meminfo)
+    result = _system_available_memory_mb()
+    assert result == 8000  # 8192000 kB // 1024 = 8000 MB
+
+
+def test_system_available_memory_mb_returns_none_on_nonlinux(monkeypatch):
+    """_system_available_memory_mb returns None when /proc/meminfo is unreadable."""
+    from hermes_cli.kanban_db import _system_available_memory_mb
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("No such file")
+
+    monkeypatch.setattr("builtins.open", _raise_oserror)
+    result = _system_available_memory_mb()
+    assert result is None
+
+
+def test_resolve_dispatch_memory_min_mb_reads_config(monkeypatch):
+    """_resolve_dispatch_memory_min_mb reads config value."""
+    from hermes_cli.kanban_db import _resolve_dispatch_memory_min_mb
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_memory_min_mb": 4096}},
+    )
+    result = _resolve_dispatch_memory_min_mb()
+    assert result == 4096
+
+
+def test_resolve_dispatch_memory_min_mb_returns_none_when_unset(monkeypatch):
+    """_resolve_dispatch_memory_min_mb returns None when config value is unset."""
+    from hermes_cli.kanban_db import _resolve_dispatch_memory_min_mb
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {},
+    )
+    result = _resolve_dispatch_memory_min_mb()
+    assert result is None
+
+
+def test_resolve_dispatch_memory_min_mb_returns_none_when_zero(monkeypatch):
+    """_resolve_dispatch_memory_min_mb returns None when config value is 0."""
+    from hermes_cli.kanban_db import _resolve_dispatch_memory_min_mb
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_memory_min_mb": 0}},
+    )
+    result = _resolve_dispatch_memory_min_mb()
+    assert result is None
+
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 

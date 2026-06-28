@@ -4574,10 +4574,16 @@ def _resolve_dispatch_memory_min_mb() -> Optional[int]:
 
     Reads ``kanban.dispatch_memory_min_mb`` from config.  Returns None
     (no limit) when unset or set to 0.
+
+    Note: ``load_config`` is imported locally (not at module top) to
+    avoid a circular import — ``kanban_db`` is loaded before ``config``
+    finishes initializing, so a top-level ``from hermes_cli.config import``
+    would fail at startup.
     """
     try:
-        from hermes_cli.config import get_config_value
-        val = get_config_value("kanban.dispatch_memory_min_mb", default=None)
+        from hermes_cli.config import load_config
+        cfg = load_config().get("kanban") or {}
+        val = cfg.get("dispatch_memory_min_mb")
         if val is not None:
             val = int(val)
             return val if val > 0 else None
@@ -5739,9 +5745,9 @@ def _dispatch_once_unlocked(
     board. When omitted, the current-board resolution chain is used.
     """
     # Load persisted exit records on first tick (survives gateway restart).
-    if not hasattr(_dispatch_once_locked, "_exits_loaded"):
+    if not hasattr(_dispatch_once_unlocked, "_exits_loaded"):
         _load_recent_exits()
-        _dispatch_once_locked._exits_loaded = True  # type: ignore[attr-defined]
+        _dispatch_once_unlocked._exits_loaded = True  # type: ignore[attr-defined]
 
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.

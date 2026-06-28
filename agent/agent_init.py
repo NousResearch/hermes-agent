@@ -1355,6 +1355,13 @@ def init_agent(
     # from substituting a cheaper lookalike for a prescribed change.
     agent._fix_fidelity = bool(_agent_section.get("fix_fidelity", True))
 
+    # Shadow-mode verification detector.  Default "shadow" (log-only).
+    # "gate" mode injects a nudge to force actual verification.
+    # "off" disables entirely.
+    agent._verification_shadow_mode = str(_agent_section.get("verification_shadow_mode", "shadow")).lower()
+    agent._verification_shadow_threshold = float(_agent_section.get("verification_shadow_threshold", 0.6))
+    agent._verification_shadow_nudges = 0
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

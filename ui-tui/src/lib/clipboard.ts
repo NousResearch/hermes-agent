@@ -3,7 +3,18 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const CLIPBOARD_MAX_BUFFER = 4 * 1024 * 1024
-const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'] as const
+// PowerShell emits Get-Clipboard output using the system ANSI code page
+// (e.g. CP936 on Chinese Windows), not UTF-8. Reading that stdout as UTF-8
+// turns every non-ASCII char (CJK, emoji, accented, Cyrillic) into `?`.
+// Force stdout to UTF-8 first so the bytes we decode actually are UTF-8 —
+// mirroring the base64+UTF8.GetString approach already used on the write
+// path (Set-Clipboard).
+const POWERSHELL_ARGS = [
+  '-NoProfile',
+  '-NonInteractive',
+  '-Command',
+  '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard -Raw'
+] as const
 
 type ClipboardRun = typeof execFileAsync
 

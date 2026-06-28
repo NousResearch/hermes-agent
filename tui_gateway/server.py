@@ -278,6 +278,8 @@ class _SlashWorker:
             argv += ["--model", model]
 
         self._closed = False
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -289,6 +291,7 @@ class _SlashWorker:
             # slash_worker runs the Hermes agent → needs provider credentials.
             # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
             env=hermes_subprocess_env(inherit_credentials=True),
+            creationflags=windows_hide_flags(),
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()

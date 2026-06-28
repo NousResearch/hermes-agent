@@ -2002,7 +2002,15 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
 
 
 
-def _find_agent_browser() -> str:
+def _agent_browser_candidate_present(path: str | None) -> bool:
+    if not path:
+        return False
+    if " " in path and path.split()[0].endswith("npx"):
+        return True
+    return os.path.exists(path) and (os.name == "nt" or os.access(path, os.X_OK))
+
+
+def _find_agent_browser(*, validate: bool = True) -> str:
     """
     Find the agent-browser CLI executable.
 
@@ -2041,7 +2049,11 @@ def _find_agent_browser() -> str:
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
-    if which_result and agent_browser_runnable(which_result):
+    if which_result and (
+        agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
+    ):
+        if not validate:
+            return which_result
         _cached_agent_browser = which_result
         _agent_browser_resolved = True
         return which_result
@@ -2051,7 +2063,11 @@ def _find_agent_browser() -> str:
     extended_path = _merge_browser_path("")
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
-        if which_result and agent_browser_runnable(which_result):
+        if which_result and (
+            agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
+        ):
+            if not validate:
+                return which_result
             _cached_agent_browser = which_result
             _agent_browser_resolved = True
             return which_result
@@ -2068,7 +2084,11 @@ def _find_agent_browser() -> str:
     local_bin_dir = repo_root / "node_modules" / ".bin"
     if local_bin_dir.is_dir():
         local_which = shutil.which("agent-browser", path=str(local_bin_dir))
-        if local_which and agent_browser_runnable(local_which):
+        if local_which and (
+            agent_browser_runnable(local_which) if validate else _agent_browser_candidate_present(local_which)
+        ):
+            if not validate:
+                return local_which
             _cached_agent_browser = local_which
             _agent_browser_resolved = True
             return _cached_agent_browser
@@ -2078,9 +2098,14 @@ def _find_agent_browser() -> str:
     if not npx_path and extended_path:
         npx_path = shutil.which("npx", path=extended_path)
     if npx_path:
+        if not validate:
+            return "npx agent-browser"
         _cached_agent_browser = "npx agent-browser"
         _agent_browser_resolved = True
         return _cached_agent_browser
+
+    if not validate:
+        raise FileNotFoundError("agent-browser CLI not found")
 
     # Nothing found — try lazy installation before giving up.
     try:
@@ -4206,8 +4231,12 @@ def check_browser_requirements() -> bool:
         return True
 
     # The agent-browser CLI is required for local launch and cloud-provider flows.
+    # Tool-schema assembly runs during Desktop startup; do not execute
+    # ``agent-browser --version`` here, because Windows .cmd shims route through
+    # cmd.exe and can flash a console before the user invokes any browser tool.
+    # Actual browser execution paths still validate the candidate before use.
     try:
-        browser_cmd = _find_agent_browser()
+        browser_cmd = _find_agent_browser(validate=False)
     except FileNotFoundError:
         return False
 

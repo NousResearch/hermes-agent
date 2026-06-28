@@ -25,6 +25,7 @@ from hermes_constants import (
 )
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
+from tools.environments.local import hermes_subprocess_env
 from tui_gateway import git_probe
 from tui_gateway.transport import (
     StdioTransport,
@@ -284,7 +285,9 @@ class _SlashWorker:
             text=True,
             bufsize=1,
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            # slash_worker runs the Hermes agent → needs provider credentials.
+            # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
+            env=hermes_subprocess_env(inherit_credentials=True),
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
@@ -11131,7 +11134,9 @@ def _(rid, params: dict) -> dict:
             text=True,
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
+            # needs provider credentials. Tier-1 secrets still stripped (#29157).
+            env=hermes_subprocess_env(inherit_credentials=True),
             stdin=subprocess.DEVNULL,
         )
         parts = [r.stdout or "", r.stderr or ""]

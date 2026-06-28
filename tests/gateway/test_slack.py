@@ -1042,10 +1042,39 @@ class TestSendPrivateNotice:
         )
 
         assert result.success
+        # Markdown-block mode is the default, so the ephemeral post carries a
+        # ``blocks`` list (native markdown rendering) and the stripped plain-text
+        # fallback in ``text=``; ``mrkdwn`` must NOT be passed in blocks mode.
+        call_kwargs = adapter._app.client.chat_postEphemeral.call_args.kwargs
+        assert call_kwargs["channel"] == "C123"
+        assert call_kwargs["user"] == "U123"
+        assert call_kwargs["text"] == "private hello"
+        assert call_kwargs["thread_ts"] == "1234567890.123456"
+        assert call_kwargs["blocks"] == [
+            {"type": "markdown", "text": "private hello"}
+        ]
+        assert "mrkdwn" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_private_notice_legacy_mrkdwn_mode(self, adapter):
+        # With markdown_blocks disabled, fall back to text= + mrkdwn=true.
+        adapter.config.extra["markdown_blocks"] = False
+        adapter._app.client.chat_postEphemeral = AsyncMock(
+            return_value={"message_ts": "123.456"}
+        )
+
+        result = await adapter.send_private_notice(
+            chat_id="C123",
+            user_id="U123",
+            content="private **hello**",
+            metadata={"thread_id": "1234567890.123456"},
+        )
+
+        assert result.success
         adapter._app.client.chat_postEphemeral.assert_called_once_with(
             channel="C123",
             user="U123",
-            text="private hello",
+            text="private *hello*",  # format_message converts **hello** → *hello*
             mrkdwn=True,
             thread_ts="1234567890.123456",
         )
@@ -2131,11 +2160,15 @@ class TestSendTyping:
         )
 
         assert result.success
-        adapter._app.client.chat_update.assert_called_once_with(
-            channel="C123",
-            ts="reply_ts",
-            text="done",
-        )
+        call_kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert call_kwargs["channel"] == "C123"
+        assert call_kwargs["ts"] == "reply_ts"
+        # Markdown-block mode is on by default for this adapter, so the final
+        # edit carries a ``blocks`` list and the raw text body (un-escaped) —
+        # ``text=`` becomes the stripped plain-text fallback rather than an
+        # mrkdwn-formatted string, and ``mrkdwn`` is not passed.
+        assert "blocks" in call_kwargs
+        assert "mrkdwn" not in call_kwargs
         adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
@@ -2412,7 +2445,17 @@ class TestFormatMessage:
 
 
 class TestEditMessage:
-    """Verify that edit_message() applies mrkdwn formatting before sending."""
+    """Verify that edit_message() applies mrkdwn formatting before sending.
+
+    These tests pin the legacy ``text=`` + ``mrkdwn=true`` formatting path
+    (``format_message`` -> mrkdwn). The default send path now uses native
+    Block Kit ``markdown`` blocks, so these explicitly opt out via the
+    ``markdown_blocks`` config flag to keep exercising the legacy converter.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _force_legacy_mrkdwn(self, adapter):
+        adapter.config.extra["markdown_blocks"] = False
 
     @pytest.mark.asyncio
     async def test_edit_message_formats_bold(self, adapter):
@@ -2458,7 +2501,14 @@ class TestEditMessageStreamingPipeline:
     Simulates the GatewayStreamConsumer pattern where edit_message is called
     repeatedly with progressively longer accumulated text.  Every call must
     produce properly formatted mrkdwn in the chat_update payload.
+
+    These tests pin the legacy mrkdwn path (see ``TestEditMessage`` for why):
+    they set ``markdown_blocks: false`` so the mrkdwn ``text=`` form is asserted.
     """
+
+    @pytest.fixture(autouse=True)
+    def _force_legacy_mrkdwn(self, adapter):
+        adapter.config.extra["markdown_blocks"] = False
 
     @pytest.mark.asyncio
     async def test_edit_message_formats_streaming_updates(self, adapter):
@@ -3223,7 +3273,19 @@ class TestSlashCommands:
 
 
 class TestMessageSplitting:
-    """Test that long messages are split before sending."""
+    """Test that long messages are split before sending.
+
+    These tests pin the legacy ``text=`` + ``mrkdwn=true`` send path (chunking
+    at ``MAX_MESSAGE_LENGTH`` and ``format_message`` -> mrkdwn conversion).
+    The default path now ships native Block Kit ``markdown`` blocks, which
+    chunk at the 12k-char block limit instead — so the chunking/formatting
+    assertions below opt into legacy mode via ``markdown_blocks: false`` to
+    keep verifying the behavior they were written for.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _force_legacy_mrkdwn(self, adapter):
+        adapter.config.extra["markdown_blocks"] = False
 
     @pytest.mark.asyncio
     async def test_long_message_split_into_chunks(self, adapter):

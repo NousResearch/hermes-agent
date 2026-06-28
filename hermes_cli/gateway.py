@@ -12,7 +12,6 @@ import shlex
 import shutil
 import signal
 import subprocess
-from hermes_cli._subprocess_compat import windows_hide_flags
 import sys
 import textwrap
 import time
@@ -3386,7 +3385,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         ]
         if full:
             log_cmd.append("-l")
-        subprocess.run(log_cmd, timeout=10, creationflags=windows_hide_flags())
+        subprocess.run(log_cmd, timeout=10)
 
 
 # =============================================================================

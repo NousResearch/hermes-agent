@@ -679,7 +679,6 @@ class VoiceReceiver:
                 check=True,
                 timeout=10,
                 stdin=subprocess.DEVNULL,
-                creationflags=windows_hide_flags(),
             )
         finally:
             try:

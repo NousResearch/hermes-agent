@@ -101,18 +101,21 @@ _HERMES_EMAIL_ELEMENT_STYLES = [
 def _style_html_email(html: str) -> str:
     """Inject inline CSS styles into HTML elements for email client compat."""
     import re
-    for tag, style in _HERMES_EMAIL_ELEMENT_STYLES:
-        html = re.sub(
-            rf'<{tag}(?![^>]*style=)(\s|>)',
-            rf'<{tag} {style}\1',
-            html,
-        )
+    # Pre-code override MUST run before the general <code> tag loop,
+    # otherwise the general loop adds style= to <code> first and the
+    # override regex (?![^>]*style=) can no longer match.
     html = re.sub(
         r'(<pre[^>]*>.*?)<code(?![^>]*style=)(\s|>)',
         r'\1<code style="background:transparent;padding:0;color:inherit;"\2',
         html,
         flags=re.DOTALL,
     )
+    for tag, style in _HERMES_EMAIL_ELEMENT_STYLES:
+        html = re.sub(
+            rf'<{tag}(?![^>]*style=)(\s|>)',
+            rf'<{tag} {style}\1',
+            html,
+        )
     return html
 
 # Automated sender patterns — emails from these are silently ignored
@@ -1037,8 +1040,14 @@ class EmailAdapter(BasePlatformAdapter):
     # ── HTML email helpers ──────────────────────────────────────────────────
 
     def _attach_body(self, msg: MIMEMultipart, body: str) -> None:
-        """Attach body as plain text + optional HTML to a message."""
-        self._attach_parts(msg, body)
+        """Attach body as plain text + optional HTML to a message.
+
+        Always wraps in multipart/alternative so email clients correctly
+        choose between plain and HTML representations.
+        """
+        alt = MIMEMultipart("alternative")
+        self._attach_parts(alt, body)
+        msg.attach(alt)
 
     def _create_body_part(self, body: str) -> MIMEMultipart:
         """Create a multipart/alternative body part (for use inside multipart/mixed)."""

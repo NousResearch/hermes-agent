@@ -13,6 +13,22 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+class _FakeEntryPoints:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def select(self, *, group):
+        return [entry for entry in self._entries if entry.group == group]
+
+
+@pytest.fixture(autouse=True)
+def _no_entry_point_plugins(monkeypatch):
+    monkeypatch.setattr(
+        "importlib.metadata.entry_points",
+        lambda: _FakeEntryPoints([]),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -92,6 +108,54 @@ class TestReadManifestInfo:
 
 
 class TestDiscoverAllPlugins:
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_entry_point_plugins_discovered(self, mock_user_dir, mock_bundled_dir, tmp_path, monkeypatch):
+        from importlib.metadata import EntryPoint
+
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        fake_ep = EntryPoint(
+            name="fake-plugin",
+            value="fake_plugin_package",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda: _FakeEntryPoints([fake_ep]),
+        )
+        mock_user_dir.return_value = tmp_path
+        mock_bundled_dir.return_value = tmp_path / "nonexistent"
+
+        entries = _discover_all_plugins()
+        entry = [e for e in entries if e[5] == "fake-plugin"][0]
+        assert entry[:4] == ("fake-plugin", "", "", "entry_point")
+        assert entry[4] == "fake_plugin_package"
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_invalid_entry_point_metadata_does_not_crash(self, mock_user_dir, mock_bundled_dir, tmp_path, monkeypatch):
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        class BrokenEntryPoint:
+            name = "broken-plugin"
+            group = ENTRY_POINTS_GROUP
+
+            @property
+            def value(self):
+                raise RuntimeError("bad metadata")
+
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda: _FakeEntryPoints([BrokenEntryPoint()]),
+        )
+        mock_user_dir.return_value = tmp_path
+        mock_bundled_dir.return_value = tmp_path / "nonexistent"
+
+        assert _discover_all_plugins() == []
+
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     def test_flat_plugins_still_discovered(self, mock_user_dir, mock_bundled_dir, tmp_path):
@@ -300,6 +364,79 @@ class TestFilterPluginEntries:
 
 
 class TestCmdListJson:
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_json_output_includes_entry_point_plugin(self, mock_user_dir, mock_bundled_dir, tmp_path, monkeypatch, capsys):
+        from importlib.metadata import EntryPoint
+
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+        from hermes_cli.plugins_cmd import cmd_list
+
+        fake_ep = EntryPoint(
+            name="fake-plugin",
+            value="fake_plugin_package",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda: _FakeEntryPoints([fake_ep]),
+        )
+        mock_user_dir.return_value = tmp_path
+        mock_bundled_dir.return_value = tmp_path / "nonexistent"
+
+        args = MagicMock()
+        args.json = True
+        args.plain = False
+        args.no_bundled = False
+        args.user = False
+        args.enabled = False
+
+        cmd_list(args)
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+        assert payload == [
+            {
+                "name": "fake-plugin",
+                "status": "not enabled",
+                "version": "",
+                "description": "",
+                "source": "entry_point",
+            }
+        ]
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_json_output_marks_enabled_entry_point_plugin(self, mock_user_dir, mock_bundled_dir, tmp_path, monkeypatch, capsys):
+        from importlib.metadata import EntryPoint
+
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+        from hermes_cli.plugins_cmd import cmd_list
+
+        fake_ep = EntryPoint(
+            name="fake-plugin",
+            value="fake_plugin_package",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda: _FakeEntryPoints([fake_ep]),
+        )
+        mock_user_dir.return_value = tmp_path
+        mock_bundled_dir.return_value = tmp_path / "nonexistent"
+
+        with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"fake-plugin"}):
+            args = MagicMock()
+            args.json = True
+            args.plain = False
+            args.no_bundled = False
+            args.user = False
+            args.enabled = False
+
+            cmd_list(args)
+            captured = capsys.readouterr()
+            payload = json.loads(captured.out)
+            assert payload[0]["status"] == "enabled"
+
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     def test_json_output_includes_category_plugins(self, mock_user_dir, mock_bundled_dir, tmp_path, capsys):

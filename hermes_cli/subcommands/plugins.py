@@ -14,7 +14,11 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_parser = subparsers.add_parser(
         "plugins",
         help="Manage plugins — install, update, remove, list",
-        description="Install plugins from Git repositories, update, remove, or list them.",
+        description=(
+            "Install plugins from Git repositories, update, remove, list, or enable "
+            "installed Python package plugins exposed via the hermes_agent.plugins "
+            "entry-point group."
+        ),
     )
     plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
 
@@ -54,7 +58,7 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_remove.add_argument("name", help="Plugin directory name to remove")
 
     plugins_list = plugins_subparsers.add_parser(
-        "list", aliases=["ls"], help="List installed plugins"
+        "list", aliases=["ls"], help="List available plugins"
     )
     plugins_list.add_argument(
         "--enabled",
@@ -83,7 +87,7 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     )
 
     plugins_enable = plugins_subparsers.add_parser(
-        "enable", help="Enable a disabled plugin"
+        "enable", help="Enable an available plugin"
     )
     plugins_enable.add_argument("name", help="Plugin name to enable")
 

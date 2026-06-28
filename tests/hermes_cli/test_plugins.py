@@ -15,6 +15,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    discover_entry_point_plugin_manifests,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
@@ -30,6 +31,22 @@ from hermes_cli.middleware import (
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
+
+
+class _FakeEntryPoints:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def select(self, *, group):
+        return [entry for entry in self._entries if entry.group == group]
+
+
+@pytest.fixture(autouse=True)
+def _no_entry_point_plugins(monkeypatch):
+    monkeypatch.setattr(
+        "importlib.metadata.entry_points",
+        lambda: _FakeEntryPoints([]),
+    )
 
 
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
@@ -391,6 +408,10 @@ class TestPluginDiscovery:
         # A later call (with discovery healthy again) must do the real scan.
         monkeypatch.undo()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda: _FakeEntryPoints([]),
+        )
         mgr.discover_and_load()
         assert mgr._discovered is True
         non_bundled = {
@@ -438,6 +459,58 @@ class TestPluginDiscovery:
             mgr.discover_and_load()
 
         assert "ep_plugin" in mgr._plugins
+
+    def test_entry_point_manifest_discovery_is_metadata_only(self):
+        """Entry-point discovery lists package plugins without importing them."""
+        fake_ep = MagicMock()
+        fake_ep.name = "fake-plugin"
+        fake_ep.value = "fake_plugin_package"
+        fake_ep.group = ENTRY_POINTS_GROUP
+        fake_ep.load.side_effect = AssertionError("entry point should not load")
+
+        def fake_entry_points():
+            result = MagicMock()
+            result.select = MagicMock(return_value=[fake_ep])
+            return result
+
+        with patch("importlib.metadata.entry_points", fake_entry_points):
+            manifests = discover_entry_point_plugin_manifests()
+
+        assert [manifest.name for manifest in manifests] == ["fake-plugin"]
+        assert manifests[0].source == "entrypoint"
+        assert manifests[0].path == "fake_plugin_package"
+        fake_ep.load.assert_not_called()
+
+    def test_enabled_entry_point_plugin_loads(self, tmp_path, monkeypatch):
+        """An entry-point plugin named in plugins.enabled is imported and loaded."""
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["ep_plugin"]}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        fake_module = types.ModuleType("fake_ep_plugin")
+        fake_module.register = lambda ctx: ctx.register_hook("pre_llm_call", lambda **kw: None)  # type: ignore[attr-defined]
+
+        fake_ep = MagicMock()
+        fake_ep.name = "ep_plugin"
+        fake_ep.value = "fake_ep_plugin"
+        fake_ep.group = ENTRY_POINTS_GROUP
+        fake_ep.load.return_value = fake_module
+
+        def fake_entry_points():
+            result = MagicMock()
+            result.select = MagicMock(return_value=[fake_ep])
+            return result
+
+        with patch("importlib.metadata.entry_points", fake_entry_points):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert mgr._plugins["ep_plugin"].enabled is True
+        fake_ep.load.assert_called_once()
 
     def test_force_rediscover_clears_all_plugin_registries(self, monkeypatch):
         """force=True must clear every plugin-populated registry.

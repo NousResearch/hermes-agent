@@ -199,6 +199,42 @@ ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 _NS_PARENT = "hermes_plugins"
 
 
+def discover_entry_point_plugin_manifests() -> List["PluginManifest"]:
+    """Return metadata-only manifests for pip-installed plugin entry points.
+
+    This intentionally does not call ``EntryPoint.load()``. Listing available
+    plugins should not import third-party plugin code; loading remains gated by
+    ``PluginManager`` and ``plugins.enabled``.
+    """
+    manifests: List[PluginManifest] = []
+    try:
+        eps = importlib.metadata.entry_points()
+        # Python 3.12+ returns a SelectableGroups; earlier returns dict
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+    except Exception as exc:
+        logger.debug("Entry-point scan failed: %s", exc)
+        return manifests
+
+    for ep in group_eps:
+        try:
+            manifests.append(
+                PluginManifest(
+                    name=ep.name,
+                    source="entrypoint",
+                    path=ep.value,
+                    key=ep.name,
+                )
+            )
+        except Exception as exc:
+            logger.debug("Skipping invalid plugin entry point %r: %s", ep, exc)
+    return manifests
+
+
 def _env_enabled(name: str) -> bool:
     """Return True when an env var is set to a truthy opt-in value."""
     return env_var_enabled(name)
@@ -1536,29 +1572,7 @@ class PluginManager:
 
     def _scan_entry_points(self) -> List[PluginManifest]:
         """Check ``importlib.metadata`` for pip-installed plugins."""
-        manifests: List[PluginManifest] = []
-        try:
-            eps = importlib.metadata.entry_points()
-            # Python 3.12+ returns a SelectableGroups; earlier returns dict
-            if hasattr(eps, "select"):
-                group_eps = eps.select(group=ENTRY_POINTS_GROUP)
-            elif isinstance(eps, dict):
-                group_eps = eps.get(ENTRY_POINTS_GROUP, [])
-            else:
-                group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
-
-            for ep in group_eps:
-                manifest = PluginManifest(
-                    name=ep.name,
-                    source="entrypoint",
-                    path=ep.value,
-                    key=ep.name,
-                )
-                manifests.append(manifest)
-        except Exception as exc:
-            logger.debug("Entry-point scan failed: %s", exc)
-
-        return manifests
+        return discover_entry_point_plugin_manifests()
 
     # -----------------------------------------------------------------------
     # Loading

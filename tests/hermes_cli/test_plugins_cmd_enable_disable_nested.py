@@ -15,6 +15,22 @@ from unittest.mock import patch
 import pytest
 
 
+class _FakeEntryPoints:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def select(self, *, group):
+        return [entry for entry in self._entries if entry.group == group]
+
+
+@pytest.fixture(autouse=True)
+def _no_entry_point_plugins(monkeypatch):
+    monkeypatch.setattr(
+        "importlib.metadata.entry_points",
+        lambda: _FakeEntryPoints([]),
+    )
+
+
 def _make_plugin_dir(parent: Path, name: str, manifest: dict) -> Path:
     d = parent / name
     d.mkdir(parents=True, exist_ok=True)
@@ -47,6 +63,29 @@ def nested_plugin_env(tmp_path):
 
 
 class TestResolvePluginKey:
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_entry_point_name_resolves_to_itself(self, mock_user, mock_bundled, tmp_path, monkeypatch):
+        from importlib.metadata import EntryPoint
+
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+        from hermes_cli.plugins_cmd import _resolve_plugin_key
+
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda: _FakeEntryPoints([
+                EntryPoint(
+                    name="fake-plugin",
+                    value="fake_plugin_package",
+                    group=ENTRY_POINTS_GROUP,
+                )
+            ]),
+        )
+        mock_user.return_value = tmp_path
+        mock_bundled.return_value = tmp_path / "nonexistent"
+
+        assert _resolve_plugin_key("fake-plugin") == "fake-plugin"
+
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     def test_full_key_resolves_to_itself(self, mock_user, mock_bundled, nested_plugin_env):
@@ -100,6 +139,115 @@ class TestResolvePluginKey:
 
 
 class TestEnableDisableNested:
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_enable_entry_point_writes_name(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
+        mock_user, mock_bundled, tmp_path, monkeypatch,
+    ):
+        from importlib.metadata import EntryPoint
+
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+        from hermes_cli.plugins_cmd import cmd_enable
+
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda: _FakeEntryPoints([
+                EntryPoint(
+                    name="fake-plugin",
+                    value="fake_plugin_package",
+                    group=ENTRY_POINTS_GROUP,
+                )
+            ]),
+        )
+        mock_user.return_value = tmp_path
+        mock_bundled.return_value = tmp_path / "nonexistent"
+
+        cmd_enable("fake-plugin")
+
+        saved = mock_save_en.call_args[0][0]
+        assert saved == {"fake-plugin"}
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"fake-plugin"})
+    def test_enable_already_enabled_entry_point_is_idempotent(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
+        mock_user, mock_bundled, tmp_path, monkeypatch,
+    ):
+        from importlib.metadata import EntryPoint
+
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+        from hermes_cli.plugins_cmd import cmd_enable
+
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda: _FakeEntryPoints([
+                EntryPoint(
+                    name="fake-plugin",
+                    value="fake_plugin_package",
+                    group=ENTRY_POINTS_GROUP,
+                )
+            ]),
+        )
+        mock_user.return_value = tmp_path
+        mock_bundled.return_value = tmp_path / "nonexistent"
+
+        cmd_enable("fake-plugin")
+
+        mock_save_en.assert_not_called()
+        mock_save_dis.assert_not_called()
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_enable_missing_entry_point_exits(self, mock_user, mock_bundled, tmp_path):
+        from hermes_cli.plugins_cmd import cmd_enable
+
+        mock_user.return_value = tmp_path
+        mock_bundled.return_value = tmp_path / "nonexistent"
+
+        with pytest.raises(SystemExit):
+            cmd_enable("missing-entry-point")
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_enable_entry_point_writes_isolated_config(
+        self, mock_user, mock_bundled, tmp_path, monkeypatch,
+    ):
+        from importlib.metadata import EntryPoint
+
+        import yaml
+
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+        from hermes_cli.plugins_cmd import cmd_enable
+
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda: _FakeEntryPoints([
+                EntryPoint(
+                    name="fake-plugin",
+                    value="fake_plugin_package",
+                    group=ENTRY_POINTS_GROUP,
+                )
+            ]),
+        )
+        mock_user.return_value = hermes_home / "plugins"
+        mock_bundled.return_value = tmp_path / "nonexistent"
+
+        cmd_enable("fake-plugin")
+
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert config["plugins"]["enabled"] == ["fake-plugin"]
+
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd._save_disabled_set")

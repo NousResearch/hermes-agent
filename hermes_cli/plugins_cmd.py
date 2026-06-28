@@ -915,13 +915,26 @@ def _discover_all_plugins() -> list:
     seen: dict = {}  # key -> (name, version, description, source, path, key)
 
     # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_cli.plugins import (
+        discover_entry_point_plugin_manifests,
+        get_bundled_plugins_dir,
+    )
     repo_plugins = get_bundled_plugins_dir()
     for base, source, skip in (
         (repo_plugins, "bundled", {"memory", "context_engine"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
+    for manifest in discover_entry_point_plugin_manifests():
+        key = manifest.key or manifest.name
+        seen[key] = (
+            manifest.name,
+            manifest.version,
+            manifest.description,
+            "entry_point",
+            manifest.path or "",
+            key,
+        )
     return list(seen.values())
 
 

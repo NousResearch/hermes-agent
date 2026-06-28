@@ -2173,7 +2173,12 @@ def _run_browser_command(
     # Local mode with no Chromium on disk: fail fast with an actionable
     # message instead of hanging for _command_timeout seconds per call.
     # Skip when engine=lightpanda — LP doesn't need Chromium for navigation.
-    if _is_local_mode() and not _chromium_installed() and _get_browser_engine() != "lightpanda":
+    if (
+        _is_local_mode()
+        and not _chromium_installed()
+        and _get_browser_engine() != "lightpanda"
+        and not _maybe_autoinstall_chromium()
+    ):
         if _running_in_docker():
             hint = (
                 "Chromium browser is missing. You're running in Docker — pull "
@@ -3989,6 +3994,8 @@ def cleanup_all_browsers() -> None:
     _cached_command_timeout = None
     _command_timeout_resolved = False
     _cached_chromium_installed = None
+    global _chromium_autoinstall_attempted
+    _chromium_autoinstall_attempted = False
     _cached_browser_engine = None
     _browser_engine_resolved = False
 
@@ -4089,6 +4096,77 @@ def _chromium_installed() -> bool:
 
     _cached_chromium_installed = False
     return False
+
+
+# One-shot per process: a 170MB download that fails (or is slow) must not be
+# retried on every browser call. Reset by _reset_browser_caches() for tests.
+_chromium_autoinstall_attempted = False
+
+
+def _maybe_autoinstall_chromium() -> bool:
+    """Best-effort, gated download of the Chromium *binary* on local cold start.
+
+    Closes the "the PR doesn't actually install the missing browser" gap for
+    the common case — a Chromium binary that was simply never downloaded.
+    Scope is deliberately narrow:
+
+    - Binary only (``agent-browser install``), never ``--with-deps`` — that
+      shells ``apt`` and needs root, so missing *system libraries* stay a user
+      action (the timeout/blocked hints already point there).
+    - Gated by ``security.allow_lazy_installs`` (same opt-out as every other
+      lazy install) and skipped in Docker, where Chromium ships in the image.
+    - Attempted once per process.
+
+    Returns True only when Chromium is present afterwards.
+    """
+    global _chromium_autoinstall_attempted
+    if _chromium_autoinstall_attempted:
+        return _chromium_installed()
+    _chromium_autoinstall_attempted = True
+
+    if _running_in_docker():
+        return False
+
+    from tools.lazy_deps import _allow_lazy_installs
+    if not _allow_lazy_installs():
+        return False
+
+    try:
+        browser_cmd = _find_agent_browser()
+    except FileNotFoundError:
+        return False
+
+    if browser_cmd == "npx agent-browser":
+        install_cmd = [shutil.which("npx") or "npx", "-y", "agent-browser", "install"]
+    else:
+        install_cmd = [browser_cmd, "install"]
+
+    logger.info(
+        "browser: Chromium missing — auto-installing the browser binary "
+        "(one-time ~170MB; disable via security.allow_lazy_installs)"
+    )
+    try:
+        proc = subprocess.run(
+            install_cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=_build_browser_env(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning("browser: Chromium auto-install failed to start: %s", e)
+        return False
+
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip()[-300:]
+        logger.warning(
+            "browser: Chromium auto-install exited %s: %s", proc.returncode, tail
+        )
+        return False
+
+    global _cached_chromium_installed
+    _cached_chromium_installed = None
+    return _chromium_installed()
 
 
 def _running_in_docker() -> bool:

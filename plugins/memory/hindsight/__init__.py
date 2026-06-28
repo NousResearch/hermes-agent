@@ -1821,7 +1821,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # all reference the old session consistently.
         # Respect auto_retain: if the user disabled automatic retention,
         # discard buffered turns instead of archiving them on session switch.
-        if self._session_turns and self._auto_retain:
+        if self._session_turns and getattr(self, '_auto_retain', True):
             old_turns = list(self._session_turns)
             old_session_id = self._session_id
             old_parent_session_id = self._parent_session_id

@@ -230,6 +230,10 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
 
+# Cache for CDP close-tabs config (similar pattern to command timeout)
+_cached_cdp_close_tabs: Optional[bool] = None
+_cdp_close_tabs_resolved = False
+
 
 def _get_command_timeout() -> int:
     """Return the configured browser command timeout from config.yaml.
@@ -253,6 +257,31 @@ def _get_command_timeout() -> int:
     except Exception as e:
         logger.debug("Could not read command_timeout from config: %s", e)
     _cached_command_timeout = result
+    return result
+
+
+def _get_cdp_close_tabs_config() -> bool:
+    """Return whether to close CDP tabs on cleanup from config.yaml.
+
+    Reads ``config["browser"]["cdp_close_tabs_on_cleanup"]`` and falls back to
+    ``False`` (backward compatible) if unset or unreadable. Result is cached
+    after the first call and cleared by ``cleanup_all_browsers()``.
+    """
+    global _cached_cdp_close_tabs, _cdp_close_tabs_resolved
+    if _cdp_close_tabs_resolved:
+        return _cached_cdp_close_tabs  # type: ignore[return-value]
+
+    _cdp_close_tabs_resolved = True
+    result = False  # Default: backward compatible (don't close tabs)
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "cdp_close_tabs_on_cleanup")
+        if val is not None:
+            result = is_truthy_value(str(val).lower())
+    except Exception as e:
+        logger.debug("Could not read cdp_close_tabs_on_cleanup from config: %s", e)
+    _cached_cdp_close_tabs = result
     return result
 
 
@@ -3611,9 +3640,63 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         _last_active_session_key.pop(bare_task_id, None)
 
 
+def _close_cdp_tab(task_id: str, session_info: Dict[str, Any]) -> None:
+    """Close the browser tab for a CDP session using Target.closeTarget.
+
+    Uses the CDP supervisor to send the close command. This is best-effort;
+    failures are logged but not raised since we're already in cleanup.
+    """
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from tools.browser_cdp_tool import _run_async
+    except Exception as exc:
+        logger.debug("Cannot import CDP modules for tab close: %s", exc)
+        return
+
+    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    if supervisor is None:
+        logger.debug("No CDP supervisor available for tab close (task=%s)", task_id)
+        return
+
+    # Get the page's target ID from the supervisor
+    try:
+        # Query Target.getTargets to find our page target
+        async def _get_targets():
+            return await supervisor._cdp("Target.getTargets")  # type: ignore[attr-defined]
+        result = _run_async(_get_targets())
+        targets = result.get("result", {}).get("targetInfos", [])
+        # Find the page target
+        target_id = None
+        for t in targets:
+            if t.get("type") == "page":
+                target_id = t.get("targetId")
+                break
+
+        if target_id:
+            async def _close_target():
+                return await supervisor._cdp("Target.closeTarget", {"targetId": target_id})  # type: ignore[attr-defined]
+            _run_async(_close_target())
+            logger.info("Closed CDP tab for task %s (target=%s)", task_id, target_id)
+    except Exception as exc:
+        logger.debug("Failed to close CDP tab for task %s: %s", task_id, exc)
+
+
 def _cleanup_single_browser_session(task_id: str) -> None:
     """Internal: reap a single browser session by its exact session key."""
-    # Stop the CDP supervisor for this task FIRST so we close our WebSocket
+    # Check if we should close the tab before stopping the supervisor
+    session_info = None
+    with _cleanup_lock:
+        session_info = _active_sessions.get(task_id)
+
+    # For CDP sessions with cdp_close_tabs_on_cleanup enabled, close the tab first
+    if session_info and session_info.get("features", {}).get("cdp_override"):
+        if _get_cdp_close_tabs_config():
+            try:
+                _close_cdp_tab(task_id, session_info)
+            except Exception as exc:
+                logger.debug("Tab close failed for CDP session %s: %s", task_id, exc)
+
+    # Stop the CDP supervisor for this task so we close our WebSocket
     # before the backend tears down the underlying CDP endpoint.
     _stop_cdp_supervisor(task_id)
 
@@ -3711,11 +3794,14 @@ def cleanup_all_browsers() -> None:
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
+    global _cached_cdp_close_tabs, _cdp_close_tabs_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
     _cached_command_timeout = None
     _command_timeout_resolved = False
+    _cached_cdp_close_tabs = None
+    _cdp_close_tabs_resolved = False
     _cached_chromium_installed = None
     _cached_browser_engine = None
     _browser_engine_resolved = False

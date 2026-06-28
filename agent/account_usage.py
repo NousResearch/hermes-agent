@@ -770,7 +770,12 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         util = window.get("utilization")
         if util is None:
             continue
-        used = float(util) * 100 if float(util) <= 1 else float(util)
+        try:
+            util_float = float(util)
+        except (TypeError, ValueError):
+            logger.debug("Anthropic usage: skipping non-numeric utilization value: %r", util)
+            continue
+        used = util_float * 100 if util_float <= 1 else util_float
         windows.append(
             AccountUsageWindow(
                 label=label,

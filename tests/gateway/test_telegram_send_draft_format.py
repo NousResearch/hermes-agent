@@ -75,3 +75,24 @@ async def test_send_draft_falls_back_to_plain_text_on_markdownv2_error():
     assert calls[1]["text"] == "weird _text"  # raw, unformatted
 
 
+@pytest.mark.asyncio
+async def test_send_draft_non_badrequest_is_suppressed():
+    """A non-BadRequest failure (e.g. expired typing action, unsupported chat)
+    is suppressed with success=True so the caller stays in draft mode and never
+    cascades to rapid editMessageText calls that exhaust the rate-limit quota."""
+    adapter = _make_adapter()
+    adapter.format_message = lambda c: f"FMT::{c}"
+
+    calls = []
+
+    async def _draft(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("drafts disabled for this chat")
+
+    adapter._bot.send_message_draft = AsyncMock(side_effect=_draft)
+
+    result = await adapter.send_draft("123", 11, "hi")
+
+    assert result.success is True
+    assert result.message_id is None
+    assert len(calls) == 1  # no plain-text retry on non-BadRequest

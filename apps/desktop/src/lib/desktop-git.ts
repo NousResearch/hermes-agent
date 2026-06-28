@@ -16,8 +16,6 @@ import { isDesktopFsRemoteMode } from './desktop-fs'
 
 type GitBridge = NonNullable<NonNullable<Window['hermesDesktop']>['git']>
 
-const q = (value: string) => encodeURIComponent(value)
-
 function desktopApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
   const desktop = window.hermesDesktop
 
@@ -28,60 +26,67 @@ function desktopApi<T>(path: string, body?: Record<string, unknown>): Promise<T>
   return desktop.api<T>(body ? { body, method: 'POST', path } : { path })
 }
 
+function gitGet<T>(route: string, params: Record<string, boolean | null | string | undefined>): Promise<T> {
+  const query = new URLSearchParams()
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined) {
+      query.set(key, String(value))
+    }
+  }
+
+  return desktopApi<T>(`/api/git/${route}?${query.toString()}`)
+}
+
+function gitPost<T>(route: string, body: Record<string, unknown>): Promise<T> {
+  return desktopApi<T>(`/api/git/${route}`, body)
+}
+
 const remoteGit: GitBridge = {
   worktreeList: async repoPath =>
-    (await desktopApi<{ worktrees: HermesGitWorktree[] }>(`/api/git/worktrees?path=${q(repoPath)}`)).worktrees,
+    (await gitGet<{ worktrees: HermesGitWorktree[] }>('worktrees', { path: repoPath })).worktrees,
 
-  worktreeAdd: (repoPath, options) => desktopApi(`/api/git/worktree/add`, { path: repoPath, ...options }),
+  worktreeAdd: (repoPath, options) => gitPost('worktree/add', { path: repoPath, ...options }),
 
   worktreeRemove: (repoPath, worktreePath, options) =>
-    desktopApi(`/api/git/worktree/remove`, { force: options?.force ?? false, path: repoPath, worktreePath }),
+    gitPost('worktree/remove', { force: options?.force ?? false, path: repoPath, worktreePath }),
 
-  branchSwitch: (repoPath, branch) => desktopApi(`/api/git/branch/switch`, { branch, path: repoPath }),
+  branchSwitch: (repoPath, branch) => gitPost('branch/switch', { branch, path: repoPath }),
 
   branchList: async repoPath =>
-    (await desktopApi<{ branches: HermesGitBranch[] }>(`/api/git/branches?path=${q(repoPath)}`)).branches,
+    (await gitGet<{ branches: HermesGitBranch[] }>('branches', { path: repoPath })).branches,
 
-  repoStatus: repoPath => desktopApi<HermesRepoStatus | null>(`/api/git/status?path=${q(repoPath)}`),
+  repoStatus: repoPath => gitGet<HermesRepoStatus | null>('status', { path: repoPath }),
 
   fileDiff: async (repoPath, filePath) =>
-    (await desktopApi<{ diff: string }>(`/api/git/file-diff?path=${q(repoPath)}&file=${q(filePath)}`)).diff,
+    (await gitGet<{ diff: string }>('file-diff', { file: filePath, path: repoPath })).diff,
 
   review: {
     list: (repoPath, scope, baseRef) =>
-      desktopApi<HermesReviewList>(
-        `/api/git/review/list?path=${q(repoPath)}&scope=${q(scope)}${baseRef ? `&base=${q(baseRef)}` : ''}`
-      ),
+      gitGet<HermesReviewList>('review/list', { base: baseRef, path: repoPath, scope }),
 
     diff: async (repoPath, filePath, scope, baseRef, staged) =>
-      (
-        await desktopApi<{ diff: string }>(
-          `/api/git/review/diff?path=${q(repoPath)}&file=${q(filePath)}&scope=${q(scope)}&staged=${staged ? 'true' : 'false'}${baseRef ? `&base=${q(baseRef)}` : ''}`
-        )
-      ).diff,
+      (await gitGet<{ diff: string }>('review/diff', { base: baseRef, file: filePath, path: repoPath, scope, staged }))
+        .diff,
 
-    stage: (repoPath, filePath) => desktopApi(`/api/git/review/stage`, { file: filePath ?? null, path: repoPath }),
+    stage: (repoPath, filePath) => gitPost('review/stage', { file: filePath ?? null, path: repoPath }),
 
-    unstage: (repoPath, filePath) => desktopApi(`/api/git/review/unstage`, { file: filePath ?? null, path: repoPath }),
+    unstage: (repoPath, filePath) => gitPost('review/unstage', { file: filePath ?? null, path: repoPath }),
 
-    revert: (repoPath, filePath) => desktopApi(`/api/git/review/revert`, { file: filePath ?? null, path: repoPath }),
+    revert: (repoPath, filePath) => gitPost('review/revert', { file: filePath ?? null, path: repoPath }),
 
     revParse: async (repoPath, ref) =>
-      (
-        await desktopApi<{ sha: null | string }>(
-          `/api/git/review/rev-parse?path=${q(repoPath)}${ref ? `&ref=${q(ref)}` : ''}`
-        )
-      ).sha,
+      (await gitGet<{ sha: null | string }>('review/rev-parse', { path: repoPath, ref })).sha,
 
-    commit: (repoPath, message, push) => desktopApi(`/api/git/review/commit`, { message, path: repoPath, push }),
+    commit: (repoPath, message, push) => gitPost('review/commit', { message, path: repoPath, push }),
 
-    commitContext: repoPath => desktopApi(`/api/git/review/commit-context?path=${q(repoPath)}`),
+    commitContext: repoPath => gitGet('review/commit-context', { path: repoPath }),
 
-    push: repoPath => desktopApi(`/api/git/review/push`, { path: repoPath }),
+    push: repoPath => gitPost('review/push', { path: repoPath }),
 
-    shipInfo: repoPath => desktopApi<HermesReviewShipInfo>(`/api/git/review/ship-info?path=${q(repoPath)}`),
+    shipInfo: repoPath => gitGet<HermesReviewShipInfo>('review/ship-info', { path: repoPath }),
 
-    createPr: repoPath => desktopApi(`/api/git/review/create-pr`, { path: repoPath })
+    createPr: repoPath => gitPost('review/create-pr', { path: repoPath })
   },
 
   // Repo discovery is a local-disk crawl; on a remote gateway the backend

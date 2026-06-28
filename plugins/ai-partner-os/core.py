@@ -676,7 +676,7 @@ def stop_bridge(values: dict[str, Any] | None = None) -> dict[str, Any]:
         proc.wait(timeout=8)
     except Exception:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, stdin=subprocess.DEVNULL)
     _clear_bridge_state()
     return {"ok": True, "stopped": True, "pid": pid}
 

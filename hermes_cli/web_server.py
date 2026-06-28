@@ -498,7 +498,7 @@ async def auth_middleware(request: Request, call_next):
     # A request already authenticated by the token-auth seam (a service caller
     # presenting a bearer token on a registered token route) carries
     # ``token_authenticated`` — never bounce it through the cookie/session gate.
-    if getattr(request.state, "token_authenticated", False):
+    if getattr(getattr(request, "state", None), "token_authenticated", False):
         return await call_next(request)
     # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
     # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only

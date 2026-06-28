@@ -222,9 +222,9 @@ def play_audio_local(path: str | Path, *, blocking: bool = False) -> dict[str, A
             cmd = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(file_path)]
         try:
             if blocking:
-                subprocess.run(cmd, check=False, timeout=120)
+                subprocess.run(cmd, check=False, timeout=120, stdin=subprocess.DEVNULL)
             else:
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=os.name != "nt")
+                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, close_fds=os.name != "nt")
             return {"ok": True, "via": player, "file_path": str(file_path), "async": not blocking}
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {"ok": False, "error": str(exc), "file_path": str(file_path)}

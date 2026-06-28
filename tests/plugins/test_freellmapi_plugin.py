@@ -101,7 +101,7 @@ def test_register_exposes_cli():
         del sys.modules[module_name]
     spec = importlib.util.spec_from_file_location(
         module_name,
-        init_path,
+        _PLUGIN_DIR / "__init__.py",
         submodule_search_locations=[str(_PLUGIN_DIR)],
     )
     assert spec is not None and spec.loader is not None

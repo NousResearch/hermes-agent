@@ -198,10 +198,10 @@ async def gated_auth_middleware(
     # on a registered token route) carries ``token_authenticated`` — it is NOT
     # a cookie session and must not be bounced to /login. Pass it through; the
     # seam already attached ``request.state.token_principal``.
-    if getattr(request.state, "token_authenticated", False):
+    if getattr(getattr(request, "state", None), "token_authenticated", False):
         return await call_next(request)
 
-    path = request.url.path
+    path = _request_path(request)
     if _path_is_public(path):
         return await call_next(request)
 

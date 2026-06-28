@@ -1213,7 +1213,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             primary_provider and current_provider == primary_provider
         ):
             agent._rate_limited_until = time.monotonic() + 60
-    if agent._fallback_index >= len(agent._fallback_chain):
+    chain = getattr(agent, "_fallback_chain", None)
+    if not isinstance(chain, (list, tuple)):
+        if chain is not None:
+            agent._fallback_chain = []
+        return False
+    if agent._fallback_index >= len(chain):
         # Chain exhausted.  If we actually walked a non-empty chain and the
         # failure was NOT a rate-limit/billing event (those already armed
         # their own 60s cooldown above), arm a short cooldown so the next

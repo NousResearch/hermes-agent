@@ -992,6 +992,11 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    if function_args is None:
+        return json.dumps(
+            {"error": "Tool call failed: arguments must be a JSON object"},
+            ensure_ascii=False,
+        )
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):

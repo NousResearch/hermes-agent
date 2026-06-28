@@ -114,12 +114,12 @@ def stop_exe(*, force: bool = False) -> dict[str, Any]:
             cmd = ["taskkill", "/PID", str(pid), "/T"]
             if force:
                 cmd.append("/F")
-            subprocess.run(cmd, check=False)
+            subprocess.run(cmd, check=False, stdin=subprocess.DEVNULL)
         else:
             os.kill(pid, 9 if force else 15)
     except Exception as exc:
         if force and os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, stdin=subprocess.DEVNULL)
         else:
             return {"ok": False, "error": str(exc), "pid": pid}
 

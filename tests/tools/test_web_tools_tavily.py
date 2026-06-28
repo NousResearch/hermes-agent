@@ -181,7 +181,7 @@ class TestWebSearchTavily:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+        with patch("tools.web_tools._get_search_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response), \
              patch("tools.interrupt.is_interrupted", return_value=False):
@@ -213,7 +213,7 @@ class TestWebExtractTavily:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+        with patch("tools.web_tools._get_extract_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response), \
              patch("tools.web_tools.process_content_with_llm", return_value=None):

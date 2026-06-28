@@ -369,8 +369,8 @@ class BaseEnvironment(ABC):
         # caused ``C:/Users/.../hermes-snap-*.sh: No such file or directory``
         # errors on Windows, leaking via stderr (merged into stdout on Linux
         # backends) into every terminal-tool response.
-        _quoted_snap = shlex.quote(self._snapshot_path)
-        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        _quoted_snap = self._quote_path_for_shell(self._snapshot_path)
+        _quoted_cwd_file = self._quote_path_for_shell(self._cwd_file)
         # Use atomic file replacement: assemble the snapshot in a temp file,
         # then mv it over the final path.  This prevents concurrent source()
         # calls from reading a half-written snapshot when another terminal
@@ -388,7 +388,7 @@ class BaseEnvironment(ABC):
         # and is genuinely unique per writer, which closes the race.  The
         # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
         # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        _snap_tmp = self._quote_path_for_shell(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"export -p > {_snap_tmp}\n"
             f"declare -f | grep -vE '^_[^_]' >> {_snap_tmp}\n"
@@ -449,8 +449,8 @@ class BaseEnvironment(ABC):
         # ``C:/Users/...``-shaped paths without glob-splitting the colon or
         # tripping on drive letters.  POSIX paths are unaffected.  See
         # :meth:`init_session` for the same fix on the bootstrap block.
-        _quoted_snap = shlex.quote(self._snapshot_path)
-        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        _quoted_snap = self._quote_path_for_shell(self._snapshot_path)
+        _quoted_cwd_file = self._quote_path_for_shell(self._cwd_file)
         # Use atomic file replacement for env snapshot updates (issue #38249).
         # Assemble into a per-writer-unique temp file, then mv to atomically
         # replace the snapshot so concurrent source() calls never read a
@@ -458,7 +458,7 @@ class BaseEnvironment(ABC):
         # subshell PID — unique per concurrent ``&``-launched writer — so two
         # writers never share a temp name and clobber each other before the mv.
         # Static path shlex-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        _snap_tmp = self._quote_path_for_shell(self._snapshot_path + ".tmp.") + "$BASHPID"
 
         parts = []
 

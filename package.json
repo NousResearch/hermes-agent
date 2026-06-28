@@ -10,6 +10,9 @@
     "web"
   ],
   "scripts": {
+    "test": "scripts/run_tests.sh",
+    "lint": "uv run ruff check .",
+    "check": "npm run lint && npm test",
     "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'"
   },
   "repository": {

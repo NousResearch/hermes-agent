@@ -375,3 +375,14 @@ class TestInlinedDisplayMasks:
             "surface a Microsoft Entra ID branch before slicing the "
             "key prefix."
         )
+        assert "Token prefix:" not in src
+        assert "key[:12]" not in src
+
+    def test_anthropic_init_banner_does_not_print_token_fragments(self):
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent.parent
+               / "agent" / "agent_init.py").read_text()
+
+        assert "Using token:" not in src
+        assert "effective_key[:8]" not in src
+        assert "effective_key[-4:]" not in src

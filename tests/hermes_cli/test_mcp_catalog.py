@@ -166,6 +166,30 @@ class TestManifestParsing:
         assert e.install.ref == "v1.0.0"
         assert e.install.bootstrap == ["pip install -r requirements.txt"]
 
+    @pytest.mark.parametrize("ref", ["main", "master", "HEAD", "develop", "feature/demo"])
+    def test_install_rejects_floating_git_ref(self, catalog_dir, ref):
+        path = _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(
+                install={
+                    "type": "git",
+                    "url": "https://example.com/demo.git",
+                    "ref": ref,
+                    "bootstrap": [],
+                },
+                transport={
+                    "type": "stdio",
+                    "command": "${INSTALL_DIR}/run.sh",
+                    "args": [],
+                },
+            ),
+        )
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="install.ref must be a commit SHA or release tag"):
+            _parse_manifest(path)
+
     def test_invalid_manifest_skipped(self, catalog_dir):
         # Broken: wrong manifest_version
         _write_manifest(catalog_dir, "bad", {
@@ -244,7 +268,7 @@ class TestInstall:
             install={
                 "type": "git",
                 "url": "https://example.com/demo.git",
-                "ref": "main",
+                "ref": "v1.0.0",
                 "bootstrap": [],
             },
             transport={

@@ -1550,7 +1550,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self._last_aux_model_failure_error = _err_text
         self._last_aux_model_failure_model = self.summary_model
         self.summary_model = ""  # empty = use main model
-        self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
+        self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
     def _generate_summary(
         self,

@@ -258,7 +258,7 @@ class _NoLockSubsystemDB:
         return getattr(self._real, name)
 
 
-def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path) -> None:
+def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path, monkeypatch) -> None:
     """Version skew (no lock methods) must fail OPEN, not raise into the loop.
 
     Reproduces the "API call #47/#48/#49 ... has no attribute
@@ -275,6 +275,12 @@ def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path) -> 
     # Swap in the lock-less wrapper AFTER construction (the agent already
     # holds a normal db reference; we only break the lock methods).
     agent._session_db = _NoLockSubsystemDB(db)
+    monkeypatch.setattr(
+        "agent.conversation_compression._CompressionLockLeaseRefresher",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("lock refresher should not start on fail-open lock skew")
+        ),
+    )
 
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 

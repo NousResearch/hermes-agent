@@ -105,6 +105,11 @@ The fallback activates automatically when the primary model fails with:
 - **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
 - **Not found** (HTTP 404) — immediately
 - **Invalid responses** — when the API returns malformed or empty responses repeatedly
+- **Stale streams** — when the provider holds the connection open (SSE keep-alives) but delivers no tokens. After `stale_fallback_threshold` consecutive stale-stream kills within a turn (default 2), Hermes escalates to the next provider instead of retrying the same unresponsive endpoint forever.
+
+:::tip Tuning stale-stream fallback
+A provider can be alive (not returning 429/500) yet stop delivering stream chunks. By default Hermes kills the stalled connection and reconnects to the same provider, escalating to `fallback_providers` after 2 such kills in one turn. Tune this with `stale_fallback_threshold` in `config.yaml` — set it to `1` to fail over after the first stale kill, or `0` to disable escalation and keep retrying the primary. It resolves per-model, then per-provider, then top-level: `providers.<id>.models.<model>.stale_fallback_threshold` → `providers.<id>.stale_fallback_threshold` → top-level `stale_fallback_threshold`.
+:::
 
 When triggered, Hermes:
 

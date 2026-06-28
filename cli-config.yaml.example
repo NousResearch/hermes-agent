@@ -102,6 +102,14 @@ model:
 # implicit non-stream stale detector is auto-disabled for local endpoints
 # and can scale upward for very large contexts.
 #
+# ``stale_fallback_threshold`` controls how many consecutive stale-stream
+# kills (within one turn, for the same provider/model) are tolerated before
+# Hermes escalates to the next entry in ``fallback_providers``. A provider
+# that holds the connection open but delivers no tokens is otherwise retried
+# on the same endpoint forever. Default is 2; set 0 to disable escalation and
+# keep retrying the primary. Resolution order: per-model override ->
+# per-provider -> top-level ``stale_fallback_threshold`` -> default.
+#
 # Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
 # SDK paths) — those use boto3 with its own timeout configuration.
 #
@@ -118,6 +126,8 @@ model:
 #     models:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
+#   zai:
+#     stale_fallback_threshold: 1    # Escalate to fallback after a single stale-stream kill
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)

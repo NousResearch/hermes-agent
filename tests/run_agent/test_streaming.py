@@ -1519,7 +1519,14 @@ class TestRepeatedStaleStreamFallback:
 
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "3")
         monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.05")
-        monkeypatch.setenv("HERMES_STREAM_STALE_FALLBACK_THRESHOLD", "2")
+        # Threshold is config-driven (model.stale_fallback_threshold), resolved
+        # via hermes_cli.timeouts.get_provider_stale_fallback_threshold. Patch
+        # the import site in chat_completion_helpers to drive the escalation
+        # path deterministically at threshold=2.
+        monkeypatch.setattr(
+            "agent.chat_completion_helpers.get_provider_stale_fallback_threshold",
+            lambda *a, **k: 2,
+        )
 
         first_response = agent._interruptible_streaming_api_call(
             {"model": "deepseek-v4-flash", "messages": []}

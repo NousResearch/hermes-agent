@@ -4,12 +4,84 @@ import textwrap
 
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
+    get_provider_stale_fallback_threshold,
     get_provider_stale_timeout,
 )
 
 
 def _write_config(tmp_path, body: str) -> None:
     (tmp_path / "config.yaml").write_text(textwrap.dedent(body), encoding="utf-8")
+
+
+def test_stale_fallback_threshold_defaults_to_two(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, "providers: {}\n")
+
+    assert get_provider_stale_fallback_threshold("zai", "glm-5-turbo") == 2
+
+
+def test_stale_fallback_threshold_model_override_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        stale_fallback_threshold: 4
+        providers:
+          zai:
+            stale_fallback_threshold: 3
+            models:
+              glm-5-turbo:
+                stale_fallback_threshold: 1
+        """,
+    )
+
+    assert get_provider_stale_fallback_threshold("zai", "glm-5-turbo") == 1
+
+
+def test_stale_fallback_threshold_provider_over_top_level(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        stale_fallback_threshold: 4
+        providers:
+          zai:
+            stale_fallback_threshold: 3
+        """,
+    )
+
+    # No model override → provider value wins over the top-level default.
+    assert get_provider_stale_fallback_threshold("zai", "glm-5-turbo") == 3
+    # Unknown provider → top-level value wins.
+    assert get_provider_stale_fallback_threshold("openrouter", "x") == 4
+
+
+def test_stale_fallback_threshold_zero_disables(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, "stale_fallback_threshold: 0\n")
+
+    # 0 is a valid, explicit "disable escalation" value — not coerced to default.
+    assert get_provider_stale_fallback_threshold("zai", "glm-5-turbo") == 0
+
+
+def test_stale_fallback_threshold_invalid_falls_through(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        stale_fallback_threshold: 5
+        providers:
+          zai:
+            stale_fallback_threshold: "not-a-number"
+            models:
+              glm-5-turbo:
+                stale_fallback_threshold: -3
+        """,
+    )
+
+    # Negative model value and non-numeric provider value are both ignored,
+    # falling through to the valid top-level value.
+    assert get_provider_stale_fallback_threshold("zai", "glm-5-turbo") == 5
 
 
 def test_model_timeout_override_wins(monkeypatch, tmp_path):

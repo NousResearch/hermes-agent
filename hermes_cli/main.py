@@ -11259,6 +11259,55 @@ def cmd_profile(args):
                     print(f"      default: {er['default']}")
         print()
 
+    elif action == "validate":
+        from hermes_cli.profile_authoring import validate_distribution
+
+        result = validate_distribution(Path(getattr(args, "path", ".")))
+        if result.ok:
+            print(f"Hermes profile distribution validation passed: {result.root}")
+            if result.warnings:
+                for warning in result.warnings:
+                    print(f"WARNING: {warning}")
+            return
+        print("Hermes profile distribution validation failed")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        for warning in result.warnings:
+            print(f"WARNING: {warning}")
+        sys.exit(1)
+
+    elif action == "scaffold":
+        from hermes_cli.profile_authoring import scaffold_distribution, validate_distribution
+        from hermes_cli.profile_distribution import DistributionError
+
+        try:
+            output = scaffold_distribution(
+                Path(getattr(args, "output")),
+                name=getattr(args, "name", None),
+                description=getattr(args, "description", None),
+                display_name=getattr(args, "display_name", None),
+                author=getattr(args, "author", "Hermes profile author"),
+                params_file=(
+                    Path(getattr(args, "params")).expanduser()
+                    if getattr(args, "params", None)
+                    else None
+                ),
+                force=getattr(args, "force", False),
+            )
+            result = validate_distribution(output)
+            if not result.ok:
+                print(f"Created profile distribution with validation errors: {output}")
+                for error in result.errors:
+                    print(f"ERROR: {error}")
+                sys.exit(1)
+            print(f"Created Hermes profile distribution scaffold: {output}")
+            print("Next steps:")
+            print(f"  hermes profile validate {output}")
+            print(f"  hermes profile install {output} --name {output.name}-local --yes")
+        except (ValueError, FileExistsError, DistributionError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
 
 def _render_distribution_plan(plan) -> None:
     """Print a human-readable summary of a pending distribution install."""

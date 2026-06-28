@@ -29,6 +29,8 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 | `install` | Install a profile distribution from a git URL or local directory. See [Profile Distributions](../user-guide/profile-distributions.md). |
 | `update` | Re-pull a distribution-managed profile and re-apply its bundle. |
 | `info` | Show distribution metadata for a profile (origin URL, commit, last update). |
+| `validate` | Validate a profile distribution authoring directory before publishing. |
+| `scaffold` | Create a starter profile distribution repository. |
 
 ## `hermes profile list`
 
@@ -442,8 +444,67 @@ Authoring a distribution is just a git push:
    GitLab / any host Hermes can clone from.
 3. Tell recipients to run `hermes profile install <your-repo-url>`.
 
-Use git tags for versioned releases — recipients who clone `HEAD` get your
+Use git tags for versioned releases. Recipients who clone `HEAD` get your
 latest state, and you can always bump `version:` in the manifest.
+
+### `hermes profile validate`
+
+```bash
+hermes profile validate [path]
+```
+
+Validates a profile distribution authoring directory before publishing it.
+`path` defaults to the current directory and must contain `distribution.yaml`.
+
+The validator checks for common authoring mistakes:
+
+- missing or invalid `distribution.yaml`
+- invalid YAML or JSON
+- missing recommended files such as `SOUL.md`, `README.md`, `config.yaml`, and `.env.EXAMPLE`
+- declared env vars that are missing from `.env.EXAMPLE`
+- `distribution_owned` paths that do not exist
+- committed runtime or user-owned files such as `.env`, `auth.json`, `state.db*`, `sessions/`, `memories/`, `logs/`, `workspace/`, `plans/`, and `local/`
+- bundled skills with missing or invalid `SKILL.md` frontmatter
+- unresolved `{{placeholder}}` tokens outside template directories
+
+Example:
+
+```bash
+cd ./my-profile-distribution
+hermes profile validate .
+```
+
+### `hermes profile scaffold`
+
+```bash
+hermes profile scaffold [name] --description "..." --output ./my-profile
+```
+
+Creates a starter profile distribution repository for developers who want to
+publish installable profiles faster. This is an authoring workflow, not a
+profile catalog or gallery.
+
+Examples:
+
+```bash
+hermes profile scaffold sql-migration-reviewer \
+  --description "Reviews SQL migrations and writes rollback checklists." \
+  --output ./sql-migration-reviewer
+
+hermes profile scaffold --params profile.params.yaml --output ./my-profile
+```
+
+Generated repositories include a starter `distribution.yaml`, `SOUL.md`,
+`config.yaml`, `mcp.json`, `.env.EXAMPLE`, README, contribution and security
+docs, safe `.gitignore`, a `skills/` directory, and a reusable
+`templates/profile.params.yaml` file.
+
+After scaffolding, run:
+
+```bash
+hermes profile validate ./sql-migration-reviewer
+hermes profile install ./sql-migration-reviewer --name sql-migration-reviewer-local --yes
+```
 
 ## `hermes -p` / `hermes --profile`
 

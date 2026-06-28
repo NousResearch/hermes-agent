@@ -200,4 +200,59 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     )
     profile_info.add_argument("profile_name", help="Profile to inspect")
 
+    profile_validate = profile_subparsers.add_parser(
+        "validate",
+        help="Validate a profile distribution authoring directory",
+        description=(
+            "Validate a profile distribution before publishing. PATH defaults "
+            "to the current directory and must contain distribution.yaml."
+        ),
+    )
+    profile_validate.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="Distribution directory to validate (default: current directory)",
+    )
+
+    profile_scaffold = profile_subparsers.add_parser(
+        "scaffold",
+        help="Create a starter profile distribution repository",
+        description=(
+            "Create a starter Hermes profile distribution repository for authors. "
+            "This is a proof-of-concept developer workflow, not a profile catalog."
+        ),
+    )
+    profile_scaffold.add_argument("name", nargs="?", help="Distribution profile name")
+    profile_scaffold.add_argument(
+        "--description",
+        default=None,
+        help="One-sentence description of the profile's purpose",
+    )
+    profile_scaffold.add_argument(
+        "--display-name",
+        default=None,
+        help="Human-readable profile name (default: title-cased name)",
+    )
+    profile_scaffold.add_argument(
+        "--author",
+        default="Hermes profile author",
+        help="Author name written to distribution.yaml",
+    )
+    profile_scaffold.add_argument(
+        "--params",
+        default=None,
+        help="YAML params file for deterministic scaffold generation",
+    )
+    profile_scaffold.add_argument(
+        "--output",
+        required=True,
+        help="Output directory for the scaffolded distribution",
+    )
+    profile_scaffold.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite output directory if it already exists",
+    )
+
     profile_parser.set_defaults(func=cmd_profile)

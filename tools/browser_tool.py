@@ -436,6 +436,7 @@ _cloud_provider_resolved = False
 _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
+_cached_agent_browser_validated = False
 _agent_browser_resolved = False
 
 # Lightpanda engine support — cached like _get_cloud_provider().
@@ -1877,12 +1878,20 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
 
 
 
-def _find_agent_browser() -> str:
+def _find_agent_browser(*, validate: bool = True) -> str:
     """
     Find the agent-browser CLI executable.
 
     Checks in order: current PATH, Homebrew/common bin dirs, Hermes-managed
     node, local node_modules/.bin/, npx fallback.
+
+    Args:
+        validate: When True, run candidate executables with ``--version`` before
+            accepting them. Actual browser execution paths should keep this
+            enabled so stale npm shims are rejected. Tool-availability probes
+            should pass False so merely building the model tool list does not
+            spawn ``agent-browser`` (on Windows that means a visible
+            ``.cmd``/``conhost`` flash during desktop startup).
 
     Returns:
         Path to agent-browser executable
@@ -1890,7 +1899,7 @@ def _find_agent_browser() -> str:
     Raises:
         FileNotFoundError: If agent-browser is not installed
     """
-    global _cached_agent_browser, _agent_browser_resolved
+    global _cached_agent_browser, _cached_agent_browser_validated, _agent_browser_resolved
     if _agent_browser_resolved:
         if _cached_agent_browser is None:
             raise FileNotFoundError(
@@ -1899,25 +1908,32 @@ def _find_agent_browser() -> str:
                 "Or run 'npm install' in the repo root to install locally.\n"
                 "Or ensure npx is available in your PATH."
             )
-        return _cached_agent_browser
+        if not validate or _cached_agent_browser_validated or agent_browser_runnable(_cached_agent_browser):
+            _cached_agent_browser_validated = _cached_agent_browser_validated or validate
+            return _cached_agent_browser
+        _cached_agent_browser = None
+        _cached_agent_browser_validated = False
+        _agent_browser_resolved = False
 
     # Note: _agent_browser_resolved is set at each return site below
     # (not before the search) to prevent a race where a concurrent thread
     # sees resolved=True but _cached_agent_browser is still None.
     #
-    # Every candidate below is validated with ``agent_browser_runnable`` before
-    # it is cached. A bare ``shutil.which`` hit is NOT trusted: agent-browser's
-    # npm postinstall re-points a global install symlink at our local
-    # node_modules binary, which disappears on the next ``hermes update`` and
-    # leaves a dangling link that ``which`` still reports but exec fails on with
-    # exit 127 (issue #48521). Validating lets a dead candidate fall through to
-    # the next working resolution (extended PATH → local .bin → npx) instead of
-    # caching the broken one and silently killing every browser tool.
+    # Actual browser execution paths validate each candidate with
+    # ``agent_browser_runnable`` before caching it. A bare ``shutil.which`` hit
+    # is NOT trusted there: agent-browser's npm postinstall can leave dangling
+    # links after ``hermes update`` (issue #48521). Availability probes pass
+    # validate=False so startup/tool-list assembly stays side-effect-free.
+    def _candidate_ok(candidate: str | None) -> bool:
+        if not candidate:
+            return False
+        return agent_browser_runnable(candidate) if validate else True
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
-    if which_result and agent_browser_runnable(which_result):
+    if which_result and _candidate_ok(which_result):
         _cached_agent_browser = which_result
+        _cached_agent_browser_validated = validate
         _agent_browser_resolved = True
         return which_result
 
@@ -1926,8 +1942,9 @@ def _find_agent_browser() -> str:
     extended_path = _merge_browser_path("")
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
-        if which_result and agent_browser_runnable(which_result):
+        if which_result and _candidate_ok(which_result):
             _cached_agent_browser = which_result
+            _cached_agent_browser_validated = validate
             _agent_browser_resolved = True
             return which_result
 
@@ -1943,8 +1960,9 @@ def _find_agent_browser() -> str:
     local_bin_dir = repo_root / "node_modules" / ".bin"
     if local_bin_dir.is_dir():
         local_which = shutil.which("agent-browser", path=str(local_bin_dir))
-        if local_which and agent_browser_runnable(local_which):
+        if local_which and _candidate_ok(local_which):
             _cached_agent_browser = local_which
+            _cached_agent_browser_validated = validate
             _agent_browser_resolved = True
             return _cached_agent_browser
 
@@ -1954,6 +1972,7 @@ def _find_agent_browser() -> str:
         npx_path = shutil.which("npx", path=extended_path)
     if npx_path:
         _cached_agent_browser = "npx agent-browser"
+        _cached_agent_browser_validated = True
         _agent_browser_resolved = True
         return _cached_agent_browser
 
@@ -1969,8 +1988,9 @@ def _find_agent_browser() -> str:
                 shutil.which("agent-browser", path=str(get_hermes_home() / "node")),
             ]
             for recheck in candidates:
-                if recheck and agent_browser_runnable(recheck):
+                if _candidate_ok(recheck):
                     _cached_agent_browser = recheck
+                    _cached_agent_browser_validated = validate
                     _agent_browser_resolved = True
                     return recheck
     except Exception:
@@ -3823,7 +3843,7 @@ def check_browser_requirements() -> bool:
 
     # The agent-browser CLI is required for local launch and cloud-provider flows.
     try:
-        browser_cmd = _find_agent_browser()
+        browser_cmd = _find_agent_browser(validate=False)
     except FileNotFoundError:
         return False
 

@@ -138,26 +138,31 @@ class TestGetConnectedPlatforms:
 
 class TestSessionResetPolicy:
     def test_roundtrip(self):
-        policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120)
+        policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120,
+                                    bg_process_max_age_hours=48)
         d = policy.to_dict()
         restored = SessionResetPolicy.from_dict(d)
         assert restored.mode == "idle"
         assert restored.at_hour == 6
         assert restored.idle_minutes == 120
+        assert restored.bg_process_max_age_hours == 48
 
     def test_defaults(self):
         policy = SessionResetPolicy()
         assert policy.mode == "both"
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
+        assert policy.bg_process_max_age_hours == 24
 
     def test_from_dict_treats_null_values_as_defaults(self):
         restored = SessionResetPolicy.from_dict(
-            {"mode": None, "at_hour": None, "idle_minutes": None}
+            {"mode": None, "at_hour": None, "idle_minutes": None,
+             "bg_process_max_age_hours": None}
         )
         assert restored.mode == "both"
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
+        assert restored.bg_process_max_age_hours == 24
 
     def test_from_dict_coerces_quoted_false_notify(self):
         restored = SessionResetPolicy.from_dict({"notify": "false"})

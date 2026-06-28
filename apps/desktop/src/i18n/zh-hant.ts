@@ -2122,6 +2122,7 @@ export const zhHant = defineLocale({
         reading: '正在讀取',
         opened: '已開啟',
         opening: '正在開啟',
+        failedToOpen: '開啟失敗',
         searched: '已搜尋',
         searching: '正在搜尋',
         ran: '已執行',

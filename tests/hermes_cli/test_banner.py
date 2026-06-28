@@ -278,3 +278,77 @@ def test_banner_skills_section_reflects_disabled_skills_toolset():
     out_enabled = console.export_text()
     assert "Skills toolset disabled" not in out_enabled
     assert "ascii-art" in out_enabled
+
+
+def test_build_welcome_banner_moa_provider_shows_preset_and_aggregator(tmp_path, monkeypatch):
+    """With provider='moa', the banner renders the preset + aggregator, not a bare slug."""
+    import yaml
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "moa": {
+                    "default_preset": "opus-gpt",
+                    "presets": {
+                        "opus-gpt": {
+                            "enabled": True,
+                            "reference_models": [
+                                {"provider": "openrouter", "model": "openai/gpt-5.5"},
+                                {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                            ],
+                            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                        }
+                    },
+                }
+            }
+        )
+    )
+
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        banner.build_welcome_banner(
+            console=console,
+            model="opus-gpt",
+            cwd="/tmp/project",
+            tools=[],
+            enabled_toolsets=[],
+            provider="moa",
+        )
+
+    out = console.export_text()
+    assert "MoA: opus-gpt" in out
+    assert "agg claude-opus-4.8" in out
+
+
+def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
+    """A normal provider still renders the bare model slug, no MoA prefix."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir()
+
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        banner.build_welcome_banner(
+            console=console,
+            model="anthropic/claude-opus-4.8",
+            cwd="/tmp/project",
+            tools=[],
+            enabled_toolsets=[],
+            provider="openrouter",
+        )
+
+    out = console.export_text()
+    assert "claude-opus-4.8" in out
+    assert "MoA:" not in out

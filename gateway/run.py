@@ -305,8 +305,29 @@ def _gateway_loop_exception_handler(
 
 
 def _redact_gateway_user_facing_secrets(text: str) -> str:
-    """Best-effort secret redaction before text can leave the gateway."""
+    """Secret redaction before text can leave the gateway.
+
+    Delegates to the authoritative ``agent.redact.redact_sensitive_text`` — the
+    same Tirith-grade redactor already applied to logs, tool output, and
+    approval-command prompts — so the outbound chat path masks the full
+    credential set the startup banner promises ("chat responses are scrubbed
+    before delivery"), not a divergent subset. ``force=True`` honors redaction
+    even when ``security.redact_secrets`` is off, matching the
+    ``_redact_approval_command`` reasoning (#23810).
+
+    The narrow ``_GATEWAY_SECRET_PATTERNS`` set runs as a belt-and-suspenders
+    second pass so nothing the gateway historically caught can regress, and so
+    redaction still degrades gracefully if the import ever fails.
+    """
     redacted = str(text or "")
+    try:
+        from agent.redact import redact_sensitive_text
+
+        redacted = redact_sensitive_text(redacted, force=True)
+    except Exception:
+        # Fail-soft: fall back to the local pattern pass below rather than
+        # letting a redactor import/error leak the raw text to chat.
+        pass
     for pattern in _GATEWAY_SECRET_PATTERNS:
         redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
     return redacted
@@ -1890,6 +1911,47 @@ def _try_resolve_fallback_provider() -> dict | None:
     return None
 
 
+def _event_media_type_at(event, index: int) -> str:
+    """Return the per-attachment MIME for the attachment at *index*.
+
+    Empty string when the platform didn't populate a per-file MIME for
+    that slot (some adapters only set a message-level type).
+    """
+    media_types = getattr(event, "media_types", None) or []
+    return media_types[index] if index < len(media_types) else ""
+
+
+def _event_media_is_image(event, index: int) -> bool:
+    """True if the attachment at *index* is an image.
+
+    Trust the per-attachment MIME when present. Only fall back to the
+    message-level ``PHOTO`` type when this attachment's MIME is unknown --
+    otherwise a document (or any non-image) uploaded alongside an image in
+    the same message gets mis-routed as an image, base64'd into a vision
+    content part, and the provider 400s ("Could not process image").
+    """
+    mtype = _event_media_type_at(event, index)
+    if mtype:
+        return mtype.startswith("image/")
+    return getattr(event, "message_type", None) == MessageType.PHOTO
+
+
+def _event_media_is_audio(event, index: int) -> bool:
+    """True if the attachment at *index* is audio (per-attachment MIME first)."""
+    mtype = _event_media_type_at(event, index)
+    if mtype:
+        return mtype.startswith("audio/")
+    return getattr(event, "message_type", None) in {MessageType.VOICE, MessageType.AUDIO}
+
+
+def _event_media_is_video(event, index: int) -> bool:
+    """True if the attachment at *index* is video (per-attachment MIME first)."""
+    mtype = _event_media_type_at(event, index)
+    if mtype:
+        return mtype.startswith("video/")
+    return getattr(event, "message_type", None) == MessageType.VIDEO
+
+
 def _build_media_placeholder(event) -> str:
     """Build a text placeholder for media-only events so they aren't dropped.
 
@@ -1900,14 +1962,12 @@ def _build_media_placeholder(event) -> str:
     """
     parts = []
     media_urls = getattr(event, "media_urls", None) or []
-    media_types = getattr(event, "media_types", None) or []
     for i, url in enumerate(media_urls):
-        mtype = media_types[i] if i < len(media_types) else ""
-        if mtype.startswith("image/") or getattr(event, "message_type", None) == MessageType.PHOTO:
+        if _event_media_is_image(event, i):
             parts.append(f"[User sent an image: {url}]")
-        elif mtype.startswith("audio/"):
+        elif _event_media_is_audio(event, i):
             parts.append(f"[User sent audio: {url}]")
-        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+        elif _event_media_is_video(event, i):
             parts.append(f"[User sent a video: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
@@ -2600,11 +2660,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
 
-        # Wire process registry into session store for reset protection
+        # Wire process registry into session store for reset protection.
+        # A background process older than the configured threshold (default 24h,
+        # session_reset.bg_process_max_age_hours) is treated as stale and no
+        # longer blocks session idle / daily reset — see #29177. The process is
+        # NOT killed, only ignored by the reset guard.
         from tools.process_registry import process_registry
+        _bg_max_age_hours = getattr(
+            self.config.default_reset_policy, "bg_process_max_age_hours", 24
+        )
+        _bg_max_age_seconds = (
+            _bg_max_age_hours * 3600 if _bg_max_age_hours and _bg_max_age_hours > 0 else None
+        )
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
-            has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+            has_active_processes_fn=lambda key: process_registry.has_active_for_session(
+                key, max_active_age=_bg_max_age_seconds,
+            ),
         )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
@@ -3091,6 +3163,60 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Defensive %s disconnect after failed connect raised: %s",
                 platform.value if platform is not None else "adapter",
                 e,
+            )
+
+    async def _bounded_adapter_teardown(
+        self, adapter, platform, *, profile: Optional[str] = None
+    ) -> None:
+        """Tear down one adapter on the shutdown path with bounded awaits.
+
+        Both ``cancel_background_tasks()`` and ``disconnect()`` can block
+        indefinitely when a platform's network state is half-dead (e.g. a
+        wedged Feishu/Lark WebSocket thread waiting on I/O). An unbounded
+        await here stalls the entire shutdown sequence past systemd's
+        ``TimeoutStopSec``; the resulting SIGKILL skips ``atexit`` PID-file
+        cleanup, so the next start dies with "PID file race lost" (#14128).
+
+        Each await is wrapped in the existing per-adapter timeout budget
+        (``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``). On timeout we log
+        and force forward progress; the loop never hangs regardless of any
+        adapter's internal behavior. Never raises.
+        """
+        timeout = self._adapter_disconnect_timeout_secs()
+        suffix = f" (profile: {profile})" if profile else ""
+        started_at = time.monotonic()
+        try:
+            if timeout <= 0:
+                await adapter.cancel_background_tasks()
+            else:
+                await asyncio.wait_for(
+                    adapter.cancel_background_tasks(), timeout=timeout
+                )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "✗ %s background-task cancel timed out after %.1fs - forcing continue%s",
+                platform.value, timeout, suffix,
+            )
+        except Exception as e:
+            logger.debug("✗ %s background-task cancel error%s: %s", platform.value, suffix, e)
+        try:
+            if timeout <= 0:
+                await adapter.disconnect()
+            else:
+                await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
+            logger.info(
+                "✓ %s disconnected (%.2fs)%s",
+                platform.value, time.monotonic() - started_at, suffix,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "✗ %s disconnect timed out after %.1fs - forcing continue%s",
+                platform.value, timeout, suffix,
+            )
+        except Exception as e:
+            logger.error(
+                "✗ %s disconnect error after %.2fs%s: %s",
+                platform.value, time.monotonic() - started_at, suffix, e,
             )
 
     def _adapter_disconnect_timeout_secs(self) -> float:
@@ -7255,38 +7381,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._cleanup_agent_resources(_agent)
 
             for platform, adapter in list(self.adapters.items()):
-                _adapter_started_at = time.monotonic()
-                try:
-                    await adapter.cancel_background_tasks()
-                except Exception as e:
-                    logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
-                try:
-                    await adapter.disconnect()
-                    logger.info(
-                        "✓ %s disconnected (%.2fs)",
-                        platform.value,
-                        time.monotonic() - _adapter_started_at,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "✗ %s disconnect error after %.2fs: %s",
-                        platform.value,
-                        time.monotonic() - _adapter_started_at,
-                        e,
-                    )
+                await self._bounded_adapter_teardown(adapter, platform)
 
             # Disconnect secondary-profile adapters (multiplex mode).
             for _prof, _amap in list(getattr(self, "_profile_adapters", {}).items()):
                 for platform, adapter in list(_amap.items()):
-                    try:
-                        await adapter.cancel_background_tasks()
-                    except Exception as e:
-                        logger.debug("✗ %s bg-cancel error (profile %s): %s", platform.value, _prof, e)
-                    try:
-                        await adapter.disconnect()
-                        logger.info("✓ %s disconnected (profile: %s)", platform.value, _prof)
-                    except Exception as e:
-                        logger.error("✗ %s disconnect error (profile %s): %s", platform.value, _prof, e)
+                    await self._bounded_adapter_teardown(
+                        adapter, platform, profile=_prof
+                    )
                 _amap.clear()
             if hasattr(self, "_profile_adapters"):
                 self._profile_adapters.clear()
@@ -9220,7 +9322,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             audio_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
-                if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
+                # Classify images per-attachment: trust this attachment's own
+                # MIME, and only honour the message-level PHOTO type when the
+                # per-attachment MIME is unknown. Otherwise a document (or any
+                # non-image) sent alongside an image in the same message gets
+                # mis-routed here as an image and the provider 400s.
+                if _event_media_is_image(event, i):
                     image_paths.append(path)
                 # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT
                 # MessageType.VOICE = voice message (Opus/OGG) — always STT
@@ -9231,7 +9338,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
                 ):
                     audio_paths.append(path)
-                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                     video_paths.append(path)
 
             if image_paths:
@@ -9350,12 +9457,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
-        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+        if event.media_urls:
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path
 
             _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
             for i, path in enumerate(event.media_urls):
+                # Per-attachment document handling. Skip anything already routed
+                # as image / audio / video by the buckets above — only genuine
+                # non-media files get a path-pointing context note. This makes a
+                # document mixed into a PHOTO/VOICE message (whole-message type
+                # != DOCUMENT) still reach the agent as a readable cached file,
+                # instead of being silently dropped because the message-level
+                # type wasn't DOCUMENT.
+                if (
+                    _event_media_is_image(event, i)
+                    or _event_media_is_audio(event, i)
+                    or _event_media_is_video(event, i)
+                ):
+                    continue
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype in {"", "application/octet-stream"}:
                     _ext = os.path.splitext(path)[1].lower()
@@ -16329,7 +16449,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            # Gate on needs_progress_queue (tool_progress OR thinking_progress)
+            # rather than tool_progress alone: the progress_callback also relays
+            # _thinking assistant scratch text, which is gated on
+            # thinking_progress and is intentionally independent of tool
+            # progress. With the old `tool_progress_enabled`-only gate, a user
+            # who set thinking_progress:true but kept tool_progress:off got a
+            # None callback — so _thinking scratch bubbles never relayed even
+            # though the progress queue was created for them.
+            agent.tool_progress_callback = progress_callback if needs_progress_queue else None
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (
@@ -17055,9 +17183,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "response_transformed": result.get("response_transformed", False),
             }
         
-        # Start progress message sender if enabled
+        # Start progress message sender if enabled. Gate on needs_progress_queue
+        # (tool_progress OR thinking_progress), not tool_progress alone: the
+        # sender drains BOTH tool-progress lines and _thinking scratch bubbles.
+        # With the old tool_progress-only gate, a thinking_progress:true /
+        # tool_progress:off user had the callback queue _thinking messages that
+        # no task ever drained — so they silently never appeared.
         progress_task = None
-        if tool_progress_enabled:
+        if needs_progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
 
         # Start stream consumer task — polls for consumer creation since it

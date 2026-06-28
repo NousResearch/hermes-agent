@@ -588,6 +588,13 @@ def run_conversation(
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
+    # Per-turn tally of consecutive successful credential-pool token refreshes,
+    # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
+    # ``try_refresh_current()`` "succeed" forever on a single-entry OAuth pool,
+    # so this tally caps same-entry refreshes and lets the fallback chain take
+    # over instead of spinning. Reset here so each turn starts fresh. See #26080.
+    agent._auth_pool_refresh_counts = {}
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
@@ -2259,6 +2266,15 @@ def run_conversation(
                     # "unknown variant `image_url`, expected `text`".
                     "unknown variant `image_url`, expected `text`",
                     "unknown variant image_url, expected text",
+                    # OpenRouter routes a request to upstream endpoints and,
+                    # when none of the candidate endpoints for the model accept
+                    # image input, returns HTTP 404 "No endpoints found that
+                    # support image input". Without this phrase the agent never
+                    # strips the images, the retry loop re-sends the same
+                    # rejected request until exhaustion, and the gateway leaves
+                    # every subsequent message queued behind the stuck turn —
+                    # the P1 in issue #21160. The 404 passes the 4xx gate below.
+                    "no endpoints found that support image input",
                 )
                 _err_lower = _err_body.lower()
                 _looks_like_image_rejection = any(
@@ -2844,15 +2860,25 @@ def run_conversation(
                     # Fall through to normal error handling if compression
                     # is exhausted or didn't help.
 
-                # Eager fallback for rate-limit errors (429 or quota exhaustion).
-                # When a fallback model is configured, switch immediately instead
-                # of burning through retries with exponential backoff -- the
-                # primary provider won't recover within the retry window.
+                # Eager fallback for rate-limit errors (429 or quota exhaustion)
+                # and transport errors (connection failure / timeout / provider
+                # overloaded).  Rate limits and billing: switch immediately —
+                # the primary provider won't recover within the retry window.
+                # Transport errors: allow 1 retry first (transient hiccups
+                # recover), then fall back if the provider is truly unreachable.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                 }
-                if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
+                _is_transport_failure = classified.reason in {
+                    FailoverReason.timeout,
+                    FailoverReason.overloaded,
+                }
+                _should_fallback = (
+                    is_rate_limited
+                    or (_is_transport_failure and retry_count >= 2)
+                )
+                if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
@@ -2866,6 +2892,10 @@ def run_conversation(
                         if classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                            )
+                        elif _is_transport_failure:
+                            agent._buffer_status(
+                                "⚠️ Provider unreachable — switching to fallback provider..."
                             )
                         else:
                             agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
@@ -3658,7 +3688,12 @@ def run_conversation(
                         _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
                         if _ra_raw:
                             try:
-                                _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
+                                # Cap at 10 minutes. Anthropic Tier 1 input-token
+                                # buckets reset in ~171s, so a 120s cap caused us to
+                                # retry before the actual reset window and re-trip the
+                                # limit. 600s covers all realistic provider reset
+                                # windows while still rejecting pathological values. (#26293)
+                                _retry_after = min(float(_ra_raw), 600)
                             except (TypeError, ValueError):
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
@@ -4602,14 +4637,20 @@ def run_conversation(
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
 
+                from agent.agent_runtime_helpers import (
+                    intent_ack_continuation_mode,
+                )
+
+                _ack_mode = intent_ack_continuation_mode(agent)
                 if (
-                    agent.api_mode == "codex_responses"
+                    _ack_mode != "off"
                     and agent.valid_tool_names
                     and codex_ack_continuations < 2
                     and agent._looks_like_codex_intermediate_ack(
                         user_message=user_message,
                         assistant_content=final_response,
                         messages=messages,
+                        require_workspace=(_ack_mode == "codex_only"),
                     )
                 ):
                     codex_ack_continuations += 1

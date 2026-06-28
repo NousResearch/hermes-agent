@@ -25,6 +25,7 @@ from hermes_constants import (
 )
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
+from tools.environments.local import hermes_subprocess_env
 from tui_gateway import git_probe
 from tui_gateway.transport import (
     StdioTransport,
@@ -178,6 +179,16 @@ _LONG_HANDLERS = frozenset(
         "billing.step_up",
         "browser.manage",
         "cli.exec",
+        # Completion RPCs run inline on the reader thread by default, but both
+        # can block it for seconds: complete.path spawns `git ls-files` and
+        # fuzzy-ranks the whole repo (slow on large repos / WSL2 mounts), and
+        # complete.slash does first-call prompt_toolkit imports + a skill-dir
+        # scan. While either runs inline, prompt.submit / session.interrupt sit
+        # unread in the stdin pipe — the TUI appears frozen until the 120s RPC
+        # timeout fires (#21123). Routing them to the pool keeps the fast path
+        # responsive; completion is read-only and write_json is lock-guarded.
+        "complete.path",
+        "complete.slash",
         "llm.oneshot",
         # Pet RPCs hit the network (manifest fetch / spritesheet download) or do
         # per-frame PNG decode/encode (pet.cells): inline they serialize on the
@@ -274,7 +285,9 @@ class _SlashWorker:
             text=True,
             bufsize=1,
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            # slash_worker runs the Hermes agent → needs provider credentials.
+            # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
+            env=hermes_subprocess_env(inherit_credentials=True),
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
@@ -3373,6 +3386,24 @@ def _on_tool_progress(
         if _session_verbose(sid):
             payload["verbose"] = True
         _emit("reasoning.available", sid, payload)
+        return
+    if event_type == "moa.reference" and name:
+        # MoA reference-model output — relay as a labelled block the Ink/desktop
+        # client renders before the aggregator's response (like a thinking
+        # block, tagged with the source model). `name` is the slot label,
+        # `preview` is the reference text.
+        ref_payload: dict[str, object] = {
+            "label": str(name),
+            "text": str(preview or ""),
+        }
+        if _kwargs.get("moa_index") is not None:
+            ref_payload["index"] = _kwargs.get("moa_index")
+        if _kwargs.get("moa_count") is not None:
+            ref_payload["count"] = _kwargs.get("moa_count")
+        _emit("moa.reference", sid, ref_payload)
+        return
+    if event_type == "moa.aggregating":
+        _emit("moa.aggregating", sid, {"aggregator": str(name or "")})
         return
     if event_type.startswith("subagent."):
         payload = {
@@ -11103,7 +11134,9 @@ def _(rid, params: dict) -> dict:
             text=True,
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
+            # needs provider credentials. Tier-1 secrets still stripped (#29157).
+            env=hermes_subprocess_env(inherit_credentials=True),
             stdin=subprocess.DEVNULL,
         )
         parts = [r.stdout or "", r.stderr or ""]

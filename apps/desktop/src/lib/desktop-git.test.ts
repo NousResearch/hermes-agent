@@ -63,6 +63,21 @@ describe('desktop git facade', () => {
     expect(repoStatus).not.toHaveBeenCalled()
   })
 
+  it('targets the active profile backend so a remote profile never touches the local repo', async () => {
+    $connection.set({ mode: 'remote', profile: 'remote-docker' } as never)
+
+    await desktopGit()?.repoStatus('/srv/work')
+    await desktopGit()?.review.stage('/srv/work', 'a.txt')
+
+    expect(api).toHaveBeenCalledWith({ path: '/api/git/status?path=%2Fsrv%2Fwork', profile: 'remote-docker' })
+    expect(api).toHaveBeenCalledWith({
+      body: { file: 'a.txt', path: '/srv/work' },
+      method: 'POST',
+      path: '/api/git/review/stage',
+      profile: 'remote-docker'
+    })
+  })
+
   it('sends mutations as POST bodies on a remote gateway', async () => {
     $connection.set({ mode: 'remote' } as never)
 

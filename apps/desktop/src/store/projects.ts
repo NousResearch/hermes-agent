@@ -444,6 +444,8 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
     if (input.use) {
       $activeProjectId.set(created.id)
     }
+
+    setSidebarAgentsGrouped(true)
   }
 
   reconcileProjects()
@@ -737,15 +739,11 @@ export async function copyPath(path: null | string): Promise<void> {
 // the backend filesystem (seeded at its default cwd) where sessions run; local
 // mode opens the native dialog. Returns the absolute path, or null if cancelled.
 export async function pickProjectFolder(): Promise<null | string> {
-  try {
-    const [dir] = await selectDesktopPaths({
-      defaultPath: (await desktopDefaultCwd())?.cwd,
-      directories: true,
-      multiple: false
-    })
+  const [dir] = await selectDesktopPaths({
+    defaultPath: (await desktopDefaultCwd())?.cwd,
+    directories: true,
+    multiple: false
+  })
 
-    return dir || null
-  } catch {
-    return null
-  }
+  return dir || null
 }

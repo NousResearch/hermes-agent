@@ -6,7 +6,7 @@ import type {
   HermesReviewShipInfo
 } from '@/global'
 
-import { isDesktopFsRemoteMode } from './desktop-fs'
+import { desktopFsProfile, isDesktopFsRemoteMode } from './desktop-fs'
 
 // Remote-aware git facade. Locally the desktop runs git through Electron
 // (window.hermesDesktop.git); on a remote gateway that's the wrong filesystem,
@@ -23,7 +23,9 @@ function desktopApi<T>(path: string, body?: Record<string, unknown>): Promise<T>
     throw new Error('Hermes Desktop bridge is unavailable')
   }
 
-  return desktop.api<T>(body ? { body, method: 'POST', path } : { path })
+  return desktop.api<T>(
+    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
+  )
 }
 
 function gitGet<T>(route: string, params: Record<string, boolean | null | string | undefined>): Promise<T> {

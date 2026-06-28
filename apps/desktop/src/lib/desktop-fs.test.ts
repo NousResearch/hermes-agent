@@ -112,6 +112,16 @@ describe('desktop filesystem facade', () => {
     expect(gitRoot).not.toHaveBeenCalled()
   })
 
+  it('targets the active profile backend so a remote profile never reads local disk', async () => {
+    $connection.set({ mode: 'remote', profile: 'remote-docker' } as never)
+
+    await readDesktopDir('/srv/project')
+    await desktopDefaultCwd()
+
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fsrv%2Fproject', profile: 'remote-docker' })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
+  })
+
   it('routes file diffs through backend git in remote mode', async () => {
     $connection.set({ mode: 'remote' } as never)
 

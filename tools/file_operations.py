@@ -2061,16 +2061,35 @@ class ShellFileOperations(FileOperations):
         if not has_hidden_path_ancestor:
             pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
 
-        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
-              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
+        escaped_path = self._escape_shell_arg(path)
+        escaped_pattern = self._escape_shell_arg(search_pattern)
+        file_or_descendant_dir_expr = r"\( -type f -o -type d \)"
+
+        cmd = (
+            f"if [ -d {escaped_path} ]; then "
+            f"find {escaped_path} -mindepth 1{hidden_filter_expr} "
+            f"{file_or_descendant_dir_expr} -name {escaped_pattern} "
+            f"-printf '%T@ %p\\n'; "
+            f"else "
+            f"find {escaped_path}{hidden_filter_expr} -type f "
+            f"-name {escaped_pattern} -printf '%T@ %p\\n'; "
+            f"fi 2>/dev/null | sort -rn{pagination_expr}"
+        )
 
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
 
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
-                        f"2>/dev/null | sort -rn{pagination_expr}"
+            cmd_simple = (
+                f"if [ -d {escaped_path} ]; then "
+                f"find {escaped_path} -mindepth 1{hidden_filter_expr} "
+                f"{file_or_descendant_dir_expr} -name {escaped_pattern}; "
+                f"else "
+                f"find {escaped_path}{hidden_filter_expr} -type f "
+                f"-name {escaped_pattern}; "
+                f"fi 2>/dev/null | sort -rn{pagination_expr}"
+            )
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
 
@@ -2108,6 +2127,95 @@ class ShellFileOperations(FileOperations):
             limit_reason=limit_reason,
         )
 
+    def _filter_hidden_descendants(self, paths: List[str], root: Path) -> List[str]:
+        """Drop hidden descendants while allowing an explicit hidden search root."""
+        normalized_root = root.resolve()
+        filtered = []
+        for item_path in paths:
+            try:
+                rel_parts = Path(item_path).resolve().relative_to(normalized_root).parts
+            except ValueError:
+                rel_parts = Path(item_path).parts
+            if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
+                continue
+            filtered.append(item_path)
+        return filtered
+
+    def _filter_gitignored_paths(self, paths: List[str], root: str) -> List[str]:
+        """Drop paths ignored by git when *root* is inside a git worktree."""
+        if not paths:
+            return paths
+
+        escaped_root = self._escape_shell_arg(root)
+        kept = []
+        for item_path in paths:
+            escaped_item = self._escape_shell_arg(item_path)
+            cmd = (
+                f"git -C {escaped_root} rev-parse --is-inside-work-tree >/dev/null 2>&1 "
+                f"&& git -C {escaped_root} check-ignore -q -- {escaped_item}"
+            )
+            result = self._exec(cmd, timeout=10)
+            # Outside a git worktree, rev-parse fails and the shell returns non-zero;
+            # inside one, check-ignore returns 0 only for ignored paths.
+            if result.exit_code == 0:
+                continue
+            kept.append(item_path)
+        return kept
+
+    def _search_directories_with_find(
+        self, pattern: str, path: str, fetch_limit: int
+    ) -> tuple[List[str], Optional[str]]:
+        """Return matching descendant directories using find, if available."""
+        if fetch_limit <= 0:
+            return [], None
+
+        search_root = Path(path)
+        has_hidden_path_ancestor = any(
+            part not in {".", ".."} and part.startswith(".")
+            for part in search_root.parts
+        )
+        hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
+        hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
+        pagination_expr = (
+            "" if has_hidden_path_ancestor else f" | head -n {fetch_limit}"
+        )
+
+        escaped_path = self._escape_shell_arg(path)
+        escaped_pattern = self._escape_shell_arg(pattern)
+        cmd = (
+            f"find {escaped_path} -mindepth 1{hidden_filter_expr} "
+            f"-type d -name {escaped_pattern} -printf '%T@ %p\\n' "
+            f"2>/dev/null | sort -rn{pagination_expr}"
+        )
+        result = self._exec(cmd, timeout=60)
+        stdout, limit_reason = _search_stdout_and_limit(result)
+
+        if not stdout.strip() and not limit_reason:
+            # Try without -printf (BSD find compatibility -- macOS)
+            cmd_simple = (
+                f"find {escaped_path} -mindepth 1{hidden_filter_expr} "
+                f"-type d -name {escaped_pattern} 2>/dev/null "
+                f"| sort -rn{pagination_expr}"
+            )
+            result = self._exec(cmd_simple, timeout=60)
+            stdout, limit_reason = _search_stdout_and_limit(result)
+
+        dirs = []
+        for line in stdout.strip().split('\n'):
+            if not line:
+                continue
+            parts = line.split(' ', 1)
+            if len(parts) == 2 and parts[0].replace('.', '').isdigit():
+                dirs.append(parts[1])
+            else:
+                dirs.append(line)
+
+        if has_hidden_path_ancestor:
+            dirs = self._filter_hidden_descendants(dirs, search_root)
+
+        dirs = self._filter_gitignored_paths(dirs, path)
+        return dirs[:fetch_limit], limit_reason
+
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name using ripgrep's --files mode.
 
@@ -2123,12 +2231,18 @@ class ShellFileOperations(FileOperations):
         else:
             glob_pattern = pattern
 
-        fetch_limit = limit + offset
+        search_root = Path(path)
+        has_hidden_path_ancestor = any(
+            part not in {".", ".."} and part.startswith(".")
+            for part in search_root.parts
+        )
+        fetch_limit = limit + offset + 1
+        head_expr = "" if has_hidden_path_ancestor else f" | head -n {fetch_limit}"
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
-            f"| head -n {fetch_limit}"
+            f"{self._escape_shell_arg(path)} 2>/dev/null"
+            f"{head_expr}"
         )
         result = self._exec(cmd_sorted, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
@@ -2138,20 +2252,34 @@ class ShellFileOperations(FileOperations):
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
-                f"| head -n {fetch_limit}"
+                f"{self._escape_shell_arg(path)} 2>/dev/null"
+                f"{head_expr}"
             )
             result = self._exec(cmd_plain, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
             all_files = [f for f in stdout.strip().split('\n') if f]
 
-        page = all_files[offset:offset + limit]
+        if has_hidden_path_ancestor:
+            all_files = self._filter_hidden_descendants(all_files, search_root)
+
+        all_entries = all_files
+        directory_limit_reason = None
+        if not limit_reason:
+            dirs, directory_limit_reason = self._search_directories_with_find(
+                glob_pattern, path, fetch_limit
+            )
+            all_entries = all_files + dirs
+
+        page = all_entries[offset:offset + limit]
 
         return SearchResult(
             files=page,
-            total_count=len(all_files),
-            truncated=len(all_files) >= fetch_limit or bool(limit_reason),
-            limit_reason=limit_reason,
+            total_count=len(all_entries),
+            truncated=(
+                len(all_entries) > offset + limit
+                or bool(limit_reason or directory_limit_reason)
+            ),
+            limit_reason=limit_reason or directory_limit_reason,
         )
     
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],

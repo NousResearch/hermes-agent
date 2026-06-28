@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 import pytest
 import subprocess
 from pathlib import Path
@@ -446,6 +447,26 @@ def file_ops(mock_env):
     return ShellFileOperations(mock_env)
 
 
+def _make_subprocess_env(cwd="/"):
+    env = MagicMock()
+    env.cwd = cwd
+
+    def execute(command, **kwargs):
+        completed = subprocess.run(
+            command,
+            shell=True,
+            text=True,
+            capture_output=True,
+        )
+        return {
+            "output": completed.stdout,
+            "returncode": completed.returncode,
+        }
+
+    env.execute = execute
+    return env
+
+
 class TestShellFileOpsHelpers:
     def test_normalize_read_pagination_clamps_invalid_values(self):
         assert normalize_read_pagination(offset=0, limit=0) == (1, 1)
@@ -642,25 +663,160 @@ class TestSearchPathValidation:
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
 
+class TestSearchFilesIncludesDirectories:
+    @pytest.mark.skipif(
+        shutil.which("rg") is None,
+        reason="ripgrep not installed",
+    )
+    def test_rg_target_files_includes_matching_empty_directory(self, tmp_path):
+        root = tmp_path / "repo"
+        empty_dir = root / "vault"
+        empty_dir.mkdir(parents=True)
+
+        ops = ShellFileOperations(_make_subprocess_env())
+        result = ops.search("vault", path=str(root), target="files")
+
+        assert result.error is None
+        assert str(empty_dir) in result.files
+
+    @pytest.mark.skipif(
+        shutil.which("rg") is None,
+        reason="ripgrep not installed",
+    )
+    def test_rg_hidden_root_still_excludes_hidden_descendants(self, tmp_path):
+        root = tmp_path / ".hermes" / "logs"
+        visible_file = root / "agent.log"
+        hidden_file = root / "nested" / ".secret.log"
+        visible_file.parent.mkdir(parents=True, exist_ok=True)
+        hidden_file.parent.mkdir(parents=True, exist_ok=True)
+        visible_file.write_text("x")
+        hidden_file.write_text("x")
+
+        ops = ShellFileOperations(_make_subprocess_env())
+        result = ops.search("*.log", path=str(root), target="files")
+
+        assert result.error is None
+        assert str(visible_file) in result.files
+        assert str(hidden_file) not in result.files
+
+    @pytest.mark.skipif(
+        shutil.which("rg") is None,
+        reason="ripgrep not installed",
+    )
+    def test_rg_hidden_root_filters_before_pagination(self, tmp_path):
+        root = tmp_path / ".hermes" / "logs"
+        visible_file = root / "agent.log"
+        hidden_file = root / "nested" / ".secret.log"
+        visible_file.parent.mkdir(parents=True, exist_ok=True)
+        hidden_file.parent.mkdir(parents=True, exist_ok=True)
+        visible_file.write_text("x")
+        hidden_file.write_text("x")
+        # Ensure the hidden descendant sorts ahead of the visible file by mtime.
+        hidden_file.touch()
+
+        ops = ShellFileOperations(_make_subprocess_env())
+        result = ops.search("*.log", path=str(root), target="files", limit=1)
+
+        assert result.error is None
+        assert result.files == [str(visible_file)]
+        assert result.truncated is False
+
+    @pytest.mark.skipif(
+        shutil.which("rg") is None,
+        reason="ripgrep not installed",
+    )
+    @pytest.mark.skipif(
+        shutil.which("git") is None,
+        reason="git not installed",
+    )
+    def test_rg_target_files_excludes_gitignored_empty_directory(self, tmp_path):
+        root = tmp_path / "repo"
+        ignored_dir = root / "ignored_dir"
+        visible_dir = root / "visible_dir"
+        ignored_dir.mkdir(parents=True)
+        visible_dir.mkdir()
+        (root / ".gitignore").write_text("ignored_dir/\n")
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+        ops = ShellFileOperations(_make_subprocess_env())
+        result = ops.search("*dir", path=str(root), target="files")
+
+        assert result.error is None
+        assert str(visible_dir) in result.files
+        assert str(ignored_dir) not in result.files
+
+    @pytest.mark.skipif(
+        shutil.which("rg") is None,
+        reason="ripgrep not installed",
+    )
+    def test_rg_target_files_exact_page_is_not_truncated(self, tmp_path):
+        root = tmp_path / "repo"
+        one = root / "one.log"
+        two = root / "two.log"
+        root.mkdir()
+        one.write_text("x")
+        two.write_text("x")
+
+        ops = ShellFileOperations(_make_subprocess_env())
+        result = ops.search("*.log", path=str(root), target="files", limit=2)
+
+        assert result.error is None
+        assert set(result.files) == {str(one), str(two)}
+        assert result.truncated is False
+
+    def test_find_target_files_includes_matching_empty_directory(self, tmp_path, monkeypatch):
+        root = tmp_path / "repo"
+        empty_dir = root / "vault"
+        regular_file = root / "vault.txt"
+        empty_dir.mkdir(parents=True)
+        regular_file.write_text("x")
+
+        ops = ShellFileOperations(_make_subprocess_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops.search("vault*", path=str(root), target="files")
+
+        assert result.error is None
+        assert {str(empty_dir), str(regular_file)}.issubset(set(result.files))
+
+    def test_target_files_still_excludes_hidden_matching_directories(self, tmp_path, monkeypatch):
+        root = tmp_path / "repo"
+        visible_dir = root / "visible" / "cache"
+        hidden_dir = root / ".hidden" / "cache"
+        visible_dir.mkdir(parents=True)
+        hidden_dir.mkdir(parents=True)
+
+        ops = ShellFileOperations(_make_subprocess_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops.search("cache", path=str(root), target="files")
+
+        assert result.error is None
+        assert str(visible_dir) in result.files
+        assert str(hidden_dir) not in result.files
+
+    def test_target_files_paginates_combined_files_and_directories(self, tmp_path, monkeypatch):
+        root = tmp_path / "repo"
+        empty_dir = root / "alpha"
+        regular_file = root / "bravo"
+        empty_dir.mkdir(parents=True)
+        regular_file.write_text("x")
+
+        ops = ShellFileOperations(_make_subprocess_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+
+        first = ops.search("*", path=str(root), target="files", limit=1, offset=0)
+        second = ops.search("*", path=str(root), target="files", limit=1, offset=1)
+        combined = ops.search("*", path=str(root), target="files", limit=2, offset=0)
+
+        assert first.error is None
+        assert second.error is None
+        assert combined.error is None
+        assert first.files + second.files == combined.files
+        assert set(combined.files) == {str(empty_dir), str(regular_file)}
+
+
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
-        env = MagicMock()
-        env.cwd = "/"
-
-        def execute(command, **kwargs):
-            completed = subprocess.run(
-                command,
-                shell=True,
-                text=True,
-                capture_output=True,
-            )
-            return {
-                "output": completed.stdout,
-                "returncode": completed.returncode,
-            }
-
-        env.execute = execute
-        return env
+        return _make_subprocess_env()
 
     def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
         """Fallback find should include visible files when path is inside hidden root."""

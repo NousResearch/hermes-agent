@@ -41,6 +41,8 @@ import logging
 import os
 import re
 import asyncio
+import time
+from pathlib import Path
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
 # After the web-provider plugin migration (PR #25182), the Firecrawl SDK
@@ -110,6 +112,33 @@ logger = logging.getLogger(__name__)
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
+_WEB_BACKENDS = {
+    "parallel",
+    "firecrawl",
+    "tavily",
+    "exa",
+    "searxng",
+    "brave-free",
+    "ddgs",
+    "xai",
+}
+_WEB_SEARCH_BACKENDS = _WEB_BACKENDS
+_WEB_EXTRACT_BACKENDS = {"parallel", "firecrawl", "tavily", "exa"}
+_WEB_BACKEND_FALLBACK_ORDER = (
+    "tavily",
+    "exa",
+    "parallel",
+    "firecrawl",
+    "searxng",
+    "brave-free",
+    "ddgs",
+)
+_WEB_CIRCUIT_VERSION = 1
+_WEB_CIRCUIT_DEFAULT_THRESHOLD = 3
+_WEB_CIRCUIT_DEFAULT_WINDOW_SECONDS = 15 * 60
+_WEB_CIRCUIT_DEFAULT_OPEN_SECONDS = 30 * 60
+
+
 def _env_value(name: str) -> str:
     """Resolve ``name`` via Hermes config-aware env, falling back to process env.
 
@@ -132,6 +161,196 @@ def _env_value(name: str) -> str:
 
 def _has_env(name: str) -> bool:
     return bool(_env_value(name))
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _web_circuit_path() -> Path:
+    configured = os.getenv("HERMES_WEB_CIRCUIT_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    try:
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+    except Exception:
+        hermes_home = Path.home() / ".hermes"
+    return hermes_home / "state" / "web_backend_circuit.json"
+
+
+def _load_web_circuit() -> dict:
+    path = _web_circuit_path()
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": _WEB_CIRCUIT_VERSION, "backends": {}}
+
+
+def _save_web_circuit(state: dict) -> None:
+    path = _web_circuit_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except OSError as exc:
+        logger.debug("Failed to save web backend circuit state: %s", exc)
+
+
+def _web_circuit_key(backend: str, capability: str) -> str:
+    return f"{capability}:{backend}"
+
+
+def _is_backend_circuit_open(backend: str, capability: str) -> bool:
+    state = _load_web_circuit()
+    entry = state.get("backends", {}).get(
+        _web_circuit_key(backend, capability), {}
+    )
+    try:
+        opened_until = float(entry.get("opened_until") or 0)
+    except (TypeError, ValueError):
+        opened_until = 0
+    if opened_until <= time.time():
+        return False
+    logger.warning(
+        "Web %s backend %s is circuit-open until %.0f",
+        capability,
+        backend,
+        opened_until,
+    )
+    return True
+
+
+def _is_circuitable_web_error(error: Optional[str]) -> bool:
+    text = (error or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "432",
+            "429",
+            "rate limit",
+            "rate-limit",
+            "too many requests",
+            "quota",
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "service unavailable",
+        )
+    )
+
+
+def _record_backend_result(
+    backend: Optional[str],
+    capability: str,
+    success: bool,
+    error: Optional[str] = None,
+) -> None:
+    if not backend:
+        return
+
+    threshold = max(
+        1,
+        _int_env(
+            "HERMES_WEB_CIRCUIT_FAILURE_THRESHOLD",
+            _WEB_CIRCUIT_DEFAULT_THRESHOLD,
+        ),
+    )
+    window_seconds = max(
+        1,
+        _int_env("HERMES_WEB_CIRCUIT_WINDOW_SECONDS", _WEB_CIRCUIT_DEFAULT_WINDOW_SECONDS),
+    )
+    open_seconds = max(
+        1,
+        _int_env("HERMES_WEB_CIRCUIT_OPEN_SECONDS", _WEB_CIRCUIT_DEFAULT_OPEN_SECONDS),
+    )
+
+    state = _load_web_circuit()
+    backends = state.setdefault("backends", {})
+    key = _web_circuit_key(backend, capability)
+    if success:
+        if key in backends:
+            backends.pop(key, None)
+            _save_web_circuit(state)
+        return
+
+    if not _is_circuitable_web_error(error):
+        return
+
+    now = time.time()
+    entry = backends.setdefault(key, {})
+    failures = [
+        float(ts)
+        for ts in entry.get("failures", [])
+        if isinstance(ts, (int, float)) and now - float(ts) <= window_seconds
+    ]
+    failures.append(now)
+    entry["failures"] = failures
+    entry["last_error"] = (error or "")[:500]
+    entry["last_failure_at"] = now
+    if len(failures) >= threshold:
+        entry["opened_until"] = now + open_seconds
+        logger.warning(
+            "Opened web %s circuit for %s after %d failures in %ds",
+            capability,
+            backend,
+            len(failures),
+            window_seconds,
+        )
+    _save_web_circuit(state)
+
+
+def _backend_supports_capability(backend: str, capability: str) -> bool:
+    if capability == "extract":
+        return backend in _WEB_EXTRACT_BACKENDS
+    return backend in _WEB_SEARCH_BACKENDS
+
+
+def _candidate_backends_for_capability(capability: str, cfg: dict) -> list[str]:
+    specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
+    shared = (cfg.get("backend") or "").lower().strip()
+    configured_candidates = [specific, shared, _get_backend()]
+    candidates = list(configured_candidates)
+    if any(
+        backend in _WEB_BACKENDS and _backend_supports_capability(backend, capability)
+        for backend in configured_candidates
+    ):
+        candidates.extend(_WEB_BACKEND_FALLBACK_ORDER)
+    return [
+        backend
+        for backend in dict.fromkeys(candidates)
+        if backend in _WEB_BACKENDS and _backend_supports_capability(backend, capability)
+    ]
+
+
+def _response_error_text(response: Any) -> Optional[str]:
+    if isinstance(response, dict):
+        if response.get("success") is False:
+            return str(
+                response.get("error")
+                or response.get("message")
+                or "backend returned success=false"
+            )
+        results = response.get("results")
+        if isinstance(results, list) and results:
+            errors = [
+                str(item.get("error") or "")
+                for item in results
+                if isinstance(item, dict) and item.get("error")
+            ]
+            if len(errors) == len(results):
+                return "; ".join(errors[:3])
+    return None
+
 
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
@@ -208,10 +427,17 @@ def _get_capability_backend(capability: str) -> str:
     uses it. Otherwise falls through to the shared ``_get_backend()``.
     """
     cfg = _load_web_config()
-    specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
-    if specific and _is_backend_available(specific):
-        return specific
-    return _get_backend()
+    for backend in _candidate_backends_for_capability(capability, cfg):
+        if _is_backend_available(backend) and not _is_backend_circuit_open(backend, capability):
+            return backend
+    fallback = _get_backend()
+    if (
+        fallback in _WEB_BACKENDS
+        and _backend_supports_capability(fallback, capability)
+        and _is_backend_circuit_open(fallback, capability)
+    ):
+        return ""
+    return fallback
 
 
 def _is_backend_available(backend: str) -> bool:
@@ -851,6 +1077,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         )
 
         backend = _get_search_backend()
+        active_backend = backend
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
             # Fall back to availability-walked active provider when the
@@ -859,6 +1086,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             provider = get_active_search_provider()
 
         if provider is None:
+            active_backend = None
             response_data = {
                 "success": False,
                 "error": (
@@ -871,8 +1099,11 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
+            active_backend = getattr(provider, "name", backend)
             response_data = provider.search(query, limit)
 
+        backend_error = _response_error_text(response_data)
+        _record_backend_result(active_backend, "search", backend_error is None, backend_error)
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
         debug_call_data["final_response_size"] = len(result_json)
@@ -882,6 +1113,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
+        _record_backend_result(locals().get("active_backend"), "search", False, error_msg)
         logger.debug("%s", error_msg)
 
         debug_call_data["error"] = error_msg
@@ -977,6 +1209,7 @@ async def web_extract_tool(
             results = []
         else:
             backend = _get_extract_backend()
+            active_backend = backend
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
             # tavily, firecrawl) now live as plugins. The dispatcher is a
@@ -1000,6 +1233,12 @@ async def web_extract_tool(
                 # isn't registered at all (typo / uninstalled plugin), fall
                 # through to the active-provider walk.
                 if provider is not None and not provider.supports_extract():
+                    _record_backend_result(
+                        active_backend,
+                        "extract",
+                        False,
+                        "backend does not support extract",
+                    )
                     return json.dumps(
                         {
                             "success": False,
@@ -1014,6 +1253,7 @@ async def web_extract_tool(
                     )
                 provider = get_active_extract_provider()
                 if provider is None:
+                    active_backend = None
                     return json.dumps(
                         {
                             "success": False,
@@ -1029,6 +1269,7 @@ async def web_extract_tool(
             logger.info(
                 "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
             )
+            active_backend = getattr(provider, "name", backend)
 
             # Async-or-sync dispatch: parallel + firecrawl have async
             # extract(); exa + tavily are sync.
@@ -1150,6 +1391,8 @@ async def web_extract_tool(
             for r in response.get("results", [])
         ]
         trimmed_response = {"results": trimmed_results}
+        backend_error = _response_error_text(trimmed_response)
+        _record_backend_result(locals().get("active_backend"), "extract", backend_error is None, backend_error)
 
         if trimmed_response.get("results") == []:
             result_json = tool_error("Content was inaccessible or not found")
@@ -1172,6 +1415,7 @@ async def web_extract_tool(
             
     except Exception as e:
         error_msg = f"Error extracting content: {str(e)}"
+        _record_backend_result(locals().get("active_backend"), "extract", False, error_msg)
         logger.debug("%s", error_msg)
         
         debug_call_data["error"] = error_msg

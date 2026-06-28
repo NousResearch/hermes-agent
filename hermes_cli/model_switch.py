@@ -1484,6 +1484,20 @@ def list_authenticated_providers(
     def _norm_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
 
+    def _is_local_ollama_dummy_endpoint(api_url: str, api_key: str) -> bool:
+        if str(api_key or "").strip().lower() != "ollama":
+            return False
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(str(api_url or "").strip())
+        except Exception:
+            return False
+        host = (parsed.hostname or "").lower()
+        return host in {"localhost", "127.0.0.1", "::1"} and (
+            parsed.port in {None, 11434}
+        )
+
     def _record_builtin_endpoint(slug: str) -> None:
         """Record the effective base URL for a built-in provider row.
 
@@ -1989,6 +2003,8 @@ def list_authenticated_providers(
             has_explicit_models = bool(models_list)
             should_probe = bool(api_url) and discover and (
                 bool(api_key) or not has_explicit_models
+            ) and not (
+                has_explicit_models and _is_local_ollama_dummy_endpoint(api_url, api_key)
             )
             if should_probe:
                 try:
@@ -2170,6 +2186,7 @@ def list_authenticated_providers(
             api_url = grp["api_url"]
             api_key = grp.get("api_key", "")
             slug = grp["slug"]
+            has_explicit_models = bool(grp["models"])
             # If the slug is already claimed by a built-in / overlay /
             # user-provider row (sections 1-3), skip this custom group
             # to avoid shadowing a real provider.
@@ -2231,10 +2248,18 @@ def list_authenticated_providers(
             #   api_key is present. This supports endpoints that expose a
             #   full aggregator catalog via /models but only serve a subset
             #   (parity with section 3's user ``providers:`` behaviour).
+            # - Local Ollama entries commonly use api_key: ollama as a dummy
+            #   auth value; preserve explicit model lists for those endpoints
+            #   instead of replacing them with whatever the host currently has
+            #   pulled.
             should_probe = (
                 bool(api_url)
-                and (bool(api_key) or not grp["models"])
+                and (bool(api_key) or not has_explicit_models)
                 and grp.get("discover_models", True)
+                and not (
+                    has_explicit_models
+                    and _is_local_ollama_dummy_endpoint(api_url, api_key)
+                )
             )
             if should_probe:
                 try:

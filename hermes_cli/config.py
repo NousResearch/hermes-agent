@@ -1161,6 +1161,7 @@ DEFAULT_CONFIG = {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        "ddgs_backend": "duckduckgo",  # DDGS package backend passed to DDGS().text()
     },
 
     "browser": {

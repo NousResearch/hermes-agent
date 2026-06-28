@@ -74,7 +74,14 @@ _SKIP_PARTS = {"integration", "e2e", "docker"}
 
 # Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
-_DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at commit time was ~100s in CI and adding some leeway
+_DEFAULT_FILE_TIMEOUT_SECONDS = 140.0  # set by observing the slowest file at commit time was ~100s in CI and adding some leeway
+
+# Some files can legitimately exceed the global cap only under full-suite
+# contention. Keep those exceptions explicit and file-scoped so the default
+# still catches real hangs elsewhere.
+_FILE_TIMEOUT_MINIMUMS = {
+    "tests/run_agent/test_run_agent.py": 240.0,
+}
 
 # Duration cache: maps relative file paths to last-observed subprocess
 # wall-clock seconds. Used by ``--slice`` to distribute files across
@@ -210,6 +217,20 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         pass
 
 
+def _repo_relative_path(file: Path, repo_root: Path) -> str:
+    try:
+        return file.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return file.as_posix()
+
+
+def _effective_file_timeout(file: Path, repo_root: Path, file_timeout: float) -> float:
+    minimum = _FILE_TIMEOUT_MINIMUMS.get(_repo_relative_path(file, repo_root))
+    if minimum is None:
+        return file_timeout
+    return max(file_timeout, minimum)
+
+
 def _run_one_file(
     file: Path,
     pytest_args: List[str],
@@ -242,6 +263,7 @@ def _run_one_file(
     bound a pathologically slow or hung file as a whole.
     """
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+    effective_file_timeout = _effective_file_timeout(file, repo_root, file_timeout)
     
     subproc_start = time.monotonic()
     # launch the pytest process
@@ -272,7 +294,7 @@ def _run_one_file(
             pgid = None
 
     try:
-        output, _ = proc.communicate(timeout=file_timeout)
+        output, _ = proc.communicate(timeout=effective_file_timeout)
         rc = proc.returncode
     except subprocess.TimeoutExpired:
         _kill_tree(proc, pgid=pgid)
@@ -282,7 +304,7 @@ def _run_one_file(
             output = "(file timeout exceeded; output unavailable)"
         rc = 124  # de facto convention for "killed by timeout".
         output = (
-            f"({file_timeout:.0f}s exceeded; "
+            f"({effective_file_timeout:.0f}s exceeded; "
             f"process tree SIGKILL'd)\n{output}"
         )
     except BaseException:

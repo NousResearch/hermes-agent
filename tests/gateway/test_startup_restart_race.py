@@ -250,6 +250,7 @@ async def test_startup_aborts_after_registered_adapter_restart(tmp_path, monkeyp
 async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     cron_started = False
+    memory_monitor_started = False
 
     class AbortedStartupRunner:
         def __init__(self, config):
@@ -271,6 +272,10 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
         nonlocal cron_started
         cron_started = True
 
+    def fail_if_memory_monitor_starts(*args, **kwargs):
+        nonlocal memory_monitor_started
+        memory_monitor_started = True
+
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
     monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
@@ -280,6 +285,10 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", AbortedStartupRunner)
     monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
+    monkeypatch.setattr(
+        "gateway.run._start_gateway_memory_monitor",
+        fail_if_memory_monitor_starts,
+    )
     monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
 
     with pytest.raises(SystemExit) as exc:
@@ -287,3 +296,4 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
 
     assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert cron_started is False
+    assert memory_monitor_started is False

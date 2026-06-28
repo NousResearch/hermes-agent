@@ -16,6 +16,7 @@ from tools.process_registry import (
     ProcessSession,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
+    MAX_ACTIVE_PROCESS_AGE,
 )
 
 
@@ -415,6 +416,34 @@ class TestListSessions:
         assert len(result) == 1
         assert result[0]["session_id"] == "proc_1"
 
+    def test_session_key_surfaces_cross_task_processes(self, registry):
+        """A bg process under the same gateway session but a DIFFERENT task is
+        surfaced when session_key is passed, and flagged session_scoped (#29177).
+        """
+        # Current turn's task = "t_now"; forgotten preview server = "t_old"
+        # but both share gateway session_key "gw1".
+        own = _make_session(sid="proc_own", task_id="t_now")
+        own.session_key = "gw1"
+        forgotten = _make_session(sid="proc_forgotten", task_id="t_old")
+        forgotten.session_key = "gw1"
+        other = _make_session(sid="proc_other", task_id="t_x")
+        other.session_key = "gw_other"
+        registry._running[own.id] = own
+        registry._running[forgotten.id] = forgotten
+        registry._running[other.id] = other
+
+        # Task-only (legacy) view sees just the current task's process.
+        legacy = registry.list_sessions(task_id="t_now")
+        assert {r["session_id"] for r in legacy} == {"proc_own"}
+
+        # With session_key, the forgotten process under the same gateway
+        # session is surfaced and flagged; the unrelated session is not.
+        result = registry.list_sessions(task_id="t_now", session_key="gw1")
+        by_id = {r["session_id"]: r for r in result}
+        assert set(by_id) == {"proc_own", "proc_forgotten"}
+        assert by_id["proc_forgotten"].get("session_scoped") is True
+        assert "session_scoped" not in by_id["proc_own"]
+
     def test_list_entry_fields(self, registry):
         s = _make_session(output="preview text")
         registry._running[s.id] = s
@@ -443,6 +472,27 @@ class TestActiveQueries:
         registry._running[s.id] = s
         assert registry.has_active_for_session("gw_session_1") is True
         assert registry.has_active_for_session("other") is False
+
+    def test_has_active_for_session_with_max_age_recent(self, registry):
+        """Recent process is considered active when max_active_age is set."""
+        s = _make_session(started_at=time.time() - 100)
+        s.session_key = "gw_session_1"
+        registry._running[s.id] = s
+        assert registry.has_active_for_session("gw_session_1", max_active_age=3600) is True
+
+    def test_has_active_for_session_with_max_age_stale(self, registry):
+        """Stale process (older than max_active_age) is ignored."""
+        s = _make_session(started_at=time.time() - 90000)  # 25 hours ago
+        s.session_key = "gw_session_1"
+        registry._running[s.id] = s
+        assert registry.has_active_for_session("gw_session_1", max_active_age=86400) is False
+
+    def test_has_active_for_session_max_age_none_preserves_legacy(self, registry):
+        """Without max_active_age, any running process blocks (legacy behaviour)."""
+        s = _make_session(started_at=time.time() - 90000)  # 25 hours ago
+        s.session_key = "gw_session_1"
+        registry._running[s.id] = s
+        assert registry.has_active_for_session("gw_session_1") is True
 
     def test_exited_not_active(self, registry):
         s = _make_session(task_id="t1", exited=True, exit_code=0)
@@ -1568,14 +1618,31 @@ class TestSigkillEscalation:
         try:
             ProcessRegistry._terminate_host_pid(parent.pid)
 
-            def _all_dead():
-                return not any(
-                    psutil.pid_exists(p)
-                    and ProcessRegistry._proc_alive(psutil.Process(p))
-                    for p in all_pids
-                )
+            def _pid_dead(p: int) -> bool:
+                # A pid is "dead" for our purposes if it no longer exists OR
+                # exists only as an unreaped zombie (already terminated, just
+                # not reaped by its reparented parent yet). psutil can also
+                # raise mid-probe if the pid vanishes between the existence
+                # check and the status read — treat any such race as dead.
+                try:
+                    if not psutil.pid_exists(p):
+                        return True
+                    return not ProcessRegistry._proc_alive(psutil.Process(p))
+                except Exception:
+                    return True
 
-            assert _wait_until(_all_dead, timeout=4.0), (
+            def _all_dead():
+                return all(_pid_dead(p) for p in all_pids)
+
+            # _terminate_host_pid SIGKILLs synchronously before returning, so
+            # the kill signals are already delivered here. The only remaining
+            # wait is the kernel tearing down 3 processes and the reparented
+            # children transitioning to zombie — which can lag on a loaded CI
+            # runner. Give a generous budget (matches the wait() test's 10s)
+            # so this asserts the escalation BEHAVIOR, not the runner's
+            # scheduling latency. The assertion itself never weakens: every
+            # tree member must end up dead/zombie.
+            assert _wait_until(_all_dead, timeout=15.0, interval=0.02), (
                 "entire SIGTERM-ignoring tree (parent + children) must be SIGKILLed"
             )
         finally:
@@ -1585,3 +1652,59 @@ class TestSigkillEscalation:
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             parent.wait()
+
+
+class TestHandleProcessRedaction:
+    """`_handle_process` redacts background-process output before it reaches the
+    model / session.db / CLI display — issue #43025.
+
+    Mirrors the foreground `terminal` redaction so the two surfaces can't
+    diverge. Env-dump commands (`printenv`/`env`) get the ENV-assignment pass
+    so opaque tokens are masked; other commands stay on the code_file path.
+    """
+
+    def _setup(self, monkeypatch, command, output):
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        from tools import process_registry as pr
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_redact1", command=command)
+        sess.output_buffer = output
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running.clear()
+        reg._finished[sess.id] = sess
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        return pr, sess
+
+    def test_log_redacts_env_dump_opaque_token(self, monkeypatch):
+        pr, sess = self._setup(
+            monkeypatch, "printenv",
+            "MY_SERVICE_TOKEN=abc123randomopaquetokenvalue999\nHOME=/home/u",
+        )
+        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        assert "abc123randomopaquetokenvalue999" not in out["output"]
+        assert "HOME=/home/u" in out["output"]
+
+    def test_poll_redacts_prefix_key(self, monkeypatch):
+        pr, sess = self._setup(
+            monkeypatch, "python app.py",
+            "leaked OPENAI_API_KEY sk-proj-abc123def456ghi789jkl012 here",
+        )
+        out = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+        assert "abc123def456" not in out["output_preview"]
+
+    def test_disabled_passes_through(self, monkeypatch):
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", False)
+        from tools import process_registry as pr
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_redact2", command="printenv")
+        sess.output_buffer = "CUSTOM_TOKEN=zzzopaque1234567890abcdef"
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        assert "zzzopaque1234567890abcdef" in out["output"]

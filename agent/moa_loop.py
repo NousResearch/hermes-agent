@@ -8,6 +8,7 @@ iteration.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -24,6 +25,44 @@ logger = logging.getLogger(__name__)
 # references; this cap just protects against a pathologically large preset
 # opening dozens of sockets at once.
 _MAX_REFERENCE_WORKERS = 8
+
+# Per-tool-result character budget for the advisory reference view. Tool
+# results can be huge (a full diff, a 5000-line file dump); replaying them
+# verbatim per reference per tool-loop step would blow the reference model's
+# context window and cost. We keep the agent's *actions* (tool calls) in full —
+# they are cheap, high-signal, and tell the reference what the agent did — but
+# preview each tool *result* head+tail so the reference still sees what came
+# back without replaying megabytes. The acting aggregator always gets the full,
+# untrimmed transcript; this budget only shapes the advisory copy.
+_REFERENCE_TOOL_RESULT_BUDGET = 4000
+
+# System prompt prepended to every reference-model call. References are
+# advisory — they do NOT act, call tools, or own the task. Without this
+# framing a reference receives the bare trimmed conversation and assumes it is
+# the acting agent: it then refuses ("I can't access repositories / URLs from
+# here") or tries to call tools it doesn't have. The prompt reframes the model
+# as an analyst whose job is to reason about the presented state and hand its
+# best thinking to the aggregator/orchestrator that will actually act.
+_REFERENCE_SYSTEM_PROMPT = (
+    "You are a reference advisor in a Mixture of Agents (MoA) process. You are "
+    "NOT the acting agent and you do NOT execute anything: you cannot call "
+    "tools, run commands, browse, or access files, repositories, or URLs, and "
+    "you should not try to or apologize for being unable to. A separate "
+    "aggregator/orchestrator model holds those capabilities and will take the "
+    "actual actions.\n\n"
+    "The conversation below is the current state of a task handled by that "
+    "acting agent. Your job is to give your most intelligent analysis of that "
+    "state: understand the goal, reason about the problem, and advise on what "
+    "to do next. Surface the best approach, concrete next steps and tool-use "
+    "strategy, likely pitfalls and risks, and anything the acting agent may "
+    "have missed or gotten wrong. Assume any referenced files, URLs, or "
+    "systems exist and reason about them from the context given rather than "
+    "asking for access.\n\n"
+    "Respond with your advice directly — no preamble, no disclaimers about "
+    "tools or access. Your response is private guidance handed to the "
+    "aggregator, not an answer shown to the user."
+)
+
 
 
 def _slot_label(slot: dict[str, str]) -> str:
@@ -54,6 +93,14 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         rt = resolve_runtime_provider(requested=provider, target_model=model)
+        resolved_provider = str(rt.get("provider") or provider).strip().lower()
+        # call_llm treats an explicit base_url as a custom endpoint. That is
+        # correct for ordinary OpenAI-compatible targets, but wrong for OAuth /
+        # provider-backed targets whose provider branch adds auth refresh,
+        # request metadata, or request-shape adapters. Keep those providers
+        # identified by name.
+        if resolved_provider in {"nous", "openai-codex", "xai-oauth"}:
+            return out
         # Pass the resolved endpoint through so call_llm builds the request for
         # the provider's actual API surface instead of auto-detecting. base_url
         # routes call_llm to the right adapter (incl. anthropic_messages mode);
@@ -92,9 +139,14 @@ def _run_reference(
     """
     label = _slot_label(slot)
     try:
+        # Prepend the advisory-role system prompt so the reference understands
+        # it is analyzing state for an aggregator, not acting on the task. The
+        # trimmed view (_reference_messages) already strips the agent's own
+        # system prompt, so this is the only system message the reference sees.
+        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
         response = call_llm(
             task="moa_reference",
-            messages=ref_messages,
+            messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             **_slot_runtime(slot),
@@ -151,40 +203,140 @@ def _run_references_parallel(
     return [r for r in results if r is not None]
 
 
-def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build an advisory-safe view of the conversation for reference models.
+def _truncate_tool_result(text: str, budget: int = _REFERENCE_TOOL_RESULT_BUDGET) -> str:
+    """Head+tail preview of a tool result for the advisory view.
 
-    Reference calls are advisory: they never call tools and never emit the
-    ``tool_calls`` the main model did. Replaying the full transcript verbatim
-    (a) re-bills the ~8K-token Hermes system prompt per reference per
-    iteration and (b) risks 400s from strict providers (Mistral, Fireworks)
-    that reject orphan ``tool`` messages or ``tool_calls`` the reference never
-    produced. We keep only the user/assistant *text* turns, dropping the
-    system prompt, any ``tool``-role messages, and any ``tool_calls`` payloads.
+    Keeps the first and last halves of the budget with a ``[... N chars
+    omitted ...]`` marker between them, so a reference sees both how the result
+    started and how it ended without replaying the whole payload.
     """
-    trimmed: list[dict[str, Any]] = []
+    if not text or len(text) <= budget:
+        return text
+    half = budget // 2
+    omitted = len(text) - 2 * half
+    return f"{text[:half]}\n[... {omitted} chars omitted ...]\n{text[-half:]}"
+
+
+def _render_tool_calls(tool_calls: Any) -> str:
+    """Render an assistant turn's tool_calls as readable text lines.
+
+    The advisory view cannot carry real ``tool_calls`` payloads (strict
+    providers reject tool_calls the reference never produced), so the agent's
+    actions are flattened to text the reference can read and reason about.
+    """
+    lines: list[str] = []
+    for tc in tool_calls or []:
+        fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+        name = fn.get("name") or (tc.get("name") if isinstance(tc, dict) else "") or "tool"
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            args_text = args
+        elif args is not None:
+            try:
+                import json
+
+                args_text = json.dumps(args, ensure_ascii=False)
+            except Exception:
+                args_text = str(args)
+        else:
+            args_text = ""
+        lines.append(f"[called tool: {name}({args_text})]" if args_text else f"[called tool: {name}]")
+    return "\n".join(lines)
+
+
+def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build an advisory view of the conversation for reference models.
+
+    A reference gives an INFORMED judgement on the current state, so it must
+    see what the agent actually did — its tool calls AND the tool results that
+    came back — not just the agent's narration. We therefore preserve the whole
+    conversation flow, but flatten it into clean user/assistant *text* turns:
+
+      - system prompt: dropped (8K of Hermes boilerplate, not advisory signal).
+      - assistant turns: kept; any ``tool_calls`` are rendered inline as
+        ``[called tool: name(args)]`` text lines appended to the turn's text.
+      - ``tool``-role results: NOT dropped. Each is folded (head+tail preview,
+        see ``_truncate_tool_result``) into the *preceding* assistant turn as a
+        ``[tool result: ...]`` block, so the reference sees what came back.
+
+    This emits ZERO ``tool``-role messages and ZERO ``tool_calls`` arrays — only
+    plain user/assistant text — so strict providers (Mistral, Fireworks) that
+    reject orphan tool messages / unproduced tool_calls don't 400, while the
+    reference still has the full picture.
+
+    The view MUST end with a ``user`` turn. Anthropic (and OpenRouter→Anthropic)
+    interpret a trailing assistant turn as an assistant *prefill* to continue,
+    and no-prefill models (e.g. Claude Opus 4.8) reject it with
+    ``400 ... must end with a user message``. Rather than DELETE the agent's
+    latest context to satisfy that (which would blind the reference to the
+    current state), we APPEND a synthetic user turn asking the reference to
+    judge the state above. End-on-user is satisfied and no context is lost.
+
+    The acting aggregator always receives the full, untrimmed transcript; this
+    function only shapes the disposable advisory copy.
+    """
+    advisory_instruction = (
+        "[The conversation above is the current state of the task. Give your "
+        "most intelligent judgement: what is going on, what should happen next, "
+        "what risks or mistakes you see, and how the acting agent should "
+        "proceed.]"
+    )
+
+    rendered: list[dict[str, Any]] = []
+    last_user_content: str | None = None
     for msg in messages:
         role = msg.get("role")
-        if role not in ("user", "assistant"):
-            # Drop system prompt and tool-result messages.
-            continue
         content = msg.get("content")
-        if not isinstance(content, str):
-            # Skip non-text (multimodal/tool-call-only) assistant turns.
-            if not content:
-                continue
         text = content if isinstance(content, str) else ""
-        if role == "assistant" and not text.strip():
-            # Assistant turn that was purely tool calls — nothing advisory.
+
+        if role == "system":
             continue
-        trimmed.append({"role": role, "content": text})
-    if not trimmed:
-        # Degenerate case (e.g. first turn was stripped): fall back to a
-        # minimal user turn so the reference still has something to answer.
+        if role == "user":
+            if text.strip():
+                last_user_content = text
+            rendered.append({"role": "user", "content": text})
+        elif role == "assistant":
+            parts: list[str] = []
+            if text.strip():
+                parts.append(text.strip())
+            calls_text = _render_tool_calls(msg.get("tool_calls"))
+            if calls_text:
+                parts.append(calls_text)
+            # Empty assistant turns (no text, no calls) carry nothing advisory.
+            if parts:
+                rendered.append({"role": "assistant", "content": "\n".join(parts)})
+        elif role == "tool":
+            # Fold the tool result into the preceding assistant turn as text so
+            # the reference sees what came back, without emitting a tool-role
+            # message a reference never produced.
+            result_text = _truncate_tool_result(text)
+            block = f"[tool result: {result_text}]"
+            if rendered and rendered[-1].get("role") == "assistant":
+                rendered[-1]["content"] = rendered[-1]["content"] + "\n" + block
+            else:
+                # No assistant turn to attach to (e.g. a leading tool result);
+                # keep it as advisory context on its own assistant-role line.
+                rendered.append({"role": "assistant", "content": block})
+        # Any other role is ignored.
+
+    # End on a user turn: append a synthetic advisory request rather than
+    # deleting the agent's latest assistant context. This satisfies Anthropic's
+    # no-trailing-assistant-prefill rule while preserving full state.
+    if rendered and rendered[-1].get("role") == "assistant":
+        rendered.append({"role": "user", "content": advisory_instruction})
+    elif rendered and rendered[-1].get("role") == "user":
+        # Already ends on a user turn (fresh user prompt, no agent action yet).
+        # Leave it — the reference answers that prompt directly.
+        pass
+
+    if not rendered:
+        # Degenerate case: nothing rendered. Fall back to the latest user turn.
+        if last_user_content is not None:
+            return [{"role": "user", "content": last_user_content}]
         for msg in reversed(messages):
             if msg.get("role") == "user" and isinstance(msg.get("content"), str):
                 return [{"role": "user", "content": msg["content"]}]
-    return trimmed
+    return rendered
 
 
 
@@ -280,8 +432,38 @@ def aggregate_moa_context(
 class MoAChatCompletions:
     """OpenAI-chat-compatible facade where the aggregator is the acting model."""
 
-    def __init__(self, preset_name: str):
+    def __init__(self, preset_name: str, reference_callback: Any = None):
         self.preset_name = preset_name or "default"
+        # Optional display hook. Called as reference outputs become available so
+        # frontends can show each reference model's answer as a labelled block
+        # before the aggregator acts. Signature:
+        #   reference_callback(event, **kwargs)
+        # where event is one of:
+        #   "moa.reference"   kwargs: index, count, label, text
+        #   "moa.aggregating" kwargs: aggregator (label), ref_count
+        # Never raises into the model call — display is best-effort.
+        self.reference_callback = reference_callback
+        # State-scoped reference cache. The agent loop calls create() once per
+        # tool-loop iteration; references should re-run whenever the task STATE
+        # advances — i.e. on every new user message AND every new tool result —
+        # so each reference judges the latest state. The advisory view
+        # (_reference_messages) now renders tool calls + results as text, so its
+        # signature changes on every new tool response; the cache key is that
+        # signature, so a new tool result is a cache MISS (references re-run)
+        # while a redundant create() call with identical state is a HIT (no
+        # re-run, no re-emit). This gives "fire on every user/tool response"
+        # for free, without re-firing on a pure no-op re-call.
+        self._ref_cache_key: tuple | None = None
+        self._ref_cache_outputs: list[tuple[str, str]] = []
+
+    def _emit(self, event: str, **kwargs: Any) -> None:
+        cb = self.reference_callback
+        if cb is None:
+            return
+        try:
+            cb(event, **kwargs)
+        except Exception as exc:  # pragma: no cover - display must never break the turn
+            logger.debug("MoA reference_callback failed for %s: %s", event, exc)
 
     def create(self, **api_kwargs: Any) -> Any:
         from hermes_cli.config import load_config
@@ -306,12 +488,52 @@ class MoAChatCompletions:
 
         reference_outputs: list[tuple[str, str]] = []
         ref_messages = _reference_messages(messages)
-        reference_outputs = _run_references_parallel(
-            reference_models,
-            ref_messages,
-            temperature=temperature,
-            max_tokens=None,
-        )
+
+        # Turn-scoped cache: only run + display references when the advisory
+        # view changed (i.e. a new user turn). Within one turn the agent loop
+        # calls create() once per tool iteration with the same advisory view;
+        # reuse the cached outputs and skip both the re-run and the re-emit.
+        _sig = hashlib.sha256(
+            "\u0000".join(
+                f"{m.get('role')}:{m.get('content')}" for m in ref_messages
+            ).encode("utf-8", "replace")
+        ).hexdigest()
+        _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))
+        _refs_from_cache = _cache_key == self._ref_cache_key and bool(self._ref_cache_outputs)
+
+        if _refs_from_cache:
+            reference_outputs = list(self._ref_cache_outputs)
+        else:
+            reference_outputs = _run_references_parallel(
+                reference_models,
+                ref_messages,
+                temperature=temperature,
+                max_tokens=None,
+            )
+            self._ref_cache_key = _cache_key
+            self._ref_cache_outputs = list(reference_outputs)
+
+            # Surface each reference model's answer to the display BEFORE the
+            # aggregator acts — once per turn (only on the iteration that
+            # actually ran them). The user sees one labelled block per
+            # reference (rendered like a thinking block) so the MoA process is
+            # visible rather than a silent pause. Best-effort: never blocks the
+            # turn.
+            _ref_count = len(reference_outputs)
+            for _idx, (_label, _text) in enumerate(reference_outputs, start=1):
+                self._emit(
+                    "moa.reference",
+                    index=_idx,
+                    count=_ref_count,
+                    label=_label,
+                    text=_text,
+                )
+            if _ref_count:
+                self._emit(
+                    "moa.aggregating",
+                    aggregator=_slot_label(aggregator),
+                    ref_count=_ref_count,
+                )
 
         agg_messages = [dict(m) for m in messages]
         if reference_outputs:
@@ -359,6 +581,6 @@ class MoAChatCompletions:
 
 
 class MoAClient:
-    def __init__(self, preset_name: str):
+    def __init__(self, preset_name: str, reference_callback: Any = None):
         self.chat = type("_MoAChat", (), {})()
-        self.chat.completions = MoAChatCompletions(preset_name)
+        self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback)

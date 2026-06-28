@@ -27,19 +27,27 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
-def _should_emit_turn_failed(reason, last_msg_role) -> bool:
+def _should_emit_turn_failed(reason, last_msg_role, interrupted) -> bool:
     """Return True when the ``turn_failed`` hook should fire for this exit.
 
     Fire for every NON-clean turn exit:
       * the agent stopped mid-work — ``last_msg_role == "tool"`` (the
         protocol_violation / "breads-pc" premature-stop class), OR
       * the reason is anything other than a healthy ``text_response(...)``
-        completion (errors, exhaustion, interrupt, guardrail, etc.).
+        completion (errors, exhaustion, guardrail, etc.).
+
+    Never fire when ``interrupted`` is True: a user ``/stop`` is a deliberate,
+    clean exit, not a failure. Its exit reason (``interrupted_by_user``) is not
+    a ``text_response(...)``, so without this gate the reason-arm below would
+    raise a false-positive failure signal. Mirrors the existing
+    ``and not interrupted`` gate on the pending-tool diagnostic warning.
 
     Do NOT fire on a healthy completion: a ``text_response(...)`` exit whose
     last message is not a pending tool result. Mirrors the
     ``normal_text_response`` classification used for the diagnostic log.
     """
+    if interrupted:
+        return False
     normal_text_response = str(reason).startswith("text_response(")
     return last_msg_role == "tool" or not normal_text_response
 
@@ -276,7 +284,7 @@ def finalize_turn(
     # only — for Phase-0 agent-failure observability capture. Gated to
     # non-clean exits via the shared classification so healthy turns stay
     # quiet, and wrapped so a failing handler never breaks finalization.
-    if _should_emit_turn_failed(_turn_exit_reason, _last_msg_role):
+    if _should_emit_turn_failed(_turn_exit_reason, _last_msg_role, interrupted):
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
@@ -286,6 +294,7 @@ def finalize_turn(
                 session_id=agent.session_id,
                 turn_id=turn_id,
                 last_msg_role=_last_msg_role,
+                interrupted=interrupted,
                 api_calls=api_call_count,
                 tool_turns=_turn_tool_count,
                 response_len=_resp_len,

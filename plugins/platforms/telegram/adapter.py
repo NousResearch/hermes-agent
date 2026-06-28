@@ -8729,6 +8729,13 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
             telegram_cfg["exclusive_bot_mentions"],
             _lower_env_str,
         )
+    if "allow_bots" in telegram_cfg:
+        _set_env_from_yaml(
+            "TELEGRAM_ALLOW_BOTS",
+            "telegram.allow_bots",
+            telegram_cfg["allow_bots"],
+            _lower_env_str,
+        )
     if "guest_mode" in telegram_cfg:
         _set_env_from_yaml(
             "TELEGRAM_GUEST_MODE",

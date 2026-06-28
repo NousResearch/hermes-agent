@@ -129,6 +129,53 @@ class TestHandleFunctionCall:
         assert kwargs_by_hook["post_tool_call"]["error_kind"] == "match_not_found"
         assert kwargs_by_hook["transform_tool_result"]["error_kind"] == "match_not_found"
 
+    def test_terminal_hooks_receive_secret_safe_command_metadata(self):
+        args = {
+            "command": "API_TOKEN=*** scripts/run_tests.sh tests/test_model_tools.py",
+            "timeout": 120,
+            "background": True,
+            "notify_on_complete": True,
+            "pty": False,
+        }
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            handle_function_call("terminal", args, task_id="t1")
+
+        kwargs_by_hook = {c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list}
+        for hook_name in ("post_tool_call", "transform_tool_result"):
+            payload = kwargs_by_hook[hook_name]
+            assert payload["command_class"] == "test"
+            assert payload["timeout_seconds"] == 120
+            assert payload["background"] is True
+            assert payload["notify_on_complete"] is True
+            assert payload["pty"] is False
+            metadata_values = {
+                payload["command_class"],
+                payload["timeout_seconds"],
+                payload["background"],
+                payload["notify_on_complete"],
+                payload["pty"],
+            }
+            assert "API_TOKEN" not in repr(metadata_values)
+
+    def test_execute_code_hooks_receive_python_command_metadata(self, monkeypatch):
+        monkeypatch.setattr("tools.code_execution_tool._load_config", lambda: {"timeout": 45})
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            handle_function_call("execute_code", {"code": "print('hi')"}, task_id="t1")
+
+        kwargs_by_hook = {c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list}
+        assert kwargs_by_hook["post_tool_call"]["command_class"] == "python"
+        assert kwargs_by_hook["post_tool_call"]["timeout_seconds"] == 45
+        assert kwargs_by_hook["transform_tool_result"]["command_class"] == "python"
+        assert kwargs_by_hook["transform_tool_result"]["timeout_seconds"] == 45
+
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must
         receive a non-negative integer ``duration_ms`` kwarg measuring

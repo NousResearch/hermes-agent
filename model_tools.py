@@ -919,6 +919,7 @@ def _emit_post_tool_call_hook(
     error_type: Optional[str] = None,
     error_message: Optional[str] = None,
     error_kind: Optional[str] = None,
+    command_metadata: Optional[Dict[str, Any]] = None,
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook.
@@ -936,23 +937,24 @@ def _emit_post_tool_call_hook(
             return
         if status is None:
             status, error_type, error_message, error_kind = _tool_result_observer_fields(result)
-        invoke_hook(
-            "post_tool_call",
-            tool_name=function_name,
-            args=function_args,
-            result=result,
-            task_id=task_id or "",
-            session_id=session_id or "",
-            tool_call_id=tool_call_id or "",
-            turn_id=turn_id or "",
-            api_request_id=api_request_id or "",
-            duration_ms=duration_ms,
-            status=status,
-            error_type=error_type,
-            error_message=error_message,
-            error_kind=error_kind,
-            middleware_trace=list(middleware_trace or []),
-        )
+        payload = {
+            "tool_name": function_name,
+            "args": function_args,
+            "result": result,
+            "task_id": task_id or "",
+            "session_id": session_id or "",
+            "tool_call_id": tool_call_id or "",
+            "turn_id": turn_id or "",
+            "api_request_id": api_request_id or "",
+            "duration_ms": duration_ms,
+            "status": status,
+            "error_type": error_type,
+            "error_message": error_message,
+            "error_kind": error_kind,
+            "middleware_trace": list(middleware_trace or []),
+        }
+        payload.update(command_metadata or {})
+        invoke_hook("post_tool_call", **payload)
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
@@ -1230,6 +1232,7 @@ def handle_function_call(
                 except Exception:
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+        _command_metadata = _tool_command_metadata(function_name, function_args)
 
         _emit_post_tool_call_hook(
             function_name=function_name,
@@ -1241,6 +1244,7 @@ def handle_function_call(
             turn_id=turn_id,
             api_request_id=api_request_id,
             duration_ms=duration_ms,
+            command_metadata=_command_metadata,
             middleware_trace=list(_tool_middleware_trace),
         )
 
@@ -1256,22 +1260,23 @@ def handle_function_call(
             from hermes_cli.plugins import has_hook, invoke_hook
             if has_hook("transform_tool_result"):
                 status, error_type, error_message, error_kind = _tool_result_observer_fields(result)
-                hook_results = invoke_hook(
-                    "transform_tool_result",
-                    tool_name=function_name,
-                    args=function_args,
-                    result=result,
-                    task_id=task_id or "",
-                    session_id=session_id or "",
-                    tool_call_id=tool_call_id or "",
-                    turn_id=turn_id or "",
-                    api_request_id=api_request_id or "",
-                    duration_ms=duration_ms,
-                    status=status,
-                    error_type=error_type,
-                    error_message=error_message,
-                    error_kind=error_kind,
-                )
+                payload = {
+                    "tool_name": function_name,
+                    "args": function_args,
+                    "result": result,
+                    "task_id": task_id or "",
+                    "session_id": session_id or "",
+                    "tool_call_id": tool_call_id or "",
+                    "turn_id": turn_id or "",
+                    "api_request_id": api_request_id or "",
+                    "duration_ms": duration_ms,
+                    "status": status,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "error_kind": error_kind,
+                }
+                payload.update(_command_metadata)
+                hook_results = invoke_hook("transform_tool_result", **payload)
                 for hook_result in hook_results:
                     if isinstance(hook_result, str):
                         result = hook_result

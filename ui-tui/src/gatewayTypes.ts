@@ -7,6 +7,12 @@ export interface GatewaySkin {
   colors?: Record<string, string>
   help_header?: string
   tool_prefix?: string
+  spinner?: {
+    waiting_faces?: string[]
+    thinking_faces?: string[]
+    thinking_verbs?: string[]
+    wings?: string[][]
+  }
 }
 
 export interface GatewayCompletionItem {

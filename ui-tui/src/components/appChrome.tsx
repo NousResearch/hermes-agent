@@ -7,8 +7,6 @@ import { $delegationState } from '../app/delegationStore.js'
 import type { IndicatorStyle, Notice } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
-import { FACES } from '../content/faces.js'
-import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
@@ -22,8 +20,9 @@ const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+export const verbPadLen = (verbs: string[]) =>
+  verbs.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
+export const padVerb = (verb: string, verbs: string[]) => `${verb}…`.padEnd(verbPadLen(verbs), ' ')
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -44,9 +43,9 @@ interface IndicatorRender {
   showVerb: boolean
 }
 
-const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
+const renderIndicator = (style: IndicatorStyle, tick: number, faces: string[]): IndicatorRender => {
   if (style === 'kaomoji') {
-    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+    return { frame: faces[tick % faces.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
   }
 
   if (style === 'emoji') {
@@ -77,12 +76,13 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
 
 // `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
 // module load instead of rescanning on every status render.
-const KAOMOJI_FRAME_WIDTH = FACES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+const kaomojiFrameWidth = (faces: string[]) =>
+  faces.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
 const EMOJI_FRAME_WIDTH = EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
 
-const indicatorFrameWidth = (style: IndicatorStyle): number => {
+const indicatorFrameWidth = (style: IndicatorStyle, faces: string[]): number => {
   if (style === 'kaomoji') {
-    return KAOMOJI_FRAME_WIDTH
+    return kaomojiFrameWidth(faces)
   }
 
   if (style === 'emoji') {
@@ -107,25 +107,31 @@ export const MAX_DURATION_WIDTH = Math.max(
 // `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
 // ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
 // Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
-export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
-  const { showVerb } = renderIndicator(style, 0)
-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean, faces: string[], verbs: string[]): number => {
+  const { showVerb } = renderIndicator(style, 0, faces)
+  const verb = showVerb ? 1 + verbPadLen(verbs) : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
-  return indicatorFrameWidth(style) + verb + duration
+  return indicatorFrameWidth(style, faces) + verb + duration
 }
 
-function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+function FaceTicker({ color, faces, startedAt, style, verbs }: {
+  color: string
+  faces: string[]
+  startedAt?: null | number
+  style: IndicatorStyle
+  verbs: string[]
+}) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * verbs.length))
   const [now, setNow] = useState(() => Date.now())
 
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
   // for verb-less styles like `unicode`) without leaving the previous
   // timer dangling.
-  const { intervalMs, showVerb } = renderIndicator(style, 0)
+  const { intervalMs, showVerb } = renderIndicator(style, 0, faces)
 
   useEffect(() => {
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
@@ -144,9 +150,9 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
     }
   }, [intervalMs, showVerb])
 
-  const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const { frame } = renderIndicator(style, tick, faces)
+  const verb = verbs[verbTick % verbs.length] ?? ''
+  const verbSegment = showVerb ? ` ${padVerb(verb, verbs)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
@@ -458,7 +464,7 @@ export function StatusRule({
   // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
   const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
+    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null, t.spinner.waitingFaces, t.spinner.thinkingVerbs)
     : showNotice
       ? noticeReserve
       : stringWidth(status)
@@ -555,7 +561,7 @@ export function StatusRule({
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
           {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
+            <FaceTicker color={statusColor} faces={t.spinner.waitingFaces} startedAt={turnStartedAt} style={indicatorStyle} verbs={t.spinner.thinkingVerbs} />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
               {status}

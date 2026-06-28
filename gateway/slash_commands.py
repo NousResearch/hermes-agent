@@ -2634,9 +2634,10 @@ class GatewaySlashCommandsMixin:
             return t("gateway.verbose.not_enabled")
 
         # --- cycle mode (per-platform) ----------------------------------------
-        cycle = ["off", "new", "all", "verbose"]
+        cycle = ["off", "generic", "new", "all", "verbose"]
         descriptions = {
             "off": t("gateway.verbose.mode_off"),
+            "generic": "GENERIC — show human-friendly placeholders instead of tool details.",
             "new": t("gateway.verbose.mode_new"),
             "all": t("gateway.verbose.mode_all"),
             "verbose": t("gateway.verbose.mode_verbose"),

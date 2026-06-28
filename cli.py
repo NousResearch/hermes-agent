@@ -3468,7 +3468,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.console = Console()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
-        # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
+        # tool_progress: "off", "generic", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
@@ -8889,7 +8889,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         explicit ``-v``/``--verbose`` flag and the ``/verbose-logging``
         toggle.  See PR #6a1aa420e for the history that decoupled them.
         """
-        cycle = ["off", "new", "all", "verbose"]
+        cycle = ["off", "generic", "new", "all", "verbose"]
         try:
             idx = cycle.index(self.tool_progress_mode)
         except ValueError:
@@ -8910,6 +8910,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         from hermes_cli.colors import Colors as _Colors
         labels = {
             "off": f"{_Colors.DIM}Tool progress: OFF{_Colors.RESET} — silent mode, just the final response.",
+            "generic": f"{_Colors.YELLOW}Tool progress: GENERIC{_Colors.RESET} — show friendly placeholders instead of tool details.",
             "new": f"{_Colors.YELLOW}Tool progress: NEW{_Colors.RESET} — show each new tool (skip repeats).",
             "all": f"{_Colors.GREEN}Tool progress: ALL{_Colors.RESET} — show every tool call.",
             "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, and think blocks.",

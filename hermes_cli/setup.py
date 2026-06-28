@@ -1534,7 +1534,7 @@ def setup_agent_settings(config: dict):
 
     current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in {"off", "new", "all", "verbose"}:
+    if mode.lower() in {"off", "generic", "new", "all", "verbose"}:
         if "display" not in config:
             config["display"] = {}
         config["display"]["tool_progress"] = mode.lower()

@@ -2257,6 +2257,59 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+def _background_output_tail(output: str, command: str = "", *, limit: int = 1000) -> str:
+    """Return a sanitized, bounded output tail for public background notifications."""
+    if not output:
+        return ""
+    try:
+        from tools.ansi_strip import strip_ansi
+        output = strip_ansi(output)
+    except Exception:
+        pass
+    try:
+        from agent.redact import redact_terminal_output
+        output = redact_terminal_output(output, command or "")
+    except Exception:
+        pass
+    output = re.sub(r"proc_[A-Za-z0-9_-]+", "background process", output)
+    if "Traceback (most recent call last):" in output:
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        if lines:
+            return f"Final error: {lines[-1]}"
+        return ""
+    if len(output) <= limit:
+        return output.strip()
+    tail = output[-limit:]
+    newline = tail.find("\n")
+    if newline != -1:
+        tail = tail[newline + 1:]
+    return f"[… output truncated — showing last {len(tail)} chars]\n{tail.strip()}"
+
+
+def _format_background_process_chat_notification(
+    *,
+    exited: bool,
+    exit_code: Optional[int],
+    output: str = "",
+    command: str = "",
+) -> str:
+    """Format a background process watcher notification for human chat surfaces."""
+    if exited:
+        if exit_code in {0, None}:
+            status = "✅ Background task completed."
+        else:
+            status = f"⚠️ Background task failed (exit code {exit_code})."
+        label = "Final output"
+    else:
+        status = "⏳ Background task is still running."
+        label = "Recent output"
+
+    tail = _background_output_tail(output, command)
+    if not tail:
+        return status
+    return f"{status}\n\n{label}:\n{tail}"
+
+
 def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
@@ -14150,15 +14203,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or (notify_mode == "error" and session.exit_code not in {0, None})
                 )
                 if should_notify:
-                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
-                    if new_output:
-                        from agent.redact import redact_terminal_output
-                        new_output = redact_terminal_output(
-                            new_output, getattr(session, "command", "") or ""
-                        )
-                    message_text = (
-                        f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                        f"Here's the final output:\n{new_output}]"
+                    message_text = _format_background_process_chat_notification(
+                        exited=True,
+                        exit_code=session.exit_code,
+                        output=session.output_buffer or "",
+                        command=getattr(session, "command", "") or "",
                     )
                     adapter = None
                     for p, a in self.adapters.items():
@@ -14180,15 +14229,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output available -- deliver status update (only in "all" mode)
                 # Skip periodic updates for agent_notify watchers (they only care about completion)
-                new_output = session.output_buffer[-500:] if session.output_buffer else ""
-                if new_output:
-                    from agent.redact import redact_terminal_output
-                    new_output = redact_terminal_output(
-                        new_output, getattr(session, "command", "") or ""
-                    )
-                message_text = (
-                    f"[Background process {session_id} is still running~ "
-                    f"New output:\n{new_output}]"
+                message_text = _format_background_process_chat_notification(
+                    exited=False,
+                    exit_code=None,
+                    output=session.output_buffer or "",
+                    command=getattr(session, "command", "") or "",
                 )
                 adapter = None
                 for p, a in self.adapters.items():

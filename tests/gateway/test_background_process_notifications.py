@@ -154,7 +154,7 @@ class TestLoadBackgroundNotificationsMode:
             "result",
             [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)],
             1,
-            "finished with exit code 0",
+            "Background task completed",
         ),
         # error mode: exit 0 → no notification
         (
@@ -168,14 +168,14 @@ class TestLoadBackgroundNotificationsMode:
             "error",
             [SimpleNamespace(output_buffer="traceback\n", exited=True, exit_code=1)],
             1,
-            "finished with exit code 1",
+            "Background task failed (exit code 1)",
         ),
         # all mode: exited → notifies
         (
             "all",
             [SimpleNamespace(output_buffer="ok\n", exited=True, exit_code=0)],
             1,
-            "finished with exit code 0",
+            "Background task completed",
         ),
     ],
 )
@@ -202,6 +202,72 @@ async def test_run_process_watcher_respects_notification_mode(
     if expected_fragment is not None:
         sent_message = adapter.send.await_args.args[1]
         assert expected_fragment in sent_message
+
+    if adapter.send.await_count:
+        sent_message = adapter.send.await_args.args[1]
+        assert "[Background process" not in sent_message
+        assert "proc_test" not in sent_message
+
+
+@pytest.mark.asyncio
+async def test_background_notification_strips_ansi_and_hides_process_id(monkeypatch, tmp_path):
+    """Public watcher notifications should not expose terminal styling or proc ids."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="\x1b[31mfailed proc_secret123\x1b[0m\n",
+            exited=True,
+            exit_code=1,
+            command="run secret",
+        )
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "error")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict(session_id="proc_secret123"))
+
+    sent_message = adapter.send.await_args.args[1]
+    assert "Background task failed (exit code 1)" in sent_message
+    assert "\x1b[" not in sent_message
+    assert "proc_secret123" not in sent_message
+    assert "[Background process" not in sent_message
+
+
+@pytest.mark.asyncio
+async def test_background_notification_summarizes_traceback(monkeypatch, tmp_path):
+    """Tracebacks are summarized to the final exception line for chat delivery."""
+    import tools.process_registry as pr_module
+
+    output = (
+        "Traceback (most recent call last):\n"
+        "  File \"job.py\", line 1, in <module>\n"
+        "RuntimeError: final failure\n"
+    )
+    sessions = [SimpleNamespace(output_buffer=output, exited=True, exit_code=1, command="python job.py")]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "error")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    sent_message = adapter.send.await_args.args[1]
+    assert "Background task failed (exit code 1)" in sent_message
+    assert "Final error: RuntimeError: final failure" in sent_message
+    assert "Traceback (most recent call last)" not in sent_message
 
 
 @pytest.mark.asyncio

@@ -389,3 +389,35 @@ class TestIsGenuineNousRateLimit:
         assert is_genuine_nous_rate_limit(
             headers=None, last_known_state=None
         ) is False
+
+
+class TestIsGenuineHeaderLimitGuard:
+    """Header path must require an enforced limit before tripping the breaker,
+    mirroring the object-path ``limit > 0`` guard in
+    ``_has_exhausted_bucket_in_object``."""
+
+    def test_zero_remaining_without_limit_header_is_not_genuine(self):
+        from agent.nous_rate_guard import is_genuine_nous_rate_limit
+
+        # Exhausted bucket but NO enforced limit header: Nous emits the
+        # full x-ratelimit-* suite on every response, so a dimension that
+        # is not enforced for the current model can report remaining == 0
+        # of a 0/absent cap. That must NOT trip the cross-session breaker.
+        headers = {
+            "x-ratelimit-remaining-tokens-1h": "0",
+            "x-ratelimit-reset-tokens-1h": "1800",
+        }
+        assert is_genuine_nous_rate_limit(headers=headers) is False
+
+    def test_zero_remaining_with_enforced_limit_is_genuine(self):
+        from agent.nous_rate_guard import is_genuine_nous_rate_limit
+
+        # Same exhaustion WITH an enforced limit is a genuine (a)-class
+        # rate limit and SHOULD trip the breaker. Parity guard ensuring the
+        # added limit check does not over-suppress real exhaustion.
+        headers = {
+            "x-ratelimit-limit-tokens-1h": "1000000",
+            "x-ratelimit-remaining-tokens-1h": "0",
+            "x-ratelimit-reset-tokens-1h": "1800",
+        }
+        assert is_genuine_nous_rate_limit(headers=headers) is True

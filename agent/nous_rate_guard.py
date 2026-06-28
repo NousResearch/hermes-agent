@@ -246,8 +246,8 @@ def is_genuine_nous_rate_limit(
 
 def _parse_buckets_from_headers(
     headers: Optional[Mapping[str, str]],
-) -> dict[str, tuple[Optional[int], Optional[float]]]:
-    """Extract (remaining, reset_seconds) per bucket from x-ratelimit-* headers.
+) -> dict[str, tuple[Optional[int], Optional[int], Optional[float]]]:
+    """Extract (limit, remaining, reset_seconds) per bucket from x-ratelimit-* headers.
 
     Returns empty dict when no rate-limit headers are present.
     """
@@ -274,20 +274,30 @@ def _parse_buckets_from_headers(
         except (TypeError, ValueError):
             return None
 
-    result: dict[str, tuple[Optional[int], Optional[float]]] = {}
+    result: dict[str, tuple[Optional[int], Optional[int], Optional[float]]] = {}
     for tag in ("requests", "requests-1h", "tokens", "tokens-1h"):
+        limit = _maybe_int(lowered.get(f"x-ratelimit-limit-{tag}"))
         remaining = _maybe_int(lowered.get(f"x-ratelimit-remaining-{tag}"))
         reset = _maybe_float(lowered.get(f"x-ratelimit-reset-{tag}"))
-        if remaining is not None or reset is not None:
-            result[tag] = (remaining, reset)
+        if limit is not None or remaining is not None or reset is not None:
+            result[tag] = (limit, remaining, reset)
     return result
 
 
 def _has_exhausted_bucket(
-    buckets: Mapping[str, tuple[Optional[int], Optional[float]]],
+    buckets: Mapping[str, tuple[Optional[int], Optional[int], Optional[float]]],
 ) -> bool:
-    """Return True when any bucket has remaining == 0 AND a meaningful reset window."""
-    for remaining, reset in buckets.values():
+    """Return True when any bucket has remaining == 0 AND a meaningful reset window.
+
+    A bucket with no enforced limit (``limit`` absent or <= 0) is skipped:
+    Nous emits the full x-ratelimit-* suite on every response, so a
+    non-enforced dimension can report ``remaining == 0`` of a ``0`` cap,
+    which is not a genuine quota exhaustion. Mirrors the ``limit <= 0``
+    guard in ``_has_exhausted_bucket_in_object``.
+    """
+    for limit, remaining, reset in buckets.values():
+        if limit is None or limit <= 0:
+            continue
         if remaining is None or remaining > 0:
             continue
         if reset is None:

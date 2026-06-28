@@ -1377,6 +1377,26 @@ class SlashCommandCompleter(Completer):
         return f"{cmd_name} "
 
     @staticmethod
+    def _name_match_rank(cmd_name: str, word: str) -> int | None:
+        """Rank a command name against the typed word for completion.
+
+        Returns 0 for a prefix match, 1 for a substring ("contains") match,
+        or None for no match. Case-insensitive. Substring matching lets users
+        recall a command by any word it contains (e.g. ``/mcp`` surfaces
+        ``/reload-mcp``); prefix matches still rank first so typing the start
+        of a command keeps it at the top.
+        """
+        if not word:
+            return 0
+        name_lower = cmd_name.lower()
+        word_lower = word.lower()
+        if name_lower.startswith(word_lower):
+            return 0
+        if word_lower in name_lower:
+            return 1
+        return None
+
+    @staticmethod
     def _extract_path_word(text: str) -> str | None:
         """Extract the current word if it looks like a file path.
 
@@ -1917,58 +1937,58 @@ class SlashCommandCompleter(Completer):
 
         word = text[1:]
 
+        # Collect candidates from every source, then yield ranked so prefix
+        # matches come before substring ("contains") matches while each source's
+        # original discovery order is preserved within a rank (stable sort). This
+        # matters because downstream consumers truncate the list (e.g. the gateway
+        # caps complete.slash at 30) — ranking first keeps prefix hits from being
+        # pushed off the end by substring hits.
+        ranked: list[tuple[int, int, Completion]] = []
+
+        def _add(cmd_name: str, completion_display: str, meta: str) -> None:
+            rank = self._name_match_rank(cmd_name, word)
+            if rank is None:
+                return
+            ranked.append((
+                rank,
+                len(ranked),
+                Completion(
+                    self._completion_text(cmd_name, word),
+                    start_position=-len(word),
+                    display=completion_display,
+                    display_meta=meta,
+                ),
+            ))
+
         for cmd, desc in COMMANDS.items():
             if not self._command_allowed(cmd):
                 continue
-            cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
-                yield Completion(
-                    self._completion_text(cmd_name, word),
-                    start_position=-len(word),
-                    display=cmd,
-                    display_meta=desc,
-                )
+            _add(cmd[1:], cmd, desc)
 
         for cmd, info in self._iter_skill_bundles().items():
-            cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
-                description = str(info.get("description", "Skill bundle"))
-                short_desc = description[:50] + ("..." if len(description) > 50 else "")
-                skill_count = len(info.get("skills", []))
-                yield Completion(
-                    self._completion_text(cmd_name, word),
-                    start_position=-len(word),
-                    display=cmd,
-                    display_meta=f"▣ {short_desc} ({skill_count} skills)",
-                )
+            description = str(info.get("description", "Skill bundle"))
+            short_desc = description[:50] + ("..." if len(description) > 50 else "")
+            skill_count = len(info.get("skills", []))
+            _add(cmd[1:], cmd, f"▣ {short_desc} ({skill_count} skills)")
 
         for cmd, info in self._iter_skill_commands().items():
-            cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
-                description = str(info.get("description", "Skill command"))
-                short_desc = description[:50] + ("..." if len(description) > 50 else "")
-                yield Completion(
-                    self._completion_text(cmd_name, word),
-                    start_position=-len(word),
-                    display=cmd,
-                    display_meta=f"⚡ {short_desc}",
-                )
+            description = str(info.get("description", "Skill command"))
+            short_desc = description[:50] + ("..." if len(description) > 50 else "")
+            _add(cmd[1:], cmd, f"⚡ {short_desc}")
 
         # Plugin-registered slash commands
         try:
             from hermes_cli.plugins import get_plugin_commands
             for cmd_name, cmd_info in get_plugin_commands().items():
-                if cmd_name.startswith(word):
-                    desc = str(cmd_info.get("description", "Plugin command"))
-                    short_desc = desc[:50] + ("..." if len(desc) > 50 else "")
-                    yield Completion(
-                        self._completion_text(cmd_name, word),
-                        start_position=-len(word),
-                        display=f"/{cmd_name}",
-                        display_meta=f"🔌 {short_desc}",
-                    )
+                desc = str(cmd_info.get("description", "Plugin command"))
+                short_desc = desc[:50] + ("..." if len(desc) > 50 else "")
+                _add(cmd_name, f"/{cmd_name}", f"🔌 {short_desc}")
         except Exception:
             pass
+
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        for _rank, _order, completion in ranked:
+            yield completion
 
 
 # ---------------------------------------------------------------------------

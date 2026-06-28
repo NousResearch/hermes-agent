@@ -605,6 +605,42 @@ class TestSlashCommandCompleter:
         # "⚡ " prefix + 50 chars + "..."
         assert meta == f"⚡ {'A' * 50}..."
 
+    # -- substring ("contains") matching + ranking -----------------------
+
+    def test_substring_completion_matches_contained_word(self):
+        """A word contained mid-command (not a prefix) still completes."""
+        completions = _completions(SlashCommandCompleter(), "/mcp")
+        texts = {item.text for item in completions}
+        # "mcp" is not a prefix of "reload-mcp" but is contained in it.
+        assert "reload-mcp" in texts
+
+    def test_substring_completion_is_case_insensitive(self):
+        completions = _completions(SlashCommandCompleter(), "/MCP")
+        texts = {item.text for item in completions}
+        assert "reload-mcp" in texts
+
+    def test_prefix_matches_rank_before_substring_matches(self):
+        """Prefix hits must precede substring hits so truncation keeps them."""
+        texts = [item.text for item in _completions(SlashCommandCompleter(), "/re")]
+        # "reset" starts with "re"; "compress" only contains it.
+        assert "reset" in texts and "compress" in texts
+        assert texts.index("reset") < texts.index("compress")
+
+    def test_prefix_completion_still_works(self):
+        """The original prefix behavior is unchanged for prefix queries."""
+        texts = {item.text for item in _completions(SlashCommandCompleter(), "/hel")}
+        assert "help" in texts
+
+    def test_skill_substring_completion_from_provider(self):
+        """Skill commands also match on a contained word, not just prefix."""
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {
+                "/gif-search": {"description": "Search for GIFs"},
+            }
+        )
+        texts = {item.text for item in _completions(completer, "/search")}
+        assert "gif-search" in texts
+
     def test_skill_missing_description_uses_fallback(self):
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: {

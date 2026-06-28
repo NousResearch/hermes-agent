@@ -1,0 +1,29 @@
+# Calls the reusable @hermes mention listener from jleechanorg/.github.
+# Fires on PR open/edit, issue_comment, and PR review_comment events.
+#
+# Required repo secret:
+#   HERMES_SLACK_WEBHOOK_URL — incoming webhook for the target Slack channel
+
+name: hermes-pr-tag-listener
+
+on:
+  pull_request:
+    types: [opened, edited]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review_comment:
+    types: [created, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  notify:
+    uses: jleechanorg/.github/.github/workflows/hermes-pr-tag-listener.yml@main
+    with:
+      slack_channel: ${{ vars.HERMES_SLACK_CHANNEL || '#worldai-bugs' }}
+      dispatch_ao: 'false'
+    secrets:
+      slack_webhook_url: ${{ secrets.HERMES_SLACK_WEBHOOK_URL }}

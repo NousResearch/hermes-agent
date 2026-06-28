@@ -8316,6 +8316,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._handle_skills_command(cmd_original)
         elif canonical == "learn":
             self._handle_learn_command(cmd_original)
+        elif canonical == "findout":
+            self._handle_findout_command(cmd_original)
         elif canonical == "memory":
             self._handle_memory_command(cmd_original)
         elif canonical == "platforms":

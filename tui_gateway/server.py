@@ -11195,6 +11195,25 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
 
+    # ── /findout — runs BEFORE the generic skill-commands scan so it gets a
+    #    proper prompt-based instruction instead of advisory SKILL.md context.
+    if name == "findout":
+        try:
+            from agent.findout_prompt import build_findout_prompt
+            msg = build_findout_prompt(arg)
+            if not arg:
+                return _ok(rid, {
+                    "type": "send",
+                    "message": msg,
+                })
+            return _ok(rid, {
+                "type": "send",
+                "message": msg,
+                "name": "findout",
+            })
+        except Exception as exc:
+            return _err(rid, 5021, f"findout prompt build failed: {exc}")
+
     try:
         from agent.skill_commands import (
             scan_skill_commands,

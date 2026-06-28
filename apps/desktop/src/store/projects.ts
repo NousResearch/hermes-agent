@@ -733,12 +733,9 @@ export async function copyPath(path: null | string): Promise<void> {
   }
 }
 
-// Pick a folder for a project. Routes through the remote-aware folder picker
-// (selectDesktopPaths): a remote gateway browses the BACKEND filesystem via the
-// in-app RemoteFolderPicker — where sessions actually run — while local mode
-// uses the native directory dialog. Returns the chosen absolute path, or null
-// when cancelled. Seeded with the backend's default cwd on remote so the picker
-// opens somewhere useful instead of "/".
+// Pick a project folder via the remote-aware picker: a remote gateway browses
+// the backend filesystem (seeded at its default cwd) where sessions run; local
+// mode opens the native dialog. Returns the absolute path, or null if cancelled.
 export async function pickProjectFolder(): Promise<null | string> {
   try {
     const defaultPath = isDesktopFsRemoteMode() ? (await desktopDefaultCwd())?.cwd : undefined

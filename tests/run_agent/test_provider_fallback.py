@@ -305,3 +305,32 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+    def test_does_not_skip_entry_with_same_provider_model_but_different_base_url(self):
+        """Same provider+model but different base_url is a legitimate fallback —
+        different endpoints are different backends. Must not be skipped."""
+        fbs = [
+            # Same provider+model as current, but different base_url.
+            {"provider": "openrouter", "model": "z-ai/glm-4.7",
+             "base_url": "https://fallback.example.com/v1"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "openrouter"
+        agent.model = "z-ai/glm-4.7"
+        agent.base_url = "https://primary.example.com/v1"
+
+        called = []
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model))
+            return _mock_client(), model
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
+                ok = agent._try_activate_fallback()
+
+        assert ok is True
+        # The entry must NOT be skipped — different base_url means different backend.
+        assert called == [("openrouter", "z-ai/glm-4.7")], (
+            f"expected fallback to use entry with same provider/model but different base_url, "
+            f"got call order: {called}"
+        )

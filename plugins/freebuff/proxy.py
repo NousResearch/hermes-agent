@@ -93,7 +93,7 @@ def _pid_alive(pid: int) -> bool:
         except Exception:
             return False
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only fallback after nt branch above
         return True
     except OSError:
         return False

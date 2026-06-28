@@ -55,7 +55,7 @@ def pid_alive(pid: int | None) -> bool:
         if os.name == "nt":
             return False
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only fallback after psutil/nt branches above
         return True
     except OSError:
         return False

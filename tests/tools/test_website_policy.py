@@ -376,6 +376,7 @@ class TestWebToolPolicy:
             return True
 
         monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "firecrawl")
         # The per-URL website-policy gate moved into the firecrawl plugin's
         # extract() during the web-provider migration. Patch it at the new
         # location.
@@ -410,6 +411,7 @@ class TestWebToolPolicy:
 
         # Allow test URLs past SSRF check so website policy is what gets tested
         monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "firecrawl")
         monkeypatch.setattr(firecrawl_provider, "is_safe_url", lambda url: True)
 
         def fake_check(url):
@@ -453,6 +455,7 @@ class TestWebToolPolicy:
         from plugins.web.firecrawl import provider as firecrawl_provider
 
         monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "firecrawl")
         monkeypatch.setattr(
             firecrawl_provider,
             "is_safe_url",

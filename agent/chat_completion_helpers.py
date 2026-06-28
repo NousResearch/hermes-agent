@@ -1232,6 +1232,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return False
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
+    if not isinstance(fb, dict):
+        return agent._try_activate_fallback(reason=reason)  # skip invalid, try next
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:

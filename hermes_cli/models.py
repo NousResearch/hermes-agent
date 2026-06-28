@@ -2509,7 +2509,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         merged_static = _merge_with_models_dev(normalized, curated_static)
         live = _fetch_opencode_live_models(normalized, force_refresh=force_refresh)
         if live:
-            return _dedupe_model_ids(live, merged_static)
+            if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+                primary, secondary = live, merged_static
+            else:
+                primary, secondary = merged_static, live
+            return _dedupe_model_ids(primary, secondary)
         return merged_static
     if normalized == "nous":
         # Try live Nous Portal /models endpoint

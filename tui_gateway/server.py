@@ -1656,6 +1656,24 @@ def _session_db(session: dict):
                 db.close()
 
 
+def _session_db_for_immediate_use(session: dict):
+    """Return a SessionDB handle for immediate (non-context-manager) use.
+
+    Profile sessions open a dedicated ``state.db`` that the caller must close
+    in a ``finally`` block. Default sessions borrow the shared ``_get_db()``.
+    """
+    profile_home = session.get("profile_home")
+    if profile_home:
+        from hermes_state import SessionDB
+
+        try:
+            return SessionDB(db_path=Path(profile_home) / "state.db")
+        except Exception:
+            logger.debug("failed to open profile db for session", exc_info=True)
+            return None
+    return _get_db()
+
+
 def _persist_session_git_meta(session: dict, cwd: str) -> None:
     """Resolve + persist a session's git branch / repo root WITHOUT blocking.
 

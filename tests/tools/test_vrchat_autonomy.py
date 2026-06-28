@@ -21,7 +21,7 @@ def test_readiness_is_read_only_and_reports_missing_voicevox(monkeypatch):
     monkeypatch.setattr(autonomy, "probe_harness", lambda url: {"ok": False, "url": url})
     monkeypatch.setattr(autonomy, "find_output_device", lambda name: {"ok": None, "configured": False})
 
-    status = autonomy.vrchat_autonomy_readiness()
+    status = autonomy.vrchat_autonomy_readiness(require_voice=True)
 
     assert status["ready"] is False
     assert "VOICEVOX Engine" in status["missing"]

@@ -77,6 +77,42 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     ]
 
 
+def build_read_denied_paths(home: str) -> set[str]:
+    """Return exact per-user credential files that must never be read."""
+    return {
+        os.path.realpath(p)
+        for p in [
+            os.path.join(home, ".netrc"),
+            os.path.join(home, ".pgpass"),
+            os.path.join(home, ".npmrc"),
+            os.path.join(home, ".pypirc"),
+            os.path.join(home, ".git-credentials"),
+        ]
+    }
+
+
+def build_read_denied_prefixes(home: str) -> list[str]:
+    """Return per-user credential directories that must never be read."""
+    return [
+        os.path.realpath(p)
+        for p in [
+            os.path.join(home, ".ssh"),
+            os.path.join(home, ".aws"),
+            os.path.join(home, ".gnupg"),
+            os.path.join(home, ".kube"),
+            os.path.join(home, ".docker"),
+            os.path.join(home, ".azure"),
+            os.path.join(home, ".config", "gh"),
+            os.path.join(home, ".config", "gcloud"),
+        ]
+    ]
+
+
+def _is_at_or_under(path: str, root: str) -> bool:
+    """Return True when ``path`` is exactly ``root`` or inside it."""
+    return path == root or path.startswith(root + os.sep)
+
+
 def get_safe_write_roots() -> set[str]:
     """Return resolved HERMES_WRITE_SAFE_ROOT paths. Supports multiple directories
     separated by ``os.pathsep`` (``:`` on Unix, ``;`` on Windows).

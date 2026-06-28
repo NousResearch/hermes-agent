@@ -935,3 +935,59 @@ class TestPoisonClientRegistration:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("srv")
         assert storage.poison_client_registration() is False
+
+
+# ---------------------------------------------------------------------------
+# OAuthCallbackServer tests
+# ---------------------------------------------------------------------------
+
+class TestOAuthCallbackServer:
+    """TDD: tests for the new bind-first OAuth callback server."""
+
+    def test_server_binds_and_returns_port(self):
+        """Server binds on construction, port is immediately available."""
+        from tools.mcp_oauth import OAuthCallbackServer
+        server = OAuthCallbackServer(port=0)
+        try:
+            assert server.port > 0
+            # Verify we can connect to it
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s.settimeout(2.0)
+                s.connect(("127.0.0.1", server.port))
+            finally:
+                s.close()
+        finally:
+            server.close()
+
+    def test_start_launches_thread(self):
+        """start() begins serving in background thread."""
+        from tools.mcp_oauth import OAuthCallbackServer
+        import threading
+        server = OAuthCallbackServer(port=0)
+        try:
+            active_before = threading.active_count()
+            server.start()
+            assert server._thread is not None
+            assert server._thread.is_alive()
+        finally:
+            server.close()
+
+    def test_close_stops_server(self):
+        """close() shuts down server and joins thread."""
+        from tools.mcp_oauth import OAuthCallbackServer
+        server = OAuthCallbackServer(port=0)
+        server.start()
+        server.close()
+        assert not server._thread.is_alive()
+        # Verify port is released
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.settimeout(1.0)
+            s.bind(("127.0.0.1", server.port))
+        except OSError:
+            pytest.fail("Port not released after close()")
+        finally:
+            s.close()

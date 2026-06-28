@@ -457,6 +457,118 @@ def _make_callback_handler() -> tuple[type, dict]:
 
 
 # ---------------------------------------------------------------------------
+# OAuthCallbackServer — bind-first persistent callback server
+# ---------------------------------------------------------------------------
+
+
+class OAuthCallbackServer:
+    """Persistent localhost HTTP server for OAuth callback capture.
+
+    Binds the server at construction time, eliminating the TOCTOU gap
+    between port discovery and server startup (issue #5344, #34260).
+    Runs ``handle_request()`` in a loop until the OAuth callback
+    arrives or the timeout expires.
+
+    Only processes requests to ``/callback``; all other paths receive
+    HTTP 404 so that stray requests (``/favicon.ico``, browser
+    preflight) don't consume the single handler slot.
+
+    Attributes:
+        port: The actual port the server is bound to.
+        _result: Shared dict written by the HTTP handler (and optionally
+            by ``_paste_callback_reader`` for SSH paste fallback).
+    """
+
+    def __init__(self, port: int = 0, timeout: float = 300.0):
+        self._result: dict[str, Any] = {"auth_code": None, "state": None, "error": None}
+        self._timeout = timeout
+        handler_cls = self._make_handler()
+        # bind server at construction time — port consumed immediately
+        self._server = HTTPServer(("127.0.0.1", port), handler_cls)
+        self._server.timeout = 1.0  # handle_request() polls
+        self.port: int = self._server.server_address[1]
+        self._thread: threading.Thread | None = None
+
+    def _make_handler(self) -> type:
+        """Build a per-instance HTTP handler with path filtering."""
+        result = self._result
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                parsed = urlparse(self.path)
+                # Only process /callback; ignore favicon, preflight, etc.
+                if parsed.path != "/callback":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                params = parse_qs(parsed.query)
+                result["auth_code"] = params.get("code", [None])[0]
+                result["state"] = params.get("state", [None])[0]
+                result["error"] = params.get("error", [None])[0]
+                body = (
+                    "<html><body><h2>Authorization Successful</h2>"
+                    "<p>You can close this tab and return to Hermes.</p></body></html>"
+                ) if result["auth_code"] else (
+                    "<html><body><h2>Authorization Failed</h2>"
+                    f"<p>Error: {result['error'] or 'unknown'}</p></body></html>"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(body.encode())
+
+            def log_message(self, fmt: str, *args: Any) -> None:
+                logger.debug("OAuth callback: %s", fmt % args)
+
+        return _Handler
+
+    def start(self) -> None:
+        """Start the server in a daemon thread."""
+        self._thread = threading.Thread(target=self._serve_loop, daemon=True)
+        self._thread.start()
+
+    def _serve_loop(self) -> None:
+        """Process requests until callback arrives or timeout."""
+        deadline = time.time() + self._timeout
+        while time.time() < deadline:
+            try:
+                self._server.handle_request()
+            except (ConnectionError, OSError):
+                # Client disconnect or socket error — non-fatal
+                pass
+            if self._result["auth_code"] is not None or self._result["error"] is not None:
+                break
+
+    async def wait(self, timeout: float = 300.0) -> tuple[str, str | None]:
+        """Async-poll the result until callback arrives or timeout.
+
+        Returns ``(auth_code, state)``.  Raises :class:`RuntimeError`
+        on authorization error or :class:`OAuthNonInteractiveError` on
+        timeout.
+        """
+        poll_interval = 0.5
+        elapsed = 0.0
+        while elapsed < timeout:
+            if self._result["auth_code"] is not None or self._result["error"] is not None:
+                break
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+        if self._result["error"]:
+            raise RuntimeError(f"OAuth authorization failed: {self._result['error']}")
+        if self._result["auth_code"] is None:
+            raise OAuthNonInteractiveError(
+                "OAuth callback timed out — no authorization code received."
+            )
+        return self._result["auth_code"], self._result["state"]
+
+    def close(self) -> None:
+        """Shut down the server and wait for the thread."""
+        self._server.server_close()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
 # Async redirect + callback handlers for OAuthClientProvider
 # ---------------------------------------------------------------------------
 

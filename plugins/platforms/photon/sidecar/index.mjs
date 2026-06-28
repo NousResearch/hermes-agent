@@ -739,7 +739,26 @@ const server = http.createServer(async (req, res) => {
       // readable plain text on platforms that don't.
       const builder =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
-      const result = await space.send(builder);
+      let result;
+      try {
+        result = await space.send(builder);
+      } catch (err) {
+        // If Apple's IMAgentKit rejects enable_data_detection (set by
+        // spectrum-ts when the text contains links), strip protocol
+        // prefixes and retry. Without "https://" the markdown link
+        // detector won't fire, so data detection stays off and the
+        // message delivers. iOS still renders domain-like text as
+        // a tappable link on the receiving end.
+        const msg = err && (err.message || String(err));
+        if (msg && msg.includes("enable_data_detection")) {
+          const stripped = text.replace(/https?:\/\//g, "");
+          const fallbackBuilder =
+            format === "markdown" ? spectrumMarkdown(stripped) : spectrumText(stripped);
+          result = await space.send(fallbackBuilder);
+        } else {
+          throw err;
+        }
+      }
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {

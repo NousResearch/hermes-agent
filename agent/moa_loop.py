@@ -13,8 +13,11 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import openai
+
 from agent.auxiliary_client import call_llm
 from agent.transports import get_transport
+from hermes_cli.runtime_provider import resolve_runtime_provider
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +117,58 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     return out
 
 
+# Providers that need direct credential resolution instead of call_llm.
+# call_llm (via auxiliary_client) does not support OAuth-backed credential
+# resolution. Currently only xai-oauth has this limitation; add other OAuth
+# providers here if they fail through the standard path.
+_OAUTH_PROVIDERS = frozenset({"xai-oauth"})
+
+
+def _call_reference_direct(
+    slot: dict[str, str],
+    messages: list[dict[str, Any]],
+    *,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> tuple[str, str]:
+    """Call an OAuth-backed reference model by resolving credentials directly.
+
+    The standard ``call_llm`` path (used by ``_run_reference``) does not support
+    OAuth-backed providers (xai-oauth, nous, openai-codex) because the auxiliary
+    client lacks the ``resolve_runtime_provider`` credential resolution step.
+    This function bypasses ``call_llm`` entirely: it resolves the OAuth provider's
+    runtime (JWT / base_url) through ``resolve_runtime_provider``, creates a
+    direct ``OpenAI`` client, and calls ``chat.completions.create``.
+
+    Returns ``(label, text)`` on success, ``(label, "[failed: ...]")`` on error.
+    """
+    label = _slot_label(slot)
+    provider = str(slot.get("provider") or "").strip()
+    model = str(slot.get("model") or "").strip()
+    try:
+        rt = resolve_runtime_provider(requested=provider, target_model=model)
+        base_url = str(rt.get("base_url") or "").strip()
+        api_key = str(rt.get("api_key") or "").strip()
+        if not base_url or not api_key:
+            raise RuntimeError(f"OAuth provider {provider} returned incomplete credentials")
+
+        client = openai.OpenAI(base_url=base_url, api_key=api_key)
+        kwargs: dict[str, Any] = dict(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        # Drop None values so the API doesn't reject explicit nulls
+        response = client.chat.completions.create(**{k: v for k, v in kwargs.items() if v is not None})
+        text = _extract_text(response) or "(empty response)"
+        logger.info("MoA reference %s succeeded (%s chars)", label, len(text))
+        return label, text
+    except Exception as exc:
+        logger.warning("MoA reference %s failed (direct): %s", label, exc)
+        return label, f"[failed: {exc}]"
+
+
 def _run_reference(
     slot: dict[str, str],
     ref_messages: list[dict[str, Any]],
@@ -132,6 +187,11 @@ def _run_reference(
     real maximum); ``temperature`` is only the user's configured preset value,
     which call_llm may still override per model.
 
+    OAuth-backed providers (xai-oauth, nous, openai-codex) cannot use
+    ``call_llm`` because the auxiliary client does not support OAuth credential
+    resolution. Those providers are routed through ``_call_reference_direct``
+    instead, which resolves the JWT/token and creates a direct OpenAI client.
+
     Never raises: a failed reference becomes a labelled note so the aggregator
     can still act with partial context. Designed to run inside a thread pool —
     ``call_llm`` is synchronous/blocking, so threads (not asyncio) are the right
@@ -144,6 +204,15 @@ def _run_reference(
         # trimmed view (_reference_messages) already strips the agent's own
         # system prompt, so this is the only system message the reference sees.
         messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+
+        # OAuth providers bypass call_llm entirely — the auxiliary client
+        # doesn't support OAuth credential resolution.
+        provider = str(slot.get("provider") or "").strip()
+        if provider in _OAUTH_PROVIDERS:
+            return _call_reference_direct(
+                slot, messages, temperature=temperature, max_tokens=max_tokens,
+            )
+
         response = call_llm(
             task="moa_reference",
             messages=messages,

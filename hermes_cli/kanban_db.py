@@ -286,6 +286,43 @@ _CTX_MAX_BODY_BYTES     = 8 * 1024   # 8 KB per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 
 
+def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
+    """Render the age of an epoch-seconds timestamp as a coarse, human-
+    readable string like ``just now``, ``18h ago``, ``3d ago``.
+
+    Workers read parent handoffs, comments, and prior-attempt summaries as
+    if they describe *current* state. A bare absolute timestamp
+    (``2026-06-25 14:30``) doesn't make an LLM reason about staleness — it
+    reads the content as fact regardless of how old it is. A relative age
+    ("18h ago") is the signal that prompts the worker to re-verify against
+    the live source before acting on stale sibling work. Returns an empty
+    string for missing/invalid timestamps so callers can append
+    unconditionally.
+    """
+    if ts is None:
+        return ""
+    try:
+        ts = int(ts)
+    except (TypeError, ValueError):
+        return ""
+    if now is None:
+        now = int(time.time())
+    delta = now - ts
+    if delta < 0:
+        # Clock skew across machines/profiles — don't claim "in the future".
+        return "just now"
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        m = delta // 60
+        return f"{m}m ago"
+    if delta < 86400:
+        h = delta // 3600
+        return f"{h}h ago"
+    d = delta // 86400
+    return f"{d}d ago"
+
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -7843,6 +7880,11 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if not task:
         raise ValueError(f"unknown task {task_id}")
 
+    # Single clock reading shared by every relative-age stamp below, so all
+    # ages in one rendering are consistent ("3h ago" / "3h ago", not drifting
+    # by the seconds it takes to build the block).
+    _now = int(time.time())
+
     def _cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:
         """Truncate a string to `limit` chars with a visible ellipsis."""
         if not s:
@@ -7922,9 +7964,11 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         for offset, run in enumerate(shown):
             idx = first_shown_idx + offset
             ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(run.started_at))
+            age = _relative_age(run.started_at, _now)
+            ts_disp = f"{ts}, {age}" if age else ts
             profile = run.profile or "(unknown)"
             outcome = run.outcome or run.status
-            lines.append(f"### Attempt {idx} — {outcome} ({profile}, {ts})")
+            lines.append(f"### Attempt {idx} — {outcome} ({profile}, {ts_disp})")
             if run.summary and run.summary.strip():
                 lines.append(_cap(run.summary))
             if run.error and run.error.strip():
@@ -7958,8 +8002,24 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
 
             if not wrote_header:
                 lines.append("## Parent task results")
+                lines.append(
+                    "_Handoffs from upstream tasks, captured when each parent "
+                    "completed (see age below). These are point-in-time "
+                    "snapshots, not live state — if a result drives your "
+                    "current work and it's not recent, re-verify against the "
+                    "source before acting on it as current._"
+                )
                 wrote_header = True
-            lines.append(f"### {pid}")
+
+            # When did this parent's result get produced? Prefer the
+            # completed run's end time; fall back to the task's completed_at.
+            done_ts = None
+            if run is not None and getattr(run, "ended_at", None):
+                done_ts = run.ended_at
+            elif pt.completed_at:
+                done_ts = pt.completed_at
+            age = _relative_age(done_ts, _now)
+            lines.append(f"### {pid}" + (f" (completed {age})" if age else ""))
 
             body_lines: list[str] = []
             if run is not None and run.summary and run.summary.strip():
@@ -7999,9 +8059,11 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                 ts = time.strftime(
                     "%Y-%m-%d %H:%M", time.localtime(int(row["ended_at"]))
                 )
+                age = _relative_age(row["ended_at"], _now)
+                ts_disp = f"{ts}, {age}" if age else ts
                 s = (row["summary"] or "").strip().splitlines()
                 first = s[0][:200] if s else "(no summary)"
-                lines.append(f"- {row['id']} — {row['title']} ({ts}): {first}")
+                lines.append(f"- {row['id']} — {row['title']} ({ts_disp}): {first}")
             lines.append("")
 
     # Comments: cap at the most-recent _CTX_MAX_COMMENTS so
@@ -8023,6 +8085,8 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             )
         for c in shown_c:
             ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(c.created_at))
+            age = _relative_age(c.created_at, _now)
+            ts_disp = f"{ts}, {age}" if age else ts
             # Render author with explicit "comment from worker" framing so
             # operator-controlled HERMES_PROFILE values like "hermes-system"
             # or "operator" can't be misread by the next worker as a system
@@ -8030,7 +8094,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             # Defense-in-depth — the LLM-controlled author-forgery surface
             # was already closed in #22435. See #22452.
             safe_author = (c.author or "").replace("`", "")
-            lines.append(f"comment from worker `{safe_author}` at {ts}:")
+            lines.append(f"comment from worker `{safe_author}` at {ts_disp}:")
             lines.append(_cap(c.body, _CTX_MAX_COMMENT_BYTES))
             lines.append("")
 

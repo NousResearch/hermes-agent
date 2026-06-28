@@ -530,7 +530,7 @@ class OAuthCallbackServer:
         while time.time() < deadline:
             try:
                 self._server.handle_request()
-            except (ConnectionError, OSError):
+            except (ConnectionError, OSError, ValueError):
                 # Client disconnect or socket error — non-fatal
                 pass
             if self._result["auth_code"] is not None or self._result["error"] is not None:
@@ -551,6 +551,10 @@ class OAuthCallbackServer:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
         if self._result["error"]:
+            # Let _wait_for_callback handle the user-skip sentinel
+            # (maps it to OAuthNonInteractiveError("user_skipped")).
+            if self._result["error"] == _USER_SKIPPED_SENTINEL:
+                return self._result["auth_code"], self._result["state"]
             raise RuntimeError(f"OAuth authorization failed: {self._result['error']}")
         if self._result["auth_code"] is None:
             raise OAuthNonInteractiveError(
@@ -776,13 +780,7 @@ def _configure_callback_port(cfg: dict) -> "OAuthCallbackServer":
     actual server startup (issue #34260).  Stores the server in
     ``cfg['_callback_server']`` and the resolved port in
     ``cfg['_resolved_port']``.
-
-    Also sets the legacy module-level ``_oauth_port`` so existing
-    callers of ``_wait_for_callback`` that haven't been migrated to
-    ``functools.partial`` yet keep working.  The legacy global will be
-    removed in a follow-up PR once all consumers use the server instance.
     """
-    global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
     server = OAuthCallbackServer(port=requested)
     server.start()

@@ -3461,9 +3461,8 @@ class GatewaySlashCommandsMixin:
                         agent = cached[0]
 
         # Resolve provider/base_url/api_key for the account-usage fetch.
-        # Prefer the live agent; fall back to persisted billing data on the
-        # SessionDB row so `/usage` still returns account info between turns
-        # when no agent is resident.
+        # Prefer the live agent, then session/config/runtime defaults so `/usage`
+        # can show account limits before the first model-backed turn.
         provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
         base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
         api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
@@ -3475,6 +3474,41 @@ class GatewaySlashCommandsMixin:
                 persisted = {}
             provider = provider or persisted.get("billing_provider")
             base_url = base_url or persisted.get("billing_base_url")
+
+        if not provider:
+            override = getattr(self, "_session_model_overrides", {}).get(session_key, {})
+            if isinstance(override, dict):
+                provider = provider or override.get("provider")
+                base_url = base_url or override.get("base_url")
+                api_key = api_key or override.get("api_key")
+
+        if not provider:
+            try:
+                from gateway.run import _load_gateway_config
+
+                cfg = _load_gateway_config() or {}
+            except Exception:
+                cfg = {}
+            model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+            if isinstance(model_cfg, dict):
+                provider = provider or model_cfg.get("provider")
+                base_url = base_url or model_cfg.get("base_url")
+                api_key = api_key or model_cfg.get("api_key")
+
+        if not provider:
+            try:
+                from gateway.run import _resolve_runtime_agent_kwargs
+
+                runtime = _resolve_runtime_agent_kwargs() or {}
+                provider = provider or runtime.get("provider")
+                base_url = base_url or runtime.get("base_url")
+                api_key = api_key or runtime.get("api_key")
+            except Exception:
+                pass
+
+        if not provider:
+            provider = "openai-codex"
+            base_url = base_url or "https://chatgpt.com/backend-api/codex"
 
         # Fetch account usage off the event loop so slow provider APIs don't
         # block the gateway. Failures are non-fatal -- account_lines stays [].

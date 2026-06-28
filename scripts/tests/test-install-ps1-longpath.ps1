@@ -27,8 +27,8 @@ if (-not (Test-Path $installScript)) {
 
 $failures = 0
 function Assert-Equal {
-    param([Parameter(Mandatory = $true)] $Expected,
-          [Parameter(Mandatory = $true)] $Actual,
+    param([AllowNull()] $Expected,
+          [AllowNull()] $Actual,
           [Parameter(Mandatory = $true)] [string]$Label)
     if ($Expected -ne $Actual) {
         Write-Host "FAIL: $Label" -ForegroundColor Red
@@ -61,7 +61,9 @@ Write-Host ""
 Write-Host "-- ConvertTo-LongPath --"
 
 Assert-Equal -Expected "" -Actual (ConvertTo-LongPath "") -Label "empty string returns empty"
-Assert-Equal -Expected $null -Actual (ConvertTo-LongPath $null) -Label "null returns null"
+# The [string]$Path param coerces $null to "" before the body runs, so a $null
+# input surfaces as empty string (IsNullOrWhiteSpace short-circuit returns it).
+Assert-Equal -Expected "" -Actual (ConvertTo-LongPath $null) -Label "null coerces to empty string"
 
 # No 8.3 component -> returned verbatim (even with spaces).
 $longish = "C:\Users\First Last\AppData\Local\Temp"
@@ -74,6 +76,27 @@ Assert-Equal -Expected $noTilde -Actual (ConvertTo-LongPath $noTilde) -Label "ti
 # (FolderExists/FileExists both false, or COM unavailable on this host).
 $fakeShort = "C:\Users\FIRST~1.LAS\does\not\exist"
 Assert-Equal -Expected $fakeShort -Actual (ConvertTo-LongPath $fakeShort) -Label "nonexistent 8.3 path falls back to input"
+
+# --- Normalization coverage (issue #43334) ---
+# The %TEMP%-only fix missed the profile-root short form (C:\Users\PPTAI~1)
+# reached via %USERPROFILE%/%LOCALAPPDATA%/%APPDATA% and the $HermesHome /
+# $InstallDir defaults derived from them — which is what aborts the desktop
+# stage. Assert the installer normalizes all of these, not just TEMP/TMP.
+Write-Host ""
+Write-Host "-- short-path normalization coverage (#43334) --"
+
+$scriptText = Get-Content -Raw -Path $installScript
+foreach ($mustNormalize in @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA')) {
+    Assert-Equal -Expected $true `
+        -Actual ($scriptText -match "(?m)^\s*foreach\s*\(\`$pathVar\s+in\s+@\([^)]*'$mustNormalize'") `
+        -Label "normalization loop covers %$mustNormalize%"
+}
+Assert-Equal -Expected $true `
+    -Actual ($scriptText -match '(?m)^\s*\$HermesHome\s*=\s*ConvertTo-LongPath\s+\$HermesHome') `
+    -Label "`$HermesHome is re-expanded after param binding"
+Assert-Equal -Expected $true `
+    -Actual ($scriptText -match '(?m)^\s*\$InstallDir\s*=\s*ConvertTo-LongPath\s+\$InstallDir') `
+    -Label "`$InstallDir is re-expanded after param binding"
 
 # --- Summary ---
 Write-Host ""

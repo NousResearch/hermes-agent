@@ -122,15 +122,29 @@ function ConvertTo-LongPath {
     return $Path
 }
 
-foreach ($tmpVar in @('TEMP', 'TMP')) {
-    $current = [Environment]::GetEnvironmentVariable($tmpVar)
+# Normalize every profile-derived location that can surface in 8.3 short form
+# when the user-profile folder name contains a space. %TEMP%/%TMP% were the
+# first observed offenders, but the same short alias (e.g. C:\Users\PPTAI~1)
+# also reaches provider cmdlets through %USERPROFILE%/%LOCALAPPDATA%/%APPDATA%
+# and the $HermesHome/$InstallDir defaults derived from them (params 26-27).
+# The desktop build streams its log to a path under $InstallDir via a provider
+# cmdlet, so a short-form $InstallDir aborts the desktop stage with
+# "An object at the specified path C:\Users\PPTAI~1 does not exist." (#43334).
+foreach ($pathVar in @('TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA')) {
+    $current = [Environment]::GetEnvironmentVariable($pathVar)
     if ($current) {
         $expanded = ConvertTo-LongPath $current
         if ($expanded -and $expanded -ne $current) {
-            Set-Item -Path "Env:$tmpVar" -Value $expanded
+            Set-Item -Path "Env:$pathVar" -Value $expanded
         }
     }
 }
+
+# $HermesHome/$InstallDir are bound from the (possibly short-form) env vars at
+# parameter-binding time, BEFORE the loop above runs, so re-expand them here in
+# case they captured a "~1" component. These feed the desktop build's log path.
+$HermesHome = ConvertTo-LongPath $HermesHome
+$InstallDir = ConvertTo-LongPath $InstallDir
 
 # ============================================================================
 # Configuration

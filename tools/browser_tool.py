@@ -3119,6 +3119,18 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
     effective_task_id = _last_session_key(task_id or "default")
 
+    if _eval_ssrf_guard_active(effective_task_id):
+        _blocked_url = _current_page_private_url(effective_task_id)
+        if _blocked_url:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: page URL targets a private or internal address "
+                    f"({_blocked_url}). This may have been caused by a "
+                    "JavaScript navigation via browser_console."
+                ),
+            }, ensure_ascii=False)
+
     console_args = ["--clear"] if clear else []
     error_args = ["--clear"] if clear else []
 

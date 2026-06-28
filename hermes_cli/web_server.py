@@ -13686,6 +13686,19 @@ def start_server(
             print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)
 
+            # Collapse the peer-hangup teardown flood (#50005). When the Desktop
+            # forcibly closes its WebSocket mid-write, asyncio logs a full
+            # traceback per pending connection-lost callback — 50+ identical
+            # WinError 10054 (ConnectionResetError) lines per disconnect on
+            # Windows. This filter downgrades exactly that class to one debug
+            # line and passes every other loop error through unchanged.
+            try:
+                from tui_gateway.loop_noise import install_loop_noise_filter
+
+                install_loop_noise_filter(asyncio.get_running_loop())
+            except Exception as exc:  # pragma: no cover - best-effort
+                _log.debug("loop noise filter install skipped: %s", exc)
+
             await server.main_loop()
             if server.started:
                 await server.shutdown()

@@ -26,11 +26,14 @@ class AnthropicTransport(ProviderTransport):
 
         kwargs:
             base_url: Optional[str] — affects thinking signature handling.
+            model: Optional[str] — identifies Kimi/DeepSeek custom relays that
+                need unsigned thinking blocks replayed.
         """
         from agent.anthropic_adapter import convert_messages_to_anthropic
 
         base_url = kwargs.get("base_url")
-        return convert_messages_to_anthropic(messages, base_url=base_url)
+        model = kwargs.get("model")
+        return convert_messages_to_anthropic(messages, base_url=base_url, model=model)
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Anthropic input_schema format."""

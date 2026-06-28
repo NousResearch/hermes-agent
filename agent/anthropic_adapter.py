@@ -501,7 +501,7 @@ def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> 
     return False
 
 
-def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
+def _is_deepseek_anthropic_endpoint(base_url: str | None, model: str | None = None) -> bool:
     """Return True for DeepSeek's Anthropic-compatible endpoint.
 
     DeepSeek's ``/anthropic`` route speaks the Anthropic Messages protocol
@@ -515,17 +515,21 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     Per DeepSeek's published compatibility matrix the blocks are unsigned
     (no Anthropic-proprietary signature, no ``redacted_thinking`` support),
     so this endpoint is handled with the same strip-signed / keep-unsigned
-    policy used for Kimi's ``/coding`` endpoint.  The match is pinned to
-    the ``/anthropic`` path so the OpenAI-compatible ``api.deepseek.com``
-    base URL (which never reaches this adapter) is not misclassified.
-    See hermes-agent#16748.
+    policy used for Kimi's ``/coding`` endpoint.
+
+    Custom relays may expose DeepSeek through an unrelated hostname (for
+    example a ``/code`` gateway) while still enforcing the same thinking
+    echo-back contract.  In Anthropic mode, use the model name as a second
+    signal so those relays keep unsigned thinking blocks too.
+    See hermes-agent#16748, #17341.
     """
-    if not base_url_host_matches(base_url or "", "api.deepseek.com"):
-        return False
-    normalized = _normalize_base_url_text(base_url)
-    if not normalized:
-        return False
-    return "/anthropic" in normalized.rstrip("/").lower()
+    if base_url_host_matches(base_url or "", "api.deepseek.com"):
+        normalized = _normalize_base_url_text(base_url)
+        if normalized and "/anthropic" in normalized.rstrip("/").lower():
+            return True
+    if model and "deepseek" in model.lower():
+        return True
+    return False
 
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
@@ -1725,6 +1729,19 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
         cits = part.get("citations")
         if isinstance(cits, list) and cits:
             block["citations"] = cits
+    elif ptype == "tool_use":
+        block = {
+            "type": "tool_use",
+            "id": _sanitize_tool_id(part.get("id", "")),
+            "name": part.get("name", ""),
+            "input": part.get("input", {}),
+        }
+    elif ptype == "tool_result":
+        block = {
+            "type": "tool_result",
+            "tool_use_id": _sanitize_tool_id(part.get("tool_use_id", "")),
+            "content": part.get("content") or "(no output)",
+        }
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
@@ -1891,7 +1908,11 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
+def _convert_assistant_message(
+    m: Dict[str, Any],
+    *,
+    preserve_unsigned_thinking: bool = False,
+) -> Dict[str, Any]:
     """Convert an assistant message to Anthropic content blocks.
 
     Handles thinking blocks, regular content, tool calls, and
@@ -1983,18 +2004,44 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     # Prepend (not append): Anthropic protocol requires thinking
     # blocks before text and tool_use blocks.
     #
-    # Guard: only add when reasoning_details didn't already contribute
-    # thinking blocks.  On native Anthropic, reasoning_details produces
-    # signed thinking blocks — adding another unsigned one from
-    # reasoning_content would create a duplicate (same text) that gets
-    # downgraded to a spurious text block on the last assistant message.
+    # Guard: usually add only when reasoning_details didn't already contribute
+    # thinking blocks.  On native Anthropic, reasoning_details produces signed
+    # thinking blocks — adding another unsigned one from reasoning_content
+    # would create a duplicate (same text) that gets downgraded to a spurious
+    # text block on the last assistant message.
+    #
+    # Kimi/DeepSeek-compatible relays are different: they cannot validate
+    # Anthropic signatures, so _manage_thinking_signatures strips signed
+    # blocks later. If a signed block is present here, still synthesize an
+    # unsigned block from reasoning_content so something valid survives.
     reasoning_content = m.get("reasoning_content")
     _already_has_thinking = any(
         isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
         for b in blocks
     )
-    if isinstance(reasoning_content, str) and not _already_has_thinking:
+    _already_has_unsigned_thinking = any(
+        isinstance(b, dict)
+        and b.get("type") == "thinking"
+        and not b.get("signature")
+        and not b.get("data")
+        for b in blocks
+    )
+    if isinstance(reasoning_content, str) and (
+        not _already_has_thinking
+        or (preserve_unsigned_thinking and not _already_has_unsigned_thinking)
+    ):
         blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
+    elif (
+        preserve_unsigned_thinking
+        and not _already_has_unsigned_thinking
+        and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in blocks)
+    ):
+        # Some streamed/custom-relay turns persist tool calls without a
+        # structured reasoning_content field. DeepSeek thinking mode still
+        # requires content[].thinking to be present when the tool-call turn is
+        # replayed, and rejects an empty string; a single space mirrors the
+        # write-time fallback used by build_assistant_message().
+        blocks.insert(0, {"type": "thinking", "thinking": " "})
     # Anthropic rejects empty assistant content
     effective = blocks or content
     if not effective or effective == "":
@@ -2068,10 +2115,13 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     """Validate and convert a user message to anthropic format."""
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
-        if not converted_blocks or all(
-            b.get("text", "").strip() == ""
-            for b in converted_blocks
+        text_blocks = [
+            b for b in converted_blocks
             if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        if not converted_blocks or (
+            len(text_blocks) == len(converted_blocks)
+            and all(b.get("text", "").strip() == "" for b in text_blocks)
         ):
             converted_blocks = [{"type": "text", "text": "(empty message)"}]
         return {"role": "user", "content": converted_blocks}
@@ -2217,7 +2267,7 @@ def _manage_thinking_signatures(
     # ones synthesised from reasoning_content.  See #13848, #16748.
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
+        or _is_deepseek_anthropic_endpoint(base_url, model)
     )
 
     last_assistant_idx = None
@@ -2377,7 +2427,15 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "assistant":
-            result.append(_convert_assistant_message(m))
+            result.append(
+                _convert_assistant_message(
+                    m,
+                    preserve_unsigned_thinking=(
+                        _is_kimi_family_endpoint(base_url, model)
+                        or _is_deepseek_anthropic_endpoint(base_url, model)
+                    ),
+                )
+            )
             continue
 
         if role == "tool":
@@ -2636,6 +2694,7 @@ def build_anthropic_kwargs(
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
+    ensure_unsigned_thinking_for_tool_use_messages(kwargs, base_url=base_url)
     return kwargs
 
 
@@ -2645,6 +2704,46 @@ def build_anthropic_kwargs(
 _RESPONSES_ONLY_KWARGS = frozenset(
     {"instructions", "input", "store", "parallel_tool_calls"}
 )
+
+
+def ensure_unsigned_thinking_for_tool_use_messages(
+    api_kwargs: Dict[str, Any],
+    *,
+    base_url: str | None = None,
+) -> None:
+    """Patch final Anthropic payloads for Kimi/DeepSeek thinking-mode relays."""
+    if not isinstance(api_kwargs, dict):
+        return
+    model = api_kwargs.get("model")
+    if not (
+        _is_kimi_family_endpoint(base_url, model)
+        or _is_deepseek_anthropic_endpoint(base_url, model)
+    ):
+        return
+    messages = api_kwargs.get("messages")
+    if not isinstance(messages, list):
+        return
+
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        if not any(
+            isinstance(block, dict) and block.get("type") == "tool_use"
+            for block in content
+        ):
+            continue
+        if any(
+            isinstance(block, dict)
+            and block.get("type") == "thinking"
+            and not block.get("signature")
+            and not block.get("data")
+            for block in content
+        ):
+            continue
+        content.insert(0, {"type": "thinking", "thinking": " "})
 
 
 def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
@@ -2707,6 +2806,7 @@ def create_anthropic_message(
     match the main turn path, falling back to ``create()`` only for providers
     that explicitly do not support streaming, such as restricted Bedrock roles.
     """
+    ensure_unsigned_thinking_for_tool_use_messages(api_kwargs)
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
 
     messages_api = getattr(client, "messages", None)

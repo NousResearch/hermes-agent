@@ -156,6 +156,181 @@ class TestDeepSeekAnthropicPreservesThinking:
             "DeepSeek cannot validate Anthropic-proprietary signatures."
         )
 
+    def test_custom_deepseek_relay_rebuilds_unsigned_thinking_from_reasoning_content(self) -> None:
+        """Custom Anthropic relays for DeepSeek still need unsigned thinking replay.
+
+        Some /code-style relays expose Anthropic Messages but sit on a non-
+        DeepSeek hostname. If their first response persists a signed thinking
+        block plus Hermes' reasoning_content, replay must strip the signed block
+        and keep a newly synthesised unsigned thinking block; otherwise the
+        second turn fails with "content[].thinking must be passed back".
+        """
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "reasoning_content": "deepseek relay thinking",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "signed proxy thinking",
+                        "signature": "proxy-sig",
+                    }
+                ],
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+
+        _system, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="https://model-api-v2.myaifast.com/code",
+            model="DeepSeek-V4-Pro",
+        )
+
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        thinking_blocks = [
+            b
+            for b in assistant_msg["content"]
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0]["thinking"] == "deepseek relay thinking"
+        assert "signature" not in thinking_blocks[0]
+
+    def test_custom_deepseek_relay_pads_tool_call_without_reasoning_content(self) -> None:
+        """Tool-call history without reasoning_content still needs thinking.
+
+        Older streamed/custom-relay sessions may contain assistant tool calls
+        where Hermes did not persist reasoning_content. DeepSeek thinking mode
+        rejects replaying those turns without any content[].thinking block, so
+        synthesize the same non-empty pad used at write time.
+        """
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "inspect files"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search_files", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+
+        _system, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="https://model-api-v2.myaifast.com/code",
+            model="DeepSeek-V4-Pro",
+        )
+
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        assert assistant_msg["content"][0] == {"type": "thinking", "thinking": " "}
+
+    def test_custom_deepseek_relay_pads_existing_anthropic_tool_blocks(self) -> None:
+        """Already-converted Anthropic tool blocks must remain valid on replay."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "search sessions"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "session_search",
+                        "input": {"query": "deepseek thinking replay"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_1",
+                        "content": "ok",
+                    }
+                ],
+            },
+        ]
+
+        _system, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="https://model-api-v2.myaifast.com/code",
+            model="DeepSeek-V4-Pro",
+        )
+
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        user_result_msg = next(
+            m
+            for m in converted
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        assert [b["type"] for b in assistant_msg["content"]] == [
+            "thinking",
+            "tool_use",
+        ]
+        assert assistant_msg["content"][0]["thinking"] == " "
+        assert user_result_msg["content"][0]["tool_use_id"] == "call_1"
+
+    def test_final_kwargs_guard_pads_bare_tool_use_blocks_by_model(self) -> None:
+        """Final outbound kwargs guard handles paths that lost base_url hints."""
+        from agent.anthropic_adapter import ensure_unsigned_thinking_for_tool_use_messages
+
+        api_kwargs = {
+            "model": "DeepSeek-V4-Pro",
+            "messages": [
+                {"role": "user", "content": "search sessions"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "call_1",
+                            "name": "session_search",
+                            "input": {"query": "deepseek thinking replay"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_1",
+                            "content": "ok",
+                        }
+                    ],
+                },
+            ],
+        }
+
+        ensure_unsigned_thinking_for_tool_use_messages(api_kwargs)
+
+        assistant_msg = api_kwargs["messages"][1]
+        assert [b["type"] for b in assistant_msg["content"]] == [
+            "thinking",
+            "tool_use",
+        ]
+        assert assistant_msg["content"][0]["thinking"] == " "
+
     def test_cache_control_stripped_from_thinking_block(self) -> None:
         """cache_control must still be stripped even when the block is preserved.
 

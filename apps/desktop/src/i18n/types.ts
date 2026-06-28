@@ -1017,6 +1017,9 @@ export interface Translations {
     chat: string
     copyUrl: string
     copyPath: string
+    filterGeneratedLabel: string
+    noGeneratedTitle: string
+    noGeneratedDesc: string
   }
 
   sidebar: {

@@ -1261,7 +1261,10 @@ export const en: Translations = {
     kindLink: 'link',
     chat: 'Chat',
     copyUrl: 'Copy URL',
-    copyPath: 'Copy path'
+    copyPath: 'Copy path',
+    filterGeneratedLabel: 'Hermes-generated only',
+    noGeneratedTitle: 'No Hermes-generated artifacts',
+    noGeneratedDesc: 'Files and media Hermes creates or edits will appear here.'
   },
 
   sidebar: {

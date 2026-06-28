@@ -1444,7 +1444,10 @@ export const zh: Translations = {
     kindLink: '链接',
     chat: '对话',
     copyUrl: '复制 URL',
-    copyPath: '复制路径'
+    copyPath: '复制路径',
+    filterGeneratedLabel: '仅 Hermes 生成',
+    noGeneratedTitle: '没有 Hermes 生成的产物',
+    noGeneratedDesc: 'Hermes 创建或编辑的文件和媒体将显示在此处。'
   },
 
   sidebar: {

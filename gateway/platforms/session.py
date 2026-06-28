@@ -296,7 +296,7 @@ class SessionAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Spawn the bridge, wait for it to be ready, then start SSE listener."""
         
         # Prevent multiple gateways from using the same Session account.

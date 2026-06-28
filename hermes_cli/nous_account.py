@@ -1,5 +1,8 @@
 """Normalized Nous Portal account entitlement helpers."""
 
+import logging
+
+logger = logging.getLogger(__name__)
 from __future__ import annotations
 
 import hashlib
@@ -572,7 +575,12 @@ def _fetch_nous_account_info(
     }
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=8) as resp:
-        payload = json.loads(resp.read().decode())
+        raw = resp.read()
+    try:
+        payload = json.loads(raw.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning("Non-JSON response from %s", url)
+        return {}
     return payload if isinstance(payload, dict) else {}
 
 

@@ -635,3 +635,158 @@ class SlackRejectedBlocks(Exception):
         # Mirror slack_sdk's SlackApiError.response['error'] shape so the
         # adapter can introspect it the same way SlackApiError is introspected.
         self.response = {"ok": False, "error": error_code}
+
+
+# ---------------------------------------------------------------------------
+# Item 5 (tw0316 review): streaming finalization uses a fresh markdown-block
+# final when the adapter has markdown blocks enabled, instead of final-editing
+# a raw legacy-mrkdwn preview. The adapter opts in via the
+# ``prefers_fresh_final_streaming`` hook (see gateway/platforms/base.py) so the
+# stream consumer delivers the completed answer as a fresh Block Kit message
+# and best-effort deletes the stale preview. This avoids the failure mode
+# where a raw streaming preview is treated as the delivered final content
+# after a rich final edit fails (#53893 item 5).
+# ---------------------------------------------------------------------------
+
+
+class TestPrefersFreshFinalStreaming:
+    """The Slack adapter must opt into the stream consumer's fresh-final path
+    when markdown blocks are enabled, so the final answer renders as Block Kit
+    rather than as a final-edit of a raw mrkdwn preview."""
+
+    def test_hook_returns_true_when_markdown_blocks_enabled(self, adapter):
+        # Default adapter is markdown-blocks-enabled.
+        assert adapter._markdown_blocks_enabled() is True
+        assert adapter.prefers_fresh_final_streaming("any content") is True
+
+    def test_hook_returns_false_when_markdown_blocks_disabled(self, adapter):
+        # Item 1 opt-out path must also gate the fresh-final hook — otherwise
+        # users who disable blocks would still get fresh-final sends that go
+        # legacy-mrkdwn anyway, paying the delete-and-resend cost for nothing.
+        adapter.config.extra["markdown_blocks"] = False
+        assert adapter._markdown_blocks_enabled() is False
+        assert adapter.prefers_fresh_final_streaming("any content") is False
+
+
+class TestStreamConsumerFreshFinalPath:
+    """End-to-end through ``GatewayStreamConsumer``: when the Slack adapter
+    has markdown blocks enabled, the final answer is delivered as a fresh
+    Block Kit ``chat.postMessage`` (not an edit of the preview), and the
+    stale preview is best-effort deleted."""
+
+    @pytest.mark.asyncio
+    async def test_final_renders_as_fresh_markdown_block_not_edit(self, adapter):
+        from gateway.stream_consumer import (
+            GatewayStreamConsumer,
+            StreamConsumerConfig,
+        )
+
+        # The first chat_postMessage streams the legacy preview; the second
+        # delivers the fresh final answer as a Block Kit payload.
+        post_results = [
+            {"ok": True, "ts": "100.0"},
+            {"ok": True, "ts": "200.0"},
+        ]
+        adapter._app.client.chat_postMessage = AsyncMock(side_effect=post_results)
+        adapter._app.client.chat_update = AsyncMock(
+            return_value={"ok": True, "ts": "100.0"}
+        )
+        adapter.delete_message = AsyncMock(return_value=True)
+
+        cfg = StreamConsumerConfig(
+            transport="auto",
+            chat_type="dm",
+            edit_interval=0.001,
+            buffer_threshold=1,
+            cursor="",
+            fresh_final_after_seconds=0.0,  # adapter hook alone drives fresh-final
+        )
+        consumer = GatewayStreamConsumer(adapter, "C123", cfg)
+
+        consumer.on_delta("# Title\n\n| a | b |\n|---|---|\n| 1 | 2 |")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # The fresh final must be a *new* chat.postMessage, NOT a chat_update
+        # of the preview. The edit path must not be the finalizer.
+        assert adapter._app.client.chat_postMessage.await_count >= 2, (
+            "fresh-final path must emit a new chat.postMessage for the final; "
+            f"got {adapter._app.client.chat_postMessage.await_count} call(s)"
+        )
+
+        # The fresh final chat_postMessage must carry Block Kit ``blocks``,
+        # not just legacy ``text`` + ``mrkdwn``. A table is the canonical case
+        # that only renders correctly in a markdown block.
+        final_call = adapter._app.client.chat_postMessage.call_args_list[-1].kwargs
+        assert "blocks" in final_call, (
+            "fresh final must be delivered as Block Kit blocks, not legacy mrkdwn"
+        )
+        assert any(
+            b.get("type") == "markdown" for b in final_call["blocks"]
+        ), f"expected a markdown block in fresh final, got {final_call['blocks']}"
+
+        # The final answer must mark delivery complete so the gateway doesn't
+        # double-send it.
+        assert consumer.final_response_sent is True
+
+
+class TestFreshFinalRejectionTriggersLegacyRetry:
+    """tw0316 item 5 layered fallback: if the fresh-final markdown-block send
+    itself is rejected by Slack (invalid_blocks etc.), the adapter's item-3
+    retry path must fire (legacy mrkdwn), so the user still gets the final
+    answer rather than a silent send failure after the preview was deleted."""
+
+    @pytest.mark.asyncio
+    async def test_fresh_final_markdown_block_rejection_retries_legacy(self, adapter):
+        from gateway.stream_consumer import (
+            GatewayStreamConsumer,
+            StreamConsumerConfig,
+        )
+
+        # First chat_postMessage: streaming preview (legacy text, succeeds).
+        # Second chat_postMessage: fresh final as blocks (REJECTED).
+        # Third chat_postMessage: legacy mrkdwn retry (item 3 wiring) succeeds.
+        adapter._app.client.chat_postMessage = AsyncMock(side_effect=[
+            {"ok": True, "ts": "100.0"},
+            SlackRejectedBlocks("invalid_blocks"),
+            {"ok": True, "ts": "300.0"},
+        ])
+        adapter._app.client.chat_update = AsyncMock(
+            return_value={"ok": True, "ts": "100.0"}
+        )
+        adapter.delete_message = AsyncMock(return_value=True)
+
+        cfg = StreamConsumerConfig(
+            transport="auto",
+            chat_type="dm",
+            edit_interval=0.001,
+            buffer_threshold=1,
+            cursor="",
+            fresh_final_after_seconds=0.0,
+        )
+        consumer = GatewayStreamConsumer(adapter, "C123", cfg)
+
+        consumer.on_delta("Final answer that must reach the user")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # Three chat_postMessage calls: preview, rejected-blocks, legacy retry.
+        assert adapter._app.client.chat_postMessage.await_count >= 3, (
+            "fresh-final rejection must trigger a legacy mrkdwn retry; "
+            f"got {adapter._app.client.chat_postMessage.await_count} calls"
+        )
+
+        # The third (retry) call must use legacy text= + mrkdwn=true, NOT blocks.
+        retry_call = adapter._app.client.chat_postMessage.call_args_list[-1].kwargs
+        assert "blocks" not in retry_call, (
+            "legacy retry after block rejection must not re-send blocks"
+        )
+        assert retry_call.get("mrkdwn") is True, (
+            f"legacy retry must set mrkdwn=True, got {retry_call}"
+        )
+
+        assert consumer.final_response_sent is True

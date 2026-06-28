@@ -6035,6 +6035,21 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def resolve_worktree_options(
+    config: Optional[Dict[str, Any]] = None,
+    *,
+    explicit_worktree: bool = False,
+    short_flag: bool = False,
+) -> tuple[bool, bool]:
+    """Resolve worktree enablement and base-sync behavior from flags + config."""
+    cfg = config if isinstance(config, dict) else load_config_readonly()
+    use_worktree = bool(
+        explicit_worktree or short_flag or cfg.get("worktree", False)
+    )
+    sync_base = bool(cfg.get("worktree_sync", True))
+    return use_worktree, sync_base
+
+
 def write_platform_config_field(
     platform_key: str,
     field_key: str,

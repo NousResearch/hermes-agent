@@ -122,3 +122,55 @@ class TestSetupWorktreeSyncBase:
         info = cli._setup_worktree(str(clone))
         assert info is not None
         assert _head(info["path"]) == remote_head
+
+    def test_workspace_name_is_reflected_in_worktree_and_branch(self, remote_and_clone):
+        clone, _, _ = remote_and_clone
+        info = cli._setup_worktree(
+            str(clone), sync_base=False, workspace_name="JARVIS Workspace!"
+        )
+        assert info is not None
+
+        leaf = Path(info["path"]).name
+        assert leaf.startswith("hermes-jarvis-workspace-")
+        assert info["branch"].startswith("hermes/hermes-jarvis-workspace-")
+        assert info["workspace_slug"] == "jarvis-workspace"
+
+    def test_workspace_name_falls_back_to_repo_directory(self, remote_and_clone):
+        clone, _, _ = remote_and_clone
+        info = cli._setup_worktree(str(clone), sync_base=False)
+        assert info is not None
+
+        leaf = Path(info["path"]).name
+        assert leaf.startswith("hermes-clone-")
+        assert info["branch"].startswith("hermes/hermes-clone-")
+        assert info["workspace_slug"] == "clone"
+
+    def test_workspace_name_lookup_does_not_create_projects_db(self, remote_and_clone):
+        from hermes_cli import projects_db
+
+        clone, _, _ = remote_and_clone
+        db_path = projects_db.projects_db_path()
+        assert not db_path.exists()
+
+        assert cli._workspace_name_for_worktree(str(clone)) == "clone"
+        assert not db_path.exists()
+
+    def test_workspace_name_uses_owning_project_slug(self, remote_and_clone):
+        from hermes_cli import projects_db
+
+        clone, _, _ = remote_and_clone
+        with projects_db.connect_closing() as conn:
+            projects_db.create_project(
+                conn,
+                name="Bob Workspace",
+                slug="bob-workspace",
+                primary_path=str(clone),
+            )
+
+        info = cli._setup_worktree(str(clone), sync_base=False)
+        assert info is not None
+
+        leaf = Path(info["path"]).name
+        assert leaf.startswith("hermes-bob-workspace-")
+        assert info["branch"].startswith("hermes/hermes-bob-workspace-")
+        assert info["workspace_slug"] == "bob-workspace"

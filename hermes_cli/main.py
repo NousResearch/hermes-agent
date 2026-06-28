@@ -1973,6 +1973,25 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     return max(1536, sized) if limit_mb > 2048 else sized
 
 
+def _resolve_tui_worktree_options(
+    explicit_worktree: bool = False,
+    config: Optional[dict] = None,
+) -> tuple[bool, bool]:
+    """Return ``(use_worktree, sync_base)`` for a TUI launch.
+
+    Classic CLI worktree setup already honors the persistent ``worktree`` and
+    ``worktree_sync`` config keys. TUI startup needs the same decision in the
+    Python wrapper before spawning Node, because the child receives its working
+    directory via ``HERMES_CWD`` / ``TERMINAL_CWD``.
+    """
+    try:
+        from hermes_cli.config import resolve_worktree_options
+
+        return resolve_worktree_options(config, explicit_worktree=explicit_worktree)
+    except Exception:
+        return bool(explicit_worktree), True
+
+
 def _launch_tui(
     resume_session_id: Optional[str] = None,
     tui_dev: bool = False,
@@ -1996,9 +2015,12 @@ def _launch_tui(
     import tempfile
 
     env = os.environ.copy()
+    config = None
     try:
-        from hermes_cli.config import apply_terminal_config_to_env
-        apply_terminal_config_to_env(env=env)
+        from hermes_cli.config import apply_terminal_config_to_env, load_config_readonly
+
+        config = load_config_readonly() or {}
+        apply_terminal_config_to_env(env=env, config=config)
     except Exception:
         logger.debug("Failed to apply terminal config bridge for TUI launch", exc_info=True)
     active_session_fd, active_session_file = tempfile.mkstemp(
@@ -2014,7 +2036,8 @@ def _launch_tui(
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
 
     wt_info = None
-    if worktree:
+    use_worktree, sync_base = _resolve_tui_worktree_options(worktree, config=config)
+    if use_worktree:
         try:
             from cli import (
                 _cleanup_worktree,
@@ -2026,7 +2049,7 @@ def _launch_tui(
             repo = _git_repo_root()
             if repo:
                 _prune_stale_worktrees(repo)
-            wt_info = _setup_worktree()
+            wt_info = _setup_worktree(repo_root=repo, sync_base=sync_base)
         except Exception as exc:
             print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
             wt_info = None
@@ -2102,9 +2125,9 @@ def _launch_tui(
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
-    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
     code: Optional[int] = None
     try:
+        argv, cwd = _make_tui_argv(tui_dir, tui_dev)
         try:
             code = subprocess.call(argv, cwd=str(cwd), env=env)
         except KeyboardInterrupt:

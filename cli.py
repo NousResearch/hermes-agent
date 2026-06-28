@@ -1247,6 +1247,34 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
+def _worktree_slug(name: str, *, fallback: str = "session", max_len: int = 40) -> str:
+    """Return a filesystem/git-ref-safe slug for a human workspace name."""
+    slug = re.sub(r"[^a-z0-9._-]+", "-", str(name or "").strip().lower())
+    slug = re.sub(r"[-_.]{2,}", "-", slug).strip("-_.")
+    slug = slug[:max_len].strip("-_.")
+    return slug or fallback
+
+
+def _workspace_name_for_worktree(repo_root: str) -> str:
+    """Best-effort human workspace label for naming auto-created worktrees.
+
+    Prefer an explicit Hermes Project that owns the repo; otherwise fall back to
+    the repository directory name. This keeps bare ``hermes -w`` / configured
+    worktree launches human-readable without adding a new user-facing setting.
+    """
+    try:
+        from hermes_cli import projects_db as _projects_db
+
+        if _projects_db.projects_db_path().exists():
+            with _projects_db.connect_closing() as conn:
+                project = _projects_db.project_for_path(conn, repo_root)
+                if project is not None:
+                    return project.slug or project.name
+    except Exception as exc:
+        logger.debug("worktree workspace-name project lookup failed: %s", exc)
+    return Path(repo_root).name or "session"
+
+
 def _resolve_worktree_base(repo_root: str) -> tuple:
     """Resolve the freshest base ref to branch a new worktree from.
 
@@ -1322,7 +1350,11 @@ def _resolve_worktree_base(repo_root: str) -> tuple:
     return "HEAD", "HEAD (local — could not reach remote)"
 
 
-def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[Dict[str, str]]:
+def _setup_worktree(
+    repo_root: Optional[str] = None,
+    sync_base: bool = True,
+    workspace_name: Optional[str] = None,
+) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree for this CLI session.
 
     Returns a dict with worktree metadata on success, None on failure.
@@ -1342,7 +1374,8 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[D
         return None
 
     short_id = uuid.uuid4().hex[:8]
-    wt_name = f"hermes-{short_id}"
+    workspace_slug = _worktree_slug(workspace_name or _workspace_name_for_worktree(repo_root))
+    wt_name = f"hermes-{workspace_slug}-{short_id}"
     branch_name = f"hermes/{wt_name}"
 
     worktrees_dir = Path(repo_root) / ".worktrees"
@@ -1481,6 +1514,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[D
         "branch": branch_name,
         "repo_root": repo_root,
         "base": base_ref,
+        "workspace_slug": workspace_slug,
     }
 
     print(f"\033[32m✓ Worktree created:\033[0m {wt_path}")
@@ -15269,7 +15303,13 @@ def main(
         # ── Git worktree isolation (#652) ──
         # Create an isolated worktree so this agent instance doesn't collide
         # with other agents working on the same repo.
-        use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
+        from hermes_cli.config import resolve_worktree_options
+
+        use_worktree, _sync_base = resolve_worktree_options(
+            CLI_CONFIG,
+            explicit_worktree=worktree,
+            short_flag=w,
+        )
         wt_info = None
         if use_worktree:
             # Prune stale worktrees from crashed/killed sessions
@@ -15279,8 +15319,7 @@ def main(
             # Branch the worktree from the freshly-fetched remote tip by
             # default so it starts current with the project. Opt out with
             # worktree_sync: false to branch from local HEAD instead.
-            _sync_base = CLI_CONFIG.get("worktree_sync", True)
-            wt_info = _setup_worktree(sync_base=_sync_base)
+            wt_info = _setup_worktree(repo_root=_repo, sync_base=_sync_base)
             if wt_info:
                 _active_worktree = wt_info
                 os.environ["TERMINAL_CWD"] = wt_info["path"]

@@ -962,6 +962,121 @@ def test_launch_tui_applies_terminal_backend_config(
     assert captured["env"]["TERMINAL_DOCKER_EXTRA_ARGS"] == '["--network=host"]'
 
 
+def test_resolve_tui_worktree_options_uses_persistent_config(main_mod):
+    config = {"worktree": True, "worktree_sync": False}
+
+    assert main_mod._resolve_tui_worktree_options(
+        explicit_worktree=False, config=config
+    ) == (
+        True,
+        False,
+    )
+    assert main_mod._resolve_tui_worktree_options(
+        explicit_worktree=True, config=config
+    ) == (
+        True,
+        False,
+    )
+
+
+def test_launch_tui_creates_worktree_from_persistent_config(monkeypatch, main_mod):
+    import cli as cli_mod
+    import hermes_cli.config as config_mod
+
+    captured = {}
+    wt_info = {
+        "path": "/repo/.worktrees/hermes-jarvis-deadbeef",
+        "branch": "hermes/hermes-jarvis-deadbeef",
+        "repo_root": "/repo",
+    }
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config_readonly",
+        lambda: {"worktree": True, "worktree_sync": False},
+    )
+    monkeypatch.setattr(
+        config_mod, "apply_terminal_config_to_env", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(cli_mod, "_git_repo_root", lambda: "/repo")
+    monkeypatch.setattr(
+        cli_mod,
+        "_prune_stale_worktrees",
+        lambda repo: captured.update({"pruned_repo": repo}),
+    )
+
+    def fake_setup_worktree(*, repo_root=None, sync_base=True):
+        captured["repo_root"] = repo_root
+        captured["sync_base"] = sync_base
+        return wt_info
+
+    monkeypatch.setattr(cli_mod, "_setup_worktree", fake_setup_worktree)
+    monkeypatch.setattr(
+        cli_mod,
+        "_cleanup_worktree",
+        lambda info: captured.update({"cleaned": info}),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(worktree=False)
+
+    assert captured["pruned_repo"] == "/repo"
+    assert captured["repo_root"] == "/repo"
+    assert captured["sync_base"] is False
+    assert captured["env"]["HERMES_CWD"] == wt_info["path"]
+    assert captured["env"]["TERMINAL_CWD"] == wt_info["path"]
+    assert captured["cleaned"] is wt_info
+
+
+def test_launch_tui_cleans_worktree_when_tui_argv_setup_fails(monkeypatch, main_mod):
+    import cli as cli_mod
+    import hermes_cli.config as config_mod
+
+    captured = {}
+    wt_info = {
+        "path": "/repo/.worktrees/hermes-jarvis-deadbeef",
+        "branch": "hermes/hermes-jarvis-deadbeef",
+        "repo_root": "/repo",
+    }
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config_readonly",
+        lambda: {"worktree": True, "worktree_sync": False},
+    )
+    monkeypatch.setattr(
+        config_mod, "apply_terminal_config_to_env", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(cli_mod, "_git_repo_root", lambda: "/repo")
+    monkeypatch.setattr(cli_mod, "_prune_stale_worktrees", lambda repo: None)
+    monkeypatch.setattr(cli_mod, "_setup_worktree", lambda **_kwargs: wt_info)
+    monkeypatch.setattr(
+        cli_mod,
+        "_cleanup_worktree",
+        lambda info: captured.update({"cleaned": info}),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (_ for _ in ()).throw(RuntimeError("missing node")),
+    )
+
+    with pytest.raises(RuntimeError, match="missing node"):
+        main_mod._launch_tui(worktree=False)
+
+    assert captured["cleaned"] is wt_info
+
+
 def test_launch_tui_exit_code_42_relaunches_update(monkeypatch, main_mod):
     from unittest.mock import patch
 

@@ -36,7 +36,8 @@ import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
-_DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
+_DOCKER_META = ("docker/", ".hadolint.yml") # docker setup
+_DOCKERFILE_NAMES = ("Dockerfile",)
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
@@ -56,7 +57,7 @@ def _is_docs(p: str) -> bool:
 
 
 def _py_irrelevant(p: str) -> bool:
-    return _is_docs(p) or p in _ROOT_NPM or p.startswith(_PY_SKIP) or p.startswith(_DOCKER_META)
+    return _is_docs(p) or p in _ROOT_NPM or p.startswith(_PY_SKIP) or _is_docker_meta(p)
 
 
 def _is_scan(p: str) -> bool:
@@ -67,12 +68,16 @@ def _is_mcp_catalog(p: str) -> bool:
     return p.startswith(_MCP_CATALOG_PATHS) or p in _MCP_CATALOG_FILES
 
 
+def _is_docker_meta(p: str) -> bool:
+    return p.startswith(_DOCKER_META) or p in _DOCKERFILE_NAMES or p.startswith("Dockerfile.")
+
+
 def classify(files: list[str]) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``."""
     files = [f.strip() for f in files if f.strip()]
     ret = {
         "python": any(not _py_irrelevant(f) for f in files),
-        "docker_meta":  any(f.startswith(_DOCKER_META) for f in files),
+        "docker_meta":  any(_is_docker_meta(f) for f in files),
         "frontend": any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files),
         "site": any(f.startswith(_SITE) for f in files),
         "scan": any(_is_scan(f) for f in files),

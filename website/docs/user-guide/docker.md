@@ -444,6 +444,57 @@ To verify what PortAudio sees inside the container:
 docker exec hermes /opt/hermes/.venv/bin/python -c "import sounddevice as sd; print(sd.query_devices())"
 ```
 
+## Optional: Juno/Cosmos development image
+
+The repo includes a dedicated derived image for Juno development agents at
+`Dockerfile.juno`. It leaves the default Hermes image unchanged and layers in
+tooling commonly needed for Juno and Cosmos SDK work:
+
+- Go and `buf`/`protoc` for Cosmos SDK chains and protobuf generation
+- Rust with the `wasm32-unknown-unknown` target, `wasm-opt`,
+  `cosmwasm-check`, `cargo-generate`, and `cargo-run-script` for CosmWasm
+  contracts
+- Node 22 with activated `pnpm` and Yarn for DAO DAO UI, the Juno website, and
+  DEX UI repositories
+- Common agent/dev utilities including `jq`, `just`, `make`, `git`, `gh`,
+  `clang`, `lld`, and native build headers
+
+Build it locally with either the published Hermes base image or a locally built
+base image:
+
+```sh
+# Published base image (default):
+docker build -t hermes-agent:juno -f Dockerfile.juno .
+
+# Or, when iterating on this repo's Dockerfile first:
+docker build -t hermes-agent:base .
+docker build \
+  --build-arg HERMES_BASE_IMAGE=hermes-agent:base \
+  -t hermes-agent:juno \
+  -f Dockerfile.juno .
+```
+
+Use it in Compose by changing the service image/build stanza, while keeping the
+same `/opt/data` volume so language caches and cloned repos persist:
+
+```yaml
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.juno
+    image: hermes-agent:juno
+    volumes:
+      - ~/.hermes:/opt/data
+```
+
+The Juno image keeps mutable developer state under `/opt/data` by default:
+`GOPATH=/opt/data/go`, `GOBIN=/opt/data/go/bin`, `CARGO_HOME=/opt/data/.cargo`,
+`PNPM_HOME=/opt/data/.local/share/pnpm`, and `npm_config_cache=/opt/data/.npm`.
+The baked Rust toolchain and preinstalled command-line tools live under
+`/usr/local`, while project checkouts, Go module caches, Cargo registries, and
+package-manager caches remain on the persistent data volume.
+
 ## Resource limits
 
 The Hermes container needs moderate resources. Recommended minimums:

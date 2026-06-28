@@ -1,0 +1,133 @@
+# syntax=docker/dockerfile:1.7
+#
+# Juno-optimized Hermes Agent image.
+#
+# This is a derived development-agent image for Juno/Cosmos work. It keeps the
+# default Hermes runtime image unchanged and layers chain, CosmWasm, and web UI
+# tooling on top for agent workspaces mounted under /opt/data.
+#
+# Build locally after building/pulling the base Hermes image:
+#   docker build -t hermes-agent:juno -f Dockerfile.juno .
+#
+ARG HERMES_BASE_IMAGE=nousresearch/hermes-agent:latest
+FROM ${HERMES_BASE_IMAGE}
+
+USER root
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Versions are ARGs so downstream Juno images can bump tooling without editing
+# the Dockerfile body. Keep these values conservative and broadly compatible
+# with Cosmos SDK chains, CosmWasm contracts, and DAO DAO/Juno web apps.
+ARG BUF_VERSION=v1.50.0
+ARG CARGO_GENERATE_VERSION=0.22.1
+ARG CARGO_RUN_SCRIPT_VERSION=0.2.0
+ARG COSMWASM_CHECK_VERSION=2.1.5
+ARG PNPM_VERSION=10.12.1
+ARG RUST_TOOLCHAIN=stable
+ARG YARN_VERSION=1.22.22
+
+# System toolchain and common agent utilities.
+# - build-essential/clang/lld/pkg-config/libssl-dev/libudev-dev: common Cosmos
+#   SDK, wasmd, CosmWasm, and frontend native module build requirements.
+# - golang-go/protobuf-compiler: Go chain work plus proto generation.
+# - binaryen: provides wasm-opt for optimized CosmWasm artifacts.
+# - gh/jq/just: common repo automation tools used across Juno workflows.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      bash-completion \
+      binaryen \
+      build-essential \
+      clang \
+      curl \
+      gh \
+      git \
+      golang-go \
+      jq \
+      just \
+      less \
+      libssl-dev \
+      libudev-dev \
+      lld \
+      make \
+      pkg-config \
+      protobuf-compiler \
+      unzip \
+      wget \
+      xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust/CosmWasm build stack. Install the toolchain and durable, image-level
+# cargo tools under /usr/local, but configure runtime caches under /opt/data so
+# contract builds persist across container recreates and never write secrets or
+# mutable build state into /opt/hermes.
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH="/usr/local/cargo/bin:${PATH}"
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- \
+      -y \
+      --no-modify-path \
+      --profile minimal \
+      --default-toolchain "${RUST_TOOLCHAIN}" && \
+    rustup target add wasm32-unknown-unknown && \
+    cargo install --locked --root /usr/local cargo-generate --version "${CARGO_GENERATE_VERSION}" && \
+    cargo install --locked --root /usr/local cargo-run-script --version "${CARGO_RUN_SCRIPT_VERSION}" && \
+    cargo install --locked --root /usr/local cosmwasm-check --version "${COSMWASM_CHECK_VERSION}" && \
+    chmod -R a+rX,go-w /usr/local/rustup /usr/local/cargo /usr/local/bin
+
+# buf is installed with Go so we avoid a separate release-asset matrix. GOBIN is
+# set only for this layer; runtime GOPATH/GOBIN below point at /opt/data.
+RUN GOBIN=/usr/local/bin go install "github.com/bufbuild/buf/cmd/buf@${BUF_VERSION}" && \
+    chmod 0755 /usr/local/bin/buf
+
+# The base image already provides Node 22 + npm + corepack. Activate package
+# managers expected by DAO DAO UI, Juno website, and DEX UI repositories.
+RUN corepack enable && \
+    corepack prepare "pnpm@${PNPM_VERSION}" --activate && \
+    corepack prepare "yarn@${YARN_VERSION}" --activate && \
+    npm cache clean --force
+
+# Persistent developer state belongs under /opt/data. Put language caches and
+# user-installed tools there by default while keeping baked tools on PATH.
+ENV CARGO_HOME=/opt/data/.cargo
+ENV GOPATH=/opt/data/go
+ENV GOBIN=/opt/data/go/bin
+ENV npm_config_cache=/opt/data/.npm
+ENV PNPM_HOME=/opt/data/.local/share/pnpm
+ENV PATH="/opt/data/.cargo/bin:/opt/data/go/bin:/opt/data/.local/share/pnpm:/usr/local/cargo/bin:${PATH}"
+
+# Pre-create cache/tool directories for non-root use. The base s6 stage2 hook
+# may remap/chown /opt/data again at runtime according to HERMES_UID/HERMES_GID.
+RUN mkdir -p \
+      /opt/data/.cargo \
+      /opt/data/.npm \
+      /opt/data/.local/bin \
+      /opt/data/.local/share/pnpm \
+      /opt/data/go/bin \
+      /opt/data/go/pkg \
+    && chown -R hermes:hermes /opt/data
+
+WORKDIR /opt/data
+
+# Build-time smoke test: fail fast if the image is missing the core Juno tools.
+# Run it as the non-root hermes user to catch PATH/cache permission regressions,
+# then switch back to root so the inherited s6-overlay entrypoint can run its
+# cont-init.d UID/GID remap and /opt/data ownership setup at container startup.
+USER hermes
+RUN set -eux; \
+    go version; \
+    rustc --version; \
+    cargo --version; \
+    rustup target list --installed | grep -qx wasm32-unknown-unknown; \
+    cosmwasm-check --version; \
+    wasm-opt --version; \
+    node --version; \
+    pnpm --version; \
+    yarn --version; \
+    buf --version; \
+    protoc --version; \
+    jq --version; \
+    just --version; \
+    gh --version | head -n1
+
+USER root

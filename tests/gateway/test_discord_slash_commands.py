@@ -1016,17 +1016,48 @@ async def test_natural_language_explicit_task_registration_with_question_creates
     fake_add_notify_sub.assert_called_once()
 
 
-def test_natural_language_classifier_keeps_plain_skill_question_as_chat():
-    assert not DiscordAdapter._looks_like_natural_task_request(
+def test_natural_language_classifier_registers_regular_discord_messages():
+    assert DiscordAdapter._looks_like_natural_task_request(
         "どんなスキルがあるかを箇条書きで出して"
     )
+    assert DiscordAdapter._looks_like_natural_task_request("この説明の意味わかりますか？")
+    assert not DiscordAdapter._looks_like_natural_task_request("/status")
 
 
 @pytest.mark.asyncio
-async def test_natural_language_question_stays_regular_chat(adapter, monkeypatch):
+async def test_natural_language_question_registers_and_still_answers(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+    monkeypatch.delenv("HERMES_TASK_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_TASK_DEFAULT_ASSIGNEE", raising=False)
+
+    fake_conn = MagicMock()
+    fake_conn.close = MagicMock()
+    created = {}
+
+    def fake_connect(*, board=None):
+        created["board"] = board
+        return fake_conn
+
+    def fake_create_task(conn, **kwargs):
+        created["conn"] = conn
+        created["kwargs"] = kwargs
+        return "t_question123"
+
+    def fake_get_task(conn, task_id):
+        return SimpleNamespace(
+            id=task_id,
+            title="この説明の意味わかりますか？",
+            assignee="operations-orchestrator",
+            status="ready",
+        )
+
+    fake_add_notify_sub = MagicMock()
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", fake_connect)
+    monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.get_task", fake_get_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.add_notify_sub", fake_add_notify_sub)
 
     captured_events = []
 
@@ -1043,6 +1074,9 @@ async def test_natural_language_question_stays_regular_chat(adapter, monkeypatch
     adapter.send.assert_not_awaited()
     assert len(captured_events) == 1
     assert captured_events[0].text == "この説明の意味わかりますか？"
+    assert created["board"] == "ai-company-2-0"
+    assert created["kwargs"]["title"] == "この説明の意味わかりますか？"
+    fake_add_notify_sub.assert_called_once()
 
 
 @pytest.mark.asyncio

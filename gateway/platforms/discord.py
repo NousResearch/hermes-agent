@@ -31,21 +31,6 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
-_NATURAL_TASK_REQUEST_RE = re.compile(
-    r"(直して|修正して|実装して|作って|作成して|追加して|更新して|反映して|"
-    r"確認して|調べて|見て|進めて|対応して|テストして|登録して|整理して|"
-    r"まとめて|やって|お願いします|お願い)"
-)
-_NATURAL_TASK_EXPLICIT_REGISTRATION_RE = re.compile(
-    r"(?:新規)?タスク(?:を|として)?[^。！？!?]{0,40}"
-    r"(?:登録したい|登録して|作成したい|作成して|追加したい|追加して)"
-)
-_NATURAL_TASK_QUESTION_ONLY_RE = re.compile(
-    r"(意味わかりますか|意味分かりますか|どう思|できますか|できる[？?]|可能ですか|"
-    r"教えて|説明して|なぜ|なに|何[？?]|どこ|いつ)"
-)
-
-
 def _summarize_exec_approval(command: str, description: str = "") -> str:
     """Return a short human-facing summary for Discord exec approval prompts."""
     cmd = (command or "").strip()
@@ -3127,11 +3112,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         if len(normalized) < 4:
             return False
-        if _NATURAL_TASK_EXPLICIT_REGISTRATION_RE.search(normalized):
-            return True
-        if _NATURAL_TASK_QUESTION_ONLY_RE.search(normalized):
-            return False
-        return bool(_NATURAL_TASK_REQUEST_RE.search(normalized))
+        return True
 
     def _build_task_payload(
         self,
@@ -3339,14 +3320,13 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_id: Optional[str],
         has_attachments: bool,
     ) -> bool:
-        """Register natural task-like messages without replacing normal chat flow.
+        """Register regular Discord messages without replacing normal chat flow.
 
-        Returns True when the message looked like a task request. Callers can use
-        that to bypass mention gating, but should continue into the regular agent
-        response path so Discord does not receive a separate "registered" notice.
+        Discord is treated as the owner's work intake, not a casual chat
+        surface. Registration and natural replies are separate: this stores the
+        message as a kanban task, then the caller continues into the regular
+        agent response path without sending a separate "registered" notice.
         """
-        if has_attachments:
-            return False
         if not self._natural_task_requests_enabled():
             return False
         if not self._looks_like_natural_task_request(prompt):

@@ -137,6 +137,48 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_index_excludes_current_session(self, tmp_path):
+        """Numeric /resume choices must match the list shown to users."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.set_session_title("sess_001", "First")
+        db.create_session("sess_002", "telegram")
+        db.set_session_title("sess_002", "Second")
+        # Make the current session the newest titled row. If /resume's numeric
+        # resolver includes it, /resume 1 will resolve to the current session
+        # instead of the first visible non-current row.
+        db.create_session("current_session_001", "telegram")
+        db.set_session_title("current_session_001", "Current")
+
+        list_event = _make_event(text="/resume")
+        list_runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=list_event,
+        )
+        listing = await list_runner._handle_resume_command(list_event)
+
+        assert "Current" not in listing
+        assert "1." in listing
+        assert "Second" in listing
+
+        resume_event = _make_event(text="/resume 1")
+        resume_runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=resume_event,
+        )
+        result = await resume_runner._handle_resume_command(resume_event)
+
+        assert "Resumed" in result
+        resume_runner.session_store.switch_session.assert_called_once()
+        call_args = resume_runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "sess_002"
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_index_out_of_range(self, tmp_path):
         """Out-of-range numeric arguments show a helpful error."""
         from hermes_state import SessionDB

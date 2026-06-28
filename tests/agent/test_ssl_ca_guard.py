@@ -80,3 +80,27 @@ def test_skip_env_var_bypasses_guard(monkeypatch, tmp_path, value):
     monkeypatch.setenv("SSL_CERT_FILE", str(fake))
     verify_ca_bundle()
     verify_ca_bundle_with_fallback()
+
+
+def test_truststore_get_ca_certs_not_implemented_passes(monkeypatch):
+    """truststore (pip-system-certs) leaves get_ca_certs() as NotImplementedError.
+
+    Routing trust to the OS keystore is a working config, not a broken bundle,
+    so the guard must treat the unsupported method as "cannot inspect" and pass
+    instead of raising an empty-message NotImplementedError on startup.
+    """
+    import ssl as _ssl
+
+    for key in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        monkeypatch.delenv(key, raising=False)
+
+    real_create = _ssl.create_default_context
+
+    def _truststore_like(*args, **kwargs):
+        ctx = real_create(*args, **kwargs)
+        ctx.get_ca_certs = lambda *a, **k: (_ for _ in ()).throw(NotImplementedError())
+        return ctx
+
+    monkeypatch.setattr("agent.ssl_guard.ssl.create_default_context", _truststore_like)
+    verify_ca_bundle()
+    verify_ca_bundle_with_fallback()

@@ -653,6 +653,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/line',
             'user-guide/messaging/simplex',
             'user-guide/messaging/ntfy',
+            'user-guide/messaging/irc',
             'user-guide/messaging/open-webui',
             'user-guide/messaging/webhooks',
           ],

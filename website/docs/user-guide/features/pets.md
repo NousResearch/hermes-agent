@@ -103,6 +103,26 @@ Inside the CLI and TUI you can manage the pet without leaving the session:
 In the TUI, `/pet list` opens an interactive picker overlay; in the desktop app
 it opens the Cmd+K pet palette.
 
+## Generating a pet (`/hatch`)
+
+Beyond installing pre-made pets from the gallery, Hermes can **generate a brand-new pet** from a text description — its own AI sprite-generation pipeline.
+
+- CLI/TUI: `/hatch <description>` (alias `/generate-pet`), or `hermes pets` → the generate flow.
+- Desktop app: the Pokédex-style **generate** UI — an animated egg, hatch FX, and a draft picker.
+
+How generation works (a two-step, cost-bounded flow):
+
+1. **Base drafts** — a handful of cheap, prompt-only "what should this pet look like" variants are generated. You pick one, or remix/retry for a fresh round.
+2. **Hatch** — the chosen base is used as a reference image to generate one grounded animation row per Hermes state (idle, thinking, tool use, etc.), which are deterministically sliced into frames and packed into a standard petdex/Codex atlas (8×9 grid of 192×208 cells). The result is a valid spritesheet you keep — and could `petdex submit`.
+
+### Image backend
+
+Generation uses the active [image-generation provider](/user-guide/features/image-generation), but it requires **reference-image grounding** so each animation row stays the same character as the base. Reference-capable backends: **Nous Portal**, **OpenRouter**, **OpenAI** (`gpt-image-2`), and **Krea**. OpenRouter/Nous run a quality-first model chain by default.
+
+- Resolution order prefers Nous Portal → OpenAI → OpenRouter.
+- If no reference-capable backend is configured, generation surfaces an actionable error pointing you to `hermes tools` → Image Generation. (Installing/adopting existing gallery pets needs no image backend.)
+- Override the backend with the `HERMES_PET_IMAGE_PROVIDER` env var (e.g. `HERMES_PET_IMAGE_PROVIDER=openrouter`).
+
 ## Desktop app
 
 In the desktop app you can manage the pet two ways:

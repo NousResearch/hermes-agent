@@ -86,3 +86,31 @@ def test_install_script_skips_with_deps_when_no_sudo() -> None:
     # service-user installs (systemd accounts, operator users, etc.).
     assert 'if [ "$(id -u)" -eq 0 ] || (command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null); then' in text
     assert "sudo npx playwright install-deps chromium" in text
+
+
+def test_install_script_overrides_playwright_platform_on_newer_apt() -> None:
+    """Releases newer than Playwright's resolver knows (Ubuntu >=26, Debian >=14)
+    hang at the Chromium download (#35166). The installer must set
+    PLAYWRIGHT_HOST_PLATFORM_OVERRIDE to the newest build Playwright ships
+    (ubuntu24.04) on exactly those releases — and MUST NOT touch releases
+    Playwright already maps correctly, since forcing ubuntu24.04 onto an older
+    release pulls a newer-glibc Chromium that breaks (playwright#35114).
+    """
+    text = INSTALL_SH.read_text()
+
+    # The helper exists and is invoked from the apt branch before the
+    # playwright install calls.
+    assert "maybe_export_playwright_platform_override()" in text
+    assert "maybe_export_playwright_platform_override\n" in text
+    # It exports the override pointing at ubuntu24.04 with an arch suffix.
+    assert 'export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-${arch_suffix}"' in text
+    # It must respect an operator-provided value rather than clobbering it.
+    assert 'if [ -n "${PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-}" ]; then' in text
+    # It must be version-scoped to the releases that actually hang, NOT applied
+    # to every apt distro — the thresholds mirror Playwright's hostPlatform.ts.
+    assert 'if [ "$major" -ge 26 ]; then too_new=true; fi' in text  # Ubuntu/pop/neon/tuxedo
+    assert 'if [ "$major" -ge 14 ]; then too_new=true; fi' in text  # Debian
+    # Non-numeric / missing VERSION_ID must be left to native resolution.
+    assert "${VERSION_ID:-}" in text
+
+

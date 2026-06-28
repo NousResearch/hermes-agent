@@ -1891,6 +1891,69 @@ run_browser_install_with_timeout() {
     fi
 }
 
+# Export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE only on apt-based releases that
+# Playwright's platform resolver does NOT yet recognize, where the Chromium/deps
+# download otherwise stalls indefinitely — the "Installing Playwright Chromium
+# with system dependencies" hang reported in #35166.
+#
+# Playwright resolves the host to a CDN build in hostPlatform.ts. For Ubuntu (and
+# pop/neon/tuxedo, which share Ubuntu versions) it maps:
+#     major < 20 -> ubuntu18.04 ; <22 -> ubuntu20.04 ; <24 -> ubuntu22.04 ;
+#     <26 -> ubuntu24.04 ; >=26 -> "ubuntu<major.minor>" (NO build -> HANG).
+# For Debian: 11/12/13 are recognized; >=14 has no build -> HANG.
+#
+# Critically, releases Playwright already maps correctly (Ubuntu <26, Debian <14)
+# MUST be left alone: forcing ubuntu24.04 onto e.g. 22.04 pulls a Chromium built
+# against a newer glibc and breaks it ("version `GLIBC_2.36' not found",
+# microsoft/playwright#35114). So we override ONLY the too-new releases, and pin
+# them to the newest build Playwright actually ships (ubuntu24.04), which runs on
+# 26.04/Debian 14. An operator-provided value is always respected.
+maybe_export_playwright_platform_override() {
+    # Respect an explicit operator-provided value.
+    if [ -n "${PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-}" ]; then
+        return 0
+    fi
+
+    # Map the host CPU to Playwright's platform-arch suffix. Playwright only
+    # ships x64/arm64 Linux builds; leave anything else to resolve natively.
+    local arch_suffix
+    case "$(uname -m)" in
+        x86_64|amd64) arch_suffix="x64" ;;
+        aarch64|arm64) arch_suffix="arm64" ;;
+        *) return 0 ;;
+    esac
+
+    # VERSION_ID is sourced from /etc/os-release in detect_os(). Without a numeric
+    # version we can't tell whether the release is too new, so don't risk it.
+    local major
+    major="$(printf '%s' "${VERSION_ID:-}" | cut -d. -f1)"
+    case "$major" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+
+    local too_new=false
+    case "$DISTRO" in
+        ubuntu|pop|neon|tuxedo)
+            # Playwright has a build through ubuntu24.04 (covers majors 24,25).
+            if [ "$major" -ge 26 ]; then too_new=true; fi
+            ;;
+        debian)
+            # Playwright has builds debian11/12/13.
+            if [ "$major" -ge 14 ]; then too_new=true; fi
+            ;;
+        *)
+            # Other apt derivatives (Mint, Kali, Raspbian, Zorin, ...) have their
+            # own Playwright mappings; don't second-guess them.
+            return 0
+            ;;
+    esac
+
+    [ "$too_new" = true ] || return 0
+
+    export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-${arch_suffix}"
+    log_info "Set PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$PLAYWRIGHT_HOST_PLATFORM_OVERRIDE ($DISTRO $VERSION_ID is newer than Playwright recognizes; avoids the Chromium download hang)"
+}
+
 configure_browser_env_from_system_browser() {
     local env_file="$HERMES_HOME/.env"
     local browser_path="${DETECTED_BROWSER_EXECUTABLE:-}"
@@ -1961,7 +2024,12 @@ install_node_deps() {
             log_info "Skipping bundled Chromium download (AGENT_BROWSER_EXECUTABLE_PATH is set)."
         else
             case "$DISTRO" in
-                ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
+                ubuntu|debian|raspbian|pop|neon|tuxedo|linuxmint|elementary|zorin|kali|parrot)
+                    # Newer apt releases (e.g. Ubuntu 26.04, Debian 14) aren't
+                    # recognized by Playwright's platform resolver yet, which
+                    # makes the Chromium/deps download stall indefinitely
+                    # (#35166). Point it at the newest build Playwright ships.
+                    maybe_export_playwright_platform_override
                     # Use --with-deps only when sudo is available non-interactively
                     # (root, or a user with passwordless sudo). Non-sudo users
                     # — typical for systemd service accounts and unprivileged

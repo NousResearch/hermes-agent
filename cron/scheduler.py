@@ -2838,9 +2838,14 @@ def run_job(
     # below, so clearing HERMES_SESSION_* here does not affect delivery.
     _ctx_tokens = set_session_vars(
         platform="",
+        source="cron",
         chat_id="",
         chat_name="",
     )
+    # Propagate HERMES_SESSION_SOURCE so that tools like
+    # hermes_studio_use_chat_run and run_agent._session_source_for_agent()
+    # inherit the cron identity when they create child sessions.
+    os.environ["HERMES_SESSION_SOURCE"] = "cron"
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
         "HERMES_CRON_AUTO_DELIVER_CHAT_ID",

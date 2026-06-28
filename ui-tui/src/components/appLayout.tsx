@@ -6,6 +6,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
+import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
@@ -25,9 +26,28 @@ import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
+import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
+
+// Petdex mascot — sits just above the composer, right-aligned. Renders
+// nothing unless a pet is installed + enabled (`hermes pets select <slug>`),
+// so it's a no-op for everyone else.
+const PetPane = memo(function PetPane() {
+  const { enabled, grid, kitty } = usePet()
+
+  if (!enabled || (!grid && !kitty)) {
+    return null
+  }
+
+  return (
+    <NoSelect flexShrink={0} justifyContent="flex-end" paddingX={1} width="100%">
+      {kitty ? <PetKitty color={kitty.color} placeholder={kitty.placeholder} /> : null}
+      {!kitty && grid ? <PetSprite grid={grid} /> : null}
+    </NoSelect>
+  )
+})
 
 const PromptPrefix = memo(function PromptPrefix({
   bold = false,
@@ -115,7 +135,14 @@ const TranscriptPane = memo(function TranscriptPane({
                 <Box flexDirection="column" paddingTop={1}>
                   <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
 
-                  {row.msg.info && <SessionPanel info={row.msg.info} maxWidth={Math.max(1, composer.cols - 2)} sid={ui.sid} t={ui.theme} />}
+                  {row.msg.info && (
+                    <SessionPanel
+                      info={row.msg.info}
+                      maxWidth={Math.max(1, composer.cols - 2)}
+                      sid={ui.sid}
+                      t={ui.theme}
+                    />
+                  )}
                 </Box>
               ) : row.msg.kind === 'panel' && row.msg.panelData ? (
                 <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
@@ -126,11 +153,11 @@ const TranscriptPane = memo(function TranscriptPane({
                   detailsMode={ui.detailsMode}
                   detailsModeCommandOverride={ui.detailsModeCommandOverride}
                   msg={row.msg}
-                  prev={prevRenderedMsg(
-                    i => transcript.virtualRows[i]?.msg,
-                    row.index,
-                    { commandOverride: ui.detailsModeCommandOverride, detailsMode: ui.detailsMode, sections: ui.sections }
-                  )}
+                  prev={prevRenderedMsg(i => transcript.virtualRows[i]?.msg, row.index, {
+                    commandOverride: ui.detailsModeCommandOverride,
+                    detailsMode: ui.detailsMode,
+                    sections: ui.sections
+                  })}
                   sections={ui.sections}
                   t={ui.theme}
                 />
@@ -176,7 +203,15 @@ const ComposerPane = memo(function ComposerPane({
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
-  const promptText = composerPromptText(ui.theme.brand.prompt, ui.info?.profile_name, sh, TERMUX_TUI_MODE, composer.cols)
+
+  const promptText = composerPromptText(
+    ui.theme.brand.prompt,
+    ui.info?.profile_name,
+    sh,
+    TERMUX_TUI_MODE,
+    composer.cols
+  )
+
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
@@ -366,6 +401,7 @@ const StatusRulePane = memo(function StatusRulePane({
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
         indicatorStyle={ui.indicatorStyle}
+        lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
@@ -373,7 +409,6 @@ const StatusRulePane = memo(function StatusRulePane({
         notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
-        showCost={ui.showCost}
         status={ui.status}
         statusColor={status.statusColor}
         t={ui.theme}
@@ -419,6 +454,8 @@ export const AppLayout = memo(function AppLayout({
 
         {!overlay.agents && (
           <>
+            <PetPane />
+
             <PerfPane id="prompt">
               <PromptZone
                 cols={composer.cols}

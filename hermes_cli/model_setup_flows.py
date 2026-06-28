@@ -24,6 +24,46 @@ import argparse
 import os
 import subprocess
 
+from hermes_cli.config import clear_model_endpoint_credentials
+
+
+def _prompt_auth_credentials_choice(title: str) -> str:
+    """Prompt for reuse / reauthenticate / cancel with the standard radio UI.
+
+    Returns one of ``"use"``, ``"reauth"``, ``"cancel"``. Falls back to a
+    numbered prompt when curses is unavailable (piped stdin, non-TTY).
+    """
+    choices = [
+        "Use existing credentials",
+        "Reauthenticate (new OAuth login)",
+        "Cancel",
+    ]
+    try:
+        from hermes_cli.setup import _curses_prompt_choice
+
+        idx = _curses_prompt_choice(title, choices, 0)
+        if idx >= 0:
+            print()
+            return ("use", "reauth", "cancel")[idx]
+    except Exception:
+        pass
+
+    print(title)
+    for i, label in enumerate(choices, 1):
+        marker = "→" if i == 1 else " "
+        print(f"  {marker} {i}. {label}")
+    print()
+    try:
+        choice = input("  Choice [1/2/3]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        choice = "1"
+
+    if choice == "2":
+        return "reauth"
+    if choice == "3":
+        return "cancel"
+    return "use"
+
 
 def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
@@ -64,7 +104,12 @@ def _model_flow_openrouter(config, current_model=""):
     pricing = get_pricing_for_provider("openrouter", force_refresh=True)
 
     selected = _prompt_model_selection(
-        openrouter_models, current_model=current_model, pricing=pricing
+        openrouter_models,
+        current_model=current_model,
+        pricing=pricing,
+        confirm_provider="openrouter",
+        confirm_base_url=OPENROUTER_BASE_URL,
+        confirm_api_key=_resolved or existing_key,
     )
     if selected:
         _save_model_choice(selected)
@@ -80,11 +125,108 @@ def _model_flow_openrouter(config, current_model=""):
         model["provider"] = "openrouter"
         model["base_url"] = OPENROUTER_BASE_URL
         model["api_mode"] = "chat_completions"
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
     else:
         print("No change.")
+
+
+def _print_moa_preset(name: str, preset: dict) -> None:
+    """Print the full reference-models + aggregator breakdown for a preset."""
+    print(f"  Preset: {name}")
+    print("  Reference models:")
+    for idx, slot in enumerate(preset.get("reference_models") or [], start=1):
+        print(f"    {idx}. {slot.get('provider')}:{slot.get('model')}")
+    agg = preset.get("aggregator") or {}
+    print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+
+
+def _model_flow_moa(config, current_model=""):
+    """Mixture of Agents virtual provider: pick a preset, then persist it.
+
+    Unlike the other provider flows there is no credential step — MoA is a
+    virtual provider whose presets reference already-configured providers. We
+    always show the preset list (even when there is only one) so the user sees
+    what they are selecting, then print the full preset breakdown on selection.
+    """
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.moa_config import normalize_moa_config
+
+    moa = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
+    presets = moa.get("presets") or {}
+    if not presets:
+        print("No MoA presets configured. Run `hermes moa configure <name>` first.")
+        return
+
+    names = list(presets.keys())
+    default_name = moa.get("default_preset") or names[0]
+
+    # Build labelled rows showing the aggregator so the picker is informative
+    # even before drilling into the full breakdown.
+    rows = []
+    for n in names:
+        agg = (presets[n].get("aggregator") or {})
+        agg_label = f"{agg.get('provider')}:{agg.get('model')}" if agg else ""
+        ref_count = len(presets[n].get("reference_models") or [])
+        suffix = "  ← default" if n == default_name else ""
+        rows.append(f"{n}  (agg {agg_label}, {ref_count} refs){suffix}")
+
+    default_idx = names.index(default_name) if default_name in names else 0
+
+    try:
+        from hermes_cli.setup import _curses_prompt_choice
+
+        idx = _curses_prompt_choice("Select a Mixture of Agents preset:", rows, default_idx)
+    except Exception:
+        print("Select a Mixture of Agents preset:")
+        for i, row in enumerate(rows, 1):
+            marker = "→" if (i - 1) == default_idx else " "
+            print(f"  {marker} {i}. {row}")
+        try:
+            raw = input(f"  Choice [1-{len(rows)}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("No change.")
+            return
+        if not raw:
+            idx = default_idx
+        else:
+            try:
+                idx = max(0, min(len(rows) - 1, int(raw) - 1))
+            except ValueError:
+                print("No change.")
+                return
+
+    if idx is None or idx < 0:
+        print("No change.")
+        return
+
+    selected_name = names[idx]
+    preset = presets[selected_name]
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["default"] = selected_name
+    model["provider"] = "moa"
+    # MoA is a virtual local provider — drop any stale endpoint credentials and
+    # base_url so auto-resolution doesn't keep pointing at the previous real
+    # provider. (clear_model_endpoint_credentials handles api_key/api_mode but
+    # intentionally leaves base_url, so pop it here.)
+    clear_model_endpoint_credentials(model, clear_api_mode=True)
+    model.pop("base_url", None)
+    save_config(cfg)
+    _save_model_choice(selected_name)
+    deactivate_provider()
+
+    print()
+    print(f"Default model set to: {selected_name} (via Mixture of Agents)")
+    _print_moa_preset(selected_name, preset)
+
 
 def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
@@ -273,12 +415,18 @@ def _model_flow_nous(config, current_model="", args=None):
         unavailable_models=unavailable_models,
         portal_url=_nous_portal_url,
         unavailable_message=unavailable_message,
+        confirm_provider="nous",
+        confirm_base_url=creds.get("base_url", ""),
+        confirm_api_key=creds.get("api_key", ""),
     )
     if selected:
         _save_model_choice(selected)
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
         _update_config_for_provider("nous", inference_url)
+        # Reload after the auth helper writes provider state. The incoming
+        # config object may still contain stale custom-provider fields.
+        config = load_config()
         current_model_cfg = config.get("model")
         if isinstance(current_model_cfg, dict):
             model_cfg = dict(current_model_cfg)
@@ -292,6 +440,7 @@ def _model_flow_nous(config, current_model="", args=None):
             model_cfg["base_url"] = inference_url.rstrip("/")
         else:
             model_cfg.pop("base_url", None)
+        clear_model_endpoint_credentials(model_cfg)
         config["model"] = model_cfg
         # Clear any custom endpoint that might conflict
         if get_env_value("OPENAI_BASE_URL"):
@@ -321,16 +470,9 @@ def _model_flow_openai_codex(config, current_model=""):
     if status.get("logged_in"):
         print("  OpenAI Codex credentials: ✓")
         print()
-        print("    1. Use existing credentials")
-        print("    2. Reauthenticate (new OAuth login)")
-        print("    3. Cancel")
-        print()
-        try:
-            choice = input("  Choice [1/2/3]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            choice = "1"
+        choice = _prompt_auth_credentials_choice("OpenAI Codex credentials:")
 
-        if choice == "2":
+        if choice == "reauth":
             print("Starting a fresh OpenAI Codex login...")
             print()
             try:
@@ -350,7 +492,7 @@ def _model_flow_openai_codex(config, current_model=""):
             if not status.get("logged_in"):
                 print("Login failed.")
                 return
-        elif choice == "3":
+        elif choice == "cancel":
             return
     else:
         print("Not logged into OpenAI Codex. Starting login...")
@@ -385,7 +527,13 @@ def _model_flow_openai_codex(config, current_model=""):
 
     codex_models = get_codex_model_ids(access_token=_codex_token)
 
-    selected = _prompt_model_selection(codex_models, current_model=current_model)
+    selected = _prompt_model_selection(
+        codex_models,
+        current_model=current_model,
+        confirm_provider="openai-codex",
+        confirm_base_url=DEFAULT_CODEX_BASE_URL,
+        confirm_api_key=_codex_token or "",
+    )
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
@@ -411,16 +559,11 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     if status.get("logged_in"):
         print("  xAI Grok OAuth (SuperGrok / Premium+) credentials: ✓")
         print()
-        print("    1. Use existing credentials")
-        print("    2. Reauthenticate (new OAuth login)")
-        print("    3. Cancel")
-        print()
-        try:
-            choice = input("  Choice [1/2/3]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            choice = "1"
+        choice = _prompt_auth_credentials_choice(
+            "xAI Grok OAuth (SuperGrok / Premium+) credentials:"
+        )
 
-        if choice == "2":
+        if choice == "reauth":
             print("Starting a fresh xAI OAuth login...")
             print()
             try:
@@ -444,7 +587,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
             except Exception as exc:
                 print(f"Login failed: {exc}")
                 return
-        elif choice == "3":
+        elif choice == "cancel":
             return
     else:
         print("Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login...")
@@ -477,7 +620,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         pass
 
     models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.3"))
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-build-0.1"))
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
@@ -520,7 +663,12 @@ def _model_flow_qwen_oauth(_config, current_model=""):
         models = list(_DEFAULT_QWEN_PORTAL_MODELS)
 
     default = current_model or (models[0] if models else "qwen3-coder-plus")
-    selected = _prompt_model_selection(models, current_model=default)
+    selected = _prompt_model_selection(
+        models,
+        current_model=default,
+        confirm_provider="qwen-oauth",
+        confirm_base_url=DEFAULT_QWEN_BASE_URL,
+    )
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("qwen-oauth", DEFAULT_QWEN_BASE_URL)
@@ -569,86 +717,18 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     from hermes_cli.models import _PROVIDER_MODELS
 
     model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
-    selected = _prompt_model_selection(model_ids, current_model)
+    selected = _prompt_model_selection(
+        model_ids,
+        current_model,
+        confirm_provider="minimax-oauth",
+        confirm_base_url=creds["base_url"],
+    )
     if not selected:
         return
     _save_model_choice(selected)
     _update_config_for_provider("minimax-oauth", creds["base_url"])
     print(f"\u2713 Using MiniMax model: {selected}")
 
-def _model_flow_google_gemini_cli(_config, current_model=""):
-    """Google Gemini OAuth (PKCE) via Cloud Code Assist — supports free AND paid tiers.
-
-    Flow:
-      1. Show upfront warning about Google's ToS stance (per opencode-gemini-auth).
-      2. If creds missing, run PKCE browser OAuth via agent.google_oauth.
-      3. Resolve project context (env -> config -> auto-discover -> free tier).
-      4. Prompt user to pick a model.
-      5. Save to ~/.hermes/config.yaml.
-    """
-    from hermes_cli.auth import (
-        DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
-        get_gemini_oauth_auth_status,
-        resolve_gemini_oauth_runtime_credentials,
-        _prompt_model_selection,
-        _save_model_choice,
-        _update_config_for_provider,
-    )
-    from hermes_cli.models import _PROVIDER_MODELS
-
-    print()
-    print("⚠  Google considers using the Gemini CLI OAuth client with third-party")
-    print("   software a policy violation. Some users have reported account")
-    print("   restrictions. You can use your own API key via 'gemini' provider")
-    print("   for the lowest-risk experience.")
-    print()
-    try:
-        proceed = input("Continue with OAuth login? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print("Cancelled.")
-        return
-    if proceed not in {"y", "yes"}:
-        print("Cancelled.")
-        return
-
-    status = get_gemini_oauth_auth_status()
-    if not status.get("logged_in"):
-        try:
-            from agent.google_oauth import resolve_project_id_from_env, start_oauth_flow
-
-            env_project = resolve_project_id_from_env()
-            start_oauth_flow(force_relogin=True, project_id=env_project)
-        except Exception as exc:
-            print(f"OAuth login failed: {exc}")
-            return
-
-    # Verify creds resolve + trigger project discovery
-    try:
-        creds = resolve_gemini_oauth_runtime_credentials(force_refresh=False)
-        project_id = creds.get("project_id", "")
-        if project_id:
-            print(f"  Using GCP project: {project_id}")
-        else:
-            print(
-                "  No GCP project configured — free tier will be auto-provisioned on first request."
-            )
-    except Exception as exc:
-        print(f"Failed to resolve Gemini credentials: {exc}")
-        return
-
-    models = list(_PROVIDER_MODELS.get("google-gemini-cli") or [])
-    default = current_model or (models[0] if models else "gemini-3-flash-preview")
-    selected = _prompt_model_selection(models, current_model=default)
-    if selected:
-        _save_model_choice(selected)
-        _update_config_for_provider(
-            "google-gemini-cli", DEFAULT_GEMINI_CLOUDCODE_BASE_URL
-        )
-        print(
-            f"Default model set to: {selected} (via Google Gemini OAuth / Code Assist)"
-        )
-    else:
-        print("No change.")
 
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
@@ -1191,6 +1271,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     model["api_mode"] = api_mode
     model["default"] = effective_model
     model["auth_mode"] = auth_mode_label
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
     if use_entra:
         # Persist only the non-default Entra scope so config.yaml stays tidy.
         # Azure identity selection stays in standard AZURE_* env vars.
@@ -1563,7 +1644,11 @@ def _model_flow_copilot(config, current_model=""):
 
     if model_list:
         selected = _prompt_model_selection(
-            model_list, current_model=normalized_current_model
+            model_list,
+            current_model=normalized_current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=api_key,
         )
     else:
         try:
@@ -1608,6 +1693,7 @@ def _model_flow_copilot(config, current_model=""):
             catalog=catalog,
             api_key=api_key,
         )
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         if selected_effort is not None:
             _set_reasoning_effort(cfg, selected_effort)
         save_config(cfg)
@@ -1701,6 +1787,9 @@ def _model_flow_copilot_acp(config, current_model=""):
         selected = _prompt_model_selection(
             model_list,
             current_model=normalized_current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=catalog_api_key,
         )
     else:
         try:
@@ -1730,6 +1819,7 @@ def _model_flow_copilot_acp(config, current_model=""):
     model["provider"] = provider_id
     model["base_url"] = effective_base
     model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
     save_config(cfg)
     deactivate_provider()
 
@@ -1791,21 +1881,16 @@ def _model_flow_kimi(config, current_model=""):
     print()
 
     # Step 3: Model selection — show appropriate models for the endpoint
-    if is_coding_plan:
-        # Coding Plan models (kimi-k2.6 first)
-        model_list = [
-            "kimi-k2.6",
-            "kimi-k2.5",
-            "kimi-for-coding",
-            "kimi-k2-thinking",
-            "kimi-k2-thinking-turbo",
-        ]
-    else:
-        # Legacy Moonshot models (excludes Coding Plan-only models)
-        model_list = _PROVIDER_MODELS.get("moonshot", [])
+    model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
 
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=existing_key,
+        )
     else:
         try:
             selected = input("Enter model name: ").strip()
@@ -1824,6 +1909,7 @@ def _model_flow_kimi(config, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         model.pop("api_mode", None)  # let runtime auto-detect from URL
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
 
@@ -1913,7 +1999,13 @@ def _model_flow_stepfun(config, current_model=""):
             )
 
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=existing_key,
+        )
     else:
         try:
             selected = input("Model name: ").strip()
@@ -1931,6 +2023,7 @@ def _model_flow_stepfun(config, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         model.pop("api_mode", None)
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
 
@@ -1989,7 +2082,13 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     print(f"  Showing {len(model_list)} curated models")
 
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider="custom",
+            confirm_base_url=mantle_base_url,
+            confirm_api_key=existing_key,
+        )
     else:
         try:
             selected = input("  Model ID: ").strip()
@@ -2008,6 +2107,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         model["provider"] = "custom"
         model["base_url"] = mantle_base_url
         model.pop("api_mode", None)  # chat_completions is the default
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
 
         # Also save region in bedrock config for reference
         bedrock_cfg = cfg.get("bedrock", {})
@@ -2178,7 +2278,12 @@ def _model_flow_bedrock(config, current_model=""):
 
     # 4. Model selection
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider="bedrock",
+            confirm_base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
+        )
     else:
         try:
             selected = input("  Model ID: ").strip()
@@ -2196,6 +2301,7 @@ def _model_flow_bedrock(config, current_model=""):
         model["provider"] = "bedrock"
         model["base_url"] = f"https://bedrock-runtime.{region}.amazonaws.com"
         model.pop("api_mode", None)  # bedrock_converse is auto-detected
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
 
         bedrock_cfg = cfg.get("bedrock", {})
         if not isinstance(bedrock_cfg, dict):
@@ -2209,6 +2315,64 @@ def _model_flow_bedrock(config, current_model=""):
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
     else:
         print("  No change.")
+
+def _select_zai_endpoint(current_base: str) -> str:
+    """Present a picker for Z.AI endpoint selection during setup.
+
+    Offers the four official Z.AI endpoints (Global, China, Coding Plan
+    Global, Coding Plan China) plus a custom-proxy option.  The list is
+    sourced from ``ZAI_ENDPOINTS`` in ``hermes_cli.auth`` so it stays in
+    sync with the probe list.
+
+    Returns the selected base URL.  Falls back to *current_base* on cancel
+    or error.
+    """
+    from hermes_cli.main import _prompt_provider_choice
+    from hermes_cli.auth import ZAI_ENDPOINTS
+
+    # Build label + URL pairs from the shared endpoint list.
+    options = [(label, url) for _, url, _, label in ZAI_ENDPOINTS]
+    normalized_current = (current_base or "").strip().rstrip("/")
+
+    # Default to the currently-active option if it matches one of the
+    # known endpoints; otherwise default to the first (Global).
+    default_idx = 0
+    for idx, (_, url) in enumerate(options):
+        if normalized_current == url.rstrip("/"):
+            default_idx = idx
+            break
+    else:
+        if normalized_current:
+            # A custom URL is active — offer "Custom proxy" as the default.
+            default_idx = len(options)
+
+    choices = [f"{label} ({url})" for label, url in options]
+    choices.append("Custom proxy URL")
+
+    selected = _prompt_provider_choice(
+        choices,
+        default=default_idx,
+        title="Select Z.AI / GLM endpoint:",
+    )
+    if selected is None:
+        return current_base
+
+    if selected == len(options):
+        # Custom proxy URL
+        try:
+            override = input(f"Custom base URL [{current_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return current_base
+        if not override:
+            return current_base
+        if not override.startswith(("http://", "https://")):
+            print("  Invalid URL — must start with http:// or https://. Keeping current value.")
+            return current_base
+        return override.rstrip("/")
+
+    return options[selected][1].rstrip("/")
+
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
@@ -2324,19 +2488,29 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             pass
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        override = ""
-    if override and base_url_env:
-        if not override.startswith(("http://", "https://")):
-            print(
-                "  Invalid URL — must start with http:// or https://. Keeping current value."
-            )
-        else:
-            save_env_value(base_url_env, override)
-            effective_base = override
+    if provider_id == "zai":
+        # Z.AI has four official endpoints (Global, China, Coding Plan
+        # Global, Coding Plan China) with separate billing paths.  Present
+        # a picker instead of a plain text input so users can explicitly
+        # choose the endpoint that matches their key type.
+        chosen_base = _select_zai_endpoint(effective_base)
+        if chosen_base and chosen_base != effective_base and base_url_env:
+            save_env_value(base_url_env, chosen_base)
+        effective_base = chosen_base
+    else:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
+        if override and base_url_env:
+            if not override.startswith(("http://", "https://")):
+                print(
+                    "  Invalid URL — must start with http:// or https://. Keeping current value."
+                )
+            else:
+                save_env_value(base_url_env, override)
+                effective_base = override
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
@@ -2462,7 +2636,13 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model_list = list(dict.fromkeys(mid for mid in model_list if mid))
 
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=existing_key,
+        )
     else:
         try:
             selected = input("Model name: ").strip()
@@ -2483,6 +2663,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             cfg["model"] = model
         model["provider"] = provider_id
         model["base_url"] = effective_base
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         if provider_id in {"opencode-zen", "opencode-go"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
@@ -2560,20 +2741,13 @@ def _model_flow_anthropic(config, current_model=""):
         elif cc_available:
             print("  Claude Code credentials: ✓ (auto-detected)")
         print()
-        print("    1. Use existing credentials")
-        print("    2. Reauthenticate (new OAuth login)")
-        print("    3. Cancel")
-        print()
-        try:
-            choice = input("  Choice [1/2/3]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            choice = "1"
+        choice = _prompt_auth_credentials_choice("Anthropic credentials:")
 
-        if choice == "2":
+        if choice == "reauth":
             needs_auth = True
-        elif choice == "3":
+        elif choice == "cancel":
             return
-        # choice == "1" or default: use existing, proceed to model selection
+        # choice == "use" or default: use existing, proceed to model selection
 
     if needs_auth:
         # Show auth method choice
@@ -2619,7 +2793,11 @@ def _model_flow_anthropic(config, current_model=""):
     # Model selection
     model_list = _PROVIDER_MODELS.get("anthropic", [])
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider="anthropic",
+        )
     else:
         try:
             selected = input("Model name (e.g., claude-sonnet-4-20250514): ").strip()
@@ -2640,6 +2818,7 @@ def _model_flow_anthropic(config, current_model=""):
             cfg["model"] = model
         model["provider"] = "anthropic"
         model.pop("base_url", None)
+        clear_model_endpoint_credentials(model)
         save_config(cfg)
         deactivate_provider()
 

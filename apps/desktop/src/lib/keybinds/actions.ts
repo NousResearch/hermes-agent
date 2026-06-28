@@ -5,6 +5,8 @@
 // like navigate / theme); labels come from i18n (`t.keybinds.actions[id]`). To
 // add a hotkey, add a row here and a handler there — nothing else.
 
+import { IS_MAC } from './combo'
+
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
 
 // The self-referential opener — bound + dispatched like any action, but shown in
@@ -13,13 +15,7 @@ export const KEYBIND_PANEL_ACTION = 'keybinds.openPanel'
 
 // `composer` is read-only; the rest are rebindable. `view` is the catch-all for
 // layout, appearance, and the panel-opener.
-export const KEYBIND_CATEGORIES: readonly KeybindCategory[] = [
-  'composer',
-  'profiles',
-  'session',
-  'navigation',
-  'view'
-]
+export const KEYBIND_CATEGORIES: readonly KeybindCategory[] = ['composer', 'profiles', 'session', 'navigation', 'view']
 
 export interface KeybindActionMeta {
   id: string
@@ -43,10 +39,30 @@ const PROFILE_SWITCH_ACTIONS: KeybindActionMeta[] = Array.from({ length: PROFILE
   defaults: [comboForSlot(i + 1)]
 }))
 
+// ⌘` on macOS / Ctrl+` elsewhere (the `~` key), plus the Shift/tilde variant.
+// `mod` keeps one binding cross-platform; on macOS this shadows the system
+// window-cycler, which is fine for a single-window app.
+const TERMINAL_TOGGLE_DEFAULTS = ['mod+`', 'mod+shift+`']
+
+// Positional jumps — ^1…^9, mirroring profiles' ⌘1…⌘9.
+export const SESSION_SLOT_COUNT = 9
+
+const SESSION_SLOT_ACTIONS: KeybindActionMeta[] = Array.from({ length: SESSION_SLOT_COUNT }, (_, i) => ({
+  id: `session.slot.${i + 1}`,
+  category: 'session' as const,
+  defaults: [`ctrl+${i + 1}`]
+}))
+
 export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Composer ─────────────────────────────────────────────────────────────
   { id: 'composer.focus', category: 'composer', defaults: [] },
   { id: 'composer.modelPicker', category: 'composer', defaults: [] },
+  // Voice conversation toggle. Matches the documented `voice.record_key`
+  // (Ctrl+B). On macOS that's literally ⌃B — distinct from the ⌘B sidebar
+  // toggle. Off macOS `ctrl` folds to `mod`, which IS the ⌘B/Ctrl+B sidebar
+  // chord, so ship it unbound there (rebindable in the panel) rather than
+  // stealing the long-standing sidebar binding.
+  { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : [] },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },
@@ -58,10 +74,16 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
 
   // ── Session ──────────────────────────────────────────────────────────────
   { id: 'session.new', category: 'session', defaults: ['mod+n', 'shift+n'] },
-  { id: 'session.next', category: 'session', defaults: [] },
-  { id: 'session.prev', category: 'session', defaults: [] },
+  { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
+  // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd
+  // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
+  { id: 'session.next', category: 'session', defaults: ['ctrl+tab'] },
+  { id: 'session.prev', category: 'session', defaults: ['ctrl+shift+tab'] },
+  ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
+  // ⌘⇧B — "b" for branch: spin up a new git worktree from the active repo.
+  { id: 'workspace.newWorktree', category: 'session', defaults: ['mod+shift+b'] },
 
   // ── Navigation ───────────────────────────────────────────────────────────
   { id: 'nav.commandPalette', category: 'navigation', defaults: ['mod+k', 'mod+p'] },
@@ -77,8 +99,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
+  // ⌘G — "g" for git; the review pane is the source-control view.
+  { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
-  { id: 'view.showTerminal', category: 'view', defaults: [] },
+  { id: 'view.showTerminal', category: 'view', defaults: TERMINAL_TOGGLE_DEFAULTS },
   // ⌘\ — the backslash reads like a mirror line flipping the layout.
   { id: 'view.flipPanes', category: 'view', defaults: ['mod+\\'] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },

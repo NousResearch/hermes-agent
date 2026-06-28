@@ -23,6 +23,7 @@ from typing import Any
 
 from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
+from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -70,16 +71,6 @@ def _resolve_args() -> list[str]:
 
 def _resolve_home_dir() -> str:
     """Return a stable HOME for child ACP processes."""
-
-    try:
-        from hermes_constants import get_subprocess_home
-
-        profile_home = get_subprocess_home()
-        if profile_home:
-            return profile_home
-    except Exception:
-        pass
-
     home = os.environ.get("HOME", "").strip()
     if home:
         return home
@@ -104,8 +95,14 @@ def _resolve_home_dir() -> str:
 
 
 def _build_subprocess_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env["HOME"] = _resolve_home_dir()
+    # Copilot ACP is a model-driving CLI executor: it legitimately needs LLM
+    # provider credentials. Route through the central helper so Tier-1 secrets
+    # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
+    env = hermes_subprocess_env(inherit_credentials=True)
+    home = _resolve_home_dir()
+    env["HOME"] = home
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(env)
     return env
 
 

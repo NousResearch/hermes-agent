@@ -25,7 +25,7 @@ _GATEWAY_LIFECYCLE_PATTERNS = re.compile(
     r"(?i)"
     r"(hermes\s+gateway\s+(restart|stop|start))"
     r"|(launchctl\s+(kickstart|unload|load|stop|restart)\s+.*hermes)"
-    r"|(systemctl\s+(restart|stop|start)\s+.*hermes)"
+    r"|(systemctl\s+(-\S+\s+)*(restart|stop|start)\s+.*hermes)"
     r"|(p?kill\s+.*hermes.*gateway)"
 )
 
@@ -55,6 +55,30 @@ def _cron_api(**kwargs):
     from tools.cronjob_tools import cronjob as cronjob_tool
 
     return json.loads(cronjob_tool(**kwargs))
+
+
+def _warn_if_gateway_not_running() -> None:
+    """Warn that scheduled jobs won't fire unless the gateway is running.
+
+    The cron ticker only runs inside the gateway (``_start_cron_ticker`` in
+    gateway/run.py); there is no standalone cron daemon. Without a running
+    gateway, ``next_run_at`` passes but jobs never fire and ``last_run_at``
+    stays null — the most common cron support report (#51038). Surfacing this
+    at create/list time, when the user is right there, prevents it.
+    """
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+
+        if find_gateway_pids():
+            return
+    except Exception:
+        # If we can't determine gateway state, stay quiet rather than nag.
+        return
+
+    print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
+    print(color("     Start it with: hermes gateway install", Colors.DIM))
+    print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
+    print(color("     Check status:  hermes cron status", Colors.DIM))
 
 
 def cron_list(show_all: bool = False):
@@ -120,9 +144,6 @@ def cron_list(show_all: bool = False):
         workdir = job.get("workdir")
         if workdir:
             print(f"    Workdir:   {workdir}")
-        profile = job.get("profile")
-        if profile:
-            print(f"    Profile:   {profile}")
 
         # Execution history
         last_status = job.get("last_status")
@@ -140,12 +161,7 @@ def cron_list(show_all: bool = False):
 
         print()
 
-    from hermes_cli.gateway import find_gateway_pids
-    if not find_gateway_pids():
-        print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
-        print(color("     Start it with: hermes gateway install", Colors.DIM))
-        print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
-        print()
+    _warn_if_gateway_not_running()
 
 
 def cron_tick():
@@ -163,8 +179,48 @@ def cron_status():
 
     pids = find_gateway_pids()
     if pids:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-        print(f"  PID: {', '.join(map(str, pids))}")
+        # The gateway PROCESS is alive — but the cron ticker THREAD inside it
+        # can die silently, or stay alive while every tick fails. Check both
+        # the liveness heartbeat and the last-successful-tick marker so we
+        # don't report "will fire" when the ticker is dead or failing
+        # (#32612, #32895).
+        from cron.jobs import (
+            get_ticker_heartbeat_age,
+            get_ticker_success_age,
+            TICKER_INTERVAL_SECONDS,
+        )
+
+        # Allow ~3 missed ticker iterations (+ a little slack) before declaring
+        # trouble. Derived from the shared interval constant so this threshold
+        # tracks the ticker cadence instead of assuming a hardcoded 60s.
+        STALE_AFTER = TICKER_INTERVAL_SECONDS * 3 + 20  # = 200s at the 60s default
+        hb_age = get_ticker_heartbeat_age()
+        ok_age = get_ticker_success_age()
+
+        if hb_age is not None and hb_age > STALE_AFTER:
+            # No heartbeat at all → the ticker thread is gone.
+            print(color(
+                "⚠ Gateway is running but the cron ticker looks STALLED — "
+                f"no heartbeat for {int(hb_age)}s (expected every ~60s).",
+                Colors.YELLOW,
+            ))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
+        elif hb_age is not None and ok_age is not None and ok_age > STALE_AFTER:
+            # Loop is alive (fresh heartbeat) but no tick has SUCCEEDED in a
+            # long time → ticks are failing every iteration.
+            print(color(
+                "⚠ Gateway and cron ticker are running, but no tick has "
+                f"succeeded in {int(ok_age)}s — ticks may be failing.",
+                Colors.YELLOW,
+            ))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            print("  Check the gateway log for 'Cron tick error'.")
+        else:
+            print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            if hb_age is not None:
+                print(f"  Ticker heartbeat: {int(hb_age)}s ago")
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
         print()
@@ -221,7 +277,6 @@ def cron_create(args):
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
-        profile=getattr(args, "profile", None),
         no_agent=getattr(args, "no_agent", False) or None,
     )
     if not result.get("success"):
@@ -239,9 +294,8 @@ def cron_create(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
-    if job_data.get("profile"):
-        print(f"  Profile: {job_data['profile']}")
     print(f"  Next run: {result['next_run_at']}")
+    _warn_if_gateway_not_running()
     return 0
 
 
@@ -286,7 +340,6 @@ def cron_edit(args):
         skills=final_skills,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
-        profile=getattr(args, "profile", None),
         no_agent=getattr(args, "no_agent", None),
     )
     if not result.get("success"):
@@ -307,8 +360,6 @@ def cron_edit(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
-    if updated.get("profile"):
-        print(f"  Profile: {updated['profile']}")
     return 0
 
 
@@ -322,7 +373,14 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     if action in {"resume", "run"} and result.get("job", {}).get("next_run_at"):
         print(f"  Next run: {result['job']['next_run_at']}")
     if action == "run":
-        print("  It will run on the next scheduler tick.")
+        job = result.get("job", {})
+        if job.get("executed"):
+            outcome = "succeeded" if job.get("execution_success") else "failed"
+            print(f"  Ran now: {outcome}.")
+        elif job.get("execution_skipped"):
+            print(f"  {job['execution_skipped']}")
+        else:
+            print("  It will run on the next scheduler tick.")
     return 0
 
 

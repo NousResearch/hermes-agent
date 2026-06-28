@@ -158,6 +158,7 @@ export const ru: Translations = {
     selectedSessionsDeleted: "Удалено сессий: {count}",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
+    newChat: "Новый чат",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
     roles: {
@@ -286,8 +287,8 @@ export const ru: Translations = {
     nameRequired: "Имя обязательно",
     nameRule:
       "Только строчные буквы, цифры, _ и -; должно начинаться с буквы или цифры; до 64 символов.",
-    invalidName: "Недопустимое имя профиля",
-    cloneFromDefault: "Клонировать конфигурацию из профиля по умолчанию",
+    invalidName: "Недопустимое имя профиля",    cloneFrom: "Клонировать конфигурацию из профиля",
+    cloneFromNone: "Нет (пусто)",
     allProfiles: "Профили",
     noProfiles: "Профили не найдены.",
     defaultBadge: "по умолчанию",

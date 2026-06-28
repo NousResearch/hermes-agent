@@ -10,16 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Loader } from '@/components/ui/loader'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
-import {
-  Check,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  ExternalLink,
-  KeyRound,
-  Loader2,
-  Terminal
-} from '@/lib/icons'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, KeyRound, Loader2, Terminal } from '@/lib/icons'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
@@ -180,7 +171,7 @@ const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
-const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
+export const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
 const orderOf = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.order ?? 99
 
 export const sortProviders = (providers: OAuthProvider[]) =>
@@ -216,8 +207,7 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
       return
     }
 
-    const reduce =
-      typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
     if (reduce) {
       confirmOnboardingModel(ctx)
@@ -430,19 +420,24 @@ const persistShowAll = (value: boolean) => {
 
 export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const { t } = useI18n()
-  const { manual, mode, providers } = useStore($desktopOnboarding)
+  const { localEndpoint, manual, mode, providers } = useStore($desktopOnboarding)
   const [showAll, setShowAll] = useState(readShowAll)
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
   const apiKeyOptions = useApiKeyCatalog()
 
-  if (mode === 'apikey' || !hasOauth) {
+  // localEndpoint forces the key form regardless of `mode` (which a manual
+  // provider refresh may flip back to 'oauth'); it preselects the local option
+  // and hides the "back to sign in" link since the user came specifically to
+  // configure a custom endpoint.
+  if (localEndpoint || mode === 'apikey' || !hasOauth) {
     return (
       <div className="grid gap-3">
         <ApiKeyForm
-          canGoBack={hasOauth}
+          canGoBack={hasOauth && !localEndpoint}
+          initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : undefined}
           onBack={() => setOnboardingMode('oauth')}
-          onSave={(envKey, value, name) => saveOnboardingApiKey(envKey, value, name, ctx)}
+          onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, ctx, apiKey)}
           options={apiKeyOptions}
         />
         {manual ? null : (
@@ -517,13 +512,7 @@ function ChooseLaterLink() {
   const { t } = useI18n()
 
   return (
-    <Button
-      className="font-medium"
-      onClick={() => dismissFirstRunOnboarding()}
-      size="xs"
-      type="button"
-      variant="text"
-    >
+    <Button className="font-medium" onClick={() => dismissFirstRunOnboarding()} size="xs" type="button" variant="text">
       {t.onboarding.chooseLater}
     </Button>
   )
@@ -630,6 +619,7 @@ export function ProviderRow({
 // surfaces render the identical form.
 export function ApiKeyForm({
   canGoBack,
+  initialEnvKey,
   isSet,
   onBack,
   onClear,
@@ -638,16 +628,24 @@ export function ApiKeyForm({
   redactedValue
 }: {
   canGoBack: boolean
+  /** Preselect a specific option by env key (e.g. 'OPENAI_BASE_URL' to land on
+   *  the local / custom endpoint form). Falls back to the first option. */
+  initialEnvKey?: string
   isSet?: (envKey: string) => boolean
   onBack: () => void
   onClear?: (envKey: string) => void
-  onSave: (envKey: string, value: string, name: string) => Promise<{ message?: string; ok: boolean }>
+  onSave: (envKey: string, value: string, name: string, apiKey?: string) => Promise<{ message?: string; ok: boolean }>
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
 }) {
   const { t } = useI18n()
-  const [option, setOption] = useState<ApiKeyOption>(options[0])
+
+  const [option, setOption] = useState<ApiKeyOption>(() => options.find(o => o.envKey === initialEnvKey) ?? options[0])
+
   const [value, setValue] = useState('')
+  // Optional endpoint API key, only used by the local / custom endpoint option
+  // (whose `value` is the base URL). Cleared whenever the option changes.
+  const [localKey, setLocalKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
   // `options` can change at runtime when callers filter the catalog (e.g. the
@@ -657,6 +655,7 @@ export function ApiKeyForm({
     if (options.length > 0 && !options.some(o => o.envKey === option.envKey)) {
       setOption(options[0])
       setValue('')
+      setLocalKey('')
       setError(null)
     }
   }, [option.envKey, options])
@@ -668,6 +667,7 @@ export function ApiKeyForm({
   const pick = (o: ApiKeyOption) => {
     setOption(o)
     setValue('')
+    setLocalKey('')
     setError(null)
     requestAnimationFrame(() => {
       entryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -693,10 +693,11 @@ export function ApiKeyForm({
 
     setSaving(true)
     setError(null)
-    const result = await onSave(option.envKey, value, option.name)
+    const result = await onSave(option.envKey, value, option.name, isLocal ? localKey : undefined)
 
     if (result.ok) {
       setValue('')
+      setLocalKey('')
     } else {
       setError(result.message ?? t.onboarding.couldNotSave)
     }
@@ -707,13 +708,7 @@ export function ApiKeyForm({
   return (
     <div className="grid gap-4">
       {canGoBack ? (
-        <Button
-          className="-mt-1 self-start font-medium"
-          onClick={onBack}
-          size="xs"
-          type="button"
-          variant="text"
-        >
+        <Button className="-mt-1 self-start font-medium" onClick={onBack} size="xs" type="button" variant="text">
           <ChevronLeft className="size-3" />
           {t.onboarding.backToSignIn}
         </Button>
@@ -759,6 +754,17 @@ export function ApiKeyForm({
           type={isLocal ? 'text' : 'password'}
           value={value}
         />
+        {isLocal ? (
+          <Input
+            autoComplete="off"
+            className="font-mono"
+            onChange={e => setLocalKey(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && void submit()}
+            placeholder={t.onboarding.localApiKeyPlaceholder}
+            type="password"
+            value={localKey}
+          />
+        ) : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
 
@@ -802,9 +808,7 @@ function FlowPanel({
   }
 
   if (flow.status === 'success') {
-    return (
-      <DecodedLabel text={t.onboarding.connectedPicking(title)} />
-    )
+    return <DecodedLabel text={t.onboarding.connectedPicking(title)} />
   }
 
   if (flow.status === 'confirming_model') {

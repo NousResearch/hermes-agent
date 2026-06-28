@@ -208,7 +208,7 @@ class SimplexAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the simplex-chat daemon and start the WebSocket listener."""
         try:
             import websockets  # noqa: F401
@@ -625,6 +625,11 @@ class SimplexAdapter(BasePlatformAdapter):
                 msg_type = MessageType.VOICE
             elif any(mt.startswith("image/") for mt in media_types):
                 msg_type = MessageType.PHOTO
+            else:
+                # Catch-all: non-image/non-audio files (tagged
+                # application/octet-stream above) are documents so run.py's
+                # document-context injection surfaces the file to the agent.
+                msg_type = MessageType.DOCUMENT
 
         # Timestamp
         ts_str = meta.get("itemTs") or meta.get("createdAt", "")

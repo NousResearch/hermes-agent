@@ -2,13 +2,14 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
-import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
+import { deleteSession, listAllProfileSessions, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
-import { setSessions } from '@/store/session'
+import { untombstoneSessions } from '@/store/projects'
+import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
@@ -43,53 +44,61 @@ export function SessionsSettings() {
     setLoading(true)
 
     try {
-      const result = await listSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
+      const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
       setLocalSessions(result.sessions)
     } catch (err) {
       notifyError(err, s.failedLoad)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [s.failedLoad])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const unarchive = useCallback(async (session: SessionInfo) => {
-    setBusyId(session.id)
+  const unarchive = useCallback(
+    async (session: SessionInfo) => {
+      setBusyId(session.id)
 
-    try {
-      await setSessionArchived(session.id, false, session.profile)
-      setLocalSessions(prev => prev.filter(s => s.id !== session.id))
-      // Surface it again in the sidebar without waiting for a full refresh.
-      setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
-      triggerHaptic('selection')
-      notify({ durationMs: 2_000, kind: 'success', message: s.restored })
-    } catch (err) {
-      notifyError(err, s.unarchiveFailed)
-    } finally {
-      setBusyId(null)
-    }
-  }, [s])
+      try {
+        await setSessionArchived(session.id, false, session.profile)
+        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        // Surface it again in the sidebar without waiting for a full refresh, and
+        // lift any optimistic eviction so the grouped tree shows it again too.
+        untombstoneSessions([session.id, session._lineage_root_id])
+        setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
+        triggerHaptic('selection')
+        notify({ durationMs: 2_000, kind: 'success', message: s.restored })
+      } catch (err) {
+        notifyError(err, s.unarchiveFailed)
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [s]
+  )
 
-  const remove = useCallback(async (session: SessionInfo) => {
-    if (!window.confirm(s.deleteConfirm(sessionTitle(session)))) {
-      return
-    }
+  const remove = useCallback(
+    async (session: SessionInfo) => {
+      if (!window.confirm(s.deleteConfirm(sessionTitle(session)))) {
+        return
+      }
 
-    setBusyId(session.id)
+      setBusyId(session.id)
 
-    try {
-      await deleteSession(session.id, session.profile)
-      setLocalSessions(prev => prev.filter(s => s.id !== session.id))
-      triggerHaptic('warning')
-    } catch (err) {
-      notifyError(err, s.deleteFailed)
-    } finally {
-      setBusyId(null)
-    }
-  }, [s])
+      try {
+        await deleteSession(session.id, session.profile)
+        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        triggerHaptic('warning')
+      } catch (err) {
+        notifyError(err, s.deleteFailed)
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [s]
+  )
 
   useDeepLinkHighlight({
     elementId: id => `archived-session-${id}`,
@@ -196,6 +205,7 @@ function DefaultProjectDirSetting() {
 
       setDir(result.dir)
       setFallback(result.defaultLabel)
+      applyConfiguredDefaultProjectDir(result.dir)
     })
 
     return () => {
@@ -221,7 +231,8 @@ function DefaultProjectDirSetting() {
 
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
-      notify({ durationMs: 2_000, kind: 'success', message: s.defaultDirUpdated })
+      applyConfiguredDefaultProjectDir(result.dir)
+      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated })
     } catch (err) {
       notifyError(err, s.updateDirFailed)
     } finally {
@@ -241,6 +252,8 @@ function DefaultProjectDirSetting() {
     try {
       await settings.setDefaultProjectDir(null)
       setDir(null)
+      applyConfiguredDefaultProjectDir(null)
+      await ensureDefaultWorkspaceCwd()
     } catch (err) {
       notifyError(err, s.clearDirFailed)
     } finally {
@@ -268,7 +281,7 @@ function DefaultProjectDirSetting() {
             )}
           </div>
         }
-        description={dir || s.defaultsTo(fallback || '~/hermes-projects')}
+        description={dir || s.defaultsTo(fallback || '~')}
         title={dir ? dir : s.notSet}
       />
     </div>

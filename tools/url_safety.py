@@ -282,9 +282,12 @@ def is_always_blocked_url(url: str) -> bool:
 
         for _family, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
+            if '%' in ip_str:
+                ip_str = ip_str.split('%')[0]
             try:
                 resolved = ipaddress.ip_address(ip_str)
             except ValueError:
+                logger.warning("Unparseable IP address %r for hostname %s — skipping address", sockaddr[0], hostname)
                 continue
             if resolved in _ALWAYS_BLOCKED_IPS or any(
                 resolved in net for net in _ALWAYS_BLOCKED_NETWORKS
@@ -353,10 +356,14 @@ def is_safe_url(url: str) -> bool:
 
         for family, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
+            if '%' in ip_str:
+                ip_str = ip_str.split('%')[0]
             try:
                 ip = ipaddress.ip_address(ip_str)
             except ValueError:
-                continue
+                # Still unparseable after scope ID strip — fail closed
+                logger.warning("Blocked request — unparseable IP address %r for hostname %s", sockaddr[0], hostname)
+                return False
 
             # Always block cloud metadata IPs and link-local, even with toggle on
             if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):

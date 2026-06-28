@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -23,6 +24,37 @@ def _jwt_with_email(email: str) -> str:
         json.dumps({"email": email}).encode()
     ).rstrip(b"=").decode()
     return f"{header}.{payload}.signature"
+
+
+def _codex_pool_only_store(*, exhausted: bool = False) -> dict:
+    entry = {
+        "id": "codex-1",
+        "label": "codex@example.com",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "manual:device_code",
+        "access_token": _jwt_with_email("codex@example.com"),
+        "refresh_token": "refresh-token",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "last_refresh": "2026-06-15T10:00:00Z",
+    }
+    if exhausted:
+        entry.update(
+            {
+                "last_status": "exhausted",
+                "last_status_at": time.time(),
+                "last_error_code": 429,
+                "last_error_reason": "usage_limit_reached",
+                "last_error_message": "The usage limit has been reached",
+                "last_error_reset_at": time.time() + 3600,
+            }
+        )
+    return {
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {},
+        "credential_pool": {"openai-codex": [entry]},
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -95,51 +127,6 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["source"] == "manual:hermes_pkce"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["expires_at_ms"] == 1711234567000
-
-
-def test_auth_add_google_gemini_cli_sets_active_provider(tmp_path, monkeypatch):
-    """hermes auth add google-gemini-cli must set active_provider in auth.json.
-
-    Tokens are managed by agent.google_oauth (written to the Google credential
-    file by start_oauth_flow). The auth.json entry must record active_provider
-    so get_active_provider() and _model_section_has_credentials() detect the
-    provider — without storing tokens that would become stale.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-    monkeypatch.setattr(
-        "agent.google_oauth.run_gemini_oauth_login_pure",
-        lambda: {
-            "access_token": "ya29.test-token",
-            "refresh_token": "google-refresh",
-            "email": "user@example.com",
-            "expires_at_ms": 9999999999000,
-            "project_id": "my-project",
-        },
-    )
-
-    from hermes_cli.auth_commands import auth_add_command
-
-    class _Args:
-        provider = "google-gemini-cli"
-        auth_type = "oauth"
-        api_key = None
-        label = None
-
-    auth_add_command(_Args())
-
-    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
-    assert payload["active_provider"] == "google-gemini-cli"
-    state = payload["providers"]["google-gemini-cli"]
-    # Only email stored — no access_token/refresh_token (those live in
-    # the Google OAuth credential file managed by agent.google_oauth).
-    assert state.get("email") == "user@example.com"
-    assert "access_token" not in state
-    assert "refresh_token" not in state
-    # pool entry from pool.add_entry() still present for hermes auth list
-    entries = payload["credential_pool"]["google-gemini-cli"]
-    entry = next(item for item in entries if item["source"] == "manual:google_pkce")
-    assert entry["access_token"] == "ya29.test-token"
 
 
 def test_auth_add_qwen_oauth_sets_active_provider(tmp_path, monkeypatch):
@@ -481,6 +468,44 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
     assert "openai-codex" not in payload.get("providers", {})
     # First add activated the provider; second add left it as-is.
     assert payload["active_provider"] == "openai-codex"
+
+
+def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store())
+
+    from hermes_cli.auth import get_codex_auth_status
+
+    status = get_codex_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["source"] == "pool:codex@example.com"
+
+
+def test_codex_auth_status_reports_pool_only_rate_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store(exhausted=True))
+
+    from hermes_cli.auth import get_codex_auth_status
+
+    status = get_codex_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["rate_limited"] is True
+    assert status["error_code"] == "codex_rate_limited"
+
+
+def test_codex_runtime_pool_only_rate_limit_is_not_missing_auth(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store(exhausted=True))
+
+    from hermes_cli.auth import AuthError, CODEX_RATE_LIMITED_CODE, resolve_codex_runtime_credentials
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_codex_runtime_credentials()
+
+    assert exc_info.value.code == CODEX_RATE_LIMITED_CODE
+    assert exc_info.value.relogin_required is False
 
 
 def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):

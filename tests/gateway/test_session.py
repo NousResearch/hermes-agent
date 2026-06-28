@@ -611,6 +611,30 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
+class TestSessionStoreLookupBySessionId:
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_returns_active_entry_for_persisted_session_id(self, store):
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!room:example.org",
+            chat_type="group",
+            user_id="@alice:example.org",
+        )
+        entry = store.get_or_create_session(source)
+
+        assert store.lookup_by_session_id(entry.session_id) is entry
+        assert store.lookup_by_session_id("missing") is None
+        assert store.lookup_by_session_id("") is None
+
+
 class TestWhatsAppSessionKeyConsistency:
     """Regression: WhatsApp session keys must collapse JID/LID aliases to a
     single stable identity for both DM chat_ids and group participant_ids."""
@@ -1020,6 +1044,97 @@ class TestWhatsAppIdentifierPublicHelpers:
     def test_canonical_empty_input(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert canonical_whatsapp_identifier("") == ""
+
+
+class TestSessionEntryFromDictTraversalValidation:
+    """Regression: from_dict must reject traversal sequences in session_key/session_id."""
+
+    BASE = {
+        "session_key": "agent:main:local:dm",
+        "session_id": "abc123",
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
+    }
+
+    def _entry(self, **overrides):
+        from gateway.session import SessionEntry
+        return {**self.BASE, **overrides}
+
+    def test_valid_entry_loads(self):
+        from gateway.session import SessionEntry
+        entry = SessionEntry.from_dict(self._entry())
+        assert entry.session_id == "abc123"
+
+    def test_session_id_dotdot_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_id"):
+            SessionEntry.from_dict(self._entry(session_id="../../etc/passwd"))
+
+    def test_session_key_dotdot_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_key"):
+            SessionEntry.from_dict(self._entry(session_key="agent:main:../../secret"))
+
+    def test_session_id_absolute_unix_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_id"):
+            SessionEntry.from_dict(self._entry(session_id="/etc/passwd"))
+
+    def test_session_id_absolute_windows_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_id"):
+            SessionEntry.from_dict(self._entry(session_id="\\windows\\system32\\config"))
+
+    def test_session_id_windows_drive_letter_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_id"):
+            SessionEntry.from_dict(self._entry(session_id="C:/windows/system32"))
+
+    def test_session_id_windows_drive_backslash_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_id"):
+            SessionEntry.from_dict(self._entry(session_id="D:\\path\\to\\file"))
+
+    def test_session_id_non_leading_separator_raises(self):
+        """A path separator anywhere — not just leading — must be rejected,
+        since a non-leading backslash is still a Windows traversal vector."""
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_id"):
+            SessionEntry.from_dict(self._entry(session_id="good\\..\\bad"))
+        with pytest.raises(ValueError, match="session_key"):
+            SessionEntry.from_dict(self._entry(session_key="agent:main:good/sub"))
+
+
+class TestEnsureLoadedSkipsInvalidEntries:
+    """Regression: one bad sessions.json entry must not block valid entries from loading."""
+
+    def test_invalid_entry_skipped_valid_entry_loads(self, tmp_path):
+        import json
+        from gateway.session import SessionStore
+        from gateway.config import GatewayConfig
+
+        sessions_file = tmp_path / "sessions.json"
+        sessions_file.write_text(json.dumps({
+            "bad:key": {
+                "session_key": "bad:key",
+                "session_id": "../../evil",
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            "agent:main:local:dm": {
+                "session_key": "agent:main:local:dm",
+                "session_id": "good123",
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+            },
+        }), encoding="utf-8")
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._ensure_loaded()
+
+        assert "bad:key" not in store._entries
+        assert "agent:main:local:dm" in store._entries
+        assert store._entries["agent:main:local:dm"].session_id == "good123"
 
 
 class TestSessionStoreEntriesAttribute:

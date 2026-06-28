@@ -30,12 +30,21 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _clear_component_auth_env(monkeypatch):
+    from unittest.mock import MagicMock, patch
+
     for name in (
         "DISCORD_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):
         monkeypatch.delenv(name, raising=False)
+
+    # Default-mock PairingStore so tests don't hit the filesystem.
+    # Pairing-specific tests override this with explicit mock values.
+    mock_store = MagicMock()
+    mock_store.is_approved.return_value = False
+    with patch("gateway.pairing.PairingStore", return_value=mock_store):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -304,3 +313,39 @@ def test_view_empty_allowlists_allow_with_explicit_allow_all(monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
     view = ExecApprovalView(session_key="s", allowed_user_ids=set())
     assert view._check_auth(_interaction(99999)) is True
+
+
+# ---------------------------------------------------------------------------
+# Pairing store: users approved via ``hermes pairing approve`` must be
+# authorized even without DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES.
+# ---------------------------------------------------------------------------
+
+
+def test_component_check_pairing_approved_user_passes(monkeypatch):
+    """User approved in pairing store passes even without allowlists."""
+    from unittest.mock import MagicMock, patch
+
+    mock_store = MagicMock()
+    mock_store.is_approved.return_value = True
+    # Override the autouse fixture's mock with approved=True
+    with patch("gateway.pairing.PairingStore", return_value=mock_store):
+        interaction = _interaction(11111)
+        assert _component_check_auth(interaction, set(), set()) is True
+    mock_store.is_approved.assert_called_once_with("discord", "11111")
+
+
+def test_component_check_pairing_not_approved_user_rejected(monkeypatch):
+    """User NOT in pairing store is still rejected (fail-closed)."""
+    # The autouse fixture already mocks is_approved=False, so this
+    # just verifies the fail-closed path still works.
+    interaction = _interaction(99999)
+    assert _component_check_auth(interaction, set(), set()) is False
+
+
+def test_component_check_pairing_import_error_graceful(monkeypatch):
+    """If PairingStore import fails, fall through to fail-closed."""
+    from unittest.mock import patch
+
+    with patch("gateway.pairing.PairingStore", side_effect=ImportError("simulated")):
+        interaction = _interaction(11111)
+        assert _component_check_auth(interaction, set(), set()) is False

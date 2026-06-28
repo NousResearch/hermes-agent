@@ -56,9 +56,11 @@ def _make_skill(skills_dir: Path, name: str, body: str = "Do the thing.") -> Pat
 def bundles_env(tmp_path, monkeypatch):
     """Isolated bundles dir + skills dir."""
     bundles_dir = tmp_path / "skill-bundles"
+    bundled_bundles_dir = tmp_path / "bundled-skill-bundles"
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundles_dir))
+    monkeypatch.setenv("HERMES_BUNDLED_SKILL_BUNDLES", str(bundled_bundles_dir))
     # Patch SKILLS_DIR so skill loading hits our temp tree.
     import tools.skills_tool as skills_tool_module
     monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)
@@ -136,6 +138,39 @@ class TestScanBundles:
         result = scan_bundles()
         assert "/fallback" in result
         assert result["/fallback"]["name"] == "fallback"
+
+    def test_finds_bundled_bundle(self, bundles_env):
+        bundled_dir = Path(os.environ["HERMES_BUNDLED_SKILL_BUNDLES"])
+        _make_bundle_yaml(
+            bundled_dir,
+            "product-manager",
+            ["product-manager"],
+            description="Bundled PM pack",
+        )
+        result = scan_bundles()
+        assert "/product-manager" in result
+        assert result["/product-manager"]["source"] == "bundled"
+        assert result["/product-manager"]["description"] == "Bundled PM pack"
+
+    def test_user_bundle_overrides_bundled_default(self, bundles_env):
+        bundles_dir, _ = bundles_env
+        bundled_dir = Path(os.environ["HERMES_BUNDLED_SKILL_BUNDLES"])
+        _make_bundle_yaml(
+            bundled_dir,
+            "analyst",
+            ["bundled-analyst"],
+            description="Bundled default",
+        )
+        _make_bundle_yaml(
+            bundles_dir,
+            "analyst",
+            ["custom-analyst"],
+            description="User override",
+        )
+        result = scan_bundles()
+        assert result["/analyst"]["source"] == "user"
+        assert result["/analyst"]["skills"] == ["custom-analyst"]
+        assert result["/analyst"]["description"] == "User override"
 
 
 class TestGetSkillBundles:

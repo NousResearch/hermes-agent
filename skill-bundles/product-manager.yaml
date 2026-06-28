@@ -1,0 +1,6 @@
+name: product-manager
+description: Product management vertical pack for PRDs, backlog slices, launch plans, and decision-ready tradeoffs.
+skills:
+  - product-manager
+instruction: |
+  Activate the product manager vertical. Treat the user instruction as a product task, pick the smallest useful PM artifact, and use the bundled templates when a PRD, backlog, or launch plan is requested.

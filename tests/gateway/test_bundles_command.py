@@ -57,9 +57,11 @@ def _make_runner():
 @pytest.fixture
 def bundles_env(tmp_path, monkeypatch):
     bundles_dir = tmp_path / "skill-bundles"
+    bundled_bundles_dir = tmp_path / "bundled-skill-bundles"
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundles_dir))
+    monkeypatch.setenv("HERMES_BUNDLED_SKILL_BUNDLES", str(bundled_bundles_dir))
     import tools.skills_tool as skills_tool_module
     monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)
     import agent.skill_bundles as mod

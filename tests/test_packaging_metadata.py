@@ -114,6 +114,7 @@ def test_manifest_includes_bundled_skills():
 
     assert "graft skills" in manifest
     assert "graft optional-skills" in manifest
+    assert "graft skill-bundles" in manifest
 
 
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
@@ -264,4 +265,3 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     # Every on-disk catalog has the .yaml extension the globs above match.
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
-

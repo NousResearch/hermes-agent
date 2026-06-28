@@ -1,0 +1,6 @@
+name: analyst
+description: Analyst vertical pack for metric definitions, analysis memos, experiment readouts, and decision recommendations.
+skills:
+  - analyst
+instruction: |
+  Activate the analyst vertical. Treat the user instruction as an evidence question, define the analysis contract before calculating, and use the bundled templates when an analysis memo, metric definition, or experiment readout is requested.

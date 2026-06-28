@@ -58,13 +58,21 @@ def test_install_script_strips_stale_snap_browser_override() -> None:
 def test_playwright_installs_are_timeout_guarded() -> None:
     text = INSTALL_SH.read_text()
 
+    # The timeout wrapper still exists and is used internally by the install
+    # wrapper, so every Playwright download remains bounded.
     assert "run_browser_install_with_timeout()" in text
-    assert "run_browser_install_with_timeout 600 npx playwright install chromium" in text
+    # Playwright installs now go through run_playwright_install(), which wraps
+    # run_browser_install_with_timeout (timeout-guarded) and adds an
+    # unrecognized-platform fallback retry.
+    assert "run_playwright_install 600 npx playwright install chromium" in text
     # --with-deps is still invoked on apt-based systems, but only when sudo
     # is available non-interactively (root or passwordless sudo). Non-sudo
     # service users fall back to the browser-only install — see
     # install_node_deps() in install.sh.
-    assert "run_browser_install_with_timeout 600 npx playwright install --with-deps chromium" in text
+    assert "run_playwright_install 600 npx playwright install --with-deps chromium" in text
+    # The wrapper still bounds the download with the timeout helper.
+    assert 'run_browser_install_with_timeout "$timeout_seconds" "$@"' in text
+
 
 
 def test_install_script_supports_skip_browser_flag() -> None:
@@ -86,3 +94,29 @@ def test_install_script_skips_with_deps_when_no_sudo() -> None:
     # service-user installs (systemd accounts, operator users, etc.).
     assert 'if [ "$(id -u)" -eq 0 ] || (command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null); then' in text
     assert "sudo npx playwright install-deps chromium" in text
+
+
+def test_playwright_install_retries_with_platform_override_on_failure() -> None:
+    """Installer must self-correct when Playwright doesn't recognize the host.
+
+    On apt releases newer than Playwright knows (Ubuntu 26.04, Debian 14, future
+    distros) `playwright install` hangs/fails (#35166). run_playwright_install
+    must retry ONCE with PLAYWRIGHT_HOST_PLATFORM_OVERRIDE pinned to the newest
+    known build — but only on failure (try-native-first, so a host Playwright
+    already supports keeps its native build and avoids the glibc mismatch in
+    microsoft/playwright#35114), and never when the operator pinned the value.
+    """
+    text = INSTALL_SH.read_text()
+
+    assert "run_playwright_install()" in text
+    assert "playwright_fallback_platform()" in text
+    # Fallback target is the newest known build, arch-aware.
+    assert 'echo "ubuntu24.04-x64"' in text
+    assert 'echo "ubuntu24.04-arm64"' in text
+    # Try native first: only retry after the first attempt fails.
+    assert 'if run_browser_install_with_timeout "$timeout_seconds" "$@" 2>/dev/null; then' in text
+    # Operator-pinned override is respected (retry skipped).
+    assert 'if [ -n "${PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-}" ]; then' in text
+    # The retry actually sets the override for the child process.
+    assert 'PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$fallback" \\' in text
+

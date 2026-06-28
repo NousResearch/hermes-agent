@@ -4187,24 +4187,190 @@ class SessionDB:
     # Export and cleanup
     # =========================================================================
 
-    def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Export a single session with all its messages as a dict."""
-        session = self.get_session(session_id)
-        if not session:
-            return None
-        messages = self.get_messages(session_id)
-        return {**session, "messages": messages}
+    def _compression_chain_root_id(self, session_id: str) -> str:
+        """Climb compression-continuation edges to the chain root.
+
+        Context compression ends a session (``end_reason='compression'``) and
+        forks a continuation child linked by ``parent_session_id``. A long
+        conversation therefore becomes a chain of physical session rows. This
+        walks *up* that chain — following ONLY compression edges, never branch
+        (``_branched_from``) / delegate (``_delegate_from``) / tool children —
+        and returns the root (the first session the user actually started).
+
+        Returns ``session_id`` unchanged when it is already a root or not part
+        of a compression chain. Bounded at 100 hops defensively.
+        """
+        if not session_id:
+            return session_id
+        current = session_id
+        seen = {current}
+        for _ in range(100):
+            with self._lock:
+                row = self._conn.execute(
+                    """
+                    SELECT parent.id
+                    FROM sessions child
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE child.id = ?
+                      AND parent.end_reason = 'compression'
+                      AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
+                      AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+                      AND COALESCE(child.source, '') != 'tool'
+                    LIMIT 1
+                    """,
+                    (current,),
+                ).fetchone()
+            if row is None:
+                return current
+            parent_id = row["id"] if hasattr(row, "keys") else row[0]
+            if not parent_id or parent_id in seen:
+                return current
+            seen.add(parent_id)
+            current = parent_id
+        return current
+
+    def _compression_chain_ids(self, session_id: str) -> List[str]:
+        """Full compression chain, root -> tip, for any member session.
+
+        Normalizes *session_id* to its chain root, then walks forward following
+        the same compression-only edge definition as :meth:`get_compression_tip`
+        (preferring the continuing/live child over stale closed siblings). The
+        returned list is the ordered set of physical session rows whose messages
+        together form one logical conversation. For a non-chained session it is
+        ``[session_id]``.
+        """
+        if not session_id:
+            return [session_id]
+        root = self._compression_chain_root_id(session_id)
+        chain = [root]
+        seen = {root}
+        current = root
+        for _ in range(100):
+            with self._lock:
+                row = self._conn.execute(
+                    """
+                    SELECT child.id
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.id = ?
+                      AND parent.end_reason = 'compression'
+                      AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
+                      AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+                      AND COALESCE(child.source, '') != 'tool'
+                    ORDER BY
+                      CASE
+                        WHEN child.end_reason = 'compression' THEN 0
+                        WHEN child.ended_at IS NULL THEN 1
+                        ELSE 2
+                      END,
+                      COALESCE(
+                        (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
+                        child.started_at
+                      ) DESC,
+                      child.started_at DESC,
+                      child.id DESC
+                    LIMIT 1
+                    """,
+                    (current,),
+                ).fetchone()
+            if row is None:
+                break
+            child_id = row["id"] if hasattr(row, "keys") else row[0]
+            if not child_id or child_id in seen:
+                break
+            seen.add(child_id)
+            chain.append(child_id)
+            current = child_id
+        return chain
+
+    def _is_compression_continuation(self, session_id: str) -> bool:
+        """True when *session_id* is a compression continuation child.
+
+        i.e. its parent ended with ``end_reason='compression'`` and it is not a
+        branch / delegate / tool child. Such rows are folded into their chain
+        root by :meth:`export_all` so a single conversation is exported once,
+        not as N fragments.
+        """
+        if not session_id:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1
+                FROM sessions child
+                JOIN sessions parent ON parent.id = child.parent_session_id
+                WHERE child.id = ?
+                  AND parent.end_reason = 'compression'
+                  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
+                  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+                  AND COALESCE(child.source, '') != 'tool'
+                LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+        return row is not None
+
+    def export_session(
+        self, session_id: str, stitch_lineage: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """Export a session with all its messages as a dict.
+
+        By default (``stitch_lineage=True``) the full compression chain is
+        reassembled: *session_id* is normalized to its chain root and the
+        messages from every continuation segment are concatenated in chain
+        order (each segment ordered by insertion id, matching
+        :meth:`get_messages`). The returned dict carries the ROOT session's
+        metadata plus the stitched ``messages`` and a ``_lineage_session_ids``
+        list naming every segment. This fixes long conversations exporting as a
+        single fragment when context compression had split them across rows.
+
+        Pass ``stitch_lineage=False`` for the legacy single-row behavior.
+        """
+        if not stitch_lineage:
+            session = self.get_session(session_id)
+            if not session:
+                return None
+            messages = self.get_messages(session_id)
+            return {**session, "messages": messages}
+
+        chain = self._compression_chain_ids(session_id)
+        root = self.get_session(chain[0])
+        if not root:
+            # Fall back to the requested id if the root row vanished.
+            session = self.get_session(session_id)
+            if not session:
+                return None
+            return {**session, "messages": self.get_messages(session_id)}
+        messages: List[Dict[str, Any]] = []
+        for sid in chain:
+            messages.extend(self.get_messages(sid))
+        result = {**root, "messages": messages}
+        if len(chain) > 1:
+            result["_lineage_session_ids"] = chain
+        return result
 
     def export_all(self, source: str = None) -> List[Dict[str, Any]]:
         """
-        Export all sessions (with messages) as a list of dicts.
+        Export all conversations (with messages) as a list of dicts.
         Suitable for writing to a JSONL file for backup/analysis.
+
+        Compression continuations are folded into their chain root via
+        :meth:`export_session`, so a conversation that was split across N
+        physical session rows is exported ONCE as a single stitched record
+        rather than N fragments. Branch / delegate / tool children remain their
+        own entries (they are distinct conversations, not continuations).
         """
         sessions = self.search_sessions(source=source, limit=100000)
         results = []
         for session in sessions:
-            messages = self.get_messages(session["id"])
-            results.append({**session, "messages": messages})
+            sid = session["id"]
+            # Skip rows that are mid-chain continuations — they are emitted as
+            # part of their root's stitched export, not on their own.
+            if self._is_compression_continuation(sid):
+                continue
+            exported = self.export_session(sid, stitch_lineage=True)
+            if exported is not None:
+                results.append(exported)
         return results
 
     def clear_messages(self, session_id: str) -> None:

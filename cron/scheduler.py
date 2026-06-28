@@ -2335,7 +2335,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
 
         # Provider routing
-        pr = _cfg.get("provider_routing", {})
+        pr = _cfg.get("provider_routing") or {}
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,

@@ -1404,7 +1404,7 @@ def resolve_runtime_provider(
         return {
             "provider": "moa",
             "api_mode": "chat_completions",
-            "base_url": "http://127.0.0.1/v1",
+            "base_url": "moa://local",
             "api_key": "moa-virtual-provider",
             "source": "moa-virtual-provider",
             "requested_provider": requested_provider,

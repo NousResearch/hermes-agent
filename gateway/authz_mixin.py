@@ -329,6 +329,7 @@ class GatewayAuthorizationMixin:
         platform_allow_bots_map = {
             Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+            Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
         }
 
         # Plugin platforms: check the registry for auth env var names

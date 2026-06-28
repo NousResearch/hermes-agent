@@ -403,6 +403,30 @@ class TestEventFilter:
             assert resp.status == 202
 
     @pytest.mark.asyncio
+    async def test_event_filter_accepts_forgejo_and_gitea_headers(self):
+        """Forgejo/Gitea event headers are recognized for route filtering."""
+        for header_name in ("X-Forgejo-Event", "X-Gitea-Event"):
+            routes = {
+                "forge": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "events": ["issues"],
+                    "prompt": "Issue: {action}",
+                }
+            }
+            adapter = _make_adapter(routes=routes)
+            adapter.handle_message = AsyncMock()
+
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/forge",
+                    json={"action": "opened"},
+                    headers={header_name: "issues"},
+                )
+                assert resp.status == 202
+                adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_event_filter_rejects_non_matching(self):
         """Non-matching event type returns 200 with status=ignored."""
         routes = {

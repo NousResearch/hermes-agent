@@ -26,6 +26,34 @@ logger = logging.getLogger(__name__)
 # opening dozens of sockets at once.
 _MAX_REFERENCE_WORKERS = 8
 
+# System prompt prepended to every reference-model call. References are
+# advisory — they do NOT act, call tools, or own the task. Without this
+# framing a reference receives the bare trimmed conversation and assumes it is
+# the acting agent: it then refuses ("I can't access repositories / URLs from
+# here") or tries to call tools it doesn't have. The prompt reframes the model
+# as an analyst whose job is to reason about the presented state and hand its
+# best thinking to the aggregator/orchestrator that will actually act.
+_REFERENCE_SYSTEM_PROMPT = (
+    "You are a reference advisor in a Mixture of Agents (MoA) process. You are "
+    "NOT the acting agent and you do NOT execute anything: you cannot call "
+    "tools, run commands, browse, or access files, repositories, or URLs, and "
+    "you should not try to or apologize for being unable to. A separate "
+    "aggregator/orchestrator model holds those capabilities and will take the "
+    "actual actions.\n\n"
+    "The conversation below is the current state of a task handled by that "
+    "acting agent. Your job is to give your most intelligent analysis of that "
+    "state: understand the goal, reason about the problem, and advise on what "
+    "to do next. Surface the best approach, concrete next steps and tool-use "
+    "strategy, likely pitfalls and risks, and anything the acting agent may "
+    "have missed or gotten wrong. Assume any referenced files, URLs, or "
+    "systems exist and reason about them from the context given rather than "
+    "asking for access.\n\n"
+    "Respond with your advice directly — no preamble, no disclaimers about "
+    "tools or access. Your response is private guidance handed to the "
+    "aggregator, not an answer shown to the user."
+)
+
+
 
 def _slot_label(slot: dict[str, str]) -> str:
     return f"{slot.get('provider', '').strip()}:{slot.get('model', '').strip()}"
@@ -100,9 +128,14 @@ def _run_reference(
     """
     label = _slot_label(slot)
     try:
+        # Prepend the advisory-role system prompt so the reference understands
+        # it is analyzing state for an aggregator, not acting on the task. The
+        # trimmed view (_reference_messages) already strips the agent's own
+        # system prompt, so this is the only system message the reference sees.
+        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
         response = call_llm(
             task="moa_reference",
-            messages=ref_messages,
+            messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             **_slot_runtime(slot),
@@ -169,6 +202,17 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     that reject orphan ``tool`` messages or ``tool_calls`` the reference never
     produced. We keep only the user/assistant *text* turns, dropping the
     system prompt, any ``tool``-role messages, and any ``tool_calls`` payloads.
+
+    The trimmed view MUST end with a ``user`` turn. An advisory reference call
+    answers the latest user input; it must never end with an ``assistant``
+    turn, which Anthropic (and OpenRouter→Anthropic) interpret as an assistant
+    *prefill* the model should continue — some models (e.g. Claude Opus 4.8)
+    reject prefill outright with ``400 ... must end with a user message``. This
+    is the common mid-tool-loop case: the last assistant turn carried
+    interleaved reasoning text plus tool calls, so its text survives the trim
+    while the following ``tool`` result is dropped, leaving a trailing
+    assistant turn. We strip any trailing assistant turns so the reference sees
+    a user message last.
     """
     trimmed: list[dict[str, Any]] = []
     for msg in messages:
@@ -186,9 +230,14 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # Assistant turn that was purely tool calls — nothing advisory.
             continue
         trimmed.append({"role": role, "content": text})
+    # Advisory calls must end on a user turn (no assistant prefill). Drop any
+    # trailing assistant turns left by the tool-loop trim above.
+    while trimmed and trimmed[-1].get("role") == "assistant":
+        trimmed.pop()
     if not trimmed:
-        # Degenerate case (e.g. first turn was stripped): fall back to a
-        # minimal user turn so the reference still has something to answer.
+        # Degenerate case (e.g. first turn was stripped, or the view trimmed
+        # down to assistant-only): fall back to the latest user turn so the
+        # reference still has something to answer.
         for msg in reversed(messages):
             if msg.get("role") == "user" and isinstance(msg.get("content"), str):
                 return [{"role": "user", "content": msg["content"]}]

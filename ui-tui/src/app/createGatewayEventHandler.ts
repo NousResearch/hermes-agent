@@ -404,7 +404,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   return (ev: GatewayEvent) => {
     const sid = getUiState().sid
 
-    if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
+    // Filter events by session id. When sid is null (during session switch /
+    // reset), drop ALL non-gateway session events — the null-sid window must
+    // not let another live session's events bleed into the view (#51058).
+    if (ev.session_id && (!sid || ev.session_id !== sid) && !ev.type.startsWith('gateway.')) {
       return
     }
 

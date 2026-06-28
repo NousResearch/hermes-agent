@@ -786,6 +786,7 @@ class TestWrapperScript:
         assert wrapper.name == "mybot"
         content = wrapper.read_text()
         assert content.startswith("#!/bin/sh")
+        assert "HERMES_CLI_NAME=\"mybot\"" in content
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
     def test_creates_bat_on_windows(self, profile_env, monkeypatch):
@@ -795,7 +796,8 @@ class TestWrapperScript:
         assert wrapper is not None
         assert wrapper.name == "mybot.bat"
         content = wrapper.read_text()
-        assert "@echo off" in content
+        assert "echo off" in content
+        assert "HERMES_CLI_NAME=mybot" in content
         assert "hermes -p mybot" in content
         assert "%*" in content
 
@@ -844,10 +846,61 @@ class TestWrapperScript:
         assert wrapper is not None
         assert wrapper.name == "rq.bat"
         content = wrapper.read_text()
-        assert "@echo off" in content
+        assert "echo off" in content
+        assert "HERMES_CLI_NAME=rq" in content
         assert "hermes -p redqueen" in content
         assert "%*" in content
         assert "#!/bin/sh" not in content
+
+
+# ---------------------------------------------------------------------------
+# _cli_prog / _build_epilogue — dynamic CLI display name (Issue #15698)
+# ---------------------------------------------------------------------------
+
+
+class TestCliProgName:
+    """Tests for _cli_prog() — the dynamic CLI display name.
+
+    When invoked through a profile-alias wrapper, the wrapper sets
+    HERMES_CLI_NAME so --help shows the alias name instead of "hermes".
+    """
+
+    def test_returns_env_var_when_set(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CLI_NAME", "june")
+        monkeypatch.setattr("sys.argv", ["/usr/local/bin/hermes"])
+        from hermes_cli._parser import _cli_prog
+        assert _cli_prog() == "june"
+
+    def test_falls_back_to_argv0_when_no_env(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CLI_NAME", raising=False)
+        monkeypatch.setattr("sys.argv", ["/opt/bin/mybot"])
+        from hermes_cli._parser import _cli_prog
+        assert _cli_prog() == "mybot"
+
+    def test_falls_back_to_hermes_when_nothing(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CLI_NAME", raising=False)
+        monkeypatch.setattr("sys.argv", [""])
+        from hermes_cli._parser import _cli_prog
+        assert _cli_prog() == "hermes"
+
+
+class TestBuildEpilogue:
+    """Tests for _build_epilogue() — the dynamic help epilog."""
+
+    def test_epilogue_uses_custom_prog(self):
+        from hermes_cli._parser import _build_epilogue
+        epilog = _build_epilogue("june")
+        assert "june chat -q" in epilog
+        assert "june --tui" in epilog
+        assert "june <command> --help" in epilog
+        # The hardcoded name should NOT appear in the examples
+        assert "hermes chat -q" not in epilog
+
+    def test_epilogue_uses_hermes_by_default(self):
+        from hermes_cli._parser import _build_epilogue
+        epilog = _build_epilogue("hermes")
+        assert "hermes chat -q" in epilog
+        assert "hermes <command> --help" in epilog
 
 
 # ===================================================================

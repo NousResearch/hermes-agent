@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from hermes_cli.dashboard_auth import (
     get_provider,
     list_providers,
+    list_session_providers,
 )
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
@@ -149,7 +150,9 @@ async def login_page(request: Request) -> HTMLResponse:
 
 @router.get("/api/auth/providers", name="auth_providers")
 async def api_auth_providers() -> Any:
-    providers = list_providers()
+    # Advertise only interactive providers; a token-only credential (e.g. drain)
+    # is not a sign-in option.
+    providers = list_session_providers()
     if not providers:
         # Q13: fail-closed when zero providers are registered.
         return JSONResponse(
@@ -182,6 +185,11 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         raise HTTPException(
             status_code=404,
             detail=f"Unknown provider: {provider!r}",
+        )
+    if not getattr(p, "supports_session", True):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Provider does not support interactive login: {provider!r}",
         )
 
     try:

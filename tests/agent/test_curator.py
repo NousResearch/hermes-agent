@@ -7,6 +7,7 @@ tests run fully offline and the curator module doesn't need real credentials.
 from __future__ import annotations
 
 import importlib
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -37,7 +38,21 @@ def curator_env(tmp_path, monkeypatch):
     # directly). Tests opt in with _enable_prune_builtins(...).
     monkeypatch.setattr(usage, "_prune_builtins_enabled", lambda: False)
 
-    return {"home": home, "curator": curator, "usage": usage}
+    yield {"home": home, "curator": curator, "usage": usage}
+
+    # Teardown: a curator review launched with synchronous=False spawns a
+    # daemon "curator-review" thread that calls save_state() when it finishes.
+    # save_state() resolves the state path from HERMES_HOME at write time, so a
+    # straggler thread that outlives this test would write into whatever home
+    # the *next* test has configured (or the default ~/.hermes once monkeypatch
+    # restores the env) — corrupting an unrelated test's state file. This race
+    # is invisible on a fast machine but flakes under CI load. Join any such
+    # thread here, while HERMES_HOME is still pinned to this test's tmp home
+    # (curator_env depends on monkeypatch, so this teardown runs before the
+    # monkeypatch env is restored). See the salvage of #14261 CI flake.
+    for t in threading.enumerate():
+        if t.name == "curator-review" and t.is_alive():
+            t.join(timeout=10.0)
 
 
 def _write_skill(skills_dir: Path, name: str):
@@ -1119,3 +1134,54 @@ def test_curator_slot_is_canonical_aux_task():
 
     # 4. web/src/pages/ModelsPage.tsx is checked at build time; the tsx
     #    array and this tuple share a ``Must match _AUX_TASK_SLOTS`` comment.
+
+
+def test_review_fork_runs_under_background_review_origin(curator_env, monkeypatch):
+    """The curator LLM fork must tag itself as background_review.
+
+    This is the keystone that makes skill_manager_tool's
+    ``_background_review_write_guard`` fire during a curation pass. Without
+    ``_memory_write_origin = "background_review"`` on the fork, the agent
+    inherits the default ``assistant_tool`` origin, ``is_background_review()``
+    stays False, and the external/bundled/hub-installed skill_manage guards
+    never trigger — leaving the LLM agent free to mutate skills.external_dirs
+    skills (GH-47688). turn_context.py binds this attribute onto the
+    write-origin ContextVar at turn start, so asserting it is set is the
+    enforceable invariant linking the fork to the guard.
+    """
+    curator = curator_env["curator"]
+
+    # The curator_env fixture stubs out _run_llm_review wholesale; this test
+    # exercises the real implementation, so reload the module to restore it.
+    import importlib
+    importlib.reload(curator)
+    monkeypatch.setattr(curator, "_load_config", lambda: {})
+
+    captured = {}
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            # AIAgent.__init__ normally sets this default; mirror it so the
+            # production assignment in _run_llm_review is what flips it.
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 10
+            self._skill_nudge_interval = 10
+            self.platform = kwargs.get("platform")
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            # Capture the origin AT RUN TIME — i.e. after _run_llm_review has
+            # finished configuring the fork, which is exactly when it matters.
+            captured["write_origin"] = self._memory_write_origin
+            return {"final_response": "no change"}
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert captured.get("write_origin") == "background_review", (
+        "curator review fork did not set _memory_write_origin to "
+        "'background_review' — the skill_manage background-review write "
+        "guard would not fire (GH-47688 regression)"
+    )

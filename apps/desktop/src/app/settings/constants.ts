@@ -1,20 +1,9 @@
-import {
-  Brain,
-  type IconComponent,
-  Lock,
-  MessageCircle,
-  Mic,
-  Monitor,
-  Moon,
-  Palette,
-  Sparkles,
-  Sun,
-  Wrench
-} from '@/lib/icons'
+import { codiconIcon } from '@/components/ui/codicon'
+import { Brain, type IconComponent, Lock, MessageCircle, Mic, Monitor, Moon, Palette, Sun, Wrench } from '@/lib/icons'
 import type { ThemeMode } from '@/themes/context'
 
-import type { DesktopConfigSection } from './types'
 import { defineFieldCopy } from './field-copy'
+import type { DesktopConfigSection } from './types'
 
 // Provider group definitions used to fold raw env-var names like
 // ``XAI_API_KEY`` into a single "xAI" card with a friendly label, short
@@ -501,7 +490,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   {
     id: 'model',
     label: 'Model',
-    icon: Sparkles,
+    icon: codiconIcon('hubot'),
     keys: ['model_context_length', 'fallback_providers']
   },
   {

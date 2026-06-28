@@ -32,6 +32,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _inherit_parent_base_url,
 )
 
 
@@ -155,6 +156,37 @@ class TestStripBlockedTools(unittest.TestCase):
     def test_empty_input(self):
         result = _strip_blocked_tools([])
         self.assertEqual(result, [])
+
+    def test_strips_cronjob_toolset(self):
+        """Regression for issue #43466: child subagents must not inherit
+        the cronjob toolset from a parent running on a gateway platform.
+        Without this guard, a delegated child could schedule new cron jobs
+        under the parent's identity.
+        """
+        result = _strip_blocked_tools(
+            ["terminal", "file", "cronjob", "web"]
+        )
+        self.assertNotIn("cronjob", result)
+        self.assertIn("terminal", result)
+        self.assertIn("file", result)
+        self.assertIn("web", result)
+
+    def test_strip_set_derived_from_blocklist(self):
+        """The strip set must be derived from DELEGATE_BLOCKED_TOOLS so a
+        new blocked tool can't silently leak through as a toolset name
+        (regression for issue #43466's 'more robust variant' suggestion).
+        """
+        from tools.delegate_tool import TOOLSETS, _strip_blocked_tools
+        # Every toolset whose tools are ALL in the blocklist should be stripped
+        for name, defn in TOOLSETS.items():
+            tools = defn.get("tools", [])
+            if tools and all(t in DELEGATE_BLOCKED_TOOLS for t in tools):
+                self.assertNotIn(
+                    name,
+                    _strip_blocked_tools([name, "terminal"]),
+                    f"Toolset {name!r} (tools={tools}) is fully blocked "
+                    f"but was not stripped",
+                )
 
 
 class TestDelegateTask(unittest.TestCase):
@@ -1341,6 +1373,47 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
 
+    def test_inherit_parent_base_url_prefers_client_kwargs(self):
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://openrouter.ai/api/v1"
+        parent._client_kwargs = {
+            "api_key": "no-key-required",
+            "base_url": "http://localhost:11434/v1",
+        }
+        self.assertEqual(
+            _inherit_parent_base_url(parent, parent.base_url),
+            "http://localhost:11434/v1",
+        )
+
+    def test_build_child_agent_inherits_active_client_endpoint(self):
+        """Regression: stale parent.base_url must not route subagents to OpenRouter."""
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "ollama"
+        parent.base_url = "https://openrouter.ai/api/v1"
+        parent.api_key = "ollama"
+        parent._client_kwargs = {
+            "api_key": "no-key-required",
+            "base_url": "http://localhost:11434/v1",
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+            _build_child_agent(
+                task_index=0,
+                goal="Use local Ollama",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["base_url"], "http://localhost:11434/v1")
+            self.assertEqual(kwargs["api_key"], "ollama")
+
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_credential_error_returns_json_error(self, mock_creds, mock_cfg):
@@ -1901,12 +1974,14 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         child.run_conversation.side_effect = slow_run
 
-        # Patch both the interval AND the idle ceiling so the test proves
-        # the in-tool branch takes effect: with a 0.05s interval and the
-        # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
-        # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # Use tiny thresholds so the assertion is scheduler-robust in CI:
+        # if idle rules were used for in-tool work, heartbeat would stop after
+        # ~2 cycles. The in-tool branch should keep touching well past that.
+        with (
+            patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 40),
+        ):
             _run_single_child(
                 task_index=0,
                 goal="Test long-running tool",
@@ -1914,11 +1989,10 @@ class TestDelegateHeartbeat(unittest.TestCase):
                 parent_agent=parent,
             )
 
-        # With the old idle threshold (5 cycles = 0.25s), touch_calls
-        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
+        # If idle-threshold logic applied, we'd cap around 2 touches; prove we
+        # continued beyond that while inside a long-running tool.
         self.assertGreater(
-            len(touch_calls), 6,
+            len(touch_calls), 2,
             f"Heartbeat stopped too early while child was inside a tool; "
             f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
         )

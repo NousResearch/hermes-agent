@@ -40,6 +40,8 @@ What you'll see:
 | Command | What it does |
 |---|---|
 | `/goal <text>` | Set (or replace) the standing goal. Kicks off the first turn immediately so you don't need to send a separate message. |
+| `/goal draft <text>` | Draft a structured completion contract from a plain-language objective, then set it. See [Completion contracts](#completion-contracts). |
+| `/goal show` | Print the active goal's completion contract. |
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
 | `/goal resume` | Resume the loop (resets the turn counter back to zero). |
@@ -48,6 +50,46 @@ What you'll see:
 | `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
 
 Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
+
+## Completion contracts
+
+A bare `/goal <text>` works fine, but a *vague* goal makes for vague judging — the judge can only check what you told it to want. Codex's `/goal` guidance makes the same point: a durable objective works best when it names **what done means, how to prove it, what not to break, what's in scope, and when to stop**. Hermes adapts this as an optional **completion contract** layered on top of the existing goal loop.
+
+A contract has five fields, all optional:
+
+| Field | Meaning |
+|---|---|
+| `outcome` | The single end state that must be true when done. |
+| `verification` | The specific test / command / artifact that *proves* the outcome. |
+| `constraints` | What must not change or regress. |
+| `boundaries` | Which files, dirs, tools, or systems are in scope. |
+| `stop_when` | The condition under which Hermes should stop and ask for input. |
+
+When a contract is set, both prompts change: the **continuation prompt** tells the agent to target the verification surface and respect the constraints, and the **judge prompt** decides `done` *only when the verification criterion is met with concrete evidence* (a command result, file excerpt, test output) — not a loose "looks done" claim. This directly tightens the most common `/goal` failure mode (premature completion or endless over-continuation on an underspecified objective).
+
+### Two ways to set a contract
+
+**1. Let Hermes draft it** (recommended — adapted from Codex's "let the agent draft the goal" tip):
+
+```
+/goal draft Migrate the auth service from session cookies to JWT
+```
+
+Hermes expands your one-liner into a full contract via the `goal_judge` auxiliary model, sets it, and shows you the result so you can review or tighten any field. If the aux model is unavailable, it falls back to a plain free-form goal — drafting never blocks setting a goal.
+
+**2. Write it inline** with `field: value` lines:
+
+```
+/goal Migrate auth to JWT
+verify: pytest tests/auth passes
+constraints: keep the /login response shape unchanged
+boundaries: only touch services/auth and its tests
+stop when: a DB schema migration is required
+```
+
+The first non-field line(s) are the goal headline; recognized field prefixes (`verify:`, `verified by:`, `constraints:`, `preserve:`, `boundaries:`, `scope:`, `stop when:`, `blocked:`, …) populate the contract. A plain goal with an incidental colon (`Fix bug: the parser drops commas`) is **not** mangled — only known field prefixes are pulled out.
+
+Use `/goal show` to review the active contract. Contracts persist in `SessionDB.state_meta` alongside the goal, so they survive `/resume`. Old goals from before this feature load unchanged (no contract). Contracts and `/subgoal` criteria compose: subgoals fold into the contract as extra criteria the judge must also satisfy.
 
 ## Adding criteria mid-goal: `/subgoal`
 

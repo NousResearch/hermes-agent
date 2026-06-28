@@ -317,6 +317,94 @@ class TestDiscovery:
 
 
 # ---------------------------------------------------------------------------
+# OIDC discovery against a REAL HTTP server that redirects (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoveryRealRedirect:
+    """Discovery must follow a 3xx on the .well-known GET.
+
+    The rest of the discovery suite mocks ``httpx.get`` with a canned 200, so
+    it cannot see httpx's ``follow_redirects=False`` default. Many real IDPs
+    answer the discovery GET with a redirect rather than a direct 200 —
+    Authentik canonicalises the ``.well-known`` path, and any IDP behind a
+    reverse proxy doing http→https upgrade redirects too. Before the fix the
+    bare 3xx (empty body) tripped the ``status != 200`` guard and surfaced as
+    ``provider_unreachable`` → HTTP 503 (the symptom in the user report:
+    ``curl -o`` writing zero bytes is exactly a redirect with no body).
+
+    This exercises the real httpx transport against a loopback server, so it
+    fails without ``follow_redirects=True`` and passes with it — a behaviour
+    contract, not a mock-shaped snapshot.
+    """
+
+    def _serve(self, handler_cls):
+        import http.server
+        import socketserver
+        import threading
+
+        # Bind :0 so the OS picks a free port (parallel-runner safe).
+        httpd = socketserver.TCPServer(("127.0.0.1", 0), handler_cls)
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        return httpd, port
+
+    def test_discovery_follows_redirect_to_json(self):
+        import http.server
+
+        holder: Dict[str, Any] = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):  # silence test-server logging
+                pass
+
+            def do_GET(self):
+                issuer = holder["issuer"]
+                if self.path == "/.well-known/openid-configuration":
+                    # 302 with an EMPTY body — the failing shape.
+                    self.send_response(302)
+                    self.send_header(
+                        "Location", "/canonical/openid-configuration"
+                    )
+                    self.end_headers()
+                    return
+                if self.path == "/canonical/openid-configuration":
+                    body = json.dumps(
+                        {
+                            "issuer": issuer,
+                            "authorization_endpoint": f"{issuer}/authorize",
+                            "token_endpoint": f"{issuer}/token",
+                            "jwks_uri": f"{issuer}/jwks",
+                        }
+                    ).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(404)
+                self.end_headers()
+
+        httpd, port = self._serve(Handler)
+        try:
+            # Loopback http is permitted by _require_https_or_loopback.
+            issuer = f"http://127.0.0.1:{port}"
+            holder["issuer"] = issuer
+            p = oidc_plugin.SelfHostedOIDCProvider(
+                issuer=issuer, client_id=_CLIENT_ID
+            )
+            disco = p._get_discovery()
+            assert disco["token_endpoint"] == f"{issuer}/token"
+            assert disco["authorization_endpoint"] == f"{issuer}/authorize"
+            assert disco["jwks_uri"] == f"{issuer}/jwks"
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
+# ---------------------------------------------------------------------------
 # start_login
 # ---------------------------------------------------------------------------
 

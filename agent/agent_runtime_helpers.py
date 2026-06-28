@@ -1499,6 +1499,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
     # live dict doesn't poison the rollback target.
     _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
+    # Snapshot the credential pool reference so a failed client rebuild can
+    # restore the original pool (issue #52727: pool reload is part of this
+    # switch and must be reversible on rollback).
+    _snapshot["_credential_pool"] = getattr(agent, "_credential_pool", _MISSING)
 
     try:
         # Clear the per-config context_length override so the new model's
@@ -1523,8 +1527,36 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         if api_key:
             agent.api_key = api_key
 
+        # ── Reload credential pool for the new provider (issue #52727) ──
+        # Without this, ``recover_with_credential_pool`` sees a
+        # ``pool.provider != agent.provider`` mismatch and short-circuits,
+        # leaving the new provider with no rotation/recovery on 401/429 and
+        # burning the original pool's entries. Only reload when the provider
+        # actually changed (or the pool was missing) — re-selecting the same
+        # provider must not churn the pool reference. A reload failure is
+        # logged + swallowed: the switch itself must still complete.
+        old_norm = (old_provider or "").strip().lower()
+        new_norm = (new_provider or "").strip().lower()
+        if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
+            try:
+                from agent.credential_pool import load_pool
+                agent._credential_pool = load_pool(new_provider)
+            except Exception as _pool_exc:  # noqa: BLE001
+                logger.warning(
+                    "switch_model: credential pool reload failed for %s (%s); "
+                    "continuing without pool rotation this turn",
+                    new_provider, _pool_exc,
+                )
+
         # ── Build new client ──
-        if api_mode == "anthropic_messages":
+        if (new_provider or "").strip().lower() == "moa":
+            from agent.moa_loop import MoAClient
+
+            agent.api_key = api_key or "moa-virtual-provider"
+            agent.base_url = "moa://local"
+            agent._client_kwargs = {}
+            agent.client = MoAClient(agent.model or "default")
+        elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,
                 resolve_anthropic_token,
@@ -1697,6 +1729,27 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         old_model, old_provider, new_model, new_provider,
     )
 
+    # ── Persist billing route to session DB ──
+    # The agent's _session_db / session_id may not be set in all contexts
+    # (tests, bare agents without a session DB, etc.).  This ensures the
+    # dashboard Model cards show the actual provider after a mid-session
+    # /model switch instead of the stale session-creation provider.
+    # See #48248 for the full bug description.
+    _session_db = getattr(agent, "_session_db", None)
+    _session_id = getattr(agent, "session_id", None)
+    if _session_db is not None and _session_id:
+        try:
+            _session_db.update_session_billing_route(
+                _session_id,
+                provider=agent.provider,
+                base_url=agent.base_url,
+                billing_mode=getattr(agent, "api_mode", None),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist billing route after model switch",
+                exc_info=True,
+            )
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,

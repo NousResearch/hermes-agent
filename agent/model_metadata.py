@@ -1644,6 +1644,14 @@ def get_model_context_length(
     9. Default fallback (256K)"""
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
+        logger.warning(
+            "Using explicit config override context_length=%d for model=%s — "
+            "this overrides the catalog value and may cap the effective context "
+            "window.  Remove model.context_length from config.yaml to use the "
+            "model's native context size.",
+            config_context_length,
+            model,
+        )
         return config_context_length
 
     # 0a. MoA virtual provider — ``model`` is a preset name, not a real model,

@@ -922,6 +922,25 @@ class TestGetModelContextLength:
         assert result == 65536
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_config_context_length_override_logs_warning(self, mock_fetch, caplog):
+        """config_context_length override should log a warning to help users trace silent caps."""
+        import logging
+
+        mock_fetch.return_value = {
+            "test/model": {"context_length": 1000000}
+        }
+
+        with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+            result = get_model_context_length(
+                "test/model",
+                config_context_length=65536,
+            )
+
+        assert result == 65536
+        assert "config override context_length=65536" in caplog.text
+        assert "test/model" in caplog.text
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_config_context_length_zero_is_ignored(self, mock_fetch):
         """config_context_length=0 should be treated as unset."""
         mock_fetch.return_value = {}

@@ -113,17 +113,44 @@ def save_json_text(path, text):
         f.write(text)
 
 
+def cmd_promote(issue_id, root_text, data):
+    """ยืนยัน root ที่แก้จริงแล้ว → status=verified + เขียนโน้ตถาวร (req-42 · ผ่านการรีวิวคือการรันคำสั่งนี้)"""
+    issues = load_issues(data)
+    cur = next((i for i in issues if i["id"] == issue_id), None)
+    if cur is None:
+        print("ไม่พบ %s" % issue_id)
+        return
+    if not root_text:
+        print("ต้องใส่ --root \"<สาเหตุจริงที่ยืนยันแล้ว>\"")
+        return
+    from datetime import datetime
+    cur["status"] = "verified"
+    cur["root_cause"] = root_text
+    cur["fix_count"] = cur.get("fix_count", 0) + 1
+    save_json(os.path.join(data, "issues.json"), issues)
+    rdir = os.path.join(data, "roots")
+    os.makedirs(rdir, exist_ok=True)
+    note = os.path.join(rdir, "%s.md" % issue_id)
+    save_json_text(note, "# %s · root ที่ยืนยันแล้ว (%s)\nเป้า: %s\nสาเหตุจริง: %s\n"
+                   % (issue_id, datetime.now().isoformat(timespec="seconds"), cur["target_blamed"], root_text))
+    print("ยืนยัน %s = verified · เขียนโน้ตถาวร: %s" % (issue_id, note))
+    print("เอาเข้าความจำกลาง (~/.claude/memory/user-facts/) = งานเจ้าของ (ติดด่าน relay)")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("command", choices=["log", "report"])
+    ap.add_argument("command", choices=["log", "report", "promote"])
     ap.add_argument("message", nargs="?", default="")
     ap.add_argument("--data", default=os.path.join(STD_ROOT, "learning", "data"))
     ap.add_argument("--html")
+    ap.add_argument("--root", default="")
     args = ap.parse_args()
     os.makedirs(args.data, exist_ok=True)
     kw = load_kw()
     if args.command == "log":
         cmd_log(args.message, args.data, kw)
+    elif args.command == "promote":
+        cmd_promote(args.message, args.root, args.data)
     else:
         cmd_report(args.data, args.html, kw)
 

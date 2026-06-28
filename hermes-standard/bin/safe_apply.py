@@ -107,12 +107,16 @@ def main():
             restore(p, snap)
             print(">> sync/init ทำผลแย่ลง → ถอยกลับแล้ว · สถานะ: BROKE_ROLLED_BACK")
             print(">> output: %s" % after_out.strip()[:200])
+            print("RESULT=BROKE_ROLLED_BACK")
             sys.exit(2)
         print(">> สถานะ: APPLIED_OK")
+        print("RESULT=APPLIED_OK")
     elif gate and not base_ok:
         print(">> สถานะ: APPLIED_NO_BASELINE (project แดงอยู่ก่อนแล้ว ไม่ใช่ความผิด sync · ควรแก้ project ก่อน)")
+        print("RESULT=APPLIED_NO_BASELINE")
     else:
         print(">> สถานะ: APPLIED_UNVERIFIED (ไม่มีเกณฑ์ให้วัด · ยังยืนยันไม่ได้ว่าไม่พัง)")
+        print("RESULT=APPLIED_UNVERIFIED")
 
 
 if __name__ == "__main__":

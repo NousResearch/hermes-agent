@@ -36,7 +36,11 @@ def main():
     projects = []
     if "--list" in args:
         i = args.index("--list")
-        projects = [os.path.abspath(a) for a in args[i + 1:] if not a.startswith("--")]
+        projects = []
+        for a in args[i + 1:]:
+            if a.startswith("-"):
+                break
+            projects.append(os.path.abspath(a))
     else:
         projects = load_registry()
 
@@ -51,8 +55,8 @@ def main():
             continue
         cmd = [sys.executable, SAFE, p] + (["--init"] if init else [])
         r = subprocess.run(cmd, capture_output=True, text=True)
-        last = [l for l in r.stdout.splitlines() if l.startswith(">>")]
-        status = last[-1].replace(">> สถานะ:", "").strip() if last else ("rc=%d" % r.returncode)
+        res = [l for l in r.stdout.splitlines() if l.startswith("RESULT=")]
+        status = res[-1].split("=", 1)[1].strip() if res else ("rc=%d" % r.returncode)
         results.append((p, status))
 
     print("== hermes rollout (%s) · %d project ==" % ("init" if init else "sync", len(projects)))
@@ -63,6 +67,13 @@ def main():
             ok += 1
         print("  %s %s — %s" % (mark, os.path.basename(p.rstrip("/")), s))
     print("สรุป: ผ่านเขียว %d / %d" % (ok, len(results)))
+
+    if "--json" in args:
+        import json
+        jp = args[args.index("--json") + 1]
+        json.dump([{"project": p, "status": s} for p, s in results],
+                  open(jp, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        print("เขียน JSON: %s" % jp)
 
 
 if __name__ == "__main__":

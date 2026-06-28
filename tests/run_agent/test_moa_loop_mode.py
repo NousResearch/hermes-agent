@@ -261,6 +261,52 @@ def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider)
     assert api_key == f"token-for-{provider}"
 
 
+def test_moa_bedrock_slot_preserves_provider_identity(monkeypatch):
+    """Bedrock slots must stay on the aws_sdk provider branch.
+
+    Bedrock OpenAI models (GPT-5.5/5.6) resolve to Bedrock Mantle's OpenAI
+    Responses endpoint with api_key="aws-sdk" as an IAM sentinel.
+    _slot_runtime forwards the resolved base_url/api_key unconditionally; the
+    chokepoint that must NOT collapse bedrock to provider=custom is
+    _resolve_task_provider_model (via _preserve_provider_with_base_url). If it
+    collapsed, call_llm would send the "aws-sdk" sentinel as an invalid bearer
+    token instead of attaching the SigV4 Responses client.
+    """
+    from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "codex_responses",
+            "model": target_model,
+            "base_url": "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+            "api_key": "aws-sdk",
+            "bedrock_openai": True,
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "bedrock", "model": "openai.gpt-5.5"})
+    # _slot_runtime forwards the resolved endpoint unconditionally now.
+    assert rt["provider"] == "bedrock"
+    assert rt["model"] == "openai.gpt-5.5"
+    assert rt["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
+    assert rt["api_key"] == "aws-sdk"
+
+    # The chokepoint preserves bedrock identity despite the explicit base_url
+    # (api_mode is forwarded to call_llm directly, not the resolver).
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+    assert resolved_provider == "bedrock"
+    assert base_url == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
+
+
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     """A slot whose provider can't be resolved still attempts the call with the
     bare provider/model rather than aborting the whole MoA turn."""

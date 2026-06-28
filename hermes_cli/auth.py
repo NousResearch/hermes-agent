@@ -190,6 +190,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("OPENAI_API_KEY",),
         base_url_env_var="OPENAI_BASE_URL",
     ),
+    "appnz": ProviderConfig(
+        id="appnz",
+        name="app.nz",
+        auth_type="api_key",
+        inference_base_url="https://app.nz/v1",
+        api_key_env_vars=("APPNZ_API_KEY",),
+        base_url_env_var="APPNZ_BASE_URL",
+    ),
     "xai-oauth": ProviderConfig(
         id="xai-oauth",
         name="xAI Grok OAuth (SuperGrok / Premium+)",

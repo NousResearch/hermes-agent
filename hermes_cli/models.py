@@ -237,6 +237,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
     ],
+    "appnz": [
+        "app/auto",
+        "app/auto-code",
+        "app/auto-reasoning",
+        "app/auto-fast",
+        "app/auto-cheap",
+        "app/auto-vision",
+    ],
     "openai-codex": _codex_curated_models(),
     "xai-oauth": _xai_curated_models(),
     "copilot-acp": [
@@ -1023,6 +1031,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
+    ProviderEntry("appnz",          "app.nz",                   "app.nz (OpenAI/Anthropic-compatible gateway, app/auto routing)"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
     ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),

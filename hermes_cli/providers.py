@@ -69,6 +69,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.openai.com/v1",
         base_url_env_var="OPENAI_BASE_URL",
     ),
+    "appnz": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://app.nz/v1",
+        base_url_env_var="APPNZ_BASE_URL",
+    ),
     "xai-oauth": HermesOverlay(
         transport="codex_responses",
         auth_type="oauth_external",
@@ -238,6 +243,11 @@ class ProviderDef:
 # Uses models.dev IDs where possible.
 
 ALIASES: Dict[str, str] = {
+    # appnz
+    "app": "appnz",
+    "app.nz": "appnz",
+    "app-nz": "appnz",
+
     # openrouter
     "openai": "openrouter",     # bare "openai" → route through aggregator
 

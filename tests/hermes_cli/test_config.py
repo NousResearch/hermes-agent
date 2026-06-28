@@ -13,9 +13,12 @@ from hermes_cli.config import (
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
+    _explicit_config_paths,
+    _normalize_max_turns_config,
     load_config,
     load_env,
     migrate_config,
+    read_raw_config,
     remove_env_value,
     save_config,
     save_env_value,
@@ -1345,3 +1348,121 @@ class TestVerifyOnStopMigration:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["agent"]["verify_on_stop"] is True
+
+class TestConfigNormalizationDoesNotOverwriteUserValues:
+    """Regression tests for #27354."""
+
+    def test_save_config_does_not_inject_max_turns_when_unset(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "memory": {"user_char_limit": 2200},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(load_config())
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert "max_turns" not in raw.get("agent", {})
+        assert raw["memory"]["user_char_limit"] == 2200
+
+    def test_save_config_preserves_explicit_default_values(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "approvals": {"mode": "manual"},
+                    "memory": {"user_char_limit": 2200},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(load_config())
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["approvals"]["mode"] == "manual"
+        assert raw["memory"]["user_char_limit"] == 2200
+
+    def test_save_config_preserves_config_version_when_raw_version_missing(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"memory": {"user_char_limit": 2200}}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(load_config())
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["memory"]["user_char_limit"] == 2200
+
+    def test_save_config_does_not_materialize_defaults_for_empty_sections(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "memory": {},
+                    "display": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(load_config())
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw == {"_config_version": DEFAULT_CONFIG["_config_version"]}
+
+    def test_save_config_honors_caller_preserve_keys(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"_config_version": DEFAULT_CONFIG["_config_version"]}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config.setdefault("agent", {})["max_turns"] = DEFAULT_CONFIG["agent"]["max_turns"]
+            save_config(config, preserve_keys={("agent", "max_turns")})
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
+
+    def test_normalize_max_turns_does_not_inject_default(self):
+        result = _normalize_max_turns_config(
+            {"_config_version": DEFAULT_CONFIG["_config_version"]}
+        )
+        assert "max_turns" not in result.get("agent", {})
+
+    def test_explicit_config_paths_from_raw_before_normalization(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "memory": {"user_char_limit": 2200},
+                },
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            raw_paths = _explicit_config_paths(read_raw_config())
+
+        assert ("memory", "user_char_limit") in raw_paths
+        assert ("agent", "max_turns") not in raw_paths
+
+    def test_explicit_config_paths_ignore_empty_sections(self):
+        assert _explicit_config_paths({"memory": {}, "display": {}}) == set()

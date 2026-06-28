@@ -40,6 +40,8 @@ from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
 
+_COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
 # drivers like the desktop app can show an explicit "Summarizing…" indicator
@@ -49,6 +51,58 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+
+
+def _controlled_rebuild_enabled(agent: Any) -> bool:
+    """Return whether deterministic rebuild packets should wrap compression."""
+    return bool(getattr(agent, "controlled_context_rebuild_enabled", False))
+
+
+def _write_controlled_rebuild_checkpoint(agent: Any, messages: list) -> None:
+    if not _controlled_rebuild_enabled(agent):
+        return
+    try:
+        from agent.controlled_context_rebuild import write_controlled_rebuild_checkpoint
+        write_controlled_rebuild_checkpoint(
+            agent.session_id or "default",
+            messages,
+            budget=int(getattr(agent, "controlled_context_rebuild_checkpoint_budget", 16_000)),
+        )
+    except Exception as exc:
+        logger.debug("controlled context rebuild checkpoint failed: %s", exc)
+
+
+def _inject_controlled_rebuild_packet(agent: Any, compressed: list, source_messages: list) -> list:
+    """Prefix the compaction summary with a deterministic rebuild packet.
+
+    Mutates only the already-created summary message. Roles, tool calls, tail
+    selection, and the prompt-cacheable system prompt stay as produced.
+    """
+    if not _controlled_rebuild_enabled(agent):
+        return compressed
+    try:
+        from agent.controlled_context_rebuild import append_controlled_rebuild_to_summary
+    except Exception as exc:
+        logger.debug("controlled context rebuild import failed: %s", exc)
+        return compressed
+
+    for msg in compressed:
+        if not isinstance(msg, dict) or not msg.get(_COMPRESSED_SUMMARY_METADATA_KEY):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            msg["content"] = append_controlled_rebuild_to_summary(
+                content,
+                agent.session_id or "default",
+                source_messages,
+                budget=int(getattr(agent, "controlled_context_rebuild_packet_budget", 12_000)),
+            )
+        except Exception as exc:
+            logger.debug("controlled context rebuild injection failed: %s", exc)
+        break
+    return compressed
 
 
 def _compression_lock_holder(agent: Any) -> str:
@@ -483,6 +537,10 @@ def compress_context(
         except Exception:
             pass
 
+    # Deterministic sidecar checkpoint: write exact anchors before the lossy
+    # LLM summarizer rewrites the transcript. Best-effort and profile-local.
+    _write_controlled_rebuild_checkpoint(agent, messages)
+
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:
@@ -540,6 +598,8 @@ def compress_context(
                     f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
                     "check auxiliary.compression.model in config.yaml."
                 )
+
+    compressed = _inject_controlled_rebuild_packet(agent, compressed, messages)
 
     todo_snapshot = agent._todo_store.format_for_injection()
     if todo_snapshot:

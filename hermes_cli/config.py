@@ -1356,6 +1356,14 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "controlled_rebuild": True,    # Before lossy compaction, write a deterministic
+                                      # checkpoint to ~/.hermes/context/sessions/<id>/
+                                      # checkpoint.md and prefix the compaction summary
+                                      # with exact literals (paths, commands, errors,
+                                      # current intent). Keeps prompt-cacheable system
+                                      # prompt and message roles unchanged.
+        "controlled_rebuild_budget": 12000,
+        "controlled_rebuild_checkpoint_budget": 16000,
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

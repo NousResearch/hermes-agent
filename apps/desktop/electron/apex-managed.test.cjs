@@ -19,6 +19,7 @@ const {
   DEFAULT_MANAGED_MODEL,
   MANAGED_MODEL_DISPLAY,
   MANAGED_PROVIDER,
+  MANAGED_PROVIDER_NAME,
   accessTokenFromLogin,
   apexWebLoginUrl,
   buildManagedModelConfig,
@@ -61,8 +62,24 @@ test('resolveApexEndpoints honors env overrides and strips trailing slashes', ()
   assert.equal(e.apiBase, 'https://api.staging.apex-nodes.com')
   assert.equal(e.relayBaseUrl, 'https://staging.apex-nodes.com/relay/v1')
   assert.equal(e.model, 'deepseek-v4-flash')
+  // The written/display id derives the collision-free `-APEX` form from the
+  // overridden routed model (no explicit display override given).
+  assert.equal(e.modelDisplay, 'deepseek-v4-flash-APEX')
   assert.equal(e.loginUrl, 'https://staging.apex-nodes.com/api/v1/auth/login')
   assert.equal(e.provisionKeyUrl, 'https://api.staging.apex-nodes.com/api/v1/desktop/provision-key')
+})
+
+test('resolveApexEndpoints modelDisplay precedence: explicit override > derived > default', () => {
+  // Prod default
+  assert.equal(resolveApexEndpoints({}).modelDisplay, MANAGED_MODEL_DISPLAY)
+  // Explicit display override wins even alongside a routed-model override
+  assert.equal(
+    resolveApexEndpoints({
+      APEXNODES_MANAGED_MODEL: 'deepseek-v4-flash',
+      APEXNODES_MANAGED_MODEL_DISPLAY: 'custom-label-APEX'
+    }).modelDisplay,
+    'custom-label-APEX'
+  )
 })
 
 test('relay base_url + /chat/completions reaches the relay route after nginx strips /relay', () => {
@@ -90,14 +107,69 @@ test('isManagedEnabled is ON by default and accepts common falsy spellings to di
 
 // --- buildManagedModelConfig + managedModelConfigYaml ---
 
-test('buildManagedModelConfig wires provider/base_url/api_key/default', () => {
+test('buildManagedModelConfig writes the collision-free DISPLAY model id + registers the relay as a named custom provider', () => {
   const block = buildManagedModelConfig('sk-relaykey123', {})
   assert.deepEqual(block, {
-    default: 'deepseek-v4-pro',
+    // The WRITTEN model id is the display name, NOT the raw routed id — the raw
+    // `deepseek-v4-pro` collides with the built-in DeepSeek catalog and gets
+    // agent init mis-routed to the keyless built-in `deepseek` provider.
+    default: 'deepseek-v4-pro-APEX',
     provider: 'custom',
     base_url: 'https://apex-nodes.com/relay/v1',
-    api_key: 'sk-relaykey123'
+    api_key: 'sk-relaykey123',
+    // The relay is registered as a named custom_providers entry (Hermes-native
+    // shape) so the endpoint stays durable across picker switches / resume.
+    custom_providers: [
+      {
+        name: MANAGED_PROVIDER_NAME,
+        base_url: 'https://apex-nodes.com/relay/v1',
+        api_key: 'sk-relaykey123',
+        model: 'deepseek-v4-pro-APEX'
+      }
+    ]
   })
+})
+
+test('buildManagedModelConfig model id is never the catalog-colliding raw routed id', () => {
+  // The whole point of the fix: the written id must not be `deepseek-v4-pro`
+  // (which is an exact entry in the built-in DeepSeek static catalog).
+  const block = buildManagedModelConfig('sk-x', {})
+  assert.notEqual(block.default, 'deepseek-v4-pro')
+  assert.notEqual(block.custom_providers[0].model, 'deepseek-v4-pro')
+  assert.match(block.default, /-APEX$/)
+})
+
+test('buildManagedModelConfig custom_providers entry mirrors model.default/base_url/api_key', () => {
+  const block = buildManagedModelConfig(
+    'sk-x',
+    {},
+    { baseUrl: 'https://relay.example.com/v1/' }
+  )
+  // The entry must use the SAME resolved endpoint/model/key as the model block,
+  // with the trailing slash stripped, so both anchors point at one place.
+  assert.deepEqual(block.custom_providers, [
+    {
+      name: MANAGED_PROVIDER_NAME,
+      base_url: 'https://relay.example.com/v1',
+      api_key: 'sk-x',
+      model: 'deepseek-v4-pro-APEX'
+    }
+  ])
+  assert.equal(block.base_url, block.custom_providers[0].base_url)
+  assert.equal(block.default, block.custom_providers[0].model)
+  assert.equal(block.api_key, block.custom_providers[0].api_key)
+})
+
+test('buildManagedModelConfig honors a provision-key model only when it is already a non-colliding -APEX id', () => {
+  // A raw routed id from the server (e.g. deepseek-v4-pro) must NOT be written
+  // verbatim — it would re-seed the collision — so we fall back to the display id.
+  const raw = buildManagedModelConfig('sk-x', {}, { model: 'deepseek-v4-pro' })
+  assert.equal(raw.default, 'deepseek-v4-pro-APEX')
+  assert.equal(raw.custom_providers[0].model, 'deepseek-v4-pro-APEX')
+  // An already-branded display id from the server is honored as-is.
+  const branded = buildManagedModelConfig('sk-x', {}, { model: 'deepseek-v4-flash-APEX' })
+  assert.equal(branded.default, 'deepseek-v4-flash-APEX')
+  assert.equal(branded.custom_providers[0].model, 'deepseek-v4-flash-APEX')
 })
 
 test('buildManagedModelConfig throws on a missing key (never seed an empty cred)', () => {
@@ -105,24 +177,33 @@ test('buildManagedModelConfig throws on a missing key (never seed an empty cred)
   assert.throws(() => buildManagedModelConfig('   ', {}), /relay key is required/)
 })
 
-test('buildManagedModelConfig respects env overrides', () => {
+test('buildManagedModelConfig respects env overrides (model id derives the collision-free -APEX display form)', () => {
   const block = buildManagedModelConfig('sk-x', {
     APEXNODES_RELAY_BASE_URL: 'https://staging.apex-nodes.com/relay/v1',
     APEXNODES_MANAGED_MODEL: 'deepseek-v4-flash'
   })
   assert.equal(block.base_url, 'https://staging.apex-nodes.com/relay/v1')
-  assert.equal(block.default, 'deepseek-v4-flash')
+  // A staging routed-model override yields the branded, collision-free written id.
+  assert.equal(block.default, 'deepseek-v4-flash-APEX')
 })
 
-test('buildManagedModelConfig prefers provision-key overrides over env defaults', () => {
+test('buildManagedModelConfig honors an explicit APEXNODES_MANAGED_MODEL_DISPLAY override', () => {
+  const block = buildManagedModelConfig('sk-x', {
+    APEXNODES_MANAGED_MODEL: 'deepseek-v4-flash',
+    APEXNODES_MANAGED_MODEL_DISPLAY: 'flash-APEX'
+  })
+  assert.equal(block.default, 'flash-APEX')
+  assert.equal(block.custom_providers[0].model, 'flash-APEX')
+})
+
+test('buildManagedModelConfig prefers a provision-key base_url override over env defaults', () => {
   const block = buildManagedModelConfig(
     'sk-x',
     {},
-    { baseUrl: 'https://relay.example.com/v1/', model: 'deepseek-v4-special' }
+    { baseUrl: 'https://relay.example.com/v1/' }
   )
   // overrides win, and the trailing slash is stripped.
   assert.equal(block.base_url, 'https://relay.example.com/v1')
-  assert.equal(block.default, 'deepseek-v4-special')
   assert.equal(block.provider, 'custom')
 })
 
@@ -153,14 +234,37 @@ test('parseProvisionResponse returns null without a key (fall back to BYOK)', ()
   assert.equal(parseProvisionResponse(null, {}), null)
 })
 
-test('managedModelConfigYaml emits a valid, quoted model block', () => {
+test('managedModelConfigYaml emits a valid, quoted model block + custom_providers entry', () => {
   const yaml = managedModelConfigYaml(buildManagedModelConfig('sk-relaykey123', {}))
   assert.match(yaml, /^model:\n/)
-  assert.match(yaml, /\n {2}default: deepseek-v4-pro\n/)
+  // The collision-free display id is what lands in config.
+  assert.match(yaml, /\n {2}default: deepseek-v4-pro-APEX\n/)
   assert.match(yaml, /\n {2}provider: custom\n/)
   // base_url + api_key are double-quoted scalars.
   assert.match(yaml, /\n {2}base_url: "https:\/\/apex-nodes\.com\/relay\/v1"\n/)
   assert.match(yaml, /\n {2}api_key: "sk-relaykey123"\n/)
+  // The relay is also registered as a named custom_providers list entry, with
+  // the name/base_url/api_key double-quoted and the model id as a bare scalar.
+  assert.match(yaml, /\ncustom_providers:\n/)
+  assert.match(yaml, /\n {2}- name: "Apex-nodes\.com"\n/)
+  assert.match(yaml, /\n {4}base_url: "https:\/\/apex-nodes\.com\/relay\/v1"\n/)
+  assert.match(yaml, /\n {4}api_key: "sk-relaykey123"\n/)
+  assert.match(yaml, /\n {4}model: deepseek-v4-pro-APEX\n/)
+  // Critically, the catalog-colliding raw id must NOT appear as a written model.
+  assert.doesNotMatch(yaml, /\n {2}default: deepseek-v4-pro\n/)
+})
+
+test('managedModelConfigYaml omits custom_providers when the block has none', () => {
+  // Defensive: a block without custom_providers (older shape) still serializes
+  // a clean model-only snippet.
+  const yaml = managedModelConfigYaml({
+    default: 'deepseek-v4-pro',
+    provider: 'custom',
+    base_url: 'https://apex-nodes.com/relay/v1',
+    api_key: 'sk-x'
+  })
+  assert.match(yaml, /^model:\n/)
+  assert.doesNotMatch(yaml, /custom_providers:/)
 })
 
 // --- defaultModelPath ---

@@ -87,6 +87,38 @@ from agent.skill_utils import (
 logger = logging.getLogger(__name__)
 
 
+_DEFAULT_SKILL_VIEW_OUTPUT_BUDGET_CHARS = 60_000
+
+
+def _skill_view_budget(max_chars: int | None = None) -> int:
+    if max_chars is None:
+        return _DEFAULT_SKILL_VIEW_OUTPUT_BUDGET_CHARS
+    try:
+        requested = int(max_chars)
+    except (TypeError, ValueError):
+        return _DEFAULT_SKILL_VIEW_OUTPUT_BUDGET_CHARS
+    if requested <= 0:
+        return 200_000
+    return max(1_000, min(requested, 200_000))
+
+
+def _apply_skill_view_budget(result: Dict[str, Any], max_chars: int | None = None) -> Dict[str, Any]:
+    content = result.get("content")
+    if not isinstance(content, str):
+        return result
+    budget = _skill_view_budget(max_chars)
+    if len(content) <= budget:
+        return result
+    suffix = "\n...[truncated by skill_view output budget; pass max_chars or load a linked file with file_path]"
+    result["content"] = content[: max(0, budget - len(suffix))] + suffix
+    result["truncated_by_budget"] = True
+    result["original_content_chars"] = len(content)
+    result["returned_content_chars"] = len(result["content"])
+    result["budget_chars"] = budget
+    result["hint"] = "skill_view content was budget-truncated. Pass max_chars for a larger response, or use file_path for targeted linked files."
+    return result
+
+
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
 # This is the single source of truth -- agent edits, hub installs, and bundled
 # skills all coexist here without polluting the git repo.
@@ -762,6 +794,7 @@ def _serve_plugin_skill(
     *,
     preprocess: bool = True,
     session_id: str | None = None,
+    max_chars: int | None = None,
 ) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
@@ -846,17 +879,15 @@ def _serve_plugin_skill(
                 "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
             )
 
-    return json.dumps(
-        {
-            "success": True,
-            "name": f"{namespace}:{bare}",
-            "content": f"{banner}{rendered_content}" if banner else rendered_content,
-            "description": description,
-            "linked_files": None,
-            "readiness_status": SkillReadinessStatus.AVAILABLE.value,
-        },
-        ensure_ascii=False,
-    )
+    result = {
+        "success": True,
+        "name": f"{namespace}:{bare}",
+        "content": f"{banner}{rendered_content}" if banner else rendered_content,
+        "description": description,
+        "linked_files": None,
+        "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+    }
+    return json.dumps(_apply_skill_view_budget(result, max_chars), ensure_ascii=False)
 
 
 def skill_view(
@@ -864,6 +895,7 @@ def skill_view(
     file_path: str = None,
     task_id: str = None,
     preprocess: bool = True,
+    max_chars: int | None = None,
 ) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
@@ -876,6 +908,7 @@ def skill_view(
         preprocess: Apply configured SKILL.md template and inline shell rendering
             to main skill content. Internal slash/preload callers disable this
             because they render the skill message themselves.
+        max_chars: Optional soft output budget for content; defaults to 60K chars.
 
     Returns:
         JSON string with skill content or error message
@@ -943,6 +976,7 @@ def skill_view(
                     bare,
                     preprocess=preprocess,
                     session_id=task_id,
+                    max_chars=max_chars,
                 )
 
             # Plugin exists but this specific skill is missing?
@@ -1280,13 +1314,16 @@ def skill_view(
                 )
 
             return json.dumps(
-                {
-                    "success": True,
-                    "name": name,
-                    "file": file_path,
-                    "content": content,
-                    "file_type": target_file.suffix,
-                },
+                _apply_skill_view_budget(
+                    {
+                        "success": True,
+                        "name": name,
+                        "file": file_path,
+                        "content": content,
+                        "file_type": target_file.suffix,
+                    },
+                    max_chars,
+                ),
                 ensure_ascii=False,
             )
 
@@ -1504,7 +1541,7 @@ def skill_view(
         if isinstance(metadata, dict):
             result["metadata"] = metadata
 
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(_apply_skill_view_budget(result, max_chars), ensure_ascii=False)
 
     except Exception as e:
         return tool_error(str(e), success=False)
@@ -1588,6 +1625,10 @@ SKILL_VIEW_SCHEMA = {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+            "max_chars": {
+                "type": "integer",
+                "description": "Soft output budget for returned content chars (default 60000). Pass 0 to allow up to 200000 chars for unusually large skills.",
+            },
         },
         "required": ["name"],
     },
@@ -1608,7 +1649,10 @@ def _skill_view_with_bump(args, **kw):
     telemetry failure never breaks the tool call."""
     name = args.get("name", "")
     result = skill_view(
-        name, file_path=args.get("file_path"), task_id=kw.get("task_id")
+        name,
+        file_path=args.get("file_path"),
+        task_id=kw.get("task_id"),
+        max_chars=args.get("max_chars"),
     )
     try:
         parsed = json.loads(result)

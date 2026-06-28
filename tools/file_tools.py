@@ -56,7 +56,9 @@ def _expand_tilde(path: str) -> str:
 # Configurable via config.yaml:  file_read_max_chars: 200000
 # ---------------------------------------------------------------------------
 _DEFAULT_MAX_READ_CHARS = 100_000
+_DEFAULT_READ_FILE_OUTPUT_BUDGET_CHARS = 60_000
 _max_read_chars_cached: int | None = None
+_read_file_output_budget_cached: int | None = None
 
 
 def _get_max_read_chars() -> int:
@@ -80,6 +82,91 @@ def _get_max_read_chars() -> int:
         pass
     _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
     return _max_read_chars_cached
+
+
+def _get_read_file_output_budget_chars(max_chars: int | None = None) -> int:
+    """Return the soft output budget for read_file content.
+
+    The hard ``file_read_max_chars`` guard still prevents pathological reads.
+    This softer budget keeps default successful reads from dumping large blobs
+    into context while giving callers an explicit ``max_chars`` override up to
+    the hard safety limit.
+    """
+    safety_limit = _get_max_read_chars()
+    if max_chars is not None:
+        try:
+            requested = int(max_chars)
+        except (TypeError, ValueError):
+            requested = _DEFAULT_READ_FILE_OUTPUT_BUDGET_CHARS
+        if requested <= 0:
+            requested = safety_limit
+        return max(1_000, min(requested, safety_limit))
+
+    global _read_file_output_budget_cached
+    if _read_file_output_budget_cached is not None:
+        return min(_read_file_output_budget_cached, safety_limit)
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        val = cfg.get("file_read_output_budget_chars")
+        if isinstance(val, (int, float)) and val > 0:
+            _read_file_output_budget_cached = max(1_000, min(int(val), safety_limit))
+            return _read_file_output_budget_cached
+    except Exception:
+        pass
+    _read_file_output_budget_cached = min(_DEFAULT_READ_FILE_OUTPUT_BUDGET_CHARS, safety_limit)
+    return _read_file_output_budget_cached
+
+
+def _truncate_content_with_budget(content: str, budget: int, label: str) -> str:
+    suffix = f"\n...[truncated by {label} output budget; use offset/limit or max_chars to retrieve more]"
+    if budget <= len(suffix):
+        return suffix[-budget:]
+    return content[: budget - len(suffix)] + suffix
+
+
+def _apply_read_file_output_budget(
+    result_dict: dict,
+    *,
+    offset: int,
+    limit: int,
+    max_chars: int | None,
+) -> None:
+    content = result_dict.get("content")
+    if not isinstance(content, str):
+        return
+    budget = _get_read_file_output_budget_chars(max_chars)
+    content_len = len(content)
+    if content_len <= budget:
+        return
+    result_dict["content"] = _truncate_content_with_budget(content, budget, "read_file")
+    result_dict["truncated_by_budget"] = True
+    result_dict["original_content_chars"] = content_len
+    result_dict["returned_content_chars"] = len(result_dict["content"])
+    result_dict["budget_chars"] = budget
+    result_dict["hint"] = (
+        f"read_file returned only the first {budget:,} chars from this page "
+        f"(offset={offset}, limit={limit}). Use a narrower offset/limit range, "
+        "or pass max_chars up to the hard safety limit when you truly need a "
+        "larger single response."
+    )
+
+
+def _operation_path_for_shell(original_path: str, resolved_path: str | None) -> str:
+    """Path to pass to the shell/file backend.
+
+    Relative paths must be passed as the tool-layer resolved absolute path so
+    the shell cwd cannot disagree with the guard/lock layer. Absolute paths are
+    already unambiguous; preserve the caller's spelling (notably /tmp on macOS,
+    where Path.resolve() becomes /private/tmp) for backwards compatibility with
+    existing handlers/tests.
+    """
+    try:
+        if Path(_expand_tilde(original_path)).is_absolute():
+            return original_path
+    except Exception:
+        pass
+    return resolved_path or original_path
 
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.
@@ -156,6 +243,13 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     value itself is still keyed by the raw session/task id, so file tools must
     read that raw override before falling back to the collapsed container key.
     """
+    # The shared/default container may carry the process/config cwd, but callers
+    # that explicitly set TERMINAL_CWD expect that env var to be the default
+    # anchor. Keep registered overrides for non-default raw task ids where the
+    # TUI/Desktop/ACP session has an explicit workspace.
+    if not task_id or task_id == "default":
+        return None
+
     try:
         from tools.terminal_tool import resolve_task_overrides
 
@@ -198,31 +292,91 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     except Exception:
         container_key = task_id
 
-    with _file_ops_lock:
-        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
-    if cached is not None:
+    configured_cwd = _configured_terminal_cwd()
+
+    def _cwd_from_cached(cached, *, allow_unknown_owner: bool = True) -> str | None:
+        if cached is None:
+            return None
         env = getattr(cached, "env", None)
+        if (
+            not allow_unknown_owner
+            and env is not None
+            and not str(getattr(env, "cwd_owner", "") or "")
+        ):
+            return None
         live_cwd = _live_cwd_if_owned(env, task_id)
         if live_cwd:
             _remember_last_known_cwd(container_key, live_cwd)
             return live_cwd
         # Legacy: a cache entry carrying its own cwd with no env to own it.
-        if env is None and getattr(cached, "cwd", None):
+        if env is None and allow_unknown_owner and getattr(cached, "cwd", None):
             legacy_cwd = getattr(cached, "cwd", None)
             _remember_last_known_cwd(container_key, legacy_cwd)
             return legacy_cwd
+        return None
+
+    allow_unknown_owner = not configured_cwd
+
+    # Exact raw task entries are always authoritative for that task.
+    with _file_ops_lock:
+        raw_cached = _file_ops_cache.get(task_id)
+    raw_allow_unknown_owner = not (task_id == "default" and configured_cwd)
+    raw_cwd = _cwd_from_cached(
+        raw_cached, allow_unknown_owner=raw_allow_unknown_owner
+    )
+    if raw_cwd:
+        return raw_cwd
 
     try:
         from tools.terminal_tool import _active_environments, _env_lock
-
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
-        live_cwd = _live_cwd_if_owned(env, task_id)
-        if live_cwd:
-            _remember_last_known_cwd(container_key, live_cwd)
-            return live_cwd
+            raw_env = _active_environments.get(task_id)
     except Exception:
-        pass
+        raw_env = None
+    if (
+        configured_cwd
+        and raw_env is not None
+        and not str(getattr(raw_env, "cwd_owner", "") or "")
+    ):
+        raw_env = None
+    raw_live = _live_cwd_if_owned(raw_env, task_id)
+    if raw_live:
+        _remember_last_known_cwd(container_key, raw_live)
+        return raw_live
+
+    # A non-default task with an explicit TERMINAL_CWD should not inherit a
+    # stale shared/default terminal cwd from another task. Returning None lets
+    # _authoritative_workspace_root fall through to that TERMINAL_CWD.
+    if task_id != "default" and configured_cwd:
+        return None
+
+    # Finally, allow collapsed/shared environment fallback for default sessions
+    # and for legacy sessions without an explicit TERMINAL_CWD.
+    if container_key != task_id:
+        with _file_ops_lock:
+            container_cached = _file_ops_cache.get(container_key)
+        container_cwd = _cwd_from_cached(
+            container_cached, allow_unknown_owner=allow_unknown_owner
+        )
+        if container_cwd:
+            return container_cwd
+
+        try:
+            from tools.terminal_tool import _active_environments, _env_lock
+            with _env_lock:
+                env = _active_environments.get(container_key)
+            if (
+                configured_cwd
+                and env is not None
+                and not str(getattr(env, "cwd_owner", "") or "")
+            ):
+                env = None
+            live_cwd = _live_cwd_if_owned(env, task_id)
+            if live_cwd:
+                _remember_last_known_cwd(container_key, live_cwd)
+                return live_cwd
+        except Exception:
+            pass
 
     return None
 
@@ -415,7 +569,8 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
-    "/private/etc/", "/private/var/",
+    "/private/etc/", "/private/var/db/", "/private/var/root/",
+    "/private/var/run/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
@@ -959,7 +1114,13 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = 500,
+    task_id: str = "default",
+    max_chars: int | None = None,
+) -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -1007,12 +1168,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                         f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)"
                     )
                 content_len = len(result_dict["content"])
-                max_chars = _get_max_read_chars()
-                if content_len > max_chars:
+                hard_max_chars = _get_max_read_chars()
+                if content_len > hard_max_chars:
                     return json.dumps({
                         "error": (
                             f"Read produced {content_len:,} characters which exceeds "
-                            f"the safety limit ({max_chars:,} chars). "
+                            f"the safety limit ({hard_max_chars:,} chars). "
                             "Use offset and limit to read a smaller range. "
                             f"The document has {total_lines} lines of extracted text."
                         ),
@@ -1022,6 +1183,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                     }, ensure_ascii=False)
                 if result_dict["content"]:
                     result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
+                _apply_read_file_output_budget(
+                    result_dict,
+                    offset=offset,
+                    limit=limit,
+                    max_chars=max_chars,
+                )
                 return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
@@ -1120,13 +1287,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # Check BEFORE redaction to avoid expensive regex on huge content.
         content_len = len(result.content or "")
         file_size = result_dict.get("file_size", 0)
-        max_chars = _get_max_read_chars()
-        if content_len > max_chars:
+        hard_max_chars = _get_max_read_chars()
+        if content_len > hard_max_chars:
             total_lines = result_dict.get("total_lines", "unknown")
             return json.dumps({
                 "error": (
                     f"Read produced {content_len:,} characters which exceeds "
-                    f"the safety limit ({max_chars:,} chars). "
+                    f"the safety limit ({hard_max_chars:,} chars). "
                     "Use offset and limit to read a smaller range. "
                     f"The file has {total_lines} lines total."
                 ),
@@ -1217,6 +1384,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "The content has not changed since your last read. Use the information you already have. "
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
             )
+
+        _apply_read_file_output_budget(
+            result_dict,
+            offset=offset,
+            limit=limit,
+            max_chars=max_chars,
+        )
 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -1448,7 +1622,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
             file_ops = _get_file_ops(task_id)
-            result = file_ops.write_file(_resolved, content)
+            result = file_ops.write_file(
+                _operation_path_for_shell(path, _resolved), content
+            )
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
@@ -1571,7 +1747,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 # shell's own cwd may differ (worktree-cwd bug), and a relative
                 # path would let the two layers disagree about which file is
                 # being edited.
-                _replace_target = _path_to_resolved.get(path) or path
+                _replace_target = _operation_path_for_shell(
+                    path, _path_to_resolved.get(path)
+                )
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
@@ -1738,7 +1916,8 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000},
+            "max_chars": {"type": "integer", "description": "Soft output budget for returned content chars (default 60000, hard-capped by file_read_max_chars). Pass 0 to use the hard safety limit."}
         },
         "required": ["path"]
     }
@@ -1835,7 +2014,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        task_id=tid,
+        max_chars=args.get("max_chars"),
+    )
 
 
 def _handle_write_file(args, **kw):

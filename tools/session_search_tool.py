@@ -38,6 +38,26 @@ from typing import Any, Dict, List, Optional, Union
 # delegate subagent runs are tagged "subagent" — neither belongs in the
 # user's session history.
 _HIDDEN_SESSION_SOURCES = ("subagent", "tool")
+_DEFAULT_SESSION_SEARCH_MESSAGE_CHARS = 12_000
+
+
+def _session_message_budget(max_content_chars: int | None = None) -> int:
+    if max_content_chars is None:
+        return _DEFAULT_SESSION_SEARCH_MESSAGE_CHARS
+    try:
+        requested = int(max_content_chars)
+    except (TypeError, ValueError):
+        return _DEFAULT_SESSION_SEARCH_MESSAGE_CHARS
+    if requested <= 0:
+        return 100_000
+    return max(1_000, min(requested, 100_000))
+
+
+def _truncate_session_content(content: str, budget: int) -> tuple[str, bool]:
+    if len(content) <= budget:
+        return content, False
+    suffix = "\n...[truncated by session_search message budget; use scroll/window or max_content_chars to retrieve more]"
+    return content[: max(0, budget - len(suffix))] + suffix, True
 
 # Automation sources that are kept searchable but DEMOTED below interactive
 # sessions in discover ranking. Cron jobs run on a schedule and accumulate
@@ -120,14 +140,31 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     )
 
 
-def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
+def _shape_message(
+    m: Dict[str, Any],
+    anchor_id: Optional[int] = None,
+    max_content_chars: int | None = None,
+) -> Dict[str, Any]:
     """Slim a message row for the tool response. Keeps content even if empty."""
+    content = m.get("content")
+    content_truncated = False
+    original_content_chars = None
+    if isinstance(content, str):
+        original_content_chars = len(content)
+        content, content_truncated = _truncate_session_content(
+            content,
+            _session_message_budget(max_content_chars),
+        )
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": content,
         "timestamp": m.get("timestamp"),
     }
+    if content_truncated:
+        entry["content_truncated_by_budget"] = True
+        entry["original_content_chars"] = original_content_chars
+        entry["returned_content_chars"] = len(content)
     if m.get("tool_name"):
         entry["tool_name"] = m.get("tool_name")
     if m.get("tool_calls"):
@@ -208,7 +245,13 @@ def _locate_session_db(session_id: str):
     return None, None
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
+def _read_session(
+    db,
+    session_id: str,
+    head: int = 20,
+    tail: int = 10,
+    max_content_chars: int | None = None,
+) -> str:
     """Read shape: dump a whole session by id (head + tail when large).
 
     Serves the linked-session case — the user dropped an @session reference and
@@ -230,7 +273,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         logging.error("get_messages failed for %s: %s", session_id, e, exc_info=True)
         return tool_error(f"failed to load session: {e}", success=False)
 
-    shaped = [_shape_message(m) for m in rows]
+    shaped = [_shape_message(m, max_content_chars=max_content_chars) for m in rows]
     total = len(shaped)
     truncated = total > head + tail
     window = shaped[:head] + shaped[-tail:] if truncated else shaped
@@ -306,6 +349,7 @@ def _scroll(
     around_message_id: int,
     window: int = 5,
     current_session_id: str = None,
+    max_content_chars: int | None = None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -415,7 +459,10 @@ def _scroll(
             "title": session_meta.get("title"),
         },
         "window": window,
-        "messages": [_shape_message(m, anchor_id=around_message_id) for m in messages],
+        "messages": [
+            _shape_message(m, anchor_id=around_message_id, max_content_chars=max_content_chars)
+            for m in messages
+        ],
         "messages_before": view.get("messages_before", 0),
         "messages_after": view.get("messages_after", 0),
     }
@@ -433,6 +480,7 @@ def _title_match_result(
     db,
     query: str,
     current_lineage_root: Optional[str],
+    max_content_chars: int | None = None,
 ) -> Optional[Dict[str, Any]]:
     """Return a discovery-shaped result when the query matches a session title."""
     title_query = _normalize_title_query(query)
@@ -484,9 +532,18 @@ def _title_match_result(
         "matched_role": "session_title",
         "match_message_id": anchor_id,
         "snippet": f"Session title matched: {session_meta.get('title') or title_query}",
-        "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or messages[:3])],
-        "messages": [_shape_message(m, anchor_id=anchor_id) for m in (view.get("window") or messages[:5])],
-        "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
+        "bookend_start": [
+            _shape_message(m, max_content_chars=max_content_chars)
+            for m in (view.get("bookend_start") or messages[:3])
+        ],
+        "messages": [
+            _shape_message(m, anchor_id=anchor_id, max_content_chars=max_content_chars)
+            for m in (view.get("window") or messages[:5])
+        ],
+        "bookend_end": [
+            _shape_message(m, max_content_chars=max_content_chars)
+            for m in (view.get("bookend_end") or messages[-3:])
+        ],
         "messages_before": view.get("messages_before", 0),
         "messages_after": view.get("messages_after", max(len(messages) - 5, 0)),
         "_lineage_root": lineage_root,
@@ -503,11 +560,14 @@ def _discover(
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
+    max_content_chars: int | None = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = _title_match_result(
+        db, query, current_lineage_root, max_content_chars=max_content_chars
+    )
 
     try:
         raw_results = db.search_messages(
@@ -596,9 +656,18 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
-            "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
-            "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
+            "bookend_start": [
+                _shape_message(m, max_content_chars=max_content_chars)
+                for m in (view.get("bookend_start") or [])
+            ],
+            "messages": [
+                _shape_message(m, anchor_id=msg_id, max_content_chars=max_content_chars)
+                for m in (view.get("window") or [])
+            ],
+            "bookend_end": [
+                _shape_message(m, max_content_chars=max_content_chars)
+                for m in (view.get("bookend_end") or [])
+            ],
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
         }
@@ -630,6 +699,7 @@ def session_search(
     sort: str = None,
     # Cross-profile (any shape)
     profile: str = None,
+    max_content_chars: int | None = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -683,12 +753,13 @@ def session_search(
             around_message_id=around_message_id,
             window=window,
             current_session_id=current_session_id,
+            max_content_chars=max_content_chars,
         )
 
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
         sid = session_id.strip()
-        result = _read_session(db, sid)
+        result = _read_session(db, sid, max_content_chars=max_content_chars)
         if json.loads(result).get("success"):
             return result
 
@@ -698,7 +769,7 @@ def session_search(
         located, owner = _locate_session_db(sid)
         if located is not None:
             try:
-                found = json.loads(_read_session(located, sid))
+                found = json.loads(_read_session(located, sid, max_content_chars=max_content_chars))
             finally:
                 located.close()
             if found.get("success"):
@@ -737,6 +808,7 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+        max_content_chars=max_content_chars,
     )
 
 
@@ -752,150 +824,71 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search past sessions stored in the local session DB, or scroll inside one. "
-        "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
-        "shape returns actual messages from the DB.\n\n"
-        "SOURCE-FIRST LIMIT\n\n"
-        "  This tool searches Hermes conversation history only. It is not evidence "
-        "about the current contents of external sources. If the user provided a "
-        "direct source such as a URL, phone number/contact, app/thread, file path, "
-        "account, website, or live system, inspect that original source before or "
-        "instead of session_search when accessible. Use session_search as secondary "
-        "context for what was previously said, not as primary proof of what the "
-        "source currently contains. If the original source is inaccessible, say so "
-        "and why before falling back to session history. Do not conclude 'not found' "
-        "or 'no prior correspondence' from session_search alone when a direct source "
-        "was provided.\n\n"
-        "FOUR CALLING SHAPES\n\n"
-        "  1) DISCOVERY — pass `query`:\n"
-        "     session_search(query=\"auth refactor\", limit=3)\n"
-        "     Runs FTS5, dedupes hits by session lineage, returns the top N sessions. "
-        "Each result carries:\n"
-        "       - session_id, title, when, source\n"
-        "       - snippet: FTS5-highlighted match excerpt\n"
-        "       - bookend_start: first 3 user+assistant messages of the session "
-        "(the goal / kickoff)\n"
-        "       - messages: ±5 messages around the FTS5 match, with the anchor message "
-        "flagged (the hit in context)\n"
-        "       - bookend_end: last 3 user+assistant messages of the session "
-        "(the resolution / decisions)\n"
-        "       - match_message_id, messages_before, messages_after\n"
-        "     Bookends + window together let you reconstruct goal → match → resolution "
-        "without paying for the whole transcript.\n\n"
-        "  2) SCROLL — pass `session_id` + `around_message_id`:\n"
-        "     session_search(session_id=\"...\", around_message_id=12345, window=10)\n"
-        "     Returns a window of ±`window` messages centered on the anchor. No FTS5, "
-        "no bookends — just the slice. Use after a discovery call when you need more "
-        "context than the ±5 default window.\n"
-        "       - To scroll FORWARD: pass messages[-1].id back as around_message_id.\n"
-        "       - To scroll BACKWARD: pass messages[0].id back as around_message_id.\n"
-        "       - The boundary message appears in both windows — orientation marker.\n"
-        "       - When messages_before or messages_after is < window, you're at the "
-        "start or end of the session.\n\n"
-        "  3) READ — pass `session_id` only (no around_message_id):\n"
-        "     session_search(session_id=\"...\", profile=\"work\")\n"
-        "     Dumps the whole session by id (first 20 + last 10 messages when "
-        "large). This is how you resolve an `@session:<profile>/<id>` link the "
-        "user dropped into the chat: split the value on `/` into profile + id "
-        "and call session_search(session_id=id, profile=profile).\n\n"
-        "  4) BROWSE — no args:\n"
-        "     session_search()\n"
-        "     Returns recent sessions chronologically: titles, previews, timestamps. "
-        "Use when the user asks \"what was I working on\" without naming a topic.\n\n"
-        "FTS5 SYNTAX\n\n"
-        "  AND is the default — multi-word queries require all terms. Use OR explicitly "
-        "for broader recall (`alpha OR beta OR gamma`), quoted phrases for exact match "
-        "(`\"docker networking\"`), boolean (`python NOT java`), or prefix wildcards "
-        "(`deploy*`).\n\n"
-        "WHEN TO USE\n\n"
-        "  Reach for this on questions about Hermes conversation history itself, such "
-        "as \"what did we do about X\", \"where did we leave Y\", or \"find the "
-        "session where Z\". If the user provided a direct source identifier, inspect "
-        "that source first when accessible; session_search can then supply historical "
-        "context. The session DB carries what was said when; external tools show "
-        "current source/world state."
+        "Search Hermes conversation history in the local SQLite/FTS5 session DB. "
+        "Returns actual stored messages; no LLM summarization. SOURCE-FIRST LIMIT: "
+        "conversation history only; use session_search as secondary memory, not proof "
+        "of current external state. If the user provides a direct source (URL, file "
+        "path, app/thread, contact, account, etc.), "
+        "inspect that source first when accessible; say why if it is inaccessible. "
+        "Do not conclude 'not found' from session history alone.\n\n"
+        "Calling shapes: DISCOVERY pass query (plus optional limit/sort/role_filter) "
+        "to get matching sessions with snippet, bookends, and a ±5 message window. "
+        "SCROLL pass session_id + around_message_id to page around an anchor; "
+        "scroll FORWARD with messages[-1].id and backward with messages[0].id. "
+        "READ pass session_id only "
+        "to dump first 20 + last 10 messages; for @session:<profile>/<id>, split the "
+        "profile into the profile arg and pass id as session_id. BROWSE pass no args "
+        "to list recent sessions.\n\n"
+        "FTS5 query notes: words are ANDed by default; use OR, quoted phrases, NOT, "
+        "or prefix wildcards like deploy*. Use this for cross-session recall such as "
+        "'what did we do about X' or 'where did we leave Y'."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": (
-                    "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
-                    "sessions. Ignored when session_id + around_message_id are set "
-                    "(scroll shape)."
-                ),
+                "description": "Discovery query. Omit to browse recent sessions; ignored for scroll/read shapes.",
             },
             "limit": {
                 "type": "integer",
-                "description": (
-                    "Discovery shape only. Max sessions to return (default 3, max 10). "
-                    "Bump to 5–10 when the topic likely spans several sessions and you "
-                    "want to pick the right one to scroll into."
-                ),
+                "description": "Discovery/browse max sessions (default 3, clamped 1-10).",
                 "default": 3,
             },
             "sort": {
                 "type": "string",
                 "enum": ["newest", "oldest"],
-                "description": (
-                    "Discovery shape only. Temporal bias on top of FTS5 ranking. Omit "
-                    "to keep relevance-only ordering (suitable for exploratory recall — "
-                    "\"what do we know about X\"). Set 'newest' for recency-shaped "
-                    "questions (\"where did we leave X\"). Set 'oldest' for "
-                    "origin-shaped questions (\"how did X start\"). Ignored in scroll "
-                    "and browse shapes."
-                ),
+                "description": "Discovery temporal bias. Omit for relevance; use newest/oldest for recency/origin questions.",
             },
             "session_id": {
                 "type": "string",
-                "description": (
-                    "Scroll shape. Session to read inside. Use the session_id returned "
-                    "from a prior discovery call. Must be paired with "
-                    "around_message_id."
-                ),
+                "description": "Session to read/scroll. Pair with around_message_id for scroll; alone means read.",
             },
             "around_message_id": {
                 "type": "integer",
-                "description": (
-                    "Scroll shape. Message id to center the window on. From a discovery "
-                    "result use match_message_id, or any id seen in a prior window. To "
-                    "scroll forward pass the last window message's id; to scroll "
-                    "backward pass the first."
-                ),
+                "description": "Scroll anchor message id. Reuse first/last returned id to page backward/forward.",
             },
             "window": {
                 "type": "integer",
-                "description": (
-                    "Scroll shape only. Messages to return on each side of the anchor "
-                    "(anchor itself always included). Clamped to [1, 20]. Default 5."
-                ),
+                "description": "Scroll messages on each side of anchor, clamped 1-20 (default 5).",
                 "default": 5,
             },
             "role_filter": {
                 "type": "string",
-                "description": (
-                    "Optional. Comma-separated roles to include. Discovery defaults to "
-                    "'user,assistant' (tool output is usually noise). Pass "
-                    "'user,assistant,tool' to include tool output (debugging tool "
-                    "behaviour) or 'tool' to search tool output only."
-                ),
+                "description": "Discovery roles CSV. Default user,assistant; include tool for debugging tool output.",
             },
             "profile": {
                 "type": "string",
-                "description": (
-                    "Optional. Read sessions from another Hermes profile's database "
-                    "(read-only). Use when resolving an `@session:<profile>/<id>` link: "
-                    "pass the profile segment here with session_id as the id segment. "
-                    "Omit to use the current profile."
-                ),
+                "description": "Read another profile DB read-only; for @session:<profile>/<id> pass the profile segment here.",
+            },
+            "max_content_chars": {
+                "type": "integer",
+                "description": "Soft per-message content budget (default 12000, max 100000; 0=max).",
             },
         },
         "required": [],
     },
 }
-
 
 # --- Registry ---
 from tools.registry import registry, tool_error
@@ -915,6 +908,7 @@ registry.register(
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
+        max_content_chars=args.get("max_content_chars"),
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",

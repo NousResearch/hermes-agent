@@ -63,6 +63,30 @@ def _make_safe_tempdir(prefix: str) -> str:
 # Device path blocking
 # ---------------------------------------------------------------------------
 
+class TestReadFileOutputBudget(unittest.TestCase):
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_file_truncates_large_successful_reads_by_default_budget(self, mock_ops):
+        fake = _make_fake_ops(content="A" * 70_000, total_lines=1, file_size=70_000)
+        mock_ops.return_value = fake
+
+        result = json.loads(read_file_tool("budget.txt", task_id="budget-default"))
+
+        self.assertTrue(result.get("truncated_by_budget"))
+        self.assertEqual(result.get("budget_chars"), 60_000)
+        self.assertLessEqual(len(result.get("content", "")), 60_000)
+        self.assertIn("max_chars", result.get("hint", ""))
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_file_max_chars_override_allows_larger_payload(self, mock_ops):
+        fake = _make_fake_ops(content="B" * 70_000, total_lines=1, file_size=70_000)
+        mock_ops.return_value = fake
+
+        result = json.loads(read_file_tool("budget.txt", task_id="budget-override", max_chars=80_000))
+
+        self.assertFalse(result.get("truncated_by_budget", False))
+        self.assertEqual(len(result.get("content", "")), 70_000)
+
+
 class TestDevicePathBlocking(unittest.TestCase):
     """Paths like /dev/zero should be rejected before any I/O."""
 

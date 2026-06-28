@@ -698,3 +698,58 @@ class TestDbConnstrCodeOutput:
         text = "connected via postgres://user:s3cr3tpw@host:5432/db ok"
         result = redact_sensitive_text(text, force=True)
         assert "s3cr3tpw" not in result
+
+
+class TestTerminalOutputRedaction:
+    """is_env_dump_command + redact_terminal_output — issue #43025.
+
+    Terminal/process stdout must be redacted on every surface (foreground
+    `terminal` AND background `process(poll/log/wait)`). Env-dump commands get
+    the ENV-assignment pass so opaque tokens (no vendor prefix) are masked;
+    other commands stay on the code_file path to avoid false positives.
+    """
+
+    def test_is_env_dump_command_detection(self):
+        from agent.redact import is_env_dump_command
+        assert is_env_dump_command("printenv")
+        assert is_env_dump_command("env")
+        assert is_env_dump_command("env | grep API")
+        assert is_env_dump_command("set")
+        assert is_env_dump_command("export")
+        assert is_env_dump_command("declare -x")
+        assert is_env_dump_command("cat /tmp/x && printenv")
+        assert not is_env_dump_command("python app.py")
+        assert not is_env_dump_command("cat config.py")
+        assert not is_env_dump_command("printf 'TOKEN=x'")
+        assert not is_env_dump_command("")
+        assert not is_env_dump_command(None)
+
+    def test_env_dump_masks_opaque_token(self):
+        from agent.redact import redact_terminal_output
+        out = "MY_SERVICE_TOKEN=abc123randomopaquetokenvalue999\nHOME=/home/u"
+        red = redact_terminal_output(out, "printenv")
+        assert "abc123randomopaquetokenvalue999" not in red
+        assert "HOME=/home/u" in red
+
+    def test_non_env_command_preserves_source_false_positives(self):
+        from agent.redact import redact_terminal_output
+        # code_file path: MAX_TOKENS=100 is source, must survive; real sk- masked.
+        out = "MAX_TOKENS=100\nOPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012"
+        red = redact_terminal_output(out, "cat config.py")
+        assert "MAX_TOKENS=100" in red
+        assert "abc123def456" not in red
+
+    def test_unknown_command_uses_safe_code_file_path(self):
+        from agent.redact import redact_terminal_output
+        # No command → code_file=True; opaque non-prefix token NOT masked
+        # (safe default avoids mangling arbitrary output), prefix still masked.
+        out = "OPAQUE=plainvalue123\nKEY=sk-proj-abc123def456ghi789jkl012"
+        red = redact_terminal_output(out, None)
+        assert "abc123def456" not in red
+
+    def test_disabled_passes_through(self, monkeypatch):
+        from agent.redact import redact_terminal_output
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        out = "CUSTOM_TOKEN=zzzopaque1234567890abcdef"
+        red = redact_terminal_output(out, "printenv")
+        assert "zzzopaque1234567890abcdef" in red

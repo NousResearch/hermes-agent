@@ -1652,3 +1652,59 @@ class TestSigkillEscalation:
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             parent.wait()
+
+
+class TestHandleProcessRedaction:
+    """`_handle_process` redacts background-process output before it reaches the
+    model / session.db / CLI display — issue #43025.
+
+    Mirrors the foreground `terminal` redaction so the two surfaces can't
+    diverge. Env-dump commands (`printenv`/`env`) get the ENV-assignment pass
+    so opaque tokens are masked; other commands stay on the code_file path.
+    """
+
+    def _setup(self, monkeypatch, command, output):
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        from tools import process_registry as pr
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_redact1", command=command)
+        sess.output_buffer = output
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running.clear()
+        reg._finished[sess.id] = sess
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        return pr, sess
+
+    def test_log_redacts_env_dump_opaque_token(self, monkeypatch):
+        pr, sess = self._setup(
+            monkeypatch, "printenv",
+            "MY_SERVICE_TOKEN=abc123randomopaquetokenvalue999\nHOME=/home/u",
+        )
+        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        assert "abc123randomopaquetokenvalue999" not in out["output"]
+        assert "HOME=/home/u" in out["output"]
+
+    def test_poll_redacts_prefix_key(self, monkeypatch):
+        pr, sess = self._setup(
+            monkeypatch, "python app.py",
+            "leaked OPENAI_API_KEY sk-proj-abc123def456ghi789jkl012 here",
+        )
+        out = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+        assert "abc123def456" not in out["output_preview"]
+
+    def test_disabled_passes_through(self, monkeypatch):
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", False)
+        from tools import process_registry as pr
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_redact2", command="printenv")
+        sess.output_buffer = "CUSTOM_TOKEN=zzzopaque1234567890abcdef"
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        assert "zzzopaque1234567890abcdef" in out["output"]

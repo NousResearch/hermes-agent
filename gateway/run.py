@@ -14149,6 +14149,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if should_notify:
                     new_output = session.output_buffer[-1000:] if session.output_buffer else ""
+                    if new_output:
+                        from agent.redact import redact_terminal_output
+                        new_output = redact_terminal_output(
+                            new_output, getattr(session, "command", "") or ""
+                        )
                     message_text = (
                         f"[Background process {session_id} finished with exit code {session.exit_code}~ "
                         f"Here's the final output:\n{new_output}]"
@@ -14174,6 +14179,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # New output available -- deliver status update (only in "all" mode)
                 # Skip periodic updates for agent_notify watchers (they only care about completion)
                 new_output = session.output_buffer[-500:] if session.output_buffer else ""
+                if new_output:
+                    from agent.redact import redact_terminal_output
+                    new_output = redact_terminal_output(
+                        new_output, getattr(session, "command", "") or ""
+                    )
                 message_text = (
                     f"[Background process {session_id} is still running~ "
                     f"New output:\n{new_output}]"

@@ -1241,6 +1241,25 @@ class TestSessionSwitchBufferFlush:
         provider._client.aretain_batch.assert_not_called()
         assert provider._session_id == "new-sid"
 
+    def test_no_flush_on_session_switch_when_auto_retain_off(
+        self, provider_with_config
+    ):
+        """on_session_switch must discard buffered turns instead of
+        archiving them when auto_retain is False (#54183)."""
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+        # Simulate turns buffered before auto_retain was toggled off
+        # (e.g. config loaded late on Windows/WeCom).
+        p._session_turns.append('{"messages":[{"role":"user","content":"hi"}]}')
+        p._auto_retain = False
+
+        p.on_session_switch("new-sid")
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_not_called()
+        # Buffered turns should be discarded, not archived.
+        assert p._session_turns == []
+        assert p._session_id == "new-sid"
+
     def test_prefetch_result_cleared_on_switch(self, provider):
         """Stale recall text from the old session must not leak into the
         next session's first prefetch read."""

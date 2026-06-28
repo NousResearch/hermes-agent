@@ -1819,7 +1819,9 @@ class HindsightMemoryProvider(MemoryProvider):
         # 1. Flush any buffered turns under the OLD identifiers. Snapshot
         # everything before mutating self._* so metadata + tags + doc_id
         # all reference the old session consistently.
-        if self._session_turns:
+        # Respect auto_retain: if the user disabled automatic retention,
+        # discard buffered turns instead of archiving them on session switch.
+        if self._session_turns and self._auto_retain:
             old_turns = list(self._session_turns)
             old_session_id = self._session_id
             old_parent_session_id = self._parent_session_id

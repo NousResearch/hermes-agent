@@ -80,6 +80,7 @@ moa:
       reference_models:
         - provider: openai-codex
           model: gpt-5.5
+          reasoning_effort: xhigh  # optional per-reference override
         - provider: openrouter
           model: deepseek/deepseek-v4-pro
       aggregator:

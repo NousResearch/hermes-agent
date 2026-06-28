@@ -216,6 +216,38 @@ def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     assert "api_key" not in rt
 
 
+def test_moa_reference_forwards_reasoning_effort(monkeypatch):
+    """Reference slots may request model-specific reasoning effort.
+
+    MoA forwards the slot's reasoning_effort via extra_body.reasoning so the
+    provider-specific call path can translate it to that backend's wire format
+    (for example Codex Responses API reasoning={effort: ...}).
+    """
+    from agent import moa_loop
+
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("reference advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    label, text = moa_loop._run_reference(
+        {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "xhigh"},
+        [{"role": "user", "content": "review this"}],
+    )
+
+    assert label == "openai-codex:gpt-5.5"
+    assert text == "reference advice"
+    assert calls[0]["extra_body"] == {"reasoning": {"effort": "xhigh"}}
+
+
 def test_reference_messages_drops_system_but_renders_tools_as_text():
     """System prompt is dropped, but tool calls + results are RENDERED as text.
 

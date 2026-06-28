@@ -94,6 +94,52 @@ def test_normalize_moa_config_wraps_bare_dict_reference_models():
     assert cfg["presets"]["p"]["reference_models"] == [{"provider": "openai", "model": "gpt-4o"}]
 
 
+def test_normalize_moa_config_preserves_reference_reasoning_effort():
+    """Reference slots can opt into model-specific reasoning effort."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {
+                            "provider": "openai-codex",
+                            "model": "gpt-5.5",
+                            "reasoning_effort": "xhigh",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    assert cfg["presets"]["p"]["reference_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "xhigh"}
+    ]
+
+
+def test_normalize_moa_config_drops_invalid_reference_reasoning_effort():
+    """Bad effort strings are ignored without dropping the whole slot."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {
+                            "provider": "openai-codex",
+                            "model": "gpt-5.5",
+                            "reasoning_effort": "maximum",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    assert cfg["presets"]["p"]["reference_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.5"}
+    ]
+
+
 def test_normalize_moa_config_coerces_numeric_strings():
     """Valid numeric strings (e.g. from YAML round-trip) must coerce correctly."""
     cfg = normalize_moa_config({"max_tokens": "8192", "reference_temperature": "0.9"})

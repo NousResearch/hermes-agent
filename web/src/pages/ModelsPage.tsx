@@ -852,10 +852,10 @@ function MoaModelsModal({
             }
             setError(null);
             updateSelectedPreset((prev) => {
-              if (picker.kind === "aggregator") return { ...prev, aggregator: { provider, model } };
+              if (picker.kind === "aggregator") return { ...prev, aggregator: { ...prev.aggregator, provider, model } };
               return {
                 ...prev,
-                reference_models: prev.reference_models.map((slot, i) => i === picker.index ? { provider, model } : slot),
+                reference_models: prev.reference_models.map((slot, i) => i === picker.index ? { ...slot, provider, model } : slot),
               };
             });
           }}

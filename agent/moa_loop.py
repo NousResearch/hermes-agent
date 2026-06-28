@@ -138,6 +138,11 @@ def _run_reference(
     concurrency primitive, mirroring ``delegate_task``'s batch fan-out.
     """
     label = _slot_label(slot)
+    extra_body = {}
+    effort = slot.get("reasoning_effort")
+    if effort:
+        extra_body["reasoning"] = {"effort": effort}
+
     try:
         # Prepend the advisory-role system prompt so the reference understands
         # it is analyzing state for an aggregator, not acting on the task. The
@@ -149,6 +154,7 @@ def _run_reference(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            extra_body=extra_body,
             **_slot_runtime(slot),
         )
         return label, _extract_text(response) or "(empty response)"

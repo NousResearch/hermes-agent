@@ -52,3 +52,15 @@ def test_memory_schema_is_well_formed():
 
 def test_memory_schema_is_json_serializable():
     json.dumps(MEMORY_SCHEMA)
+
+def test_memory_schema_stays_compact_but_preserves_curated_memory_guidance():
+    schema_text = json.dumps(MEMORY_SCHEMA, ensure_ascii=False)
+
+    assert len(schema_text) < 2_300
+    desc = MEMORY_SCHEMA["description"]
+    assert "operations" in desc
+    assert "atomically" in desc
+    assert "session_search" in desc
+    assert "task progress" in desc
+    assert "procedures belong in a skill" in desc
+    assert "declarative facts" in desc

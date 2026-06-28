@@ -202,6 +202,7 @@ class TestPatchHandler:
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="replace", path=None, old_string="a", new_string="b"))
         assert "error" in result
+        assert result["error_kind"] == "invalid_patch_format"
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_missing_strings_errors(self, mock_get):
@@ -227,6 +228,7 @@ class TestPatchHandler:
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="patch", patch=None))
         assert "error" in result
+        assert result["error_kind"] == "invalid_patch_format"
 
     @patch("tools.file_tools._get_file_ops")
     def test_unknown_mode_errors(self, mock_get):
@@ -234,6 +236,58 @@ class TestPatchHandler:
         result = json.loads(patch_tool(mode="invalid_mode"))
         assert "error" in result
         assert "Unknown mode" in result["error"]
+        assert result["error_kind"] == "invalid_patch_format"
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_result_errors_include_normalized_error_kind(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"error": "Could not find old_string in file"}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="replace", path="/tmp/f.py",
+            old_string="missing", new_string="replacement"
+        ))
+
+        assert result["error"] == "Could not find old_string in file"
+        assert result["error_kind"] == "match_not_found"
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_result_ambiguous_errors_include_normalized_error_kind(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"error": "Found 3 matches for old_string. Provide more context."}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="replace", path="/tmp/f.py",
+            old_string="foo", new_string="bar"
+        ))
+
+        assert result["error"] == "Found 3 matches for old_string. Provide more context."
+        assert result["error_kind"] == "ambiguous_match"
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_result_lint_errors_include_normalized_error_kind(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"lint": {"success": False, "output": "SyntaxError"}}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="replace", path="/tmp/f.py",
+            old_string="foo", new_string="bar"
+        ))
+
+        assert "error" not in result
+        assert result["error_kind"] == "syntax_check_failed"
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_v4a_rejects_traversal_in_update_header(self, mock_get):
@@ -256,6 +310,7 @@ class TestPatchHandler:
         ))
         assert "error" in result
         assert "traversal" in result["error"].lower()
+        assert result["error_kind"] == "guard_blocked"
         # patch_v4a must not be invoked when the header is rejected
         mock_get.return_value.patch_v4a.assert_not_called()
 
@@ -273,6 +328,7 @@ class TestPatchHandler:
         ))
         assert "error" in result
         assert "traversal" in result["error"].lower()
+        assert result["error_kind"] == "guard_blocked"
 
 
 class TestSearchHandler:

@@ -750,6 +750,10 @@ class TestToolCallOutputBackfill:
             task_id="task-1",
             session_id="session-1",
             tool_call_id="call-1",
+            status="error",
+            error_type="tool_error",
+            error_kind="match_not_found",
+            error_message="Could not find old_string in file",
         )
 
         assert ended["observation"] is observation
@@ -758,6 +762,11 @@ class TestToolCallOutputBackfill:
         assert state.turn_tool_calls[0]["output"] == {
             "results": [{"url": "https://example.com", "content": "Example Domain"}]
         }
+        assert ended["metadata"]["status"] == "error"
+        assert ended["metadata"]["error_type"] == "tool_error"
+        assert ended["metadata"]["error_kind"] == "match_not_found"
+        assert ended["metadata"]["hermes.tool.error_kind"] == "match_not_found"
+        assert ended["metadata"]["error_message"] == "Could not find old_string in file"
 
     def test_serialize_messages_keeps_tool_name_and_call_id(self):
         sys.modules.pop("plugins.observability.langfuse", None)

@@ -562,6 +562,40 @@ def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
         for rp in resolved_paths:
             task_failures.pop(rp, None)
 
+
+def _patch_error_kind(message: str) -> str:
+    """Return a stable, low-cardinality kind for patch tool failures."""
+    msg = str(message or "")
+    lower = msg.lower()
+
+    if "parse error" in lower or "failed to parse patch" in lower:
+        return "invalid_patch_format"
+    if "patch validation failed" in lower:
+        return "invalid_patch_format"
+    if "found " in lower and " matches for old_string" in lower:
+        return "ambiguous_match"
+    if "is ambiguous" in lower or "ambiguous (" in lower:
+        return "ambiguous_match"
+    if "could not find" in lower or "old_string not found" in lower:
+        return "match_not_found"
+    if "old_string cannot be empty" in lower or "old_string and new_string are identical" in lower:
+        return "invalid_patch_format"
+    if "path required" in lower or "old_string and new_string required" in lower or "patch content required" in lower:
+        return "invalid_patch_format"
+    if "apply phase failed" in lower:
+        return "tool_exception"
+    if "failed to read" in lower or "cannot read" in lower:
+        return "tool_exception"
+    if "failed to write" in lower or "failed to add" in lower or "failed to update" in lower:
+        return "tool_exception"
+    if "post-write verification failed" in lower:
+        return "tool_exception"
+    return "tool_exception"
+
+
+def _patch_tool_error(message: str, kind: str | None = None) -> str:
+    return tool_error(message, error_kind=_patch_error_kind(message) if kind is None else kind)
+
 # Per-task bounds for the containers inside each _read_tracker[task_id].
 # A CLI session uses one stable task_id for its lifetime; without these
 # caps, a 10k-read session would accumulate ~1.5MB of dict/set state that
@@ -1349,20 +1383,21 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # because the agent uses relative ``..`` paths legitimately
             # (e.g. ``patch path="../other_module/x.py"`` from a worktree).
             if has_traversal_component(v4a_path):
-                return tool_error(
+                return _patch_tool_error(
                     f"V4A patch header contains '..' traversal: {v4a_path!r}. "
                     "Use the agent's cwd-relative path (no '..') or an absolute "
-                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
+                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers.",
+                    "guard_blocked",
                 )
             _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
-            return tool_error(sensitive_err)
+            return _patch_tool_error(sensitive_err, "guard_blocked")
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
-                return tool_error(cross_warning)
+                return _patch_tool_error(cross_warning, "guard_blocked")
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
@@ -1410,9 +1445,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
             if mode == "replace":
                 if not path:
-                    return tool_error("path required")
+                    return _patch_tool_error("path required", "invalid_patch_format")
                 if old_string is None or new_string is None:
-                    return tool_error("old_string and new_string required")
+                    return _patch_tool_error("old_string and new_string required", "invalid_patch_format")
                 # Pass the resolved ABSOLUTE path to the shell layer so it
                 # operates on the exact file the tool layer resolved — the
                 # shell's own cwd may differ (worktree-cwd bug), and a relative
@@ -1422,12 +1457,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
-                    return tool_error("patch content required")
+                    return _patch_tool_error("patch content required", "invalid_patch_format")
                 result = file_ops.patch_v4a(patch)
             else:
-                return tool_error(f"Unknown mode: {mode}")
+                return _patch_tool_error(f"Unknown mode: {mode}", "invalid_patch_format")
 
             result_dict = result.to_dict()
+            if result_dict.get("error"):
+                result_dict["error_kind"] = _patch_error_kind(str(result_dict["error"]))
+            elif isinstance(result_dict.get("lint"), dict) and result_dict["lint"].get("success") is False:
+                result_dict["error_kind"] = "syntax_check_failed"
             if stale_warnings:
                 result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
             # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
@@ -1490,7 +1529,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
-        return tool_error(str(e))
+        return _patch_tool_error(str(e), "tool_exception")
 
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",

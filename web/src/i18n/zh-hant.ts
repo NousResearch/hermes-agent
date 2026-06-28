@@ -115,6 +115,9 @@ export const zhHant: Translations = {
     eventsDisconnected:
       "events feed disconnected — tool calls may not appear",
     eventsRejected: "events feed rejected ({code}) — reload the page",
+    reasoning: "推理強度",
+    reasoningEffortSet:
+      "推理強度已設為 {effort}。執行 /new 或重新整理頁面後，這次對話才會使用新設定。",
   },
 
   modelPicker: {

@@ -1,6 +1,6 @@
+import type { Locale } from '../i18n/index.js'
 import type { Msg } from '../types.js'
 
-import type { Locale } from '../i18n/index.js'
 import { userDisplay } from './messages.js'
 
 const upperBound = (offsets: ArrayLike<number>, target: number) => {

@@ -13,10 +13,10 @@ import { en as ko } from './ko.js'
 import { en as pt } from './pt.js'
 import { en as ru } from './ru.js'
 import { en as tr } from './tr.js'
+import { type LangPack, type Locale, LOCALES } from './types.js'
 import { en as uk } from './uk.js'
-import { zh } from './zh.js'
 import { en as zhHant } from './zh-hant.js'
-import { LOCALES, type LangPack, type Locale } from './types.js'
+import { zh } from './zh.js'
 
 // ── Re-export the public type surface ──────────────────────────
 export { LOCALES }
@@ -63,44 +63,60 @@ const interpolate = (template: string, vars: Record<string, string | number> = {
   template.replace(/\{(\w+)\}/g, (_m, key: string) => String(vars[key] ?? `{${key}}`))
 
 export const normalizeLocale = (value: unknown): Locale => {
-  if (typeof value !== 'string') return 'en'
+  if (typeof value !== 'string') {return 'en'}
   const raw = value.trim().toLowerCase()
-  if (!raw) return 'en'
+
+  if (!raw) {return 'en'}
 
   // Direct matches against the supported set.
-  if ((LOCALES as readonly string[]).includes(raw)) return raw as Locale
+  if ((LOCALES as readonly string[]).includes(raw)) {return raw as Locale}
 
   // Canonical aliases — one-to-one with agent/i18n.py _LANGUAGE_ALIASES.
   // English + Chinese
-  if (raw === 'en-us' || raw === 'en-gb' || raw === 'english') return 'en'
-  if (raw === 'zh-cn' || raw === 'zh-hans' || raw === 'zh-sg' || raw === 'chinese' || raw === 'mandarin') return 'zh'
-  if (raw === 'zh-tw' || raw === 'zh-hk' || raw === 'zh-mo' || raw === 'traditional-chinese' || raw === 'traditional_chinese') return 'zh-hant'
+  if (raw === 'en-us' || raw === 'en-gb' || raw === 'english') {return 'en'}
+
+  if (raw === 'zh-cn' || raw === 'zh-hans' || raw === 'zh-sg' || raw === 'chinese' || raw === 'mandarin') {return 'zh'}
+
+  if (raw === 'zh-tw' || raw === 'zh-hk' || raw === 'zh-mo' || raw === 'traditional-chinese' || raw === 'traditional_chinese') {return 'zh-hant'}
+
   // Japanese
-  if (raw === 'japanese' || raw === 'jp' || raw === 'ja-jp') return 'ja'
+  if (raw === 'japanese' || raw === 'jp' || raw === 'ja-jp') {return 'ja'}
+
   // German
-  if (raw === 'german' || raw === 'deutsch' || raw === 'de-de' || raw === 'de-at' || raw === 'de-ch') return 'de'
+  if (raw === 'german' || raw === 'deutsch' || raw === 'de-de' || raw === 'de-at' || raw === 'de-ch') {return 'de'}
+
   // Spanish
-  if (raw === 'spanish' || raw === 'español' || raw === 'espanol' || raw === 'es-es' || raw === 'es-mx' || raw === 'es-ar') return 'es'
+  if (raw === 'spanish' || raw === 'español' || raw === 'espanol' || raw === 'es-es' || raw === 'es-mx' || raw === 'es-ar') {return 'es'}
+
   // French
-  if (raw === 'french' || raw === 'français' || raw === 'france' || raw === 'fr-fr' || raw === 'fr-be' || raw === 'fr-ca' || raw === 'fr-ch') return 'fr'
+  if (raw === 'french' || raw === 'français' || raw === 'france' || raw === 'fr-fr' || raw === 'fr-be' || raw === 'fr-ca' || raw === 'fr-ch') {return 'fr'}
+
   // Ukrainian
-  if (raw === 'ukrainian' || raw === 'ukrainisch' || raw === 'українська' || raw === 'uk-ua' || raw === 'ua') return 'uk'
+  if (raw === 'ukrainian' || raw === 'ukrainisch' || raw === 'українська' || raw === 'uk-ua' || raw === 'ua') {return 'uk'}
+
   // Turkish
-  if (raw === 'turkish' || raw === 'türkçe' || raw === 'tr-tr') return 'tr'
+  if (raw === 'turkish' || raw === 'türkçe' || raw === 'tr-tr') {return 'tr'}
+
   // Afrikaans
-  if (raw === 'afrikaans' || raw === 'af-za') return 'af'
+  if (raw === 'afrikaans' || raw === 'af-za') {return 'af'}
+
   // Korean
-  if (raw === 'korean' || raw === '한국어' || raw === 'ko-kr') return 'ko'
+  if (raw === 'korean' || raw === '한국어' || raw === 'ko-kr') {return 'ko'}
+
   // Italian
-  if (raw === 'italian' || raw === 'italiano' || raw === 'it-it' || raw === 'it-ch') return 'it'
+  if (raw === 'italian' || raw === 'italiano' || raw === 'it-it' || raw === 'it-ch') {return 'it'}
+
   // Irish
-  if (raw === 'irish' || raw === 'gaeilge' || raw === 'ga-ie') return 'ga'
+  if (raw === 'irish' || raw === 'gaeilge' || raw === 'ga-ie') {return 'ga'}
+
   // Portuguese
-  if (raw === 'portuguese' || raw === 'português' || raw === 'portugues' || raw === 'pt-pt' || raw === 'pt-br' || raw === 'brazilian' || raw === 'brasileiro') return 'pt'
+  if (raw === 'portuguese' || raw === 'português' || raw === 'portugues' || raw === 'pt-pt' || raw === 'pt-br' || raw === 'brazilian' || raw === 'brasileiro') {return 'pt'}
+
   // Russian
-  if (raw === 'russian' || raw === 'русский' || raw === 'ru-ru') return 'ru'
+  if (raw === 'russian' || raw === 'русский' || raw === 'ru-ru') {return 'ru'}
+
   // Hungarian
-  if (raw === 'hungarian' || raw === 'magyar' || raw === 'hu-hu') return 'hu'
+  if (raw === 'hungarian' || raw === 'magyar' || raw === 'hu-hu') {return 'hu'}
 
   return 'en'
 }
@@ -108,6 +124,7 @@ export const normalizeLocale = (value: unknown): Locale => {
 export const translate = (locale: Locale, key: TranslationKey, vars?: Record<string, string | number>) => {
   const pack = getPack(locale)
   const value = (pack.catalog as Record<string, string>)[key] ?? (en.catalog as Record<string, string>)[key] ?? key
+
   return typeof value === 'string' ? interpolate(value, vars) : key
 }
 
@@ -142,6 +159,7 @@ export function I18nProvider({ children, locale }: { children: ReactNode; locale
     }),
     [locale]
   )
+
   return <I18nContext.Provider value={api}>{children}</I18nContext.Provider>
 }
 
@@ -152,6 +170,7 @@ export const toolsetLabel = (raw: string, locale: Locale): string => {
   const key = raw.endsWith('_tools') ? raw.slice(0, -6) : raw
   const pack = getPack(locale)
   const label = (pack.catalog as Record<string, string>)[`toolset.${key}`]
+
   return label ?? (en.catalog as Record<string, string>)[`toolset.${key}`] ?? key
 }
 

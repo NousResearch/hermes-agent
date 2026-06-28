@@ -115,6 +115,9 @@ export const pt: Translations = {
     eventsDisconnected:
       "events feed disconnected — tool calls may not appear",
     eventsRejected: "events feed rejected ({code}) — reload the page",
+    reasoning: "reasoning",
+    reasoningEffortSet:
+      "Reasoning effort set to {effort}. Run /new or refresh the page to apply it to this chat.",
   },
 
   modelPicker: {

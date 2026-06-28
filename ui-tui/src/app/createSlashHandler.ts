@@ -100,6 +100,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         if (d.notice?.trim()) {
           sys(d.notice)
         }
+
         return d.message?.trim() ? send(d.message) : sys(translate(ui.locale, 'command.emptyMessage', { command: parsed.name }))
       }
 
@@ -110,6 +111,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         if (d.notice?.trim()) {
           sys(d.notice)
         }
+
         if (d.message) {
           ctx.composer.setInput(d.message)
         }

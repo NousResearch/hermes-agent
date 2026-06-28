@@ -1,11 +1,11 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
-import { useI18n } from '../i18n/index.js'
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
+import { useI18n } from '../i18n/index.js'
 import { fuzzyRank } from '../lib/fuzzy.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -17,6 +17,16 @@ const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
 type Stage = 'provider' | 'key' | 'model' | 'disconnect'
+
+type ProviderRow = { name: string; provider: ModelOptionProvider }
+
+export function providerIndexAfterClearingFilter(providerRows: ProviderRow[], provider: ModelOptionProvider | undefined) {
+  if (!provider) {
+    return -1
+  }
+
+  return providerRows.findIndex(row => row.provider.slug === provider.slug)
+}
 
 export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
   const { t: ti } = useI18n()
@@ -126,8 +136,17 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
     if ((stage === 'provider' || stage === 'model') && filter.trim()) {
+      // Preserve the selected provider across filter clear (same fix as
+      // Enter→key/model and Ctrl+D transitions above).
+      const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+      if (fullProviderIdx >= 0) {
+        setProviderIdx(fullProviderIdx)
+      } else if (stage === 'provider') {
+        setProviderIdx(0)
+      }
+
       setFilter('')
-      setProviderIdx(stage === 'provider' ? 0 : providerIdx)
       setModelIdx(0)
 
       return
@@ -309,6 +328,12 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         if (provider.authenticated === false) {
           // api_key providers: prompt for key inline
           if (provider.auth_type === 'api_key' && provider.key_env) {
+            const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+            if (fullProviderIdx >= 0) {
+              setProviderIdx(fullProviderIdx)
+            }
+
             setStage('key')
             setKeyInput('')
             setKeyError('')
@@ -317,6 +342,12 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 
           // Other auth types: no-op (warning shown tells them to run hermes model)
           return
+        }
+
+        const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+        if (fullProviderIdx >= 0) {
+          setProviderIdx(fullProviderIdx)
         }
 
         setStage('model')
@@ -367,7 +398,14 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 
     // Disconnect (Ctrl+D): only in provider stage, only for authenticated providers.
     if (key.ctrl && ch === 'd' && stage === 'provider' && provider?.authenticated !== false) {
+      const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+      if (fullProviderIdx >= 0) {
+        setProviderIdx(fullProviderIdx)
+      }
+
       setStage('disconnect')
+      setFilter('')
 
       return
     }

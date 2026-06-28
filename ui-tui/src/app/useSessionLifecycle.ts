@@ -2,10 +2,9 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import { type RefObject, useCallback } from 'react'
+import { type RefObject, useCallback, useEffect, useRef } from 'react'
 
 import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
-import { translate, type TranslationKey } from '../i18n/index.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
@@ -18,6 +17,7 @@ import type {
   SessionTitleResponse,
   SetupStatusResponse
 } from '../gatewayTypes.js'
+import { translate, type TranslationKey } from '../i18n/index.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
@@ -67,6 +67,35 @@ export const hydrateLiveSessionInflight = (inflight?: null | SessionInflightTurn
   }
 
   turnController.hydrateStreamingText(assistant)
+}
+
+export const scheduleResumeScrollToBottom = (
+  scrollRef: RefObject<null | ScrollBoxHandle>,
+  delays: readonly number[] = [0, 80, 240]
+) => {
+  const startedAt = Date.now()
+
+  const timers = delays.map((delay, index) =>
+    setTimeout(() => {
+      const scroll = scrollRef.current
+
+      if (!scroll) {
+        return
+      }
+
+      const manuallyScrolledAfterResume = scroll.getLastManualScrollAt() > startedAt
+
+      if (!manuallyScrolledAfterResume && (index === 0 || scroll.isSticky())) {
+        scroll.scrollToBottom()
+      }
+    }, delay)
+  )
+
+  return () => {
+    for (const timer of timers) {
+      clearTimeout(timer)
+    }
+  }
 }
 
 const trimTail = (items: Msg[]) => {
@@ -122,9 +151,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     [rpc]
   )
 
+  const cancelResumeScrollRef = useRef<null | (() => void)>(null)
+
   const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(getUiState().locale, key, vars)
 
   const resetSession = useCallback(() => {
+    cancelResumeScrollRef.current?.()
+    cancelResumeScrollRef.current = null
     turnController.fullReset()
     setVoiceRecording(false)
     setVoiceProcessing(false)
@@ -137,6 +170,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     // the user resumes back to the prior session.
     evictInkCaches('half')
   }, [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt, setVoiceProcessing, setVoiceRecording])
+
+  useEffect(
+    () => () => {
+      cancelResumeScrollRef.current?.()
+      cancelResumeScrollRef.current = null
+    },
+    []
+  )
 
   const resetVisibleHistory = useCallback(
     (info: null | SessionInfo = null) => {
@@ -283,7 +324,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
-          setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
+          cancelResumeScrollRef.current?.()
+          cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
         .catch((e: Error) => {
           sys(`error: ${e.message}`)
@@ -337,12 +379,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)
+            cancelResumeScrollRef.current?.()
+            cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
 
             if (previousSid && previousSid !== r.session_id) {
               void closeSession(previousSid)
             }
 
-            setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
           })
           .catch((e: Error) => {
             sys(ti('errors.rpc', { message: e.message }))

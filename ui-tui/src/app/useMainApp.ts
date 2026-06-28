@@ -461,7 +461,7 @@ export function useMainApp(gw: GatewayClient) {
 
       return null
     },
-    [gw, sys]
+    [gw, sys, ti]
   )
 
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
@@ -478,11 +478,14 @@ export function useMainApp(gw: GatewayClient) {
     process.exit(0)
   }, [exit, gw])
 
-  const dieWithCode = useCallback((code: number) => {
-    gw.kill(`app.dieWithCode:${code}`)
-    exit()
-    process.exit(code)
-  }, [exit, gw])
+  const dieWithCode = useCallback(
+    (code: number) => {
+      gw.kill(`app.dieWithCode:${code}`)
+      exit()
+      process.exit(code)
+    },
+    [exit, gw]
+  )
 
   const session = useSessionLifecycle({
     colsRef,
@@ -536,8 +539,7 @@ export function useMainApp(gw: GatewayClient) {
             // round-trip is needed.
             const currentSid = getUiState().sid
 
-            const sessionTitle =
-              result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
+            const sessionTitle = result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
 
             // Only patch when something actually changed. patchUiState always
             // produces a new state object, which notifies every $uiState
@@ -668,7 +670,7 @@ export function useMainApp(gw: GatewayClient) {
           sys(r.message || ti('paste.noImage'))
         }
       }),
-    [rpc, sys]
+    [rpc, sys, ti, ui.locale]
   )
 
   clipboardPasteRef.current = paste
@@ -761,7 +763,6 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      clearSelection,
       composerActions.setInput,
       gateway,
       panel,
@@ -825,7 +826,7 @@ export function useMainApp(gw: GatewayClient) {
       gw.off('event', handler)
       gw.off('exit', exitHandler)
     }
-  }, [gw, sys])
+  }, [gw, sys, ti])
 
   useLongRunToolCharms()
 
@@ -869,6 +870,7 @@ export function useMainApp(gw: GatewayClient) {
       composerActions,
       composerRefs,
       die,
+      dieWithCode,
       gateway,
       hasSelection,
       maybeWarn,
@@ -1057,10 +1059,7 @@ export function useMainApp(gw: GatewayClient) {
       closeLiveSession,
       newPromptSession,
       onModelSelect,
-      session.activateLiveSession,
-      session.guardBusySessionSwitch,
-      session.newLiveSession,
-      session.resumeById
+      session
     ]
   )
 

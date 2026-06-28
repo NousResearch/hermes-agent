@@ -58,7 +58,7 @@ _DEFAULT_ROOTS = ["tests"]
 #
 #   tests/e2e/         — .github/workflows/tests.yml :: e2e job
 #   tests/integration/ — historical; legacy --ignore flags
-#   tests/docker/      — .github/workflows/docker-publish.yml ::
+#   tests/docker/      — .github/workflows/docker.yml ::
 #                        build-amd64 job (runs against the freshly-loaded
 #                        nousresearch/hermes-agent:test image, via
 #                        ``HERMES_TEST_IMAGE`` so the fixture skips
@@ -80,62 +80,27 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at com
 _DURATIONS_FILE = "test_durations.json"
 
 
-def _count_tests(
-    files: List[Path], repo_root: Path, pytest_passthrough: List[str]
+def _approximately_count_tests(
+    files: List[Path], repo_root: Path
 ) -> dict[Path, int]:
-    """Run ``pytest --co -q`` once to count individual tests per file.
+    """
+    Make a decent estimate at individual tests per file.
+    Running ``pytest --co -q`` is WAY too slow because it actually imports everything.
 
     Returns a mapping ``{file_path: test_count}``. Files with zero
     collected tests are omitted from the dict (not an error — e.g. the
     file only defines fixtures / conftest helpers).
 
-    This is a single subprocess call (~2-5s for ~1k files) that gives
-    us the total test count for the discovery announcement and
-    per-file counts for the progress lines.
-
-    ``--ignore`` flags for directories in ``_SKIP_PARTS`` are added
-    automatically so that pytest's own collection machinery (conftest
-    walking, directory traversal) doesn't pull in tests we intend to
-    skip — matching what the per-file runs will actually execute.
     """
-    # Build --ignore flags for skipped dirs so the --co collection
-    # mirrors what we'll actually run (not what pytest might find via
-    # conftest walking or directory traversal).
-    ignore_args: List[str] = []
-    for root in [repo_root / p for p in _DEFAULT_ROOTS]:
-        for part in _SKIP_PARTS:
-            d = root / part
-            if d.is_dir():
-                ignore_args.extend(["--ignore", str(d)])
 
-    cmd = [
-        sys.executable, "-m", "pytest",
-        "--co", "-q",
-        *ignore_args,
-        *[str(f) for f in files],
-        *pytest_passthrough,
-    ]
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return {}
+    results = {}
 
-    counts: dict[Path, int] = {}
-    for line in result.stdout.splitlines():
-        # Lines look like: tests/acp/test_auth.py::TestClass::test_name
-        if "::" not in line:
-            continue
-        file_part = line.split("::", 1)[0]
-        key = repo_root / file_part
-        counts[key] = counts.get(key, 0) + 1
+    for path in files:
+        with open(path, "r", encoding="utf-8") as f:
+            contents = f.read()
+        results[path] = contents.count("def test_")
 
-    return counts
+    return results
 
 
 def _discover_files(roots: List[Path]) -> List[Path]:
@@ -390,7 +355,7 @@ def _format_file(file: Path, repo_root: Path) -> str:
 
 def _print_progress(
     tests_done: int,
-    total_tests: int,
+    approx_total_tests: int,
     file: Path,
     rc: int,
     dur: float,
@@ -412,7 +377,7 @@ def _print_progress(
     time and the queue-inclusive elapsed time.
     """
     status = "✓" if rc == 0 else "✗"
-    pct = (tests_done / total_tests * 100) if total_tests else 0
+    pct = min((tests_done / approx_total_tests * 100), 100) if approx_total_tests else 0
     # Digit width for left-side counter padding (derived from total file count).
     fw = len(str(tests_passed + tests_failed))
     # Build per-file test count string.
@@ -447,7 +412,7 @@ def _print_progress(
     else:
         time_str = f"{dur:.1f}s"
     msg = (
-        f"[{pct:5.1f}% | {tests_done:>5}/{total_tests}"
+        f"[{pct:5.1f}% | {tests_done:>5}/~{approx_total_tests}"
         f" | ✓{tests_passed:>{fw}} | ✗{tests_failed:>{fw}}] "
         f"{status} {_format_file(file, repo_root)} ({test_str}{time_str})"
     )
@@ -504,7 +469,8 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
         return {}
     try:
         return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        print("[ERROR] Failed to load json durations file! {e}")
         return {}
 
 
@@ -527,38 +493,27 @@ def _save_durations(
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
-def _slice_files(
+def _compute_lpt_slices(
     files: List[Path],
-    slice_index: int,
     slice_count: int,
     durations: dict[str, float],
     repo_root: Path,
-) -> List[Path]:
-    """Return the subset of *files* belonging to slice *slice_index*.
+) -> List[List[Path]]:
+    """Distribute files across N slices using LPT (Longest Processing Time first).
 
-    Uses **Longest Processing Time first** (LPT) distribution: sort files
-    by estimated duration descending, then greedily assign each file to
-    the slice with the smallest accumulated time so far. This minimizes
-    the makespan (max slice duration) and keeps CI jobs balanced.
+    Sorts files by estimated duration descending, then greedily assigns each
+    file to the slice with the smallest accumulated time so far. This
+    minimizes the makespan (max slice duration) and keeps CI jobs balanced.
 
     Files with no cached duration get a default estimate of 2.0s (roughly
-    the P50 from profiling). This means first-time ``--slice`` runs
-    (no cache) still get reasonable distribution, and new files don't
-    all land in one slice.
+    the P50 from profiling). This means first-time runs (no cache) still
+    get reasonable distribution, and new files don't all land in one slice.
 
-    ``slice_index`` is 1-indexed (1..slice_count) for ergonomics —
-    ``--slice 1/4`` reads more naturally than ``--slice 0/4``.
+    Returns a list of N file-lists, one per slice (0-indexed).
     """
     if slice_count < 2:
-        return files
-    if not (1 <= slice_index <= slice_count):
-        print(
-            f"error: --slice index must be 1..{slice_count}, got {slice_index}",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+        return [files]
 
-    # Build (file, estimated_duration) pairs.
     default_dur = 2.0
     file_durs: List[Tuple[Path, float]] = []
     for f in files:
@@ -575,15 +530,47 @@ def _slice_files(
     bucket_totals: List[float] = [0.0] * slice_count
 
     for f, dur in file_durs:
-        # Find the least-loaded bucket.
         min_idx = min(range(slice_count), key=lambda i: bucket_totals[i])
         bucket_files[min_idx].append(f)
         bucket_totals[min_idx] += dur
 
-    # Print slice summary for visibility.
+    return bucket_files
+
+
+def _slice_files(
+    files: List[Path],
+    slice_index: int,
+    slice_count: int,
+    durations: dict[str, float],
+    repo_root: Path,
+) -> List[Path]:
+    """Return the subset of *files* belonging to slice *slice_index*.
+
+    Uses :func:`_compute_lpt_slices` for LPT distribution.
+
+    ``slice_index`` is 1-indexed (1..slice_count) for ergonomics —
+    ``--slice 1/4`` reads more naturally than ``--slice 0/4``.
+    """
+    if slice_count < 2:
+        return files
+    if not (1 <= slice_index <= slice_count):
+        print(
+            f"error: --slice index must be 1..{slice_count}, got {slice_index}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    bucket_files = _compute_lpt_slices(files, slice_count, durations, repo_root)
+
     target = bucket_files[slice_index - 1]
-    target_dur = bucket_totals[slice_index - 1]
-    total_dur = sum(bucket_totals)
+    target_dur = sum(
+        durations.get(_format_file(f, repo_root), 2.0) for f in target
+    )
+    total_dur = sum(
+        durations.get(_format_file(f, repo_root), 2.0)
+        for bucket in bucket_files
+        for f in bucket
+    )
     print(
         f"Slice {slice_index}/{slice_count}: {len(target)} files "
         f"(~{target_dur:.0f}s estimated of {total_dur:.0f}s total)",
@@ -639,6 +626,27 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--generate-slices",
+        metavar="N",
+        type=int,
+        help=(
+            "Discover test files, distribute them across N slices using "
+            "LPT on cached durations, and print a JSON matrix to stdout "
+            "then exit (no tests run). The JSON has the shape "
+            "'{\"slices\": [{\"index\": 1, \"files\": [\"tests/foo.py\", ...]}, ...]}' "
+            "so the CI generate job can feed it directly into a matrix."
+        ),
+    )
+    parser.add_argument(
+        "--files",
+        metavar="LIST",
+        help=(
+            "Explicit colon-separated list of test files to run. Bypasses "
+            "discovery entirely — used by CI matrix jobs that receive their "
+            "file list from the generate job."
+        ),
+    )
+    parser.add_argument(
         "paths_positional",
         nargs="*",
         metavar="PATH",
@@ -676,29 +684,51 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
 
-    # Resolve discovery roots: positional path args override --paths if any
-    # were supplied, otherwise --paths (which itself defaults to 'tests').
-    if args.paths_positional:
-        # Positionals can be directories OR explicit .py files. Either is
-        # fine — _discover_files handles both via rglob('test_*.py') for
-        # dirs and direct inclusion for files.
-        roots = [repo_root / p for p in args.paths_positional]
+    # --files: explicit file list from the CI generate job — skip discovery.
+    if args.files:
+        files = [repo_root / f for f in args.files.split(":") if f.strip()]
+        roots = []
     else:
-        roots = [repo_root / p for p in args.paths.split(":") if p]
+        # Resolve discovery roots: positional path args override --paths if any
+        # were supplied, otherwise --paths (which itself defaults to 'tests').
+        if args.paths_positional:
+            roots = [repo_root / p for p in args.paths_positional]
+        else:
+            roots = [repo_root / p for p in args.paths.split(":") if p]
 
-    if args.include_integration:
-        # Caller takes responsibility — typically used via explicit -k filter.
-        global _SKIP_PARTS  # noqa: PLW0603 — config knob
-        _SKIP_PARTS = set()
+        if args.include_integration:
+            # Caller takes responsibility — typically used via explicit -k filter.
+            global _SKIP_PARTS  # noqa: PLW0603 — config knob
+            _SKIP_PARTS = set()
 
-    files = _discover_files(roots)
+        files = _discover_files(roots)
+
     if not files:
-        print(f"No test files discovered under {[str(r) for r in roots]}", file=sys.stderr)
+        print(f"No test files to run", file=sys.stderr)
         return 1
 
-    # Count individual tests per file via a single pytest --co pass.
-    test_counts = _count_tests(files, repo_root, pytest_passthrough)
-    total_tests = sum(test_counts.values())
+    # --generate-slices: compute LPT distribution and emit JSON, then exit.
+    if args.generate_slices is not None:
+        durations = _load_durations(repo_root)
+        slices = _compute_lpt_slices(
+            files, args.generate_slices, durations, repo_root
+        )
+        matrix = {
+            "slice": [
+                {
+                    "index": i + 1,
+                    "files": ":".join(_format_file(f, repo_root) for f in bucket),
+                }
+                for i, bucket in enumerate(slices)
+            ]
+        }
+        # Print to stdout so the CI step can capture it with $().
+        print(json.dumps(matrix))
+        return 0
+
+    # Count individual tests per file
+    test_counts = _approximately_count_tests(files, repo_root)
+    approx_total_tests = sum(test_counts.values())
 
     # Apply slicing if requested — distribute files across CI jobs by
     # estimated duration so no one job gets all the slow files.
@@ -707,14 +737,21 @@ def main() -> int:
         files = _slice_files(files, slice_index, slice_count, durations, repo_root)
         # Recount after slicing.
         test_counts = {f: test_counts[f] for f in files if f in test_counts}
-        total_tests = sum(test_counts.values())
+        approx_total_tests = sum(test_counts.values())
 
-    print(
-        f"Discovered {len(files)} test files ({total_tests} tests) under "
-        f"{[str(r.relative_to(repo_root)) if r.is_relative_to(repo_root) else str(r) for r in roots]}; "
-        f"running with -j {args.jobs}",
-        flush=True,
-    )
+    if roots:
+        roots_str = [str(r.relative_to(repo_root)) if r.is_relative_to(repo_root) else str(r) for r in roots]
+        print(
+            f"Discovered {len(files)} test files (~{approx_total_tests} tests) under "
+            f"{roots_str}; running with -j {args.jobs}",
+            flush=True,
+        )
+    else:
+        print(
+            f"Running {len(files)} test files (~{approx_total_tests} tests) "
+            f"with -j {args.jobs}",
+            flush=True,
+        )
 
     # Capture and print on completion (out-of-order is fine — keeps the
     # terminal clean rather than interleaving N parallel pytest outputs).
@@ -741,7 +778,7 @@ def main() -> int:
                 fail_count += 1
                 failures.append((file, f"runner crashed: {exc!r}", {}))
                 _print_progress(
-                    tests_done, total_tests, file, 1,
+                    tests_done, approx_total_tests, file, 1,
                     time.monotonic() - started_at,
                     repo_root, tests_passed, tests_failed,
                     test_counts,
@@ -761,7 +798,7 @@ def main() -> int:
                 fail_count += 1
                 failures.append((fpath, output, summary))
             _print_progress(
-                tests_done, total_tests, fpath, rc,
+                tests_done, approx_total_tests, fpath, rc,
                 time.monotonic() - started_at,
                 repo_root, tests_passed, tests_failed,
                 test_counts,
@@ -788,7 +825,7 @@ def main() -> int:
 
     elapsed = time.monotonic() - started
     print()
-    pct = (tests_done / total_tests * 100) if total_tests else 0
+    pct = min(100, (tests_done / approx_total_tests * 100)) if approx_total_tests else 0
     print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
 
     # Save durations for future --slice runs. Each slice writes its own

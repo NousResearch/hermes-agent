@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest'
 
-import { en, type TranslationKey } from '../i18n/en.js'
-import { zh } from '../i18n/zh.js'
 // Shell packs all export `{ en }` — import with locale-specific aliases
 import { en as af } from '../i18n/af.js'
 import { en as de } from '../i18n/de.js'
+import { en, type TranslationKey } from '../i18n/en.js'
 import { en as es } from '../i18n/es.js'
 import { en as fr } from '../i18n/fr.js'
 import { en as ga } from '../i18n/ga.js'
 import { en as hu } from '../i18n/hu.js'
+import {
+  getThinkingVerbs,
+  getToolVerb,
+  LOCALES,
+  normalizeLocale,
+  shouldEllipsisVerb,
+  toolsetLabel,
+  translate,
+  translateStatus,
+} from '../i18n/index.js'
 import { en as itLang } from '../i18n/it.js'
 import { en as ja } from '../i18n/ja.js'
 import { en as ko } from '../i18n/ko.js'
@@ -17,16 +26,7 @@ import { en as ru } from '../i18n/ru.js'
 import { en as tr } from '../i18n/tr.js'
 import { en as uk } from '../i18n/uk.js'
 import { en as zhHant } from '../i18n/zh-hant.js'
-import {
-  LOCALES,
-  getThinkingVerbs,
-  getToolVerb,
-  normalizeLocale,
-  shouldEllipsisVerb,
-  toolsetLabel,
-  translate,
-  translateStatus,
-} from '../i18n/index.js'
+import { zh } from '../i18n/zh.js'
 
 // ── Shell packs: 14 languages that re-export English until translated ──
 const SHELL_PACKS: [string, typeof en][] = [
@@ -242,6 +242,7 @@ describe('verbStyle', () => {
   it('getThinkingVerbs returns verbs array for each locale', () => {
     expect(getThinkingVerbs('en')).toEqual(en.verbs)
     expect(getThinkingVerbs('zh')).toEqual(zh.verbs)
+
     for (const [name] of SHELL_PACKS) {
       expect(getThinkingVerbs(name as (typeof LOCALES)[number])).toEqual(en.verbs)
     }
@@ -341,6 +342,7 @@ describe('toolsetLabel', () => {
 describe('TRAIL_PATTERNS', () => {
   it('every locale has a trail entry', async () => {
     const { TRAIL_PATTERNS } = await import('../i18n/index.js')
+
     for (const loc of LOCALES) {
       expect(TRAIL_PATTERNS[loc]).toBeDefined()
       expect(typeof TRAIL_PATTERNS[loc].draftPrefix).toBe('string')

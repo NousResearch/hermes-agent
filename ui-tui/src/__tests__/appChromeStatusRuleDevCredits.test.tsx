@@ -2,7 +2,8 @@ import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { StatusRuleView } from '../components/appChrome.js'
-import { getThinkingVerbs, getToolVerb, translate, translateStatus, type I18nApi } from '../i18n/index.js'
+import type * as EnvModule from '../config/env.js'
+import { getThinkingVerbs, getToolVerb, type I18nApi, translate, translateStatus } from '../i18n/index.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 // DEV_CREDITS_MODE is a module-load-time constant (config/env.ts reads
@@ -11,8 +12,9 @@ import { DEFAULT_THEME } from '../theme.js'
 // the dev-on value for this file. vitest hoists vi.mock above the imports, so
 // appChrome picks up the mocked flag. Lives in its own file so the override
 // stays scoped (the other StatusRule tests run with the real, dev-off value).
-vi.mock('../config/env.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../config/env.js')>()
+vi.mock('../config/env.js', async importOriginal => {
+  const actual = await importOriginal<typeof EnvModule>()
+
   return { ...actual, DEV_CREDITS_MODE: true }
 })
 
@@ -54,13 +56,16 @@ const baseProps = {
   liveSessionCount: 0,
   model: 'opus-4.8',
   sessionStartedAt: null,
-  showCost: false,
   status: 'ready',
   statusColor: DEFAULT_THEME.color.ok,
+  i18n: enI18n,
   t: DEFAULT_THEME,
   turnStartedAt: null,
   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
-  voiceLabel: ''
+  voiceEnabled: false,
+  voiceProcessing: false,
+  voiceRecording: false,
+  voiceTts: false
 }
 
 describe('StatusRule dev-credits banner (HERMES_DEV_CREDITS on)', () => {

@@ -1,7 +1,7 @@
 import { LONG_MSG } from '../config/limits.js'
+import { type Locale, translate } from '../i18n/index.js'
 import { buildToolTrailLine, fmtK } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
-import { type Locale, translate } from '../i18n/index.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 

@@ -1,7 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 
 import { HOTKEYS } from '../content/hotkeys.js'
-import { useI18n, type TranslationKey } from '../i18n/index.js'
+import { type TranslationKey, useI18n } from '../i18n/index.js'
 import type { Theme } from '../theme.js'
 
 const COMMON_COMMAND_KEYS: [string, TranslationKey][] = [
@@ -18,6 +18,7 @@ const HOTKEY_PREVIEW = HOTKEYS.slice(0, 8)
 export function HelpHint({ t }: { t: Theme }) {
   const { t: ti } = useI18n()
   const COMMON_COMMANDS: [string, string][] = COMMON_COMMAND_KEYS.map(([k, key]) => [k, ti(key)])
+
   const labelW = Math.max(
     ...COMMON_COMMANDS.map(([k]) => k.length),
     ...HOTKEY_PREVIEW.map(([k]) => k.length)

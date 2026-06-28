@@ -396,7 +396,9 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
   const localTokens = inputTokens + outputTokens
   const subtreeTokens = agg.inputTokens + agg.outputTokens - localTokens
   const localCost = item.costUsd ?? 0
-  const subtreeCost = agg.costUsd - localCost
+  const subtreeCost = Math.max(0, agg.costUsd - localCost)
+  const subtreeCostText = subtreeCost >= 0.01 ? fmtCost(subtreeCost) : ''
+  const showBudget = localTokens > 0 || subtreeTokens > 0 || localCost > 0 || Boolean(subtreeCostText)
 
   const filesRead = item.filesRead ?? []
   const filesWritten = item.filesWritten ?? []
@@ -430,7 +432,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
         {item.apiCalls ? <Field name="api calls" t={t} value={String(item.apiCalls)} /> : null}
       </Box>
 
-      {localTokens > 0 || localCost > 0 ? (
+      {showBudget ? (
         <OverlaySection defaultOpen t={t} title={ti('section.budget')}>
           {localTokens > 0 ? (
             <Field
@@ -445,6 +447,8 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
             />
           ) : null}
 
+          {subtreeTokens > 0 ? <Field name="subtree tokens" t={t} value={`+${fmtTokens(subtreeTokens)}`} /> : null}
+
           {localCost > 0 ? (
             <Field
               name="cost"
@@ -452,13 +456,11 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
               value={
                 <>
                   {fmtCost(localCost)}
-                  {subtreeCost >= 0.01 ? ` · subtree +${fmtCost(subtreeCost)}` : ''}
+                  {subtreeCostText ? ` · subtree +${subtreeCostText}` : ''}
                 </>
               }
             />
           ) : null}
-
-          {subtreeTokens > 0 ? <Field name="subtree tokens" t={t} value={`+${fmtTokens(subtreeTokens)}`} /> : null}
         </OverlaySection>
       ) : null}
 
@@ -638,7 +640,6 @@ function DiffView({
 
   const round = (n: number) => String(Math.round(n))
   const sumTokens = (x: typeof aTotals) => x.inputTokens + x.outputTokens
-  const dollars = (n: number) => fmtCost(n) || '$0.00'
 
   return (
     <Box flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
@@ -671,7 +672,6 @@ function DiffView({
           {diffMetricLine('duration', aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
         </Text>
         <Text color={t.color.text}>{diffMetricLine('tokens', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}</Text>
-        <Text color={t.color.text}>{diffMetricLine('cost', aTotals.costUsd, bTotals.costUsd, dollars)}</Text>
       </Box>
     </Box>
   )
@@ -758,7 +758,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       setCursor(0)
       setFlash(ti('agents.turnFinished'))
     }
-  }, [history.length, historyIndex, liveSubagents.length])
+  }, [history.length, historyIndex, liveSubagents.length, ti])
 
   useEffect(() => {
     // Reset detail scroll on navigation so the top of the new node shows.
@@ -972,12 +972,14 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const controlsHint = replayMode
     ? ti('agents.controlsLocked')
     : ti('agents.controlsLive', { action: delegation.paused ? ti('agents.resume') : ti('agents.pause') })
+
   const sortLabel = ti(({
     'depth-first': 'agents.sort.depthFirst',
     'duration-desc': 'agents.sort.durationDesc',
     status: 'agents.sort.status',
     'tools-desc': 'agents.sort.toolsDesc'
   } as const)[sort])
+
   const filterLabel = ti(({
     all: 'agents.filter.all',
     failed: 'agents.filter.failed',

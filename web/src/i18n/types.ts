@@ -139,6 +139,8 @@ export interface Translations {
     noToolCalls: string;
     eventsDisconnected: string;
     eventsRejected: string;
+    reasoning: string;
+    reasoningEffortSet: string;
   };
 
   // ── Model picker dialog ──
@@ -170,6 +172,7 @@ export interface Translations {
     agent: string;
     connected: string;
     connectedPlatforms: string;
+    disabled?: string;
     disconnected: string;
     error: string;
     failed: string;

@@ -59,6 +59,8 @@ const status: Record<string, string> = {
 // missing keys fall back to this EN catalog at runtime.
 const catalog = {
   'background.short': 'bg',
+  'background.resumeWhenSubagentFinishes': '↩ resumes when subagent finishes',
+  'background.resumeWhenSubagentsFinish': '↩ resumes when {count} subagents finish',
   'common.chars': 'chars',
   'common.lines': 'lines',
   'common.no': 'No',

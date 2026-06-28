@@ -13,11 +13,11 @@ import type {
   SpawnTreeLoadResponse,
   ToolsConfigureResponse
 } from '../../../gatewayTypes.js'
+import { translate } from '../../../i18n/index.js'
 import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
-import { translate, type Locale, type TranslationKey } from '../../../i18n/index.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {
@@ -88,9 +88,11 @@ export const opsCommands: SlashCommand[] = [
       // Parse arg: `now` / `always` skip the confirmation gate.
       // `always` additionally persists approvals.mcp_reload_confirm=false.
       const a = (arg || '').trim().toLowerCase()
+
       const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
         session_id: ctx.sid
       }
+
       if (a === 'now' || a === 'approve' || a === 'once' || a === 'yes') {
         params.confirm = true
       } else if (a === 'always') {
@@ -104,16 +106,20 @@ export const opsCommands: SlashCommand[] = [
           ctx.guarded<ReloadMcpResponse>(r => {
             if (r.status === 'confirm_required') {
               ctx.transcript.sys(r.message || translate(ctx.ui.locale,'sys.reloadMcpConfirmRequired'))
+
               return
             }
+
             if (r.status === 'reloaded') {
               ctx.transcript.sys(
                 params.always
                   ? translate(ctx.ui.locale,'sys.reloadMcpReloaded')
                   : translate(ctx.ui.locale,'sys.reloadMcpReloadedSimple')
               )
+
               return
             }
+
             ctx.transcript.sys(translate(ctx.ui.locale,'sys.reloadComplete'))
           })
         )
@@ -495,6 +501,7 @@ export const opsCommands: SlashCommand[] = [
       const query = rest.join(' ').trim()
       const { rpc } = ctx.gateway
       const { panel, sys } = ctx.transcript
+
       const runViaSlashWorker = () => {
         ctx.gateway.gw
           .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })

@@ -1,4 +1,4 @@
-import { translate, type Locale } from '../i18n/index.js'
+import { type Locale, translate } from '../i18n/index.js'
 import type { PanelSection } from '../types.js'
 
 export const setupRequiredTitle = (locale: Locale = 'en') => translate(locale, 'setup.title')

@@ -17,6 +17,7 @@ export function getQueueWindow(queueLen: number, queueEditIdx: number | null) {
 
 export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessagesProps) {
   const { t: ti } = useI18n()
+
   if (!queued.length) {
     return null
   }

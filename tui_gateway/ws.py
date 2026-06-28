@@ -181,7 +181,12 @@ async def handle_ws(ws: Any) -> None:
     disconnect_reason = "not_connected"
 
     try:
-        await ws.accept()
+        try:
+            await ws.accept()
+        except (RuntimeError, Exception) as exc:
+            _log.warning("ws accept failed peer=%s error=%s", peer, exc)
+            disconnect_reason = "accept_failed"
+            return
         disconnect_reason = "connected"
         # Push small streamed frames out immediately instead of letting Nagle
         # batch them — keeps the live token cadence intact for GUI clients.

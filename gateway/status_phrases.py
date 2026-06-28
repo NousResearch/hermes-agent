@@ -1,8 +1,8 @@
 """Human-friendly generic gateway status phrases.
 
 These helpers deliberately avoid relaying raw model scratch text.  They turn
-Hermes' own gateway visibility surfaces (thinking/tool/command/interim/status)
-into short status lines suitable for chat surfaces.
+Hermes' long-running gateway status surface into short status lines suitable
+for chat surfaces.
 
 Built-in defaults live in ``gateway/assets/status_phrases.yaml``. Users can add
 portable, profile-relative phrase catalogs under ``HERMES_HOME`` either by using
@@ -36,20 +36,15 @@ import yaml
 
 from hermes_constants import get_hermes_home
 
-# These are Hermes UI surfaces, not app/vendor/domain buckets.  Do not add
-# Jira/Confluence/Gmail/etc. categories here; tool names are only used to choose
-# between the built-in "tool" and "command" surfaces.
-_STATUS_SURFACES = ("thinking", "tool", "command", "interim", "status", "generic")
-_COMMAND_TOOL_NAMES = {"terminal", "execute_code", "process"}
+# These are Hermes UI surfaces, not app/vendor/domain buckets.  Keep this
+# long-running-only: regular tool/thinking/interim chatter is intentionally not
+# rewritten into generic placeholders because that gets noisy fast in chat.
+_STATUS_SURFACES = ("status", "generic")
 _MAX_CUSTOM_PHRASES_PER_SURFACE = 80
 _MAX_PHRASE_CHARS = 160
 _CONVENTIONAL_RELATIVE_PATHS = ("status_phrases.yaml", "status_phrases")
 
 _FALLBACK_PHRASES: dict[str, list[str]] = {
-    "thinking": ["one sec, thinking it through", "thinking this through", "checking the logic"],
-    "tool": ["checking that now", "looking into it", "checking the source"],
-    "command": ["running it now", "checking what the machine says", "checking the output"],
-    "interim": ["still shaping the answer", "stitching this together", "almost there"],
     "status": ["still on it", "still working through it", "waiting for the result"],
     "generic": ["on it", "one sec", "checking that now"],
 }
@@ -198,15 +193,6 @@ def classify_status_context(
     normalized = str(kind or "").strip().lower()
     if normalized in {"heartbeat", "waiting", "long_running", "status"}:
         return "status"
-    if normalized in {"thinking", "_thinking", "reasoning"}:
-        return "thinking"
-    if normalized in {"interim", "interim_assistant"}:
-        return "interim"
-    if normalized in {"command", "terminal"}:
-        return "command"
-    if normalized == "tool":
-        name = (tool_name or "").strip().lower()
-        return "command" if name in _COMMAND_TOOL_NAMES else "tool"
     return "generic"
 
 

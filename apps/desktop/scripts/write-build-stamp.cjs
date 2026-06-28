@@ -92,7 +92,7 @@ function fromLocalGit() {
 function fromApexNodesPin() {
   if (process.env.APEXNODES_RUNTIME_PIN === "0") return null
   return {
-    commit: process.env.APEXNODES_RUNTIME_COMMIT || "9c6d001b6b49bb915025ea42dee591741243f221",
+    commit: process.env.APEXNODES_RUNTIME_COMMIT || "87740e8021390455962caa3ad2c16d522c0d306a",
     branch: process.env.APEXNODES_RUNTIME_REF || "v2026.6.19",
     dirty: false,
     source: "apexnodes-pin"

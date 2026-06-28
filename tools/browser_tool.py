@@ -322,7 +322,7 @@ def _format_browser_timeout_error(
 
     combined = f"{stderr}\n{stdout}".lower()
     hints: list[str] = []
-    if "sandbox" in combined or "no usable sandbox" in combined:
+    if "sandbox" in combined:
         hints.append(
             "Chromium sandbox launch failed. Set AGENT_BROWSER_ARGS="
             "'--no-sandbox,--disable-dev-shm-usage' in your environment, "

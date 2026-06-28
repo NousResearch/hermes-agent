@@ -2047,6 +2047,46 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    # --- Strip tool_calls from compaction-summary assistant messages ---
+    # When context compression fires, the compressed head may contain an
+    # assistant message that (a) carries the compaction summary as its text
+    # content AND (b) still has tool_calls from the turn that was compressed.
+    # Those tool_calls have no matching tool results in the active message list
+    # (the results were archived together with the pre-compaction transcript).
+    # Anthropic rejects the resulting wire messages with HTTP 400
+    # "tool_use ids found without tool_result blocks immediately after".
+    # Fix: strip tool_calls from any assistant message whose content is a
+    # compaction summary — they are historical artifacts that the model must
+    # not act on.
+    _COMPACTION_MARKERS = (
+        "[CONTEXT COMPACTION — REFERENCE ONLY]",
+        "[CONTEXT SUMMARY]:",
+    )
+    stripped_compaction_calls = 0
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+        if not msg.get("tool_calls"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            # Multimodal content: check text blocks
+            content = " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        if isinstance(content, str) and any(
+            content.lstrip().startswith(m) for m in _COMPACTION_MARKERS
+        ):
+            messages[i] = {**msg}
+            messages[i].pop("tool_calls", None)
+            stripped_compaction_calls += 1
+    if stripped_compaction_calls:
+        _ra().logger.debug(
+            "Pre-call sanitizer: stripped tool_calls from %d compaction-summary message(s)",
+            stripped_compaction_calls,
+        )
+
     surviving_call_ids: set = set()
     for msg in messages:
         if msg.get("role") == "assistant":

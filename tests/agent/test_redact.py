@@ -795,8 +795,11 @@ class TestFileReadNonReusableRedaction:
 
     def test_default_mode_unchanged_keeps_headtail_mask(self):
         """Regression guard: NON-file_read (logs/display) keeps the existing
-        head/tail mask shape — only file content gets the sentinel."""
-        out = redact_sensitive_text(f"token: {self.GHP}", force=True)
+        head/tail mask shape — only file content gets the sentinel. Uses a
+        bare-token context (no ``key:`` prefix) so this isolates the prefix
+        pass: a ``token: <key>`` line would additionally hit the YAML config
+        pass and collapse to ``***``, which is unrelated to this guard."""
+        out = redact_sensitive_text(f"see {self.GHP} here", force=True)
         assert "«redacted" not in out          # no sentinel in log mode
         assert "ghp_" in out and "..." in out   # head/tail mask preserved
 

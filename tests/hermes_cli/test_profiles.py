@@ -21,6 +21,7 @@ from hermes_cli.profiles import (
     create_profile,
     delete_profile,
     list_profiles,
+    profile_info_to_dict,
     set_active_profile,
     get_active_profile,
     get_active_profile_name,
@@ -616,6 +617,29 @@ class TestListProfiles:
         profiles = list_profiles()
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
+
+    def test_machine_representation_excludes_profile_contents(self, profile_env):
+        default = list_profiles()[0]
+
+        payload = profile_info_to_dict(default)
+
+        assert payload == {
+            "name": "default",
+            "path": str(profile_env / ".hermes"),
+            "is_default": True,
+            "model": None,
+            "provider": None,
+            "has_env": False,
+            "skill_count": 0,
+            "gateway_running": False,
+            "description": "",
+            "description_auto": False,
+            "distribution_name": None,
+            "distribution_version": None,
+            "distribution_source": None,
+            "has_alias": False,
+        }
+        assert not {"env", "soul", "memory", "credentials"} & set(payload)
 
 
 # ===================================================================

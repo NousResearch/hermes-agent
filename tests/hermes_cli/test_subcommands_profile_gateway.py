@@ -53,6 +53,9 @@ def test_profile_subactions_and_dispatch():
     assert ns.command == "profile"
     assert ns.profile_action == "list"
     assert ns.func is _h_profile
+    assert ns.json is False
+    json_ns = p.parse_args(["profile", "list", "--json"])
+    assert json_ns.json is True
     # a representative arg-taking subaction
     ns2 = p.parse_args(["profile", "show", "work"])
     assert ns2.profile_action == "show"

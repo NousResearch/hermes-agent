@@ -33,7 +33,7 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 ## `hermes profile list`
 
 ```bash
-hermes profile list
+hermes profile list [--json]
 ```
 
 Lists all profiles. The currently active profile is marked with `*`.
@@ -48,7 +48,38 @@ $ hermes profile list
   personal
 ```
 
-No options.
+| Option | Description |
+|--------|-------------|
+| `--json` | Emit a machine-readable `{"profiles": [...]}` object instead of the human table. The records contain profile metadata and status only; credential values and profile contents are not included. |
+
+For example:
+
+```bash
+hermes profile list --json
+```
+
+```json
+{
+  "profiles": [
+    {
+      "name": "default",
+      "path": "/home/user/.hermes",
+      "is_default": true,
+      "model": "anthropic/claude-sonnet-4.6",
+      "provider": "openrouter",
+      "has_env": true,
+      "skill_count": 12,
+      "gateway_running": false,
+      "description": "",
+      "description_auto": false,
+      "distribution_name": null,
+      "distribution_version": null,
+      "distribution_source": null,
+      "has_alias": false
+    }
+  ]
+}
+```
 
 ## `hermes profile use`
 

@@ -10146,30 +10146,10 @@ class ProfileDescribeAuto(BaseModel):
     overwrite: bool = False
 
 
-def _profile_attr(info, name: str, default: Any = None) -> Any:
-    try:
-        return getattr(info, name)
-    except Exception:
-        return default
-
-
 def _profile_to_dict(info) -> Dict[str, Any]:
-    return {
-        "name": _profile_attr(info, "name", ""),
-        "path": str(_profile_attr(info, "path", "")),
-        "is_default": bool(_profile_attr(info, "is_default", False)),
-        "model": _profile_attr(info, "model"),
-        "provider": _profile_attr(info, "provider"),
-        "has_env": bool(_profile_attr(info, "has_env", False)),
-        "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
-        "gateway_running": bool(_profile_attr(info, "gateway_running", False)),
-        "description": _profile_attr(info, "description", "") or "",
-        "description_auto": bool(_profile_attr(info, "description_auto", False)),
-        "distribution_name": _profile_attr(info, "distribution_name"),
-        "distribution_version": _profile_attr(info, "distribution_version"),
-        "distribution_source": _profile_attr(info, "distribution_source"),
-        "has_alias": _profile_attr(info, "alias_path") is not None,
-    }
+    from hermes_cli.profiles import profile_info_to_dict
+
+    return profile_info_to_dict(info)
 
 
 def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:

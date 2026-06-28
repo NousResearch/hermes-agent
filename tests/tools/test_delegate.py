@@ -3393,5 +3393,138 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestDelegateCredentialLeakGuard(unittest.TestCase):
+    """Regression tests for the 2026-06-28 OpenRouter credential leak.
+
+    When delegate_task() targets a subagent with override_provider pointing
+    to a different provider than the parent, the child agent must NOT inherit
+    the parent's base_url or api_key — otherwise a parent holding an openrouter
+    credential could silently forward it to a subagent whose model override
+    targets a different provider, billing the user for models never authorised
+    through that route.
+
+    Confirmed leak: 2026-06-28 00:11 session 20260628_000238_58dc95 billed
+    11.82$ on openrouter.ai for anthropic/claude-sonnet-4.6.
+
+    These tests pin the post-fix behaviour:
+    - Same provider: inherit (existing behaviour preserved)
+    - Different provider: drop base_url + api_key unless explicitly overridden
+    - Explicit override: respect the user's intent
+    """
+
+    def _build_with_override(self, parent, override_provider, override_base_url=None, override_api_key=None):
+        """Helper: build a child agent with provider override, return MockAgent kwargs."""
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="test credential leak guard",
+                context=None,
+                toolsets=None,
+                model="anthropic/claude-sonnet-4.6",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider=override_provider,
+                override_base_url=override_base_url,
+                override_api_key=override_api_key,
+            )
+
+        _, kwargs = MockAgent.call_args
+        return kwargs
+
+    def test_child_does_not_inherit_parent_base_url_on_provider_switch(self):
+        """When override_provider differs from parent.provider, child.base_url
+        must NOT be the parent's base_url — it must be None so init_agent
+        re-resolves from the target provider's own config."""
+        parent = _make_mock_parent(depth=0)
+        # parent.base_url = "https://openrouter.ai/api/v1" (set by _make_mock_parent)
+
+        kwargs = self._build_with_override(
+            parent,
+            override_provider="anthropic",
+        )
+
+        self.assertNotEqual(
+            kwargs["base_url"], parent.base_url,
+            "Child must NOT inherit parent's base_url when override_provider "
+            "targets a different provider — this is the 2026-06-28 OpenRouter leak.",
+        )
+        self.assertIsNone(
+            kwargs["base_url"],
+            "Child.base_url should be None so init_agent() re-resolves from "
+            "the target provider's own config/credential pool.",
+        )
+
+    def test_child_does_not_inherit_parent_api_key_on_provider_switch(self):
+        """When override_provider differs from parent.provider, child.api_key
+        must NOT be the parent's api_key — it must be None."""
+        parent = _make_mock_parent(depth=0)
+
+        kwargs = self._build_with_override(
+            parent,
+            override_provider="anthropic",
+        )
+
+        self.assertNotEqual(
+            kwargs["api_key"], parent.api_key,
+            "Child must NOT inherit parent's api_key when override_provider "
+            "targets a different provider — this is the leak vector that "
+            "billed 11.82$ to OpenRouter on 2026-06-28.",
+        )
+        self.assertIsNone(
+            kwargs["api_key"],
+            "Child.api_key should be None so init_agent() re-resolves from "
+            "the target provider's own credential pool.",
+        )
+
+    def test_child_inherits_parent_creds_when_same_provider(self):
+        """When override_provider matches parent.provider (or no override is
+        set), the child should still inherit base_url and api_key — this is
+        the existing legitimate behaviour the patch must not regress."""
+        parent = _make_mock_parent(depth=0)
+
+        kwargs = self._build_with_override(
+            parent,
+            override_provider="openrouter",  # same as parent.provider
+        )
+
+        self.assertEqual(
+            kwargs["base_url"], parent.base_url,
+            "Same-provider delegation must still inherit base_url (regression guard).",
+        )
+        self.assertEqual(
+            kwargs["api_key"], parent.api_key,
+            "Same-provider delegation must still inherit api_key (regression guard).",
+        )
+
+    def test_child_respects_explicit_override_base_url_and_key(self):
+        """When the caller explicitly provides override_base_url and/or
+        override_api_key via delegate_task(...), the child must respect them
+        even when override_provider differs from parent.provider. The guard
+        must only nullify when no explicit override was supplied."""
+        parent = _make_mock_parent(depth=0)
+        explicit_url = "https://api.minimax.io/anthropic"
+        explicit_key = "sk-explicit-override-key"
+
+        kwargs = self._build_with_override(
+            parent,
+            override_provider="anthropic",
+            override_base_url=explicit_url,
+            override_api_key=explicit_key,
+        )
+
+        self.assertEqual(
+            kwargs["base_url"], explicit_url,
+            "Explicit override_base_url must be respected even on provider switch.",
+        )
+        self.assertEqual(
+            kwargs["api_key"], explicit_key,
+            "Explicit override_api_key must be respected even on provider switch.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

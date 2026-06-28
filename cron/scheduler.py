@@ -1064,6 +1064,126 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
+_DEFINITIVE_DELIVERY_ERRORS = frozenset({"not_found", "forbidden"})
+
+_REDIRECT_NOTICE = (
+    "⚠️ This cron output was redirected — the original delivery target "
+    "({platform}:{chat_id}) is no longer accessible ({error_kind}).\n\n"
+)
+
+
+def _try_delivery_home_fallback(
+    job: dict,
+    platform,  # Platform enum
+    platform_name: str,
+    delivery_content: str,
+    cleaned_delivery_content: str,
+    media_files: list,
+    config,
+    origin: dict,
+    error_kind: str,
+    original_error: str,
+) -> bool:
+    """Attempt fallback delivery to the platform's home channel.
+
+    Called when the primary target is definitively undeliverable (not_found /
+    forbidden).  Returns True if the fallback delivery succeeded, False
+    otherwise.  On success, the caller should treat the job as delivered and
+    suppress the original error (#54329).
+    """
+    home_chat_id = _get_home_target_chat_id(platform_name)
+    if not home_chat_id:
+        logger.info(
+            "Job '%s': no home channel configured for %s — cannot redirect",
+            job.get("id", "?"), platform_name,
+        )
+        return False
+    # Don't redirect to the same target we just failed on.
+    if str(home_chat_id) == str(origin.get("chat_id", "")):
+        logger.info(
+            "Job '%s': home channel == failed target (%s:%s) — skipping redirect",
+            job.get("id", "?"), platform_name, home_chat_id,
+        )
+        return False
+
+    # Prepend a short redirect notice.
+    notice = _REDIRECT_NOTICE.format(
+        platform=platform_name,
+        chat_id=origin.get("chat_id", "?"),
+        error_kind=error_kind,
+    )
+    redirect_content = notice + delivery_content
+
+    # Re-extract media from the full delivery content (notice + original).
+    from gateway.platforms.base import BasePlatformAdapter
+    from tools.send_message_tool import _send_to_platform
+    media_files_r, cleaned_redirect = BasePlatformAdapter.extract_media(redirect_content)
+    media_files_r = BasePlatformAdapter.filter_media_delivery_paths(media_files_r)
+
+    pconfig = config.platforms.get(platform)
+    if not pconfig or not pconfig.enabled:
+        logger.warning(
+            "Job '%s': platform '%s' not configured/enabled for redirect",
+            job.get("id", "?"), platform_name,
+        )
+        return False
+
+    home_thread_id = _get_home_target_thread_id(platform_name)
+    logger.info(
+        "Job '%s': redirecting to %s:%s home channel (original target %s:%s was %s)",
+        job.get("id", "?"), platform_name, home_chat_id,
+        platform_name, origin.get("chat_id", "?"), error_kind,
+    )
+    try:
+        result = asyncio.run(
+            _send_to_platform(
+                platform, pconfig, home_chat_id, cleaned_redirect,
+                thread_id=home_thread_id, media_files=media_files_r,
+            )
+        )
+    except RuntimeError:
+        coro = _send_to_platform(
+            platform, pconfig, home_chat_id, cleaned_redirect,
+            thread_id=home_thread_id, media_files=media_files_r,
+        )
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(asyncio.run, coro)
+                result = future.result(timeout=30)
+        except Exception as ex:
+            logger.warning("Job '%s': home channel redirect also failed: %s", job.get("id", "?"), ex)
+            return False
+    except Exception as ex:
+        logger.warning("Job '%s': home channel redirect failed: %s", job.get("id", "?"), ex)
+        return False
+
+    if result and result.get("error"):
+        logger.warning(
+            "Job '%s': home channel redirect returned error: %s",
+            job.get("id", "?"), result["error"],
+        )
+        return False
+
+    logger.info("Job '%s': successfully redirected to %s:%s", job.get("id", "?"), platform_name, home_chat_id)
+    return True
+
+
+def _is_likely_private_dm(platform_name: str, chat_id: str) -> bool:
+    """Heuristic: is this delivery target likely a 1:1 DM?
+
+    Used to prevent redirecting failed deliveries to a shared home channel,
+    which would leak private content.  Conservative — returns True only for
+    Telegram positive chat_ids (the reliable signal); other platforms return
+    False so the redirect is attempted (safer to deliver than to silently drop).
+    """
+    if platform_name.lower() == "telegram":
+        try:
+            return int(chat_id) > 0
+        except (ValueError, TypeError):
+            return False
+    return False
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -1072,6 +1192,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
+
+    When a delivery fails with a *definitively undeliverable* error (target
+    deleted/archived/blocked — ``not_found`` or ``forbidden``), attempts a
+    fallback redirect to the platform's home channel with a short notice.
+    Uncertain failures (timeouts, rate-limits, transient errors) are NOT
+    redirected since the original send may have already landed.  DM targets
+    are never escalated to a shared home channel to avoid leaking private
+    content (#54329).
 
     Returns None on success, or an error string on failure.
     """
@@ -1125,7 +1253,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         delivery_content = content
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
-    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.base import BasePlatformAdapter, classify_send_error
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
@@ -1485,14 +1613,47 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 target_errors.extend([msg])
-                delivery_errors.extend(target_errors)
+                # #54329: classify the error — if definitively undeliverable
+                # (not_found / forbidden), try redirecting to the home channel
+                # instead of silently dropping.
+                error_kind = classify_send_error(e)
+                if (
+                    error_kind in _DEFINITIVE_DELIVERY_ERRORS
+                    and not _is_likely_private_dm(platform_name, str(chat_id))
+                ):
+                    redirected = _try_delivery_home_fallback(
+                        job, platform, platform_name, delivery_content,
+                        cleaned_delivery_content, media_files, config,
+                        origin, error_kind, msg,
+                    )
+                    if redirected:
+                        delivered = True
+                        target_errors.clear()
+                if not delivered:
+                    delivery_errors.extend(target_errors)
                 continue
 
             if result and result.get("error"):
                 msg = f"delivery error: {result['error']}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 target_errors.extend([msg])
-                delivery_errors.extend(target_errors)
+                # #54329: classify the error — if definitively undeliverable,
+                # try redirecting to the home channel.
+                error_kind = classify_send_error(None, result["error"])
+                if (
+                    error_kind in _DEFINITIVE_DELIVERY_ERRORS
+                    and not _is_likely_private_dm(platform_name, str(chat_id))
+                ):
+                    redirected = _try_delivery_home_fallback(
+                        job, platform, platform_name, delivery_content,
+                        cleaned_delivery_content, media_files, config,
+                        origin, error_kind, msg,
+                    )
+                    if redirected:
+                        delivered = True
+                        target_errors.clear()
+                if not delivered:
+                    delivery_errors.extend(target_errors)
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)

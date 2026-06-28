@@ -955,6 +955,236 @@ class TestDeliverResultErrorReturns:
         assert "no delivery target" in result
 
 
+class TestDeliveryFallbackRedirect:
+    """#54329: when delivery fails with not_found / forbidden, redirect to home channel."""
+
+    def test_is_likely_private_dm_telegram_positive(self):
+        from cron.scheduler import _is_likely_private_dm
+        assert _is_likely_private_dm("telegram", "123456") is True
+
+    def test_is_likely_private_dm_telegram_negative(self):
+        from cron.scheduler import _is_likely_private_dm
+        assert _is_likely_private_dm("telegram", "-100123456") is False
+
+    def test_is_likely_private_dm_other_platform(self):
+        from cron.scheduler import _is_likely_private_dm
+        assert _is_likely_private_dm("discord", "123456") is False
+
+    def test_not_found_error_triggers_home_fallback(self, monkeypatch):
+        """Standalone delivery with 'chat not found' should redirect to home channel."""
+        from gateway.config import Platform
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-999")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        call_count = 0
+        responses = [
+            {"error": "chat not found"},   # first call fails
+            {"success": True},              # fallback succeeds
+        ]
+
+        async def mock_send(*args, **kwargs):
+            nonlocal call_count
+            r = responses[min(call_count, len(responses) - 1)]
+            call_count += 1
+            return r
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=mock_send):
+            job = {
+                "id": "test-fallback",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "-100123"},
+            }
+            result = _deliver_result(job, "Reminder: standup in 5 min.")
+
+        # Should have succeeded (no error returned)
+        assert result is None
+        assert call_count == 2  # original + fallback
+
+    def test_forbidden_error_triggers_home_fallback(self, monkeypatch):
+        """Standalone delivery with 'forbidden' should redirect to home channel."""
+        from gateway.config import Platform
+
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "999999")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        call_count = 0
+        responses = [
+            {"error": "Forbidden: bot was kicked from the channel"},
+            {"success": True},
+        ]
+
+        async def mock_send(*args, **kwargs):
+            nonlocal call_count
+            r = responses[min(call_count, len(responses) - 1)]
+            call_count += 1
+            return r
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=mock_send):
+            job = {
+                "id": "test-forbidden",
+                "deliver": "origin",
+                "origin": {"platform": "discord", "chat_id": "111111"},
+            }
+            result = _deliver_result(job, "Reminder.")
+
+        assert result is None
+        assert call_count == 2
+
+    def test_unknown_error_does_not_trigger_fallback(self, monkeypatch):
+        """Unclassified errors should NOT redirect (might duplicate)."""
+        from gateway.config import Platform
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-999")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        async def mock_send(*args, **kwargs):
+            return {"error": "internal server error 500"}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=mock_send):
+            job = {
+                "id": "test-no-fallback",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "-100123"},
+            }
+            result = _deliver_result(job, "Reminder.")
+
+        # Should have FAILED (error returned, no redirect)
+        assert result is not None
+        assert "delivery error" in result
+
+    def test_dm_target_does_not_trigger_fallback(self, monkeypatch):
+        """DM targets (positive Telegram chat_id) should NOT be escalated to home channel."""
+        from gateway.config import Platform
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-999")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        async def mock_send(*args, **kwargs):
+            return {"error": "Forbidden: bot was blocked by the user"}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=mock_send):
+            job = {
+                "id": "test-dm-no-escalate",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123456"},  # positive = DM
+            }
+            result = _deliver_result(job, "Private reminder.")
+
+        # Should have FAILED (not redirected to shared home channel)
+        assert result is not None
+
+    def test_no_home_channel_configured_skips_fallback(self, monkeypatch):
+        """When no home channel is set, fallback is skipped gracefully."""
+        from gateway.config import Platform
+
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        async def mock_send(*args, **kwargs):
+            return {"error": "chat not found"}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=mock_send):
+            job = {
+                "id": "test-no-home",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "-100123"},
+            }
+            result = _deliver_result(job, "Reminder.")
+
+        # Should have FAILED (no home channel to redirect to)
+        assert result is not None
+
+    def test_home_channel_same_as_failed_target_skips_fallback(self, monkeypatch):
+        """When home channel == failed target, don't retry the same destination."""
+        from gateway.config import Platform
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100123")  # same as origin
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        async def mock_send(*args, **kwargs):
+            return {"error": "chat not found"}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=mock_send):
+            job = {
+                "id": "test-same-target",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "-100123"},
+            }
+            result = _deliver_result(job, "Reminder.")
+
+        # Should have FAILED (home == target, can't redirect)
+        assert result is not None
+
+    def test_redirect_notice_included_in_fallback_content(self, monkeypatch):
+        """The fallback delivery should include a redirect notice prefix."""
+        from gateway.config import Platform
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-999")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        call_count = 0
+        sent_content = None
+
+        async def mock_send(*args, **kwargs):
+            nonlocal call_count, sent_content
+            call_count += 1
+            if call_count == 1:
+                return {"error": "chat not found"}
+            # Capture the fallback content
+            sent_content = kwargs.get("content") or (args[3] if len(args) > 3 else None)
+            return {"success": True}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=mock_send):
+            job = {
+                "id": "test-notice",
+                "name": "daily-reminder",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "-100123"},
+            }
+            result = _deliver_result(job, "Standup in 5 minutes.")
+
+        assert result is None
+        assert sent_content is not None
+        assert "redirected" in sent_content.lower()
+        assert "Standup in 5 minutes." in sent_content
+
+
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
         job = {

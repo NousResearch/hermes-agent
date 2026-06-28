@@ -1219,7 +1219,10 @@ def remove_job(job_id: str) -> bool:
             save_jobs(jobs)
             # Clean up output directory to prevent orphaned dirs accumulating
             if job_output_dir.exists():
-                shutil.rmtree(job_output_dir)
+                try:
+                    shutil.rmtree(job_output_dir)
+                except OSError as exc:
+                    logger.warning("Failed to remove job output dir %s: %s", job_output_dir, exc)
             return True
     return False
 

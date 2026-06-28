@@ -1006,7 +1006,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
             message += f" Content absorbed into '{absorbed_target}'."
         return {"success": True, "message": message, "_archived": True}
 
-    shutil.rmtree(skill_dir)
+    try:
+        shutil.rmtree(skill_dir)
+    except OSError as exc:
+        logger.warning("Failed to remove skill dir %s: %s", skill_dir, exc)
 
     # Clean up empty category directories (don't remove the skills root itself)
     parent = skill_dir.parent

@@ -26,6 +26,13 @@ class TestHomeChannelRoundtrip:
         assert restored.chat_id == "999"
         assert restored.name == "general"
 
+    def test_to_dict_from_dict_preserves_chat_type(self):
+        hc = HomeChannel(platform=Platform.SLACK, chat_id="C123", name="ops", chat_type="group")
+        d = hc.to_dict()
+        restored = HomeChannel.from_dict(d)
+
+        assert restored.chat_type == "group"
+
 
 class TestPlatformConfigRoundtrip:
     def test_to_dict_from_dict(self):
@@ -70,6 +77,23 @@ class TestPlatformConfigRoundtrip:
     def test_gateway_restart_notification_coerces_quoted_false(self):
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
+
+    def test_gateway_restart_notification_channels_defaults_true(self):
+        assert PlatformConfig().gateway_restart_notification_channels is True
+        assert PlatformConfig.from_dict({}).gateway_restart_notification_channels is True
+
+    def test_gateway_restart_notification_channels_roundtrip_false(self):
+        pc = PlatformConfig(enabled=True, gateway_restart_notification_channels=False)
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.gateway_restart_notification_channels is False
+
+    def test_gateway_restart_notification_channels_coerces_quoted_false(self):
+        restored = PlatformConfig.from_dict({"gateway_restart_notification_channels": "false"})
+        assert restored.gateway_restart_notification_channels is False
+
+    def test_gateway_restart_notification_channels_reads_from_extra(self):
+        restored = PlatformConfig.from_dict({"extra": {"gateway_restart_notification_channels": False}})
+        assert restored.gateway_restart_notification_channels is False
 
 
 class TestGetConnectedPlatforms:

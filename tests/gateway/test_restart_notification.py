@@ -688,3 +688,242 @@ async def test_restart_shutdown_notification_anchors_telegram_dm_topic():
         "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "462",
     }
+
+
+# ── gateway_restart_notification_channels granularity ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_suppressed_in_bare_channel_when_channels_flag_false():
+    """With gateway_restart_notification_channels=False, bare channels are muted."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    source = make_restart_source(chat_id="chan-42", chat_type="group", thread_id=None)
+    session_key = build_session_key(source)
+
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=source)
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_suppressed_for_forum_and_webhook_when_channels_flag_false():
+    """Telegram forums and webhook-triggered sessions are also treated as bare channels."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+
+    for chat_type in ("forum", "webhook"):
+        source = make_restart_source(chat_id=f"chan-{chat_type}", chat_type=chat_type, thread_id=None)
+        session_key = build_session_key(source)
+        runner._running_agents[session_key] = object()
+        runner.session_store._entries[session_key] = MagicMock(origin=source)
+
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_kept_for_uppercase_dm_chat_type():
+    """DM suppression is case-insensitive, so uppercase 'DM' is still treated as a DM."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    source = make_restart_source(chat_id="42", chat_type="DM", thread_id=None)
+    session_key = build_session_key(source)
+
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=source)
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_still_sent_in_active_thread_when_channels_flag_false():
+    """Threads inside channels still get shutdown notifications."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    source = make_restart_source(chat_id="chan-42", chat_type="group", thread_id="t-7")
+    session_key = build_session_key(source)
+
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=source)
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_kept_for_legacy_session_without_source():
+    """Legacy sessions without origin cannot be confirmed as bare channels, so we send."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    session_key = "agent:main:telegram:group:chan-42"
+
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=None)
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_kept_for_legacy_dm_session_without_source():
+    """Legacy DM sessions without origin still receive shutdown notifications."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    session_key = "agent:main:telegram:dm:42"
+
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=None)
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_suppressed_in_bare_channel_when_channels_flag_false(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "chan-42",
+        "chat_type": "group",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    adapter.send = AsyncMock()
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_still_sent_in_dm_when_channels_flag_false(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+        "chat_type": "dm",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "42", None)
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_suppressed_when_channels_flag_disabled(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_kept_when_threaded_and_channels_flag_disabled(
+    tmp_path, monkeypatch
+):
+    """Threaded home channels still receive startup pings even when bare channels are muted."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+        thread_id="t-99",
+    )
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "home-42", "t-99")}
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_kept_for_dm_when_channels_flag_disabled(
+    tmp_path, monkeypatch
+):
+    """DM home channels are never muted by the channels-only flag."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="dm-42",
+        name="Ops Home",
+        chat_type="dm",
+    )
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "dm-42", None)}
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_ack_suppressed_in_bare_channel_when_channels_flag_false(
+    tmp_path, monkeypatch
+):
+    """Explicit /restart ack is also muted in bare channels when the flag is off."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "chan-42",
+        "chat_type": "group",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification_channels = False
+    adapter.send = AsyncMock()
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    adapter.send.assert_not_called()

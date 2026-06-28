@@ -251,7 +251,8 @@ class HomeChannel:
     chat_id: str
     name: str  # Human-readable name for display
     thread_id: Optional[str] = None
-    
+    chat_type: Optional[str] = None  # "dm", "group", "channel", etc.
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "platform": self.platform.value,
@@ -260,8 +261,10 @@ class HomeChannel:
         }
         if self.thread_id:
             result["thread_id"] = self.thread_id
+        if self.chat_type:
+            result["chat_type"] = self.chat_type
         return result
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
         return cls(
@@ -269,6 +272,7 @@ class HomeChannel:
             chat_id=str(data["chat_id"]),
             name=data.get("name", "Home"),
             thread_id=str(data["thread_id"]) if data.get("thread_id") else None,
+            chat_type=str(data["chat_type"]) if data.get("chat_type") else None,
         )
 
 
@@ -345,6 +349,11 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # If False, suppress gateway restart/shutdown notifications in bare
+    # channels/groups. Notifications still go to DMs and to active threads
+    # within channels. Default True preserves prior behavior.
+    gateway_restart_notification_channels: bool = True
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -354,6 +363,7 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
+            "gateway_restart_notification_channels": self.gateway_restart_notification_channels,
         }
         if self.token:
             result["token"] = self.token
@@ -377,6 +387,10 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        _grnc = data.get("gateway_restart_notification_channels")
+        if _grnc is None:
+            _grnc = data.get("extra", {}).get("gateway_restart_notification_channels")
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -384,6 +398,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            gateway_restart_notification_channels=_coerce_bool(_grnc, True),
             extra=data.get("extra", {}),
         )
 
@@ -1032,6 +1047,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "gateway_restart_notification_channels" in platform_cfg:
+                    bridged["gateway_restart_notification_channels"] = platform_cfg["gateway_restart_notification_channels"]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

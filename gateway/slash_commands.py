@@ -2129,6 +2129,7 @@ class GatewaySlashCommandsMixin:
                 chat_id=str(chat_id),
                 name=chat_name,
                 thread_id=str(thread_id) if thread_id else None,
+                chat_type=source.chat_type,
             )
 
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)

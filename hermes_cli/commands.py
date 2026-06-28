@@ -1356,6 +1356,11 @@ class SlashCommandCompleter(Completer):
     # - Adding space makes "/model" → "/model " which blocks picker execution
     _PICKER_COMMANDS = frozenset({"model", "skin", "personality"})
 
+    # Minimum query length before substring ("contains") matching is used.
+    # Below this, completion stays prefix-only so a very short query (e.g. "/s")
+    # doesn't surface every command containing that character.
+    _SUBSTRING_MIN_LEN = 2
+
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
         """Return replacement text for a completion.
@@ -1385,6 +1390,11 @@ class SlashCommandCompleter(Completer):
         recall a command by any word it contains (e.g. ``/mcp`` surfaces
         ``/reload-mcp``); prefix matches still rank first so typing the start
         of a command keeps it at the top.
+
+        Substring matching only applies once the query is at least
+        ``_SUBSTRING_MIN_LEN`` characters; shorter queries stay prefix-only so
+        a single character (e.g. ``/s``) doesn't surface every command that
+        merely contains it. Prefix matching is unaffected at any length.
         """
         if not word:
             return 0
@@ -1392,7 +1402,7 @@ class SlashCommandCompleter(Completer):
         word_lower = word.lower()
         if name_lower.startswith(word_lower):
             return 0
-        if word_lower in name_lower:
+        if len(word_lower) >= SlashCommandCompleter._SUBSTRING_MIN_LEN and word_lower in name_lower:
             return 1
         return None
 

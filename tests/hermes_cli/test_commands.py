@@ -641,6 +641,28 @@ class TestSlashCommandCompleter:
         texts = {item.text for item in _completions(completer, "/search")}
         assert "gif-search" in texts
 
+    def test_single_char_query_is_prefix_only(self):
+        """A 1-char query must stay prefix-only (substring noise guard).
+
+        Every returned command must START with the typed character — none may
+        match only as a substring.
+        """
+        completions = _completions(SlashCommandCompleter(), "/r")
+        names = [item.display_text.lstrip("/") for item in completions]
+        assert names, "expected at least one /r* command"
+        assert all(name.lower().startswith("r") for name in names)
+
+    def test_two_char_query_enables_substring(self):
+        """At the >=2 char threshold, substring matching is active.
+
+        'mc' is contained in 'reload-mcp' without being a prefix.
+        """
+        names = {
+            item.display_text.lstrip("/")
+            for item in _completions(SlashCommandCompleter(), "/mc")
+        }
+        assert "reload-mcp" in names
+
     def test_skill_missing_description_uses_fallback(self):
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: {

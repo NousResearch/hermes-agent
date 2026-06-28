@@ -4173,6 +4173,34 @@ def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     assert resp["result"]["canon"]["/notes"] == "/notes"
 
 
+def test_commands_catalog_surfaces_plugin_commands(monkeypatch):
+    from hermes_cli import plugins as plugins_mod
+
+    monkeypatch.setattr(
+        plugins_mod,
+        "get_plugin_commands",
+        lambda: {
+            "metrics": {
+                "description": "Show plugin metrics",
+                "args_hint": "[days]",
+            }
+        },
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    assert pairs["/metrics"] == "Show plugin metrics"
+    assert resp["result"]["canon"]["/metrics"] == "/metrics"
+
+    plugin_cat = next(
+        c for c in resp["result"]["categories"] if c["name"] == "Plugin commands"
+    )
+    assert dict(plugin_cat["pairs"])["/metrics"] == "Show plugin metrics"
+
+
 def test_commands_catalog_includes_tui_mouse_command():
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}

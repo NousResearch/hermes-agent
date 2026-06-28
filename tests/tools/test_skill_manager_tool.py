@@ -365,6 +365,41 @@ word word
         assert "escapes" in result["error"].lower()
         assert outside_file.read_text() == "old text here"
 
+    def test_patch_skill_under_symlinked_projection_root(self, tmp_path):
+        """Symlink-projected skill roots must be mutable by skill_manage.
+
+        Read-side skill discovery follows symlinked skill roots. The write-side
+        manager must use the same generic index walk so projected skills are
+        not loadable-but-unpatchable by bare skill name.
+        """
+        skills_root = tmp_path / "skills"
+        projected_tree = tmp_path / "provider" / "skills"
+        projected_skill = projected_tree / "category" / "projected-skill"
+        projected_skill.mkdir(parents=True)
+        (projected_skill / "SKILL.md").write_text(
+            "---\n"
+            "name: projected-skill\n"
+            "description: A projected skill.\n"
+            "---\n\n"
+            "# Projected Skill\n\n"
+            "Body with OLD_MARKER.\n",
+            encoding="utf-8",
+        )
+        skills_root.mkdir()
+        (skills_root / "projected-provider").symlink_to(
+            projected_tree,
+            target_is_directory=True,
+        )
+
+        with _skill_dir(skills_root):
+            result = _patch_skill("projected-skill", "OLD_MARKER", "NEW_MARKER")
+
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (projected_skill / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        assert not (skills_root / "projected-skill").exists()
+
 
 class TestDeleteSkill:
     def test_delete_existing(self, tmp_path):

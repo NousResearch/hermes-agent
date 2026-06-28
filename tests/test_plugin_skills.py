@@ -195,6 +195,65 @@ class TestSkillViewQualifiedName:
         assert result["name"] == "superpowers:writing-plans"
         assert "writing-plans body." in result["content"]
 
+    def test_plugin_skill_support_file(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        md = self._register_skill(tmp_path)
+        refs = md.parent / "references"
+        refs.mkdir()
+        (refs / "api.md").write_text("API reference.\n", encoding="utf-8")
+
+        result = json.loads(
+            skill_view("superpowers:writing-plans", file_path="references/api.md")
+        )
+
+        assert result["success"] is True
+        assert result["name"] == "superpowers:writing-plans"
+        assert result["file"] == "references/api.md"
+        assert result["content"] == "API reference.\n"
+
+    def test_plugin_skill_support_file_blocks_traversal(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path)
+        result = json.loads(
+            skill_view("superpowers:writing-plans", file_path="../secret.txt")
+        )
+
+        assert result["success"] is False
+        assert "Path traversal" in result["error"]
+
+    def test_plugin_skill_support_file_lists_available_files(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        md = self._register_skill(tmp_path)
+        refs = md.parent / "references"
+        refs.mkdir()
+        (refs / "api.md").write_text("API reference.\n", encoding="utf-8")
+
+        result = json.loads(
+            skill_view("superpowers:writing-plans", file_path="references/nope.md")
+        )
+
+        assert result["success"] is False
+        assert result["available_files"]["references"] == ["references/api.md"]
+
+    def test_plugin_skill_support_file_rejects_directory(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        md = self._register_skill(tmp_path)
+        refs = md.parent / "references"
+        refs.mkdir()
+        (refs / "api.md").write_text("API reference.\n", encoding="utf-8")
+
+        result = json.loads(
+            skill_view("superpowers:writing-plans", file_path="references")
+        )
+
+        assert result["success"] is False
+        assert "not a file" in result["error"]
+        assert result["available_files"]["references"] == ["references/api.md"]
+
     def test_invalid_namespace_returns_error(self, tmp_path):
         from tools.skills_tool import skill_view
 

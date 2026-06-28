@@ -11089,6 +11089,33 @@ def _(rid, params: dict) -> dict:
             if not warning:
                 warning = f"quick_commands discovery unavailable: {e}"
 
+        try:
+            from hermes_cli.plugins import get_plugin_commands
+
+            plugin_cmds = get_plugin_commands() or {}
+            if plugin_cmds:
+                bucket = "Plugin commands"
+                if bucket not in cat_map:
+                    cat_map[bucket] = []
+                    cat_order.append(bucket)
+                for pname, pinfo in sorted(plugin_cmds.items()):
+                    if not isinstance(pname, str) or not isinstance(pinfo, dict):
+                        continue
+                    clean = pname.strip().lstrip("/")
+                    if not clean:
+                        continue
+                    key = f"/{clean}"
+                    if key.lower() in canon:
+                        continue
+                    canon[key.lower()] = key
+                    pdesc = str(pinfo.get("description") or "Plugin command")
+                    pdesc = pdesc[:120] + ("…" if len(pdesc) > 120 else "")
+                    all_pairs.append([key, pdesc])
+                    cat_map[bucket].append([key, pdesc])
+        except Exception as e:
+            if not warning:
+                warning = f"plugin command discovery unavailable: {e}"
+
         skill_count = 0
         try:
             from agent.skill_commands import scan_skill_commands

@@ -755,11 +755,124 @@ def skills_list(category: str = None, task_id: str = None) -> str:
 # ── Plugin skill serving ──────────────────────────────────────────────────
 
 
+def _available_skill_support_files(skill_dir: Path) -> Dict[str, List[str]]:
+    """Return support files grouped the same way skill_view reports them."""
+    available_files = {
+        "references": [],
+        "templates": [],
+        "assets": [],
+        "scripts": [],
+        "other": [],
+    }
+
+    for f in skill_dir.rglob("*"):
+        if f.is_file() and f.name != "SKILL.md":
+            rel = str(f.relative_to(skill_dir))
+            if rel.startswith("references/"):
+                available_files["references"].append(rel)
+            elif rel.startswith("templates/"):
+                available_files["templates"].append(rel)
+            elif rel.startswith("assets/"):
+                available_files["assets"].append(rel)
+            elif rel.startswith("scripts/"):
+                available_files["scripts"].append(rel)
+            elif f.suffix in {
+                ".md",
+                ".py",
+                ".yaml",
+                ".yml",
+                ".json",
+                ".tex",
+                ".sh",
+            }:
+                available_files["other"].append(rel)
+
+    return {k: v for k, v in available_files.items() if v}
+
+
+def _serve_skill_support_file(skill_dir: Path, name: str, file_path: str) -> str:
+    """Read a support file from inside a skill directory."""
+    from tools.path_security import has_traversal_component, validate_within_dir
+
+    if has_traversal_component(file_path):
+        return json.dumps(
+            {
+                "success": False,
+                "error": "Path traversal ('..') is not allowed.",
+                "hint": "Use a relative path within the skill directory",
+            },
+            ensure_ascii=False,
+        )
+
+    target_file = skill_dir / file_path
+    traversal_error = validate_within_dir(target_file, skill_dir)
+    if traversal_error:
+        return json.dumps(
+            {
+                "success": False,
+                "error": traversal_error,
+                "hint": "Use a relative path within the skill directory",
+            },
+            ensure_ascii=False,
+        )
+
+    if not target_file.exists():
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"File '{file_path}' not found in skill '{name}'.",
+                "available_files": _available_skill_support_files(skill_dir),
+                "hint": "Use one of the available file paths listed above",
+            },
+            ensure_ascii=False,
+        )
+
+    if not target_file.is_file():
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Path '{file_path}' in skill '{name}' is not a file.",
+                "available_files": _available_skill_support_files(skill_dir),
+                "hint": "Use a file path within the skill directory",
+            },
+            ensure_ascii=False,
+        )
+
+    try:
+        content = target_file.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return json.dumps(
+            {
+                "success": True,
+                "name": name,
+                "file": file_path,
+                "content": (
+                    f"[Binary file: {target_file.name}, "
+                    f"size: {target_file.stat().st_size} bytes]"
+                ),
+                "is_binary": True,
+            },
+            ensure_ascii=False,
+        )
+
+    return json.dumps(
+        {
+            "success": True,
+            "name": name,
+            "file": file_path,
+            "content": content,
+            "file_type": target_file.suffix,
+        },
+        ensure_ascii=False,
+    )
+
+
 def _serve_plugin_skill(
     skill_md: Path,
     namespace: str,
     bare: str,
     *,
+    file_path: str | None = None,
     preprocess: bool = True,
     session_id: str | None = None,
 ) -> str:
@@ -800,6 +913,13 @@ def _serve_plugin_skill(
                 "readiness_status": SkillReadinessStatus.UNSUPPORTED.value,
             },
             ensure_ascii=False,
+        )
+
+    if file_path:
+        return _serve_skill_support_file(
+            skill_md.parent,
+            f"{namespace}:{bare}",
+            file_path,
         )
 
     # Injection scan — log but still serve (matches local-skill behaviour)
@@ -941,6 +1061,7 @@ def skill_view(
                     plugin_skill_md,
                     namespace,
                     bare,
+                    file_path=file_path,
                     preprocess=preprocess,
                     session_id=task_id,
                 )
@@ -1191,104 +1312,7 @@ def skill_view(
 
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
-            from tools.path_security import validate_within_dir, has_traversal_component
-
-            # Security: Prevent path traversal attacks
-            if has_traversal_component(file_path):
-                return json.dumps(
-                    {
-                        "success": False,
-                        "error": "Path traversal ('..') is not allowed.",
-                        "hint": "Use a relative path within the skill directory",
-                    },
-                    ensure_ascii=False,
-                )
-
-            target_file = skill_dir / file_path
-
-            # Security: Verify resolved path is still within skill directory
-            traversal_error = validate_within_dir(target_file, skill_dir)
-            if traversal_error:
-                return json.dumps(
-                    {
-                        "success": False,
-                        "error": traversal_error,
-                        "hint": "Use a relative path within the skill directory",
-                    },
-                    ensure_ascii=False,
-                )
-            if not target_file.exists():
-                # List available files in the skill directory, organized by type
-                available_files = {
-                    "references": [],
-                    "templates": [],
-                    "assets": [],
-                    "scripts": [],
-                    "other": [],
-                }
-
-                # Scan for all readable files
-                for f in skill_dir.rglob("*"):
-                    if f.is_file() and f.name != "SKILL.md":
-                        rel = str(f.relative_to(skill_dir))
-                        if rel.startswith("references/"):
-                            available_files["references"].append(rel)
-                        elif rel.startswith("templates/"):
-                            available_files["templates"].append(rel)
-                        elif rel.startswith("assets/"):
-                            available_files["assets"].append(rel)
-                        elif rel.startswith("scripts/"):
-                            available_files["scripts"].append(rel)
-                        elif f.suffix in {
-                            ".md",
-                            ".py",
-                            ".yaml",
-                            ".yml",
-                            ".json",
-                            ".tex",
-                            ".sh",
-                        }:
-                            available_files["other"].append(rel)
-
-                # Remove empty categories
-                available_files = {k: v for k, v in available_files.items() if v}
-
-                return json.dumps(
-                    {
-                        "success": False,
-                        "error": f"File '{file_path}' not found in skill '{name}'.",
-                        "available_files": available_files,
-                        "hint": "Use one of the available file paths listed above",
-                    },
-                    ensure_ascii=False,
-                )
-
-            # Read the file content
-            try:
-                content = target_file.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                # Binary file - return info about it instead
-                return json.dumps(
-                    {
-                        "success": True,
-                        "name": name,
-                        "file": file_path,
-                        "content": f"[Binary file: {target_file.name}, size: {target_file.stat().st_size} bytes]",
-                        "is_binary": True,
-                    },
-                    ensure_ascii=False,
-                )
-
-            return json.dumps(
-                {
-                    "success": True,
-                    "name": name,
-                    "file": file_path,
-                    "content": content,
-                    "file_type": target_file.suffix,
-                },
-                ensure_ascii=False,
-            )
+            return _serve_skill_support_file(skill_dir, name, file_path)
 
         # Reuse the parse from the platform check above
         frontmatter = parsed_frontmatter

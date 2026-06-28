@@ -866,6 +866,27 @@ class TestModelsEndpoint:
         assert kwargs["refresh"] is True
 
     @pytest.mark.asyncio
+    async def test_model_options_capabilities_include_context_length(self, adapter):
+        """Capabilities enrichment should include context_length per model."""
+        from hermes_cli.inventory import _apply_capabilities
+
+        rows = [
+            {
+                "slug": "nous",
+                "models": ["xiaomi/mimo-v2.5-pro", "anthropic/claude-sonnet-4"],
+            }
+        ]
+        with patch("agent.model_metadata.get_model_context_length", side_effect=lambda m, **kw: {
+            "xiaomi/mimo-v2.5-pro": 1048576,
+            "anthropic/claude-sonnet-4": 200000,
+        }.get(m)) as mock_ctx, patch("hermes_cli.models.model_supports_fast_mode", return_value=False):
+            _apply_capabilities(rows)
+
+        caps = rows[0]["capabilities"]
+        assert caps["xiaomi/mimo-v2.5-pro"]["context_length"] == 1048576
+        assert caps["anthropic/claude-sonnet-4"]["context_length"] == 200000
+
+    @pytest.mark.asyncio
     async def test_model_options_requires_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:

@@ -231,13 +231,17 @@ def build_models_payload(
 
 
 def _apply_capabilities(rows: list[dict]) -> None:
-    """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
+    """Attach a ``{model: {fast, reasoning, context_length}}`` map to each provider row.
 
     `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
     enforces). `reasoning` comes from the models.dev catalog when known and
     defaults to True otherwise — the effort dial is broadly accepted and a
     no-op on models that ignore it, whereas hiding it from a capable-but-
     uncatalogued model is the worse failure.
+
+    `context_length` is resolved through ``get_model_context_length`` so
+    browser extensions and GUI pickers can display the real context window
+    instead of falling back to a tiny default.
     """
     from hermes_cli.models import model_supports_fast_mode
 
@@ -246,9 +250,14 @@ def _apply_capabilities(rows: list[dict]) -> None:
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
 
+    try:
+        from agent.model_metadata import get_model_context_length
+    except Exception:
+        get_model_context_length = None  # type: ignore[assignment]
+
     for row in rows:
         slug = row.get("slug") or ""
-        caps: dict[str, dict[str, bool]] = {}
+        caps: dict[str, dict[str, object]] = {}
 
         for model in row.get("models") or []:
             reasoning = True
@@ -260,9 +269,19 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
+            context_length = 0
+            if get_model_context_length is not None:
+                try:
+                    ctx = get_model_context_length(model, provider=slug or None)
+                    if ctx:
+                        context_length = int(ctx)
+                except Exception:
+                    context_length = 0
+
             caps[model] = {
                 "fast": bool(model_supports_fast_mode(model)),
                 "reasoning": reasoning,
+                "context_length": context_length,
             }
 
         row["capabilities"] = caps

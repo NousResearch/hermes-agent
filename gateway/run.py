@@ -14133,6 +14133,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Agent cache idle-TTL evict: session=%s (idle=%.0fs)",
                 key, now - getattr(agent, "_last_activity_ts", now),
             )
+            # Idle TTL eviction is a session boundary for long-idle agents.
+            # Memory providers' on_session_end must fire here, otherwise the
+            # agent is gone by the time the session expiry watcher runs hours
+            # later (see #11205).
+            self._cleanup_agent_resources(agent)
             threading.Thread(
                 target=self._release_evicted_agent_soft,
                 args=(agent,),

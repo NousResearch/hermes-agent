@@ -1233,6 +1233,12 @@ def init_agent(
     # are noisy.
     agent._environment_probe = bool(_agent_section.get("environment_probe", True))
 
+    # System prompt repeat toggle. Default False. When True, the entire
+    # system prompt is appended a second time at the end so the model
+    # benefits from recency bias (Prompt Repetition Improves Non-Reasoning
+    # LLMs, arXiv 2512.14982, Google 2025). Byte-stable once deployed.
+    agent._repeat_system_prompt = bool(_agent_section.get("repeat_system_prompt", False))
+
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
     try:

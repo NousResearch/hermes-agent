@@ -1098,6 +1098,13 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt(system_message="Custom instruction")
         assert "Custom instruction" in prompt
 
+    def test_repeat_system_prompt_doubles_length(self, agent):
+        prompt_normal = agent._build_system_prompt()
+        agent._repeat_system_prompt = True
+        prompt_repeated = agent._build_system_prompt()
+        assert len(prompt_repeated) > len(prompt_normal) * 1.9
+        assert prompt_repeated.endswith(prompt_normal)
+
     def test_memory_guidance_when_memory_tool_loaded(self, agent_with_memory_tool):
         from agent.prompt_builder import MEMORY_GUIDANCE
 

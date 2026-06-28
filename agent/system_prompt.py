@@ -420,6 +420,15 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     for warning in drain_truncation_warnings():
         agent._emit_status(warning)
 
+    # System prompt repeat: append the entire prompt a second time so the
+    # model benefits from recency bias (arXiv 2512.14982, Google 2025).
+    # Controlled by config.yaml agent.repeat_system_prompt (default False).
+    # Byte-stable — the separator and repetition are constant, so cached
+    # system prompts are identical across turns.
+    if getattr(agent, "_repeat_system_prompt", False):
+        _REPEAT_SEP = "\n\n══════════════════════════════════════════════════════════════════\n\n"
+        joined = joined + _REPEAT_SEP + joined
+
     return joined
 
 

@@ -86,3 +86,31 @@ class TestVerifyConsoleScriptsInstalled:
 
         names = _load_console_script_names()
         assert names == ["hermes", "hermes-agent", "hermes-acp"]
+
+    def test_primary_install_success_still_verifies_scripts(self):
+        import hermes_cli.main as main_mod
+
+        with patch("hermes_cli.main._is_windows", return_value=False), \
+             patch("hermes_cli.main._run_quarantined_install") as mock_install, \
+             patch("hermes_cli.main._verify_console_scripts_installed") as mock_verify:
+            main_mod._install_python_dependencies_with_optional_fallback(
+                ["uv", "pip"], env={"VIRTUAL_ENV": "x"}
+            )
+
+        mock_install.assert_called_once_with(
+            ["uv", "pip", "install", "-e", ".[all]"],
+            env={"VIRTUAL_ENV": "x"},
+            scripts_dir=None,
+        )
+        mock_verify.assert_called_once_with(["uv", "pip"], env={"VIRTUAL_ENV": "x"})
+
+    def test_quarantine_shims_include_declared_console_scripts(
+        self, temp_pyproject, fake_scripts_dir
+    ):
+        import hermes_cli.main as main_mod
+
+        with patch("hermes_cli.main._is_windows", return_value=True):
+            names = {path.name for path in main_mod._hermes_exe_shims(fake_scripts_dir)}
+
+        assert {"hermes.exe", "hermes-agent.exe", "hermes-acp.exe"} <= names
+        assert "hermes-gateway.exe" in names

@@ -3681,11 +3681,11 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
             "Model: anthropic/claude-sonnet-4.6\nProvider: anthropic"
         )
         assert agent._cached_system_prompt == db.system_prompt
-        assert session["history"][-1]["role"] == "system"
+        assert session["history"][-1]["role"] == "user"
         assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
         assert db.messages[-1] == {
             "session_id": "session-key",
-            "role": "system",
+            "role": "user",
             "content": session["history"][-1]["content"],
         }
         # ...and the shared process env was NOT touched.

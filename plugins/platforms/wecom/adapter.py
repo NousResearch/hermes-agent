@@ -198,7 +198,7 @@ class WeComAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the WeCom AI Bot gateway."""
         if not AIOHTTP_AVAILABLE:
             message = "WeCom startup failed: aiohttp not installed"

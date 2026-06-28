@@ -37,6 +37,7 @@ from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
+_OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 
 
 def _ra():
@@ -113,6 +114,23 @@ def _is_openai_codex_backend(agent) -> bool:
             and "/backend-api/codex" in base_url_lower
         )
     )
+
+
+def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
+    """Return a normalized OpenRouter provider.sort value or None."""
+    if not isinstance(raw_sort, str):
+        return None
+    sort_value = raw_sort.strip().lower()
+    if not sort_value:
+        return None
+    if sort_value in _OPENROUTER_PROVIDER_SORT_VALUES:
+        return sort_value
+    logger.warning(
+        "Ignoring invalid OpenRouter provider.sort value %r (allowed: %s)",
+        raw_sort,
+        ", ".join(sorted(_OPENROUTER_PROVIDER_SORT_VALUES)),
+    )
+    return None
 
 
 def _env_float(name: str, default: float) -> float:
@@ -229,6 +247,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                         invalidate_runtime_client(region)
                     raise
                 result["response"] = normalize_converse_response(raw_response)
+            elif agent.provider == "moa":
+                # MoA is a virtual chat-completions provider backed by the
+                # in-process MoAClient facade. Do not rebuild a request-local
+                # OpenAI client from the virtual runtime metadata.
+                result["response"] = agent.client.chat.completions.create(**api_kwargs)
             else:
                 request_client = _set_request_client(
                     agent._create_request_openai_client(
@@ -698,8 +721,9 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _prefs["ignore"] = agent.providers_ignored
     if agent.providers_order:
         _prefs["order"] = agent.providers_order
-    if agent.provider_sort:
-        _prefs["sort"] = agent.provider_sort
+    _provider_sort = _validated_openrouter_provider_sort(agent.provider_sort)
+    if _provider_sort:
+        _prefs["sort"] = _provider_sort
     if agent.provider_require_parameters:
         _prefs["require_parameters"] = True
     if agent.provider_data_collection:
@@ -1210,14 +1234,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._transport_cache.clear()
         agent._fallback_activated = True
 
-        # Clear the credential pool when the fallback provider doesn't match
-        # the pool's provider.  The pool was seeded for the primary provider;
-        # leaving it attached means downstream recovery (rate_limit / billing /
-        # auth) calls ``_swap_credential`` with a primary entry which overwrites
-        # the agent's ``base_url`` back to the primary's endpoint — every
-        # fallback request then 404s against the wrong host.  See #33163.
+        # Rebind the credential pool to the fallback provider when the provider
+        # changes.  Keeping the primary pool attached would make downstream
+        # recovery (rate_limit / billing / auth) mutate the wrong credential
+        # set and can overwrite the fallback's base_url back to the primary
+        # endpoint.  See #33163.
+        #
         # When the fallback shares the pool's provider (e.g. both openrouter
-        # entries with different routing) the pool is preserved.
+        # entries with different routing) the pool is preserved.  When the
+        # providers differ, load the fallback provider's own pool if one exists
+        # so provider-specific rotation continues to work after the switch.
         _existing_pool = getattr(agent, "_credential_pool", None)
         if _existing_pool is not None:
             _pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
@@ -1228,6 +1254,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                     fb_provider, fb_model, _pool_provider,
                 )
                 agent._credential_pool = None
+        if getattr(agent, "_credential_pool", None) is None:
+            try:
+                from agent.credential_pool import load_pool
+
+                fallback_pool = load_pool(fb_provider)
+                if fallback_pool and fallback_pool.has_credentials():
+                    agent._credential_pool = fallback_pool
+                    logger.info(
+                        "Fallback to %s/%s: attached fallback credential pool",
+                        fb_provider, fb_model,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Fallback to %s/%s: could not attach credential pool: %s",
+                    fb_provider, fb_model, exc,
+                )
 
         # Honor per-provider / per-model request_timeout_seconds for the
         # fallback target (same knob the primary client uses).  None = use
@@ -1458,8 +1500,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 provider_preferences["ignore"] = agent.providers_ignored
             if agent.providers_order:
                 provider_preferences["order"] = agent.providers_order
-            if agent.provider_sort:
-                provider_preferences["sort"] = agent.provider_sort
+            _provider_sort = _validated_openrouter_provider_sort(agent.provider_sort)
+            if _provider_sort:
+                provider_preferences["sort"] = _provider_sort
             if provider_preferences and (
                 (agent.provider or "").strip().lower() == "openrouter"
                 or agent._is_openrouter_url()
@@ -2561,6 +2604,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
         else:
             _stream_stale_timeout = _stream_stale_timeout_base
+        # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
+        # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
+        # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
+        # model threshold during their thinking phase.  The cloud gateway
+        # upstream kills the socket first, surfacing as BrokenPipeError.
+        # Raises the floor only — never overrides explicit user config
+        # (handled by get_provider_stale_timeout above).
+        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
+        if _reasoning_floor is not None:
+            _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()

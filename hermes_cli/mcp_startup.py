@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from contextlib import nullcontext
 from typing import Optional
 
 _mcp_discovery_lock = threading.Lock()
@@ -36,9 +37,7 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
 
         def _discover() -> None:
             try:
-                from tools.mcp_tool import discover_mcp_tools
-
-                discover_mcp_tools()
+                _discover_mcp_tools_without_interactive_oauth()
             except Exception:
                 logger.debug("Background MCP tool discovery failed", exc_info=True)
 
@@ -70,6 +69,19 @@ def _resolve_discovery_timeout(explicit: "float | None") -> float:
         return val if val > 0 else default
     except Exception:
         return 1.5
+
+
+def _discover_mcp_tools_without_interactive_oauth() -> None:
+    """Run MCP discovery without letting OAuth read from the user's stdin."""
+    try:
+        from tools.mcp_oauth import suppress_interactive_oauth
+    except Exception:
+        suppress_interactive_oauth = nullcontext
+
+    with suppress_interactive_oauth():
+        from tools.mcp_tool import discover_mcp_tools
+
+        discover_mcp_tools()
 
 
 def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:

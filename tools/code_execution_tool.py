@@ -961,7 +961,7 @@ def _execute_remote(
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
         if tz:
-            env_prefix += f" TZ={tz}"
+            env_prefix += f" TZ={shlex.quote(tz)}"
 
         # Execute the script on the remote backend
         logger.info("Executing code on %s backend (task %s)...",
@@ -1290,7 +1290,7 @@ def execute_code(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
 

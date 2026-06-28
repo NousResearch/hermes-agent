@@ -78,6 +78,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
+    CommandDef("prompt", "Compose your next prompt in $EDITOR (markdown), then send it", "Session",
+               cli_only=True, args_hint="[initial text]", aliases=("compose",)),
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
@@ -106,7 +108,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
-               args_hint="[text | pause | resume | clear | status]"),
+               args_hint="[text | draft <text> | show | pause | resume | clear | status | wait <pid> | unwait]"),
+    CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
+               args_hint="<prompt>"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session, model, token, and context info", "Session"),
@@ -128,13 +132,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
-    CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
-               cli_only=True),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
                cli_only=True, aliases=("sb",)),
+    CommandDef("timestamps", "Toggle [HH:MM] timestamps on messages and /history", "Configuration",
+               cli_only=True, args_hint="[on|off|status]",
+               subcommands=("on", "off", "status"), aliases=("ts",)),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),
@@ -144,8 +149,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
-               args_hint="[level|show|hide]",
-               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off")),
+               args_hint="[level|show|hide|full|clamp]",
+               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off", "full", "clamp")),
     CommandDef("fast", "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)", "Configuration",
                args_hint="[normal|fast|status]",
                subcommands=("normal", "fast", "status", "on", "off")),
@@ -176,6 +181,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("pending", "approve", "reject", "approval")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
+    CommandDef("pet", "Toggle or adopt a petdex mascot (/pet, /pet list, /pet <slug>)", "Tools & Skills",
+               cli_only=True, args_hint="[toggle|list|scale <n>|<slug>]", subcommands=("toggle", "list", "scale", "off")),
+    CommandDef("hatch", "Generate a new petdex pet from a description",
+               "Tools & Skills", cli_only=True, aliases=("generate-pet",), args_hint="[description]"),
+    CommandDef("learn", "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
+               "Tools & Skills", args_hint="<what to learn from>"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
@@ -527,6 +538,14 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     return result
 
 
+# Telegram allows up to 100 BotCommands. Hermes ships ~50 built-in commands;
+# a 60-slot default keeps every built-in plus common skill commands visible in
+# the `/` menu while staying comfortably under Telegram's ~4KB payload limit.
+# Users can tune this via platforms.telegram.extra.command_menu.max_commands.
+_DEFAULT_TELEGRAM_MENU_MAX_COMMANDS = 60
+_TELEGRAM_BOT_API_MAX_COMMANDS = 100
+_TELEGRAM_PRIORITY_MODES = {"prepend", "append", "replace"}
+
 _TELEGRAM_MENU_PRIORITY = (
     # Most-typed everyday commands first.
     "help",
@@ -564,12 +583,92 @@ need to survive the visible menu cap ahead of lower-priority built-ins.
 """
 
 
+def _nested_mapping(root: Mapping[str, Any], *path: str) -> Mapping[str, Any]:
+    node: Any = root
+    for key in path:
+        if not isinstance(node, Mapping):
+            return {}
+        node = node.get(key)
+    return node if isinstance(node, Mapping) else {}
+
+
+def _telegram_command_menu_config() -> dict[str, Any]:
+    """Return normalized Telegram command-menu config with safe defaults.
+
+    Canonical user-facing path:
+    ``platforms.telegram.extra.command_menu``.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        raw_cfg = read_raw_config() or {}
+    except Exception:
+        raw_cfg = {}
+    if not isinstance(raw_cfg, Mapping):
+        raw_cfg = {}
+
+    menu_cfg = dict(_nested_mapping(raw_cfg, "platforms", "telegram", "extra", "command_menu"))
+
+    max_commands = menu_cfg.get("max_commands", _DEFAULT_TELEGRAM_MENU_MAX_COMMANDS)
+    try:
+        max_commands = int(max_commands)
+    except (TypeError, ValueError):
+        max_commands = _DEFAULT_TELEGRAM_MENU_MAX_COMMANDS
+    max_commands = max(1, min(_TELEGRAM_BOT_API_MAX_COMMANDS, max_commands))
+
+    priority_mode = str(menu_cfg.get("priority_mode") or "prepend").strip().lower()
+    if priority_mode not in _TELEGRAM_PRIORITY_MODES:
+        priority_mode = "prepend"
+
+    raw_priority = menu_cfg.get("priority")
+    if isinstance(raw_priority, list):
+        priority = [str(item) for item in raw_priority if str(item).strip()]
+    else:
+        priority = []
+
+    return {
+        "max_commands": max_commands,
+        "priority_mode": priority_mode,
+        "priority": priority,
+    }
+
+
+def telegram_menu_max_commands() -> int:
+    """Return configured Telegram BotCommand menu cap with safe bounds."""
+    return int(_telegram_command_menu_config()["max_commands"])
+
+
+def _dedupe_sanitized_names(raw_names: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_name in raw_names:
+        name = _sanitize_telegram_name(str(raw_name))
+        if name and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return tuple(result)
+
+
+def _telegram_effective_priority() -> tuple[str, ...]:
+    menu_cfg = _telegram_command_menu_config()
+    configured = list(_dedupe_sanitized_names(menu_cfg["priority"]))
+    defaults = list(_dedupe_sanitized_names(_TELEGRAM_MENU_PRIORITY))
+
+    if menu_cfg["priority_mode"] == "replace":
+        raw_priority = configured
+    elif menu_cfg["priority_mode"] == "append":
+        raw_priority = defaults + configured
+    else:
+        raw_priority = configured + defaults
+
+    return _dedupe_sanitized_names(raw_priority)
+
+
 def _prioritize_telegram_menu_commands(
     commands: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
     priority = {
-        _sanitize_telegram_name(name): index
-        for index, name in enumerate(_TELEGRAM_MENU_PRIORITY)
+        name: index
+        for index, name in enumerate(_telegram_effective_priority())
     }
     return [
         command
@@ -1056,8 +1155,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
 #   - billing: the terminal-billing surface (buy/auto-reload/limit); /hermes billing.
+#   - moa: high-cost slash mode, available through /hermes moa to avoid
+#     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "debug"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

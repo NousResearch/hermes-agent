@@ -41,7 +41,19 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
 }))
 
-const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus, applyBackendUpdate, $backendUpdateApply, reportBackendContract } = await import('./updates')
+const {
+  maybeNotifyUpdateAvailable,
+  checkBackendUpdates,
+  $backendUpdateStatus,
+  applyBackendUpdate,
+  $backendUpdateApply,
+  reportBackendContract,
+  applyUpdates,
+  $updateApply,
+  $updateOverlayOpen,
+  resetUpdateApplyState
+} = await import('./updates')
+
 const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
@@ -188,9 +200,29 @@ describe('checkBackendUpdates', () => {
 
     expect(checkHermesUpdateSpy).toHaveBeenCalled()
     expect(result?.behind).toBe(2)
+    expect(result?.updateAvailable).toBe(true)
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
     expect(result?.supported).toBe(true)
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+  })
+
+  it('preserves backend update_available when the backend cannot count commits', async () => {
+    setRemote(true)
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'nixos',
+      current_version: '0.16.0',
+      behind: -1,
+      update_available: true,
+      can_apply: false,
+      update_command: 'managed outside dashboard',
+      message: 'Update available.'
+    })
+
+    const result = await checkBackendUpdates()
+
+    expect(result?.behind).toBe(0)
+    expect(result?.updateAvailable).toBe(true)
+    expect(result?.targetSha).toBe('backend:0.16.0')
   })
 
   it('honours can_apply=false (docker/nix): not supported, carries message', async () => {
@@ -218,13 +250,134 @@ describe('checkBackendUpdates', () => {
   })
 })
 
+describe('applyUpdates terminal state', () => {
+  const applyMock = vi.fn()
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyMock.mockReset()
+    resetUpdateApplyState()
+    $updateOverlayOpen.set(true)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('holds the restart view when a relauncher hands off (no close, no toast)', async () => {
+    applyMock.mockResolvedValue({ ok: true, handedOff: true })
+
+    const result = await applyUpdates()
+
+    expect(result.handedOff).toBe(true)
+    // The detached relauncher will quit + reopen us; keep "applying" until then.
+    expect($updateApply.get().applying).toBe(true)
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('closes the overlay + toasts when updated but not relaunched in place', async () => {
+    // The Linux AppImage / dev-run path: backend + GUI updated, no in-place
+    // relaunch. Must not strand the overlay on a closeless spinner.
+    applyMock.mockResolvedValue({ ok: true, backendUpdated: true })
+
+    await applyUpdates()
+
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().stage).toBe('idle')
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ kind: 'success' })
+  })
+
+  it('lands on a closeable error state when the apply resolves not-ok', async () => {
+    applyMock.mockResolvedValue({ ok: false, error: 'rebuild-failed', message: 'rebuild failed' })
+
+    await applyUpdates()
+
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().stage).toBe('error')
+    expect($updateApply.get().error).toBe('rebuild-failed')
+  })
+
+  it('keeps the manual command state for CLI installs with no staged updater', async () => {
+    applyMock.mockResolvedValue({ ok: true, manual: true, command: 'hermes update' })
+
+    await applyUpdates()
+
+    expect($updateApply.get().stage).toBe('manual')
+    expect($updateApply.get().command).toBe('hermes update')
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('lands on the guiSkew terminal state for a GUI/backend skew (AppImage/.deb/.rpm), without claiming a GUI update', async () => {
+    // Linux: backend updated, but the running desktop package was NOT replaced.
+    // Must NOT toast "loads next launch" — that's the dishonest message #45205
+    // guards against. Lands on a closeable guiSkew view instead.
+    applyMock.mockResolvedValue({
+      ok: true,
+      backendUpdated: true,
+      guiUpdated: false,
+      guiSkew: true,
+      message: 'Backend updated, but the desktop app package was not changed.'
+    })
+
+    const result = await applyUpdates()
+
+    expect(result.guiUpdated).toBe(false)
+    expect($updateApply.get().stage).toBe('guiSkew')
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().message).toMatch(/desktop app package was not changed/)
+    // Overlay stays open on a closeable terminal view; no "all set" toast.
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('lands on a closeable manual-restart state when the rebuilt sandbox blocks auto-relaunch', async () => {
+    // Under release/*-unpacked but chrome-sandbox isn't launchable: don't quit
+    // into a dead app — keep a working window on a closeable manual state.
+    applyMock.mockResolvedValue({
+      ok: true,
+      backendUpdated: true,
+      guiUpdated: false,
+      manualRestart: true,
+      sandboxBlocked: true,
+      message: 'Backend updated. Quit and reopen Hermes to finish.'
+    })
+
+    const result = await applyUpdates()
+
+    expect(result.manualRestart).toBe(true)
+    expect($updateApply.get().stage).toBe('manual')
+    expect($updateApply.get().command).toBeNull()
+    expect($updateApply.get().message).toMatch(/Quit and reopen/)
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+})
+
 describe('applyBackendUpdate recovery', () => {
   beforeEach(() => {
     storage.clear()
     checkHermesUpdateSpy.mockReset()
     updateHermesSpy.mockReset()
     getActionStatusSpy.mockReset()
-    $backendUpdateApply.set({ applying: false, stage: 'idle', message: '', percent: null, error: null, command: null, log: [] })
+    $backendUpdateApply.set({
+      applying: false,
+      stage: 'idle',
+      message: '',
+      percent: null,
+      error: null,
+      command: null,
+      log: []
+    })
     vi.useFakeTimers()
   })
 
@@ -235,7 +388,15 @@ describe('applyBackendUpdate recovery', () => {
   it('waits for the backend to return after the restart drops the connection, then clears the overlay', async () => {
     updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
     getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))
-    checkHermesUpdateSpy.mockResolvedValue({ install_method: 'git', current_version: '0.16.0', behind: 0, update_available: false, can_apply: true, update_command: 'hermes update', message: null })
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
 
     const promise = applyBackendUpdate()
     await vi.advanceTimersByTimeAsync(5000)
@@ -244,6 +405,40 @@ describe('applyBackendUpdate recovery', () => {
     expect(result.ok).toBe(true)
     expect($backendUpdateApply.get().stage).toBe('idle')
     expect($backendUpdateApply.get().applying).toBe(false)
+  })
+
+  it('surfaces backend update action log lines while the action is running', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy
+      .mockResolvedValueOnce({
+        exit_code: null,
+        lines: ['Pulling updates...', 'Installing dependencies...'],
+        name: 'update',
+        pid: 1,
+        running: true
+      })
+      .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+
+    expect($backendUpdateApply.get().message).toBe('Installing dependencies...')
+    expect($backendUpdateApply.get().log.map(entry => entry.message)).toEqual([
+      'Pulling updates...',
+      'Installing dependencies...'
+    ])
+
+    await vi.advanceTimersByTimeAsync(5000)
+    await promise
   })
 
   it('surfaces an error when the backend never comes back after the restart', async () => {
@@ -259,4 +454,3 @@ describe('applyBackendUpdate recovery', () => {
     expect($backendUpdateApply.get().stage).toBe('error')
   })
 })
-

@@ -22,7 +22,7 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         self.edits = []
         self.typing = []
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -137,6 +137,29 @@ class FakeAgent:
             cb("tool.started", "terminal", "pwd", {})
             time.sleep(0.35)
             cb("tool.started", "browser_navigate", "https://example.com", {})
+            time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ThinkingAgent:
+    """Agent that emits _thinking scratch text (no tool calls).
+
+    Used to prove the progress callback relays _thinking bubbles when
+    thinking_progress is enabled but tool_progress is off.
+    """
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("_thinking", "weighing the options here")
             time.sleep(0.35)
         return {
             "final_response": "done",
@@ -1565,3 +1588,49 @@ async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_
     # Exactly TWO terminal headers: one for the first run of three calls,
     # one for the terminal call after web_search broke the streak.
     assert final.count("terminal\n```") == 2
+
+
+@pytest.mark.asyncio
+async def test_run_agent_relays_thinking_when_tool_progress_off(monkeypatch, tmp_path):
+    """_thinking scratch text relays as a bubble when thinking_progress is on,
+    even with tool_progress off.
+
+    Regression: agent.tool_progress_callback used to be gated on
+    tool_progress_enabled alone, so enabling only thinking_progress left the
+    callback None and _thinking never relayed — despite the progress queue
+    being created for it (needs_progress_queue = tool OR thinking).
+    """
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-thinking-on",
+        config_data={"display": {"thinking_progress": True, "tool_progress": "off"}},
+    )
+
+    assert result["final_response"] == "done"
+    blob = "\n".join(
+        [c["content"] for c in adapter.sent] + [c["content"] for c in adapter.edits]
+    )
+    assert "weighing the options here" in blob
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_thinking_when_thinking_off(monkeypatch, tmp_path):
+    """With thinking_progress off and tool_progress off, _thinking is suppressed
+    (no callback wired → no relay)."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-thinking-off",
+        config_data={"display": {"thinking_progress": False, "tool_progress": "off"}},
+    )
+
+    assert result["final_response"] == "done"
+    blob = "\n".join(
+        [c["content"] for c in adapter.sent] + [c["content"] for c in adapter.edits]
+    )
+    assert "weighing the options here" not in blob

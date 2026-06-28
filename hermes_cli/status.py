@@ -458,11 +458,51 @@ def show_status(args):
         
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
 
-    # Plugin-registered platforms
+    # Plugin-registered platforms.  Status is often run as a standalone CLI
+    # command, so force plugin discovery before reading the registry; otherwise
+    # plugin channels such as Photon/iMessage can be configured and working but
+    # absent from `hermes status --all`.
     try:
+        try:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
+        except Exception:
+            pass
+        from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES, load_gateway_config
         from gateway.platform_registry import platform_registry
+
+        try:
+            gateway_config = load_gateway_config()
+        except Exception:
+            gateway_config = None
+
         for entry in platform_registry.plugin_entries():
-            configured = entry.check_fn()
+            # Built-in platforms can also be backed by plugins during the
+            # migration period; the fixed table above is the authoritative
+            # status row for those names.  Avoid duplicate Telegram/Slack/etc.
+            # rows here and reserve this section for plugin-only channels.
+            if entry.name in _BUILTIN_PLATFORM_VALUES:
+                continue
+
+            platform_config = None
+            configured = False
+            if gateway_config is not None:
+                try:
+                    platform = Platform(entry.name)
+                    platform_config = gateway_config.platforms.get(platform)
+                    configured = bool(
+                        platform_config
+                        and platform_config.enabled
+                        and gateway_config._is_platform_connected(platform, platform_config)
+                    )
+                except Exception:
+                    configured = False
+
+            # Keep the status view concise: show configured plugin platforms,
+            # plus explicitly-present but disabled/misconfigured plugin blocks.
+            if not configured and platform_config is None:
+                continue
+
             status_str = "configured" if configured else "not configured"
             label = entry.label
             print(f"  {label:<12}  {check_mark(configured)} {status_str} (plugin)")

@@ -1842,6 +1842,62 @@ class TestCallLlmPaymentFallback:
         # Fallback client should have been used
         assert fallback_client.chat.completions.create.called
 
+    def test_401_auth_error_triggers_fallback_in_auto_mode(self, monkeypatch):
+        """401 auth errors should trigger fallback in auto mode (#21165).
+
+        When refresh is unavailable/fails and the user is on the auto chain,
+        a 401 must fall back instead of silently dropping the aux task
+        (which caused compression message loss).
+        """
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.base_url = "https://api.minimax.chat/v1"
+        primary_client.chat.completions.create.side_effect = _AuxAuth401("expired key")
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = _DummyResponse("fallback auth response")
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "minimax/minimax-m2.7")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "minimax/minimax-m2.7", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(fallback_client, "fallback-model", "openrouter")) as mock_fb:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "fallback auth response"
+        assert fallback_client.chat.completions.create.called
+        # Labelled as an auth error, not mis-tagged as a connection error.
+        assert mock_fb.call_args.kwargs.get("reason") == "auth error"
+
+    def test_401_auth_error_no_fallback_with_explicit_provider(self, monkeypatch):
+        """401 on an explicitly-configured provider must NOT silently switch.
+
+        Auth is not a capacity error: the explicit-provider gate means a 401
+        respects the user's choice and raises instead of falling back. This
+        guards the deliberate design at the should_fallback/is_capacity gate.
+        """
+        primary_client = MagicMock()
+        primary_client.base_url = "https://api.minimax.chat/v1"
+        primary_client.chat.completions.create.side_effect = _AuxAuth401("expired key")
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "minimax/minimax-m2.7")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("minimax", "minimax/minimax-m2.7", None, None, None)), \
+             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False), \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_fb:
+            with pytest.raises(_AuxAuth401):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+        mock_fb.assert_not_called()
+
 
 class TestAuxiliaryFallbackLayering:
     """Explicit-provider users get layered fallback: configured_chain → main agent → warn."""

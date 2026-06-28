@@ -116,6 +116,15 @@ def _get_subagent_approval_callback():
 # — the model has no toolsets argument. Subagents inherit the parent's toolsets.
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+# Per-turn spawn cap for delegate_task. Limits the total number of child
+# tasks a parent agent can spawn across the duration of a single user
+# turn. This closes the runaway-loop class where the model calls
+# delegate_task repeatedly in one turn (exhausting tokens and API budget
+# through thousands of sequential subagents). max_concurrent_children
+# bounds batch size per individual call; max_spawn_depth bounds nesting.
+# Neither limits how many times the PARENT triggers delegate_task in the
+# same turn. See PR #52557.
+_DEFAULT_MAX_SPAWNS_PER_TURN = 10
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
 # per process. _get_max_concurrent_children() runs on every get_definitions()
 # schema rebuild (via _build_top_level_description / _build_tasks_param_description),
@@ -423,6 +432,34 @@ def _get_max_async_children() -> int:
             return _DEFAULT_MAX_ASYNC_CHILDREN
     return _DEFAULT_MAX_ASYNC_CHILDREN
 
+
+def _get_max_spawns_per_turn() -> int:
+    """Read delegation.max_spawns_per_turn from config, floored at 1 (no ceiling).
+
+    Caps the total number of child tasks a parent agent can spawn across
+    a single user turn. This closes the runaway-loop class where the model
+    calls delegate_task repeatedly in one turn. max_concurrent_children
+    bounds batch size per individual call; max_spawn_depth bounds nesting.
+    This knob bounds how many times the PARENT triggers delegate_task in the
+    same turn.
+
+    Like max_concurrent_children there is no upper ceiling — but a very high
+    value multiplies API cost linearly, so raise it deliberately.
+    """
+    cfg = _load_config()
+    val = cfg.get("max_spawns_per_turn")
+    if val is None:
+        return _DEFAULT_MAX_SPAWNS_PER_TURN
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.max_spawns_per_turn=%r is not a valid integer; "
+            "using default %d",
+            val,
+            _DEFAULT_MAX_SPAWNS_PER_TURN,
+        )
+        return _DEFAULT_MAX_SPAWNS_PER_TURN
 
 def _get_child_timeout() -> Optional[float]:
     """Read delegation.child_timeout_seconds from config.
@@ -2428,6 +2465,8 @@ def delegate_task(
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
+    max_spawns_per_turn = _get_max_spawns_per_turn()
+    current_turn_spawn_count = getattr(parent_agent, "_turn_spawn_count", 0)
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
     if tasks_error:
         return tool_error(tasks_error)
@@ -2461,10 +2500,20 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    n_tasks = len(task_list)
+    if current_turn_spawn_count + n_tasks > max_spawns_per_turn:
+        return tool_error(
+            f"Per-turn spawn cap exceeded for delegate_task: "
+            f"already spawned {current_turn_spawn_count} children this turn, "
+            f"and this call would add {n_tasks} (cap is {max_spawns_per_turn}). "
+            "Do not keep delegating in a loop — synthesize a response "
+            "or split work across multiple user turns instead."
+        )
+
     overall_start = time.monotonic()
     results = []
-
-    n_tasks = len(task_list)
+    # Track goal labels for progress display (truncated for readability)
+    task_labels = [t["goal"][:40] for t in task_list]
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
@@ -2516,6 +2565,11 @@ def delegate_task(
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
+
+    # Increment the per-turn spawn counter with the children we just built.
+    parent_agent._turn_spawn_count = (
+        getattr(parent_agent, "_turn_spawn_count", 0) + n_tasks
+    )
 
     def _execute_and_aggregate() -> dict:
         """Run all built children (1 or N), join on them, aggregate results,

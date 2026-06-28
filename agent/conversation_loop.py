@@ -615,6 +615,11 @@ def run_conversation(
     # so this tally caps same-entry refreshes and lets the fallback chain take
     # over instead of spinning. Reset here so each turn starts fresh. See #26080.
     agent._auth_pool_refresh_counts = {}
+    # Per-turn spawn counter for delegate_task. Counts the total number of
+    # child tasks spawned by this agent in the current user turn across every
+    # delegate_task call in that turn. Reset here to 0 at the start of each
+    # user turn.
+    agent._turn_spawn_count = 0
 
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching

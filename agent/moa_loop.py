@@ -96,9 +96,10 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
         resolved_provider = str(rt.get("provider") or provider).strip().lower()
         # call_llm treats an explicit base_url as a custom endpoint. That is
         # correct for ordinary OpenAI-compatible targets, but wrong for OAuth /
-        # adapter-backed providers whose provider branch adds auth headers and
-        # request-shape adapters. Keep those providers identified by name.
-        if resolved_provider in {"openai-codex", "xai-oauth"}:
+        # provider-backed targets whose provider branch adds auth refresh,
+        # request metadata, or request-shape adapters. Keep those providers
+        # identified by name.
+        if resolved_provider in {"nous", "openai-codex", "xai-oauth"}:
             return out
         # Pass the resolved endpoint through so call_llm builds the request for
         # the provider's actual API surface instead of auto-detecting. base_url

@@ -76,7 +76,7 @@ class TestCheckBrowserRequirementsChromium:
 
     def test_local_mode_with_chromium_returns_true(self, monkeypatch, tmp_path):
         monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(bt, "_find_agent_browser", lambda: "/usr/local/bin/agent-browser")
+        monkeypatch.setattr(bt, "_find_agent_browser", lambda *a, **k: "/usr/local/bin/agent-browser")
         monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _: False)
         monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
@@ -93,7 +93,7 @@ class TestCheckBrowserRequirementsChromium:
                 return "browserbase"
 
         monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(bt, "_find_agent_browser", lambda: "/usr/local/bin/agent-browser")
+        monkeypatch.setattr(bt, "_find_agent_browser", lambda *a, **k: "/usr/local/bin/agent-browser")
         monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _: False)
         monkeypatch.setattr(bt, "_get_cloud_provider", lambda: FakeProvider())
         # Point chromium search at an empty dir — should not matter for cloud.

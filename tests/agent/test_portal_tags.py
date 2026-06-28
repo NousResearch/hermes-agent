@@ -42,6 +42,33 @@ def test_nous_portal_tags_returns_fresh_list():
     assert "client=test-mutation" not in b
 
 
+def test_conversation_tag_format():
+    """The conversation tag carries the session id verbatim."""
+    from agent.portal_tags import conversation_tag
+
+    assert conversation_tag("abc-123") == "conversation=abc-123"
+
+
+def test_nous_portal_tags_appends_conversation_when_session_id_given():
+    """A session id adds a third, high-cardinality conversation tag."""
+    from agent.portal_tags import conversation_tag, nous_portal_tags
+
+    tags = nous_portal_tags(session_id="sess-42")
+    assert "product=hermes-agent" in tags
+    assert conversation_tag("sess-42") in tags
+    assert len(tags) == 3
+
+
+def test_nous_portal_tags_omits_conversation_without_session_id():
+    """Base tag set stays at two tags when no session id is available."""
+    from agent.portal_tags import nous_portal_tags
+
+    for empty in (None, ""):
+        tags = nous_portal_tags(session_id=empty)
+        assert len(tags) == 2
+        assert not any(t.startswith("conversation=") for t in tags)
+
+
 def test_auxiliary_client_nous_extra_body_uses_helper():
     """auxiliary_client.NOUS_EXTRA_BODY must match the canonical helper output."""
     from agent.auxiliary_client import NOUS_EXTRA_BODY

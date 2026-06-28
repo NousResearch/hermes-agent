@@ -786,3 +786,64 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+# =========================================================================
+# Entry-delimiter validation — content containing ENTRY_DELIMITER ("\n§\n")
+# must be rejected on every write path to prevent silent data corruption.
+# See issue #54403.
+# =========================================================================
+
+
+class TestEntryDelimiterValidation:
+    """Regression tests for #54403: user content containing the literal
+    ENTRY_DELIMITER ("\\n§\\n") collides with the stored-entry boundary and is
+    silently split on read, corrupting stored memory. The shared
+    _scan_memory_content() chokepoint must reject it across add(), replace(),
+    and apply_batch().
+    """
+
+    def test_scan_rejects_entry_delimiter(self):
+        # The full "\n§\n" sequence collides with the stored-entry boundary.
+        assert _scan_memory_content("line one\n§\nline two") is not None
+
+    def test_scan_accepts_lone_section_sign(self):
+        # A lone "§" (not the full newline-delimited sequence) is valid
+        # content and must NOT be rejected — the read split is on "\n§\n",
+        # not the single "§" character.
+        assert _scan_memory_content("User prefers § for sections") is None
+
+    def test_add_rejects_content_with_entry_delimiter(self, store):
+        result = store.add("memory", "heading one\n§\nheading two")
+        assert result["success"] is False
+        assert "delimiter" in result["error"].lower()
+        # Nothing was stored.
+        assert store.memory_entries == []
+
+    def test_add_accepts_lone_section_sign(self, store):
+        result = store.add("memory", "uses § as a section mark")
+        assert result["success"] is True
+        assert "uses § as a section mark" in store.memory_entries
+
+    def test_add_delimiter_rejection_preserves_existing_data(self, store):
+        store.add("memory", "safe entry one")
+        result = store.add("memory", "poisoned\n§\ncontent")
+        assert result["success"] is False
+        # Prior entry untouched.
+        assert store.memory_entries == ["safe entry one"]
+
+    def test_replace_rejects_content_with_entry_delimiter(self, store):
+        store.add("memory", "original entry")
+        result = store.replace("memory", "original", "new\n§\ncontent")
+        assert result["success"] is False
+        # Original entry unchanged.
+        assert store.memory_entries == ["original entry"]
+
+    def test_apply_batch_rejects_content_with_entry_delimiter(self, store):
+        result = store.apply_batch("memory", [
+            {"action": "add", "content": "good entry"},
+            {"action": "add", "content": "bad\n§\nentry"},
+        ])
+        assert result["success"] is False
+        # All-or-nothing: nothing committed.
+        assert store.memory_entries == []

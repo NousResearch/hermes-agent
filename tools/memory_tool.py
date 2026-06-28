@@ -77,6 +77,13 @@ from tools.threat_patterns import first_threat_message as _first_threat_message
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
+    if ENTRY_DELIMITER in content:
+        return (
+            "Blocked: content contains the memory entry delimiter sequence (a "
+            "section sign § between line breaks), which would corrupt stored "
+            "memory when it is read back — the entry would be silently split "
+            "into fragments. Please rephrase to avoid that sequence, then retry."
+        )
     return _first_threat_message(content, scope="strict")
 
 

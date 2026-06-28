@@ -6777,6 +6777,102 @@ class SessionDB:
                 run = 0
         return run == 1
 
+    @staticmethod
+    def _trigram_eligible_tokens(query: str) -> bool:
+        """True when every non-operator token is long enough for the trigram
+        tokenizer to match (>=3 chars).
+
+        The trigram tokenizer indexes overlapping 3-character sequences, so a
+        token shorter than 3 chars produces no trigrams and can never match.
+        With FTS5's implicit-AND between tokens, a single short token makes the
+        whole MATCH return nothing, so the trigram path is only worth taking
+        when every searchable token qualifies.
+        """
+        tokens = [
+            t for t in query.strip('"').strip().split()
+            if t.upper() not in {"AND", "OR", "NOT"}
+        ]
+        return bool(tokens) and all(len(t) >= 3 for t in tokens)
+
+    def _run_trigram_search(
+        self,
+        raw_query: str,
+        *,
+        table: str = "messages_fts_trigram",
+        order_by_sql: str,
+        include_inactive: bool,
+        source_filter: List[str] = None,
+        exclude_sources: List[str] = None,
+        role_filter: List[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Run a search against a substring-capable FTS index.
+
+        ``table`` is ``messages_fts_trigram`` (default) or
+        ``messages_fts_cjk``. The trigram tokenizer indexes overlapping
+        3-byte sequences, so it matches substrings regardless of word
+        boundaries — both CJK phrases the unicode61 tokenizer splits into
+        single characters and Latin runs the unicode61 tokenizer fuses onto
+        adjacent CJK (e.g. ``修改youer服务端``). The cjk-bigram tokenizer
+        splits Latin runs off adjacent CJK, giving the same recovery as an
+        exact ranked token match. Each non-operator token is quoted to
+        neutralise FTS5 special characters while boolean operators
+        (AND/OR/NOT) are preserved.
+
+        Returns the matching rows, or ``None`` when the query cannot be
+        executed (e.g. the tokenizer is unavailable at runtime) so the
+        caller can fall back to another strategy.
+        """
+        tokens = raw_query.split()
+        parts = []
+        for tok in tokens:
+            if tok.upper() in {"AND", "OR", "NOT"}:
+                parts.append(tok)
+            else:
+                parts.append('"' + tok.replace('"', '""') + '"')
+        trigram_query = " ".join(parts)
+        tri_where = [f"{table} MATCH ?"]
+        tri_params: list = [trigram_query]
+        if not include_inactive:
+            tri_where.append("(m.active = 1 OR m.compacted = 1)")
+        if source_filter is not None:
+            tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+            tri_params.extend(source_filter)
+        if exclude_sources is not None:
+            tri_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+            tri_params.extend(exclude_sources)
+        if role_filter:
+            tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+            tri_params.extend(role_filter)
+        tri_sql = f"""
+            SELECT
+                m.id,
+                m.session_id,
+                m.role,
+                snippet({table}, -1, '>>>', '<<<', '...', 40) AS snippet,
+                m.content,
+                m.timestamp,
+                m.tool_name,
+                s.source,
+                s.model,
+                s.started_at AS session_started
+            FROM {table}
+            JOIN messages m ON m.id = {table}.rowid
+            JOIN sessions s ON s.id = m.session_id
+            WHERE {' AND '.join(tri_where)}
+            {order_by_sql}
+            LIMIT ? OFFSET ?
+        """
+        tri_params.extend([limit, offset])
+        with self._lock:
+            try:
+                tri_cursor = self._conn.execute(tri_sql, tri_params)
+            except sqlite3.OperationalError:
+                # Query failed at runtime — let the caller fall back.
+                return None
+            return [dict(row) for row in tri_cursor.fetchall()]
+
     def search_messages(
         self,
         query: str,
@@ -7278,6 +7374,61 @@ class SessionDB:
                 matches.extend(m for m in gap_matches if m["id"] not in seen_ids)
             except sqlite3.OperationalError as exc:
                 logger.debug("Unindexed-gap supplement skipped: %s", exc)
+
+        # Pure-Latin queries run against the unicode61 ``messages_fts`` table,
+        # whose tokenizer does not insert a boundary between Latin letters and
+        # adjacent CJK characters: "修改youer服务端" is indexed as one token,
+        # so MATCH "youer" finds nothing even though the substring is present
+        # (#54242). When the exact-token search returns nothing, retry on the
+        # substring-capable indexes. Preference order:
+        #   1. messages_fts_cjk (when built): its tokenizer splits Latin runs
+        #      off adjacent CJK, so "youer" is an exact ranked token match.
+        #   2. messages_fts_trigram: substring matching, needs >=3-char
+        #      tokens (shorter tokens produce no trigrams).
+        # Gated on a zero-result miss so successful Latin searches keep their
+        # unicode61 ranking — strictly additive, never reorders existing
+        # hits. Trade-off on the trigram leg: any zero-result Latin query
+        # gains substring semantics (e.g. "cat" can then match
+        # "concatenate"). Genuinely absent terms still return []. Skipped for
+        # role_filter=['tool'] queries — both fallback indexes exclude tool
+        # rows (v23), so a retry could never add hits.
+        if (
+            not matches
+            and not is_cjk
+            and not (bool(role_filter) and "tool" in role_filter)
+        ):
+            _fb_query = query.strip('"').strip()
+            if self._fts_cjk_available:
+                cjk_fb = self._run_trigram_search(
+                    _fb_query,
+                    table="messages_fts_cjk",
+                    order_by_sql=order_by_sql,
+                    include_inactive=include_inactive,
+                    source_filter=source_filter,
+                    exclude_sources=exclude_sources,
+                    role_filter=role_filter,
+                    limit=limit,
+                    offset=offset,
+                )
+                if cjk_fb:
+                    matches = cjk_fb
+            if (
+                not matches
+                and self._trigram_available
+                and self._trigram_eligible_tokens(query)
+            ):
+                tri_matches = self._run_trigram_search(
+                    _fb_query,
+                    order_by_sql=order_by_sql,
+                    include_inactive=include_inactive,
+                    source_filter=source_filter,
+                    exclude_sources=exclude_sources,
+                    role_filter=role_filter,
+                    limit=limit,
+                    offset=offset,
+                )
+                if tri_matches:
+                    matches = tri_matches
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.

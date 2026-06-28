@@ -2536,6 +2536,10 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Global concurrency cap (#1001). At most this many workers may be
+        # running across the entire board at once. Prevents runaway concurrency
+        # on memory-constrained hosts. Set to 0 to disable the cap entirely.
+        "max_in_progress": 10,
         # Per-profile concurrency cap (#21582). When set to a positive int,
         # no single profile can have more than N workers running at once,
         # even if the global max_in_progress / max_spawn caps would allow

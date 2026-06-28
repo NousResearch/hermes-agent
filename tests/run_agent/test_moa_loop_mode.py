@@ -140,6 +140,89 @@ moa:
     assert agg_call.get("max_tokens") is None
 
 
+def test_moa_reasoning_efforts_forwarded_to_reference_and_aggregator(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_reasoning_effort: low
+      aggregator_reasoning_effort: xhigh
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openai-codex
+        model: gpt-5.5
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if kwargs["task"] == "moa_reference":
+            return _response("reference advice")
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "solve this"}], tools=[])
+
+    ref_call = next(c for c in calls if c["task"] == "moa_reference")
+    agg_call = next(c for c in calls if c["task"] == "moa_aggregator")
+    assert ref_call["extra_body"] == {"reasoning": {"enabled": True, "effort": "low"}}
+    assert agg_call["extra_body"] == {"reasoning": {"enabled": True, "effort": "xhigh"}}
+
+
+def test_moa_reasoning_effort_none_disables_reasoning(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      aggregator_reasoning_effort: none
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openai-codex
+        model: gpt-5.5
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if kwargs["task"] == "moa_reference":
+            return _response("reference advice")
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "solve this"}], tools=[])
+
+    ref_call = next(c for c in calls if c["task"] == "moa_reference")
+    agg_call = next(c for c in calls if c["task"] == "moa_aggregator")
+    assert ref_call["extra_body"] is None
+    assert agg_call["extra_body"] == {"reasoning": {"enabled": False}}
+
+
 def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
     """Reference + aggregator slots must be called via their provider's real
     runtime (resolve_runtime_provider), not a bare provider/model call.

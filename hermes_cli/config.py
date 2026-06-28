@@ -2194,6 +2194,8 @@ DEFAULT_CONFIG = {
                     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
                 ],
                 "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                "reference_reasoning_effort": "",
+                "aggregator_reasoning_effort": "",
                 "max_tokens": 4096,
                 "enabled": True,
             }

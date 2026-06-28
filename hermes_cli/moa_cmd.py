@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_constants import VALID_REASONING_EFFORTS
 from hermes_cli.config import load_config, save_config
 from hermes_cli.inventory import build_models_payload, load_picker_context
 from hermes_cli.moa_config import DEFAULT_MOA_PRESET_NAME, normalize_moa_config
@@ -60,6 +61,21 @@ def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     return {"provider": str(provider.get("slug") or ""), "model": str(model)}
 
 
+def _pick_reasoning_effort(title: str, current: str = "") -> str:
+    """Prompt for a MoA reasoning effort.
+
+    ``""`` means no MoA-specific override; providers/models use their normal
+    default. ``"none"`` is an explicit disable signal, mirroring /reasoning.
+    """
+    values = ["", "none", *VALID_REASONING_EFFORTS]
+    rows = ["Default (provider/model default)", "Disable reasoning (none)"] + [
+        str(effort) for effort in VALID_REASONING_EFFORTS
+    ]
+    clean = str(current or "").strip().lower()
+    default = values.index(clean) if clean in values else 0
+    return values[_prompt_choice(title, rows, default)]
+
+
 def _print_config(config: dict[str, Any]) -> None:
     cfg = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
     print("Mixture of Agents presets")
@@ -74,6 +90,10 @@ def _print_config(config: dict[str, Any]) -> None:
             print(f"    {idx}. {slot['provider']}:{slot['model']}")
         agg = preset["aggregator"]
         print(f"  Aggregator: {agg['provider']}:{agg['model']}")
+        ref_reasoning = preset.get("reference_reasoning_effort") or "default"
+        agg_reasoning = preset.get("aggregator_reasoning_effort") or "default"
+        print(f"  Reference reasoning: {ref_reasoning}")
+        print(f"  Aggregator reasoning: {agg_reasoning}")
 
 
 def cmd_moa(args) -> None:
@@ -105,6 +125,14 @@ def cmd_moa(args) -> None:
         current = dict(current)
         current["reference_models"] = refs
         current["aggregator"] = _pick_slot(current.get("aggregator"))
+        current["reference_reasoning_effort"] = _pick_reasoning_effort(
+            "Select reference reasoning effort",
+            str(current.get("reference_reasoning_effort") or ""),
+        )
+        current["aggregator_reasoning_effort"] = _pick_reasoning_effort(
+            "Select aggregator reasoning effort",
+            str(current.get("aggregator_reasoning_effort") or ""),
+        )
         moa["presets"][preset_name] = current
         moa.setdefault("default_preset", preset_name)
         cfg["moa"] = normalize_moa_config(moa)

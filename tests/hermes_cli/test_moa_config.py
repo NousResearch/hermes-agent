@@ -115,6 +115,38 @@ def test_normalize_moa_config_coerces_float_max_tokens():
     assert cfg2["presets"][DEFAULT_MOA_PRESET_NAME]["max_tokens"] == 4096
 
 
+def test_normalize_moa_config_preserves_reasoning_efforts():
+    """MoA presets can opt reference and aggregator calls into reasoning.
+
+    The stored values mirror the regular /reasoning levels. Invalid hand-edited
+    values degrade to "" rather than being forwarded to providers.
+    """
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "review": {
+                    "reference_reasoning_effort": "HIGH",
+                    "aggregator_reasoning_effort": "xhigh",
+                },
+                "broken": {
+                    "reference_reasoning_effort": "turbo",
+                    "aggregator_reasoning_effort": 123,
+                },
+            }
+        }
+    )
+
+    review = cfg["presets"]["review"]
+    assert review["reference_reasoning_effort"] == "high"
+    assert review["aggregator_reasoning_effort"] == "xhigh"
+    assert cfg["reference_reasoning_effort"] == "high"
+    assert cfg["aggregator_reasoning_effort"] == "xhigh"
+
+    broken = cfg["presets"]["broken"]
+    assert broken["reference_reasoning_effort"] == ""
+    assert broken["aggregator_reasoning_effort"] == ""
+
+
 def test_exact_preset_matching_is_not_fuzzy():
     config = {"presets": {"coding": {}, "review": {}}}
 

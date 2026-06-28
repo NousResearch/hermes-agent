@@ -15,6 +15,7 @@ from typing import Any
 
 from agent.auxiliary_client import call_llm
 from agent.transports import get_transport
+from hermes_constants import parse_reasoning_effort
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,14 @@ def _slot_label(slot: dict[str, str]) -> str:
     return f"{slot.get('provider', '').strip()}:{slot.get('model', '').strip()}"
 
 
+def _reasoning_extra_body(effort: str | None) -> dict[str, Any] | None:
+    """Return an OpenRouter/Codex-style reasoning extra_body, if configured."""
+    parsed = parse_reasoning_effort(str(effort or ""))
+    if parsed is None:
+        return None
+    return {"reasoning": parsed}
+
+
 def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     """Resolve a reference/aggregator slot to real runtime call kwargs.
 
@@ -223,6 +232,7 @@ def _run_reference(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, usage)``.
 
@@ -275,6 +285,7 @@ def _run_reference(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            extra_body=_reasoning_extra_body(reasoning_effort),
             **runtime,
         )
         usage = CanonicalUsage()
@@ -339,6 +350,7 @@ def _run_references_parallel(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -375,6 +387,7 @@ def _run_references_parallel(
                     ref_messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
                 )
             ] = idx
         # Collect every reference before returning — the aggregator needs the
@@ -832,6 +845,8 @@ class MoAChatCompletions:
             # The acting agent's own configured temperature (if any) still
             # applies to the aggregator, which IS the acting model.
             aggregator_temperature = api_kwargs.get("temperature")
+        reference_reasoning_effort = str(preset.get("reference_reasoning_effort") or "")
+        aggregator_reasoning_effort = str(preset.get("aggregator_reasoning_effort") or "")
 
         # When the preset is disabled, skip the reference fan-out and let the
         # configured aggregator act alone — it is the preset's acting model, so
@@ -902,6 +917,7 @@ class MoAChatCompletions:
                 ref_messages,
                 temperature=temperature,
                 max_tokens=reference_max_tokens,
+                reasoning_effort=reference_reasoning_effort,
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
@@ -1010,13 +1026,18 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
+
+        extra_body = dict(agg_kwargs.get("extra_body") or {})
+        reasoning_extra = _reasoning_extra_body(aggregator_reasoning_effort)
+        if reasoning_extra:
+            extra_body.update(reasoning_extra)
         _agg_response = call_llm(
             task="moa_aggregator",
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=agg_kwargs.get("max_tokens"),
             tools=agg_kwargs.get("tools"),
-            extra_body=agg_kwargs.get("extra_body"),
+            extra_body=extra_body or None,
             **stream_kwargs,
             **_slot_runtime(aggregator),
         )

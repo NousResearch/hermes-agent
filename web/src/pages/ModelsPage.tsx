@@ -747,6 +747,8 @@ function MoaModelsModal({
       aggregator: draft.aggregator,
       reference_temperature: draft.reference_temperature,
       aggregator_temperature: draft.aggregator_temperature,
+      reference_reasoning_effort: draft.reference_reasoning_effort,
+      aggregator_reasoning_effort: draft.aggregator_reasoning_effort,
       max_tokens: draft.max_tokens,
       enabled: draft.enabled,
     };

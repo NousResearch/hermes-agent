@@ -177,6 +177,37 @@ model:
 #   response_cache_ttl: 300      # Cache TTL in seconds, 1-86400 (default: 300)
 
 # =============================================================================
+# Mixture of Agents (/moa)
+# =============================================================================
+# Named presets used by /moa. References provide private advisory context;
+# the aggregator is the acting model that answers or calls tools.
+#
+# reference_reasoning_effort / aggregator_reasoning_effort are optional MoA-
+# specific overrides. Empty string = provider/model default. Valid explicit
+# values mirror /reasoning: none, minimal, low, medium, high, xhigh.
+moa:
+  default_preset: "default"
+  active_preset: ""
+  presets:
+    default:
+      reference_models:
+        - provider: "openai-codex"
+          model: "gpt-5.5"
+        - provider: "openrouter"
+          model: "deepseek/deepseek-v4-pro"
+      aggregator:
+        provider: "openrouter"
+        model: "anthropic/claude-opus-4.8"
+      # Optional sampling overrides. null = omit temperature and use the
+      # provider/model default, matching normal single-model Hermes behavior.
+      reference_temperature: null
+      aggregator_temperature: null
+      reference_reasoning_effort: ""
+      aggregator_reasoning_effort: ""
+      max_tokens: 4096
+      enabled: true
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple

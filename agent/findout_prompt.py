@@ -48,44 +48,50 @@ Copy-paste this EXACT code into execute_code:
 ```python
 import os, sys, json, requests, textwrap
 
-# === CONFIG ===
-BASE_URL = os.getenv("FINDOUT_BASE_URL", "http://localhost:11434/v1")
-API_KEY = os.getenv("FINDOUT_API_KEY", "ollama")
-MODEL = os.getenv("FINDOUT_MODEL", "qwen3.5:14b")
+# === CONFIG (set these env vars to ANY OpenAI-compatible provider) ===
+BASE_URL = os.getenv("FINDOUT_BASE_URL")      # e.g. https://api.openai.com/v1
+API_KEY = os.getenv("FINDOUT_API_KEY", "")    # your API key
+MODEL = os.getenv("FINDOUT_MODEL")            # e.g. gpt-4o, claude-sonnet-4, qwen3.5:14b
 SEARCH_PROVIDER = os.getenv("FINDOUT_SEARCH_PROVIDER", "duckduckgo")
 QUERY = "{q}"
 
-# === CONNECTIVITY PROBE ===
-def _probe_llm() -> bool:
-    \"\"\"Check if the LLM endpoint is reachable before running the pipeline.\"\"\"
-    probe_url = BASE_URL.rstrip("/v1").rstrip("/")
-    for endpoint in [probe_url + "/api/tags", BASE_URL + "/models"]:
-        try:
-            r = requests.get(endpoint, timeout=5, headers={{}})
-            if r.status_code == 200:
-                return True
-        except Exception:
-            continue
-    # Last resort: try a raw chat completion to see if anything answers
+if not BASE_URL or not MODEL:
+    print("⚠️  FINDOUT_BASE_URL or FINDOUT_MODEL not set.")
+    print("   Set these env vars to your OpenAI-compatible endpoint, then retry.")
+    print("   Example: FINDOUT_BASE_URL=https://api.openai.com/v1 FINDOUT_MODEL=gpt-4o")
+    raise SystemExit(0)  # exit cleanly → STEP 2 manual fallback
+
+# === CONNECTIVITY PROBE (generic OpenAI-compatible check) ===
+def _probe_endpoint() -> bool:
+    \"\"\"Check if the LLM endpoint is reachable with a minimal chat request.\"\"\"
+    headers = {{"Authorization": f"Bearer {{API_KEY}}"}} if API_KEY else {{}}
     try:
         r = requests.post(
-            BASE_URL + "/chat/completions",
-            json={{"model": MODEL, "messages": [{{"role": "user", "content": "ping"}}], "max_tokens": 1}},
-            timeout=5,
-            headers={{"Authorization": f"Bearer {{API_KEY}}"}} if API_KEY and API_KEY != "ollama" else {{}},
+            BASE_URL.rstrip("/") + "/chat/completions",
+            json={{"model": MODEL, "messages": [{{\"role\": \"user\", \"content\": \"ping\"}}], "max_tokens": 1}},
+            timeout=10,
+            headers=headers,
         )
         return r.status_code < 500
-    except Exception:
+    except requests.exceptions.ConnectionError:
+        print(f"   → Connection refused at {{BASE_URL}}")
+        return False
+    except requests.exceptions.Timeout:
+        print(f"   → Connection timed out at {{BASE_URL}}")
+        return False
+    except Exception as e:
+        print(f"   → Probe failed: {{type(e).__name__}}")
         return False
 
 print("🔍 Checking LLM endpoint...")
-llm_ok = _probe_llm()
-print(f"   → {{'reachable' if llm_ok else 'UNREACHABLE'}} at {{BASE_URL}}")
+reachable = _probe_endpoint()
+print(f"   → {{'reachable' if reachable else 'UNREACHABLE'}}")
 
-if not llm_ok:
-    print(f"\\n⚠️  LLM endpoint at {{BASE_URL}} is not reachable.")
-    print("   Pipeline skipped — will do manual verification below.")
-    raise SystemExit(0)  # exit cleanly, STEP 2 handles it
+if not reachable:
+    print()
+    print("⚠️  LLM endpoint is not reachable with the current FINDOUT_* config.")
+    print("   Pipeline skipped — manual verification in STEP 2.")
+    raise SystemExit(0)
 
 # === RUN PIPELINE ===
 try:

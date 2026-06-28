@@ -7931,7 +7931,6 @@ def _(rid, params: dict) -> dict:
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
-            _write_config_key("agent.reasoning_effort", arg)
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed
                 _persist_live_session_runtime(session)
@@ -7940,6 +7939,8 @@ def _(rid, params: dict) -> dict:
                     params.get("session_id", ""),
                     _session_info(session["agent"], session),
                 )
+            else:
+                _write_config_key("agent.reasoning_effort", arg)
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))

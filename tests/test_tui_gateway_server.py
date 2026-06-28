@@ -3046,6 +3046,45 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
 
 
+def test_config_set_reasoning_effort_is_session_scoped(tmp_path, monkeypatch):
+    """Reasoning effort changes with an active session must NOT persist to
+    config.yaml — parity with gateway /reasoning (session-scoped by default,
+    --global to persist).  See #54084."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    agent = types.SimpleNamespace(reasoning_config=None)
+    server._sessions["sid"] = _session(agent=agent)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "high"},
+        }
+    )
+    # Agent should be updated
+    assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+    # But config.yaml should NOT contain the reasoning_effort key
+    cfg = server._load_cfg()
+    assert cfg.get("agent", {}).get("reasoning_effort") is None
+
+
+def test_config_set_reasoning_effort_persists_without_session(tmp_path, monkeypatch):
+    """Without an active session, reasoning effort must persist to config.yaml
+    so CLI/cron picks it up.  See #54084."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions.clear()
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "reasoning", "value": "high"},
+        }
+    )
+    cfg = server._load_cfg()
+    assert cfg["agent"]["reasoning_effort"] == "high"
+
+
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(verbose_logging=False)

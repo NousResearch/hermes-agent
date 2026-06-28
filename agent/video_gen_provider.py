@@ -149,6 +149,10 @@ class VideoGenProvider(abc.ABC):
                 "supports_audio": True,
                 "supports_negative_prompt": True,
                 "max_reference_images": 7,
+                "max_reference_videos": 3,
+                "max_reference_audios": 3,
+                "supports_first_frame": True,
+                "supports_last_frame": True,
             }
 
         Used by the tool layer for soft validation and by ``hermes tools``
@@ -163,6 +167,10 @@ class VideoGenProvider(abc.ABC):
             "supports_audio": False,
             "supports_negative_prompt": False,
             "max_reference_images": 0,
+            "max_reference_videos": 0,
+            "max_reference_audios": 0,
+            "supports_first_frame": False,
+            "supports_last_frame": False,
         }
 
     @abc.abstractmethod

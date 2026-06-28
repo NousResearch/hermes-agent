@@ -21,8 +21,9 @@ def _reset_registry():
 class _RecordingProvider(VideoGenProvider):
     """Captures the kwargs the tool layer hands it."""
 
-    def __init__(self, name: str = "fake"):
+    def __init__(self, name: str = "fake", capabilities: Optional[Dict[str, Any]] = None):
         self._name = name
+        self._capabilities = capabilities or {"modalities": ["text", "image"]}
         self.last_kwargs: Dict[str, Any] = {}
 
     @property
@@ -36,7 +37,7 @@ class _RecordingProvider(VideoGenProvider):
         return "model-a"
 
     def capabilities(self) -> Dict[str, Any]:
-        return {"modalities": ["text", "image"]}
+        return self._capabilities
 
     def generate(self, prompt, **kwargs):
         self.last_kwargs = {"prompt": prompt, **kwargs}
@@ -109,6 +110,44 @@ class TestUnifiedDispatch:
         assert result["modality"] == "image"
         assert provider.last_kwargs["image_url"] == "https://example.com/img.png"
 
+    def test_reference_media_inputs_reach_provider(self):
+        provider = _RecordingProvider(
+            "rec",
+            {
+                "modalities": ["text", "image"],
+                "max_reference_videos": 3,
+                "max_reference_audios": 3,
+                "supports_first_frame": True,
+                "supports_last_frame": True,
+            },
+        )
+        video_gen_registry.register_provider(provider)
+        result = self._run({
+            "prompt": "match the references",
+            "reference_video_urls": [" https://example.com/ref.mp4 ", ""],
+            "reference_audio_urls": "https://example.com/ref.wav",
+            "first_frame_url": " https://example.com/first.png ",
+            "last_frame_url": "https://example.com/last.png",
+        })
+
+        assert result["success"] is True
+        assert provider.last_kwargs["reference_video_urls"] == ["https://example.com/ref.mp4"]
+        assert provider.last_kwargs["reference_audio_urls"] == ["https://example.com/ref.wav"]
+        assert provider.last_kwargs["first_frame_url"] == "https://example.com/first.png"
+        assert provider.last_kwargs["last_frame_url"] == "https://example.com/last.png"
+
+    def test_reference_media_inputs_rejected_when_model_lacks_capability(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run({
+            "prompt": "match the reference",
+            "reference_video_urls": ["https://example.com/ref.mp4"],
+        })
+
+        assert "error" in result
+        assert "does not support" in result["error"]
+
     def test_prompt_required(self):
         provider = _RecordingProvider("rec")
         video_gen_registry.register_provider(provider)
@@ -135,6 +174,67 @@ class TestUnifiedDispatch:
 
     def test_edit_extend_fields_not_in_schema(self):
         from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
-        props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-        assert "operation" not in props
-        assert "video_url" not in props
+        properties = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
+        assert "operation" not in properties
+        assert "video_url" not in properties
+
+    def test_reference_media_fields_are_capability_gated(self, monkeypatch):
+        from tools import video_generation_tool
+
+        provider = _RecordingProvider(
+            "rec",
+            {
+                "modalities": ["text", "image"],
+                "max_reference_videos": 2,
+                "max_reference_audios": 1,
+                "supports_first_frame": True,
+                "supports_last_frame": True,
+            },
+        )
+        video_gen_registry.register_provider(provider)
+        monkeypatch.setattr(
+            video_generation_tool,
+            "_read_configured_video_provider",
+            lambda: "rec",
+        )
+        monkeypatch.setattr(
+            video_generation_tool,
+            "_read_configured_video_model",
+            lambda: "model-a",
+        )
+
+        properties = video_generation_tool._build_dynamic_video_schema()[
+            "parameters"
+        ]["properties"]
+        assert properties["reference_video_urls"]["items"]["type"] == "string"
+        assert properties["reference_video_urls"]["maxItems"] == 2
+        assert properties["reference_audio_urls"]["items"]["type"] == "string"
+        assert properties["first_frame_url"]["type"] == "string"
+        assert properties["last_frame_url"]["type"] == "string"
+
+    def test_reference_media_fields_hidden_for_unsupported_model(self, monkeypatch):
+        from tools import video_generation_tool
+
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        monkeypatch.setattr(
+            video_generation_tool,
+            "_read_configured_video_provider",
+            lambda: "rec",
+        )
+        monkeypatch.setattr(
+            video_generation_tool,
+            "_read_configured_video_model",
+            lambda: "model-a",
+        )
+
+        properties = video_generation_tool._build_dynamic_video_schema()[
+            "parameters"
+        ]["properties"]
+        for field in (
+            "reference_video_urls",
+            "reference_audio_urls",
+            "first_frame_url",
+            "last_frame_url",
+        ):
+            assert field not in properties

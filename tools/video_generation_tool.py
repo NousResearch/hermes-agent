@@ -24,6 +24,10 @@ reference-to-video - with a compact schema:
     prompt                   text instruction (required)
     image_url                drives image-to-video
     reference_image_urls     list, up to provider-declared cap
+    reference_video_urls     reference videos for motion/camera/style guidance
+    reference_audio_urls     reference audio for rhythm/music/voice guidance
+    first_frame_url          image URL to pin the video's first frame
+    last_frame_url           image URL to pin the video's last frame
     duration                 seconds (provider clamps)
     aspect_ratio             "16:9" | "9:16" | "1:1" | ...
     resolution               "480p" | "540p" | "720p" | "1080p"
@@ -45,6 +49,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from agent.video_gen_provider import (
@@ -57,6 +62,32 @@ from agent.video_gen_provider import (
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
+
+
+_REFERENCE_INPUT_PROPERTIES: Dict[str, Dict[str, Any]] = {
+    "reference_video_urls": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "Optional reference video URLs for motion, camera, or style guidance."
+        ),
+    },
+    "reference_audio_urls": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "Optional reference audio URLs for rhythm, music, or voice guidance."
+        ),
+    },
+    "first_frame_url": {
+        "type": "string",
+        "description": "Optional image URL to pin the video's first frame.",
+    },
+    "last_frame_url": {
+        "type": "string",
+        "description": "Optional image URL to pin the video's last frame.",
+    },
+}
 
 
 VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
@@ -293,7 +324,7 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return None
 
 
-def _normalize_reference_images(value: Any) -> Optional[List[str]]:
+def _normalize_url_list(value: Any) -> Optional[List[str]]:
     if value is None:
         return None
     if isinstance(value, str):
@@ -307,10 +338,74 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
     return out or None
 
 
+_REFERENCE_CAPABILITY_KEYS = {
+    "reference_video_urls": "max_reference_videos",
+    "reference_audio_urls": "max_reference_audios",
+    "first_frame_url": "supports_first_frame",
+    "last_frame_url": "supports_last_frame",
+}
+
+
+def _capabilities_for_model(provider: Any, model: Optional[str]) -> Dict[str, Any]:
+    """Return provider capabilities with model-specific metadata applied."""
+    try:
+        capabilities = dict(provider.capabilities() or {})
+    except Exception:
+        capabilities = {}
+
+    try:
+        models = provider.list_models() or []
+    except Exception:
+        models = []
+    model_meta = next(
+        (
+            item
+            for item in models
+            if isinstance(item, dict) and item.get("id") == model
+        ),
+        {},
+    )
+    model_capabilities = {
+        "max_reference_images",
+        *_REFERENCE_CAPABILITY_KEYS.values(),
+    }
+    for capability in model_capabilities:
+        if capability in model_meta:
+            capabilities[capability] = model_meta[capability]
+    return capabilities
+
+
+def _supports_reference_input(capabilities: Dict[str, Any], field: str) -> bool:
+    value = capabilities.get(_REFERENCE_CAPABILITY_KEYS[field])
+    if field in {"reference_video_urls", "reference_audio_urls"}:
+        return isinstance(value, int) and not isinstance(value, bool) and value > 0
+    return value is True
+
+
+def _schema_parameters_for_capabilities(
+    capabilities: Dict[str, Any],
+) -> Dict[str, Any]:
+    parameters = deepcopy(VIDEO_GENERATE_SCHEMA["parameters"])
+    properties = parameters["properties"]
+    for field, capability in _REFERENCE_CAPABILITY_KEYS.items():
+        if not _supports_reference_input(capabilities, field):
+            continue
+        definition = deepcopy(_REFERENCE_INPUT_PROPERTIES[field])
+        limit = capabilities.get(capability)
+        if definition.get("type") == "array" and isinstance(limit, int):
+            definition["maxItems"] = limit
+        properties[field] = definition
+    return parameters
+
+
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
-    reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
+    reference_image_urls = _normalize_url_list(args.get("reference_image_urls"))
+    reference_video_urls = _normalize_url_list(args.get("reference_video_urls"))
+    reference_audio_urls = _normalize_url_list(args.get("reference_audio_urls"))
+    first_frame_url = (args.get("first_frame_url") or "").strip() or None
+    last_frame_url = (args.get("last_frame_url") or "").strip() or None
     duration = _coerce_int(args.get("duration"))
     aspect_ratio = (args.get("aspect_ratio") or DEFAULT_ASPECT_RATIO).strip() or DEFAULT_ASPECT_RATIO
     resolution = (args.get("resolution") or DEFAULT_RESOLUTION).strip() or DEFAULT_RESOLUTION
@@ -339,11 +434,33 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # Resolve model: explicit arg wins, then config, then provider default.
     model = model_override or _read_configured_video_model() or provider.default_model()
 
+    capabilities = _capabilities_for_model(provider, model)
+    reference_inputs = {
+        "reference_video_urls": reference_video_urls,
+        "reference_audio_urls": reference_audio_urls,
+        "first_frame_url": first_frame_url,
+        "last_frame_url": last_frame_url,
+    }
+    unsupported = [
+        field
+        for field, value in reference_inputs.items()
+        if value and not _supports_reference_input(capabilities, field)
+    ]
+    if unsupported:
+        return tool_error(
+            f"Provider '{getattr(provider, 'name', '?')}' model "
+            f"'{model or 'default'}' does not support: {', '.join(unsupported)}"
+        )
+
     kwargs: Dict[str, Any] = {
         "model": model,
         "_model_override_explicit": bool(model_override),
         "image_url": image_url,
         "reference_image_urls": reference_image_urls,
+        "reference_video_urls": reference_video_urls,
+        "reference_audio_urls": reference_audio_urls,
+        "first_frame_url": first_frame_url,
+        "last_frame_url": last_frame_url,
         "duration": duration,
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,
@@ -486,12 +603,11 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
             "\nNo video backend is available. Calls will return an error "
             "until the user picks one via `hermes tools` → Video Generation."
         )
-        return {"description": "\n".join(parts)}
+        return {
+            "description": "\n".join(parts),
+            "parameters": _schema_parameters_for_capabilities({}),
+        }
 
-    try:
-        caps = provider.capabilities() or {}
-    except Exception:
-        caps = {}
     try:
         models = provider.list_models() or []
     except Exception:
@@ -502,6 +618,7 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
         (m for m in models if isinstance(m, dict) and m.get("id") == active_model),
         {},
     )
+    caps = _capabilities_for_model(provider, active_model)
 
     backend_label = provider.display_name
     line = f"\nActive backend: {backend_label}"
@@ -538,6 +655,22 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     max_refs = caps.get("max_reference_images") or 0
     if max_refs:
         parts.append(f"- reference_image_urls: up to {max_refs} images")
+    max_reference_videos = caps.get("max_reference_videos") or 0
+    if max_reference_videos:
+        parts.append(
+            f"- reference_video_urls: up to {max_reference_videos} videos"
+        )
+    max_reference_audios = caps.get("max_reference_audios") or 0
+    if max_reference_audios:
+        parts.append(
+            f"- reference_audio_urls: up to {max_reference_audios} audio files"
+        )
+    if caps.get("supports_first_frame") and caps.get("supports_last_frame"):
+        parts.append(
+            "- first_frame_url / last_frame_url: start/end frame control supported"
+        )
+    elif caps.get("supports_first_frame"):
+        parts.append("- first_frame_url: start-frame control supported")
     if provider.name == "xai":
         parts.append(
             "- chaining: for edit/extend pass the public HTTPS MP4 in `video` "
@@ -554,7 +687,10 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
         if notice:
             parts.append(f"- storage: {notice}")
 
-    return {"description": "\n".join(parts)}
+    return {
+        "description": "\n".join(parts),
+        "parameters": _schema_parameters_for_capabilities(caps),
+    }
 
 
 # ---------------------------------------------------------------------------

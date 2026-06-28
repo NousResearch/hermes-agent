@@ -500,21 +500,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
-    term.attachCustomWheelEventHandler((ev) => {
-      const delta = ev.deltaY;
-      if (!delta) {
-        return false;
-      }
-
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
-
-      ev.preventDefault();
-      ev.stopPropagation();
-      return false;
-    });
+    // Dashboard chat is an embedded Ink app.  The transcript scroll position
+    // lives inside Ink's ScrollBox, not in xterm's native scrollback.  Let
+    // xterm encode wheel input as mouse protocol bytes so the TUI can scroll
+    // its own virtualized transcript.  Non-wheel SGR mouse traffic is still
+    // filtered below before it reaches the PTY; that keeps the old stray
+    // `102;71M5;104;62M` input-corruption class out while fixing long final
+    // replies that looked cut off in the browser.
+    term.attachCustomWheelEventHandler(() => true);
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -799,10 +792,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // behave normally.
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
+      const isWheelSgrMouseReport = (data: string): boolean => {
+        const match = data.match(SGR_MOUSE_RE);
+        if (!match) return false;
+        const button = Number(match[1]);
+        // SGR protocol: 64 = wheel up, 65 = wheel down.  Forward only these
+        // so Ink's ScrollBox receives scroll intent; drop click/move reports.
+        return button === 64 || button === 65;
+      };
       onDataDisposable = term.onData((data) => {
         if (ws.readyState !== WebSocket.OPEN) return;
 
-        if (SGR_MOUSE_RE.test(data)) {
+        if (SGR_MOUSE_RE.test(data) && !isWheelSgrMouseReport(data)) {
           return;
         }
 

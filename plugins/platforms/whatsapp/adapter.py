@@ -417,6 +417,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         
         This launches the Node.js bridge process and waits for it to be ready.
         """
+        # aiohttp isn't a core dependency — it only ships with another platform
+        # extra (discord/slack/messaging), so a WhatsApp-only install reaches the
+        # bare `import aiohttp` below with nothing to import and crashes connect
+        # (#54217). Lazy-install it on first connect, mirroring platform.slack /
+        # platform.teams. ensure() is a no-op when aiohttp is already present.
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("platform.whatsapp", prompt=False)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Could not lazy-install aiohttp (%s); WhatsApp may fail to "
+                "connect. Install it manually with `pip install hermes-agent[whatsapp]`.",
+                self.name, exc,
+            )
+
         if not check_whatsapp_requirements():
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             self._set_fatal_error(

@@ -1623,6 +1623,9 @@ web = [
 wecom = [
     { name = "defusedxml" },
 ]
+whatsapp = [
+    { name = "aiohttp" },
+]
 youtube = [
     { name = "youtube-transcript-api" },
 ]
@@ -1635,6 +1638,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.13.4" },
     { name = "aiohttp", marker = "extra == 'sms'", specifier = "==3.13.4" },
     { name = "aiohttp", marker = "extra == 'teams'", specifier = "==3.13.4" },
+    { name = "aiohttp", marker = "extra == 'whatsapp'", specifier = "==3.13.4" },
     { name = "aiohttp-socks", marker = "extra == 'matrix'", specifier = "==0.11.0" },
     { name = "aiosqlite", marker = "extra == 'matrix'", specifier = "==0.22.1" },
     { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
@@ -1745,7 +1749,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "whatsapp", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"

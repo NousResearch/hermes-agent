@@ -431,6 +431,14 @@ class TestGeneratedSystemdUnits:
         # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
+        # ExecStopPost reaps any process the gateway didn't clean up itself,
+        # so long-lived helpers (e.g. adb) can't be left orphaned in the
+        # cgroup and block Restart=always — issue #37454.
+        assert "ExecStopPost=" in unit
+        assert "-m gateway.cgroup_cleanup" in unit
+        # KillMode=mixed is preserved so the gateway still reaps its own
+        # tool-call children before systemd SIGKILLs the cgroup — #8202.
+        assert "KillMode=mixed" in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
@@ -493,6 +501,14 @@ class TestGeneratedSystemdUnits:
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
+        # ExecStopPost reaps any process the gateway didn't clean up itself,
+        # so long-lived helpers (e.g. adb) can't be left orphaned in the
+        # cgroup and block Restart=always — issue #37454.
+        assert "ExecStopPost=" in unit
+        assert "-m gateway.cgroup_cleanup" in unit
+        # KillMode=mixed is preserved so the gateway still reaps its own
+        # tool-call children before systemd SIGKILLs the cgroup — #8202.
+        assert "KillMode=mixed" in unit
 
 
 class TestGatewayStopCleanup:

@@ -534,9 +534,10 @@ function getTitleBarOverlayOptions() {
     return { height: TITLEBAR_HEIGHT }
   }
 
-  // Windows + WSLg paint WCO natively; plain Linux disables it (frameless hidden
-  // titlebar still applies).
-  if (!IS_WINDOWS && !IS_WSL) {
+  // WSLg paints WCO via the RDP host's own min/max/close, so requesting
+  // an Electron overlay there just leaves a dead gap. Plain Linux (KDE,
+  // GNOME) can use the native overlay — let it through.
+  if (!IS_WINDOWS && IS_WSL) {
     return false
   }
 
@@ -3788,7 +3789,7 @@ function getWindowButtonPosition() {
 }
 
 function getNativeOverlayWidth() {
-  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL })
+  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
 }
 
 function getWindowState() {

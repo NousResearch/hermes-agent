@@ -1572,6 +1572,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            # start_polling() succeeding IS the recovery signal: the long-poll
+            # connection is live again, so clear the degraded flag immediately
+            # rather than blocking all outbound sends for the full
+            # HEARTBEAT_PROBE_DELAY window. The deferred probe below is a
+            # defensive re-check — if it later detects a silent wedge (PTB
+            # running=True but consumer task dead) it re-enters the ladder,
+            # which re-sets _send_path_degraded. Without this clear here, a
+            # clean reconnect leaves the flag stuck True until the 60s probe
+            # (or forever, if the probe is never scheduled), blocking the send
+            # path even though the bot has fully recovered. See #35205.
+            self._send_path_degraded = False
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
             # but the underlying long-poll task is wedged on a stale httpx
@@ -1695,6 +1706,69 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, HEARTBEAT_PROBE_DELAY, probe_err,
             )
             await self._handle_polling_network_error(probe_err)
+
+    def _disarm_ptb_retry_loop(self) -> None:
+        """Synchronously stop PTB's internal polling retry loop.
+
+        PTB wraps ``getUpdates`` in ``network_retry_loop`` with
+        ``max_retries=-1`` (retry forever).  When a ``TelegramError`` (including
+        a 409 ``Conflict``) fires, that loop calls our ``error_callback``
+        *synchronously*, then sleeps and re-checks ``while is_running()`` before
+        polling again.  Our ``error_callback`` only schedules an async recovery
+        task (``loop.create_task(...)``) and returns immediately, so PTB's loop
+        keeps polling while our handler concurrently runs
+        ``stop -> sleep -> start_polling``.  The two polling sessions overlap and
+        Telegram returns a fresh 409 — a self-inflicted conflict loop on a
+        ~31s cadence.
+
+        The loop is wired with ``is_running=lambda: updater.running`` and a
+        private ``stop_event`` (``do_action`` races that event and returns the
+        moment it is set).  Setting that event *synchronously inside the
+        callback* — before it returns — makes PTB's loop exit on its own next
+        tick instead of racing our recovery.  Our async handler then performs
+        the real ``await updater.stop()`` (idempotent) followed by
+        drain + ``start_polling()``, which builds a fresh ``stop_event`` so the
+        restart is not poisoned.
+
+        Best-effort and defensive: PTB names the attribute differently across
+        versions (``_Updater__polling_task_stop_event`` via name-mangling), so
+        we probe for both spellings.  If neither is found we do nothing and
+        fall back to the prior behaviour (async ``updater.stop()`` racing PTB) —
+        i.e. we never make things worse than before.
+
+        We deliberately do NOT fall back to flipping ``updater._running``:
+        ``stop()`` raises ``RuntimeError`` when ``running`` is already False and
+        our recovery handler guards its ``stop()`` call on ``running``, so
+        clearing the flag here would skip the real teardown and leave PTB's
+        stop_event uncleared — poisoning the subsequent ``start_polling()``.
+        The stop_event lever leaves ``_running`` True, so the handler's
+        ``await updater.stop()`` still runs, drains the polling task, and clears
+        the event for a clean restart.
+        """
+        updater = getattr(self._app, "updater", None) if self._app else None
+        if updater is None:
+            return
+        # Preferred (and only) lever: PTB's polling stop_event. Name-mangled on
+        # Updater, so probe both the mangled and unmangled spellings.
+        for attr in (
+            "_Updater__polling_task_stop_event",
+            "_polling_task_stop_event",
+        ):
+            stop_event = getattr(updater, attr, None)
+            if isinstance(stop_event, asyncio.Event):
+                if not stop_event.is_set():
+                    stop_event.set()
+                    logger.debug(
+                        "[%s] Disarmed PTB polling retry loop via %s",
+                        self.name, attr,
+                    )
+                return
+        logger.debug(
+            "[%s] Could not disarm PTB polling retry loop "
+            "(stop_event not found on this PTB version); "
+            "falling back to async stop()",
+            self.name,
+        )
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
@@ -2388,6 +2462,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     if self._polling_error_task and not self._polling_error_task.done():
                         return
                     if self._looks_like_polling_conflict(error):
+                        # Synchronously stop PTB's internal network_retry_loop
+                        # BEFORE scheduling our async recovery task.  PTB calls
+                        # this callback synchronously inside its loop and then
+                        # keeps polling on its own; if we only schedule a task
+                        # here, PTB's retry and our stop->restart overlap and
+                        # produce a fresh 409.  Disarming the loop now makes it
+                        # exit on its next tick so recovery owns polling alone.
+                        self._disarm_ptb_retry_loop()
                         self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
                     elif self._looks_like_network_error(error):
                         logger.warning("[%s] Telegram network error, scheduling reconnect: %s", self.name, error)
@@ -4221,6 +4303,31 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _notify_clarify_expired(self, query, user_display: str) -> None:
+        """Tell the user a clarify tap arrived too late to be delivered.
+
+        Fires when the clarify entry was evicted by ``clarify_timeout`` or the
+        gateway restarted between asking and the tap. In both cases the agent
+        thread is no longer waiting, so the tap would otherwise leave a
+        misleading ✓ (or an "awaiting typed response" prompt) on a button the
+        agent never receives.
+        """
+        try:
+            await query.answer(text="⚠️ This prompt expired — please /retry.")
+        except Exception:
+            pass
+        try:
+            await query.edit_message_text(
+                text=(
+                    f"❓ {_html.escape(query.message.text or '')}\n\n"
+                    "<i>⚠️ This question expired or the session reset — please /retry.</i>"
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -4458,11 +4565,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     # clarify.  Do NOT pop _clarify_state yet — we still
                     # need it if the user is slow to respond and the entry
                     # is cleared by something else.
+                    flipped = False
                     try:
                         from tools.clarify_gateway import mark_awaiting_text
-                        mark_awaiting_text(clarify_id)
+                        flipped = mark_awaiting_text(clarify_id)
                     except Exception as exc:
                         logger.warning("[%s] mark_awaiting_text failed: %s", self.name, exc)
+
+                    if not flipped:
+                        # Entry evicted (clarify_timeout) or gateway restarted
+                        # between ask and tap — a typed answer would go nowhere.
+                        self._clarify_state.pop(clarify_id, None)
+                        await self._notify_clarify_expired(query, user_display)
+                        return
 
                     await query.answer(text="✏️ Type your answer in the chat.")
                     try:
@@ -4509,22 +4624,25 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
                     resolved = False
 
-                await query.answer(text=f"✓ {resolved_text[:60]}")
-                try:
-                    await query.edit_message_text(
-                        text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass
-
                 if resolved:
+                    await query.answer(text=f"✓ {resolved_text[:60]}")
+                    try:
+                        await query.edit_message_text(
+                            text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
                     logger.info(
                         "Telegram clarify button resolved (id=%s, choice=%r, user=%s)",
                         clarify_id, resolved_text, user_display,
                     )
                 else:
+                    # Entry evicted (clarify_timeout) or gateway restarted
+                    # between ask and tap — surface this instead of leaving a
+                    # misleading ✓ on a button the agent will never receive.
+                    await self._notify_clarify_expired(query, user_display)
                     logger.warning(
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
@@ -6101,6 +6219,47 @@ class TelegramAdapter(BasePlatformAdapter):
             return note
         return f"{existing}\n\n{note}"
 
+    async def _surface_media_cache_failure(
+        self,
+        msg: Message,
+        event: MessageEvent,
+        kind: str,
+        exc: Exception,
+        display_name: Optional[str] = None,
+    ) -> None:
+        """Surface a failed media download/cache on BOTH ends instead of swallowing it.
+
+        When download_as_bytearray()/cache_*_from_bytes() raises (typically a
+        transient httpx.ConnectError to Telegram's CDN), the attachment never
+        made it into event.media_urls. Without this, the handler falls through
+        and dispatches an empty turn: the user thinks the file was delivered,
+        the agent sees nothing, and the only record is a buried log warning.
+
+        This (1) replies to the user in Telegram so they know to retry, and
+        (2) appends an agent-visible notice to event.text via the existing
+        observed-note channel so the agent knows an attachment was attempted
+        and failed — never a silent empty turn. No new event fields (the
+        structured-event refactor is out of scope per #23045).
+        """
+        named = f" ({display_name})" if display_name else ""
+        try:
+            await msg.reply_text(
+                f"\u26a0\ufe0f Couldn't download your {kind}{named} "
+                f"({exc.__class__.__name__}). Please try sending it again."
+            )
+        except Exception as reply_err:
+            logger.warning(
+                "[Telegram] Failed to notify user about %s cache failure: %s",
+                kind,
+                reply_err,
+                exc_info=True,
+            )
+        agent_note = (
+            f"[The user attempted to send a {kind}{named} but it could not be "
+            f"downloaded ({exc.__class__.__name__}); they have been asked to retry.]"
+        )
+        event.text = self._append_observed_note(event.text, agent_note)
+
     def _observe_unmentioned_group_message(
         self,
         message: Message,
@@ -6562,6 +6721,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "photo", e)
 
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
@@ -6580,6 +6740,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "voice message", e)
         elif msg.audio:
             try:
                 allowed, note = self._telegram_media_size_allowed(msg.audio, "audio file")
@@ -6596,6 +6757,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "audio file", e)
 
         elif msg.video:
             try:
@@ -6619,6 +6781,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user video at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "video file", e)
 
         # Download document files to cache for agent processing
         elif msg.document:
@@ -6751,6 +6914,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
+                await self._surface_media_cache_failure(
+                    msg, event, "attachment", e,
+                    display_name=getattr(doc, "file_name", None) or None,
+                )
 
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
@@ -7133,6 +7300,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=thread_id_str,
             chat_topic=chat_topic,
             message_id=str(message.message_id),
+            is_bot=bool(getattr(user, "is_bot", False)) if user else False,
         )
         
         # Extract reply context if this message is a reply.
@@ -7408,6 +7576,8 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         os.environ["TELEGRAM_MENTION_PATTERNS"] = _json.dumps(telegram_cfg["mention_patterns"])
     if "exclusive_bot_mentions" in telegram_cfg and not os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS"):
         os.environ["TELEGRAM_EXCLUSIVE_BOT_MENTIONS"] = str(telegram_cfg["exclusive_bot_mentions"]).lower()
+    if "allow_bots" in telegram_cfg and not os.getenv("TELEGRAM_ALLOW_BOTS"):
+        os.environ["TELEGRAM_ALLOW_BOTS"] = str(telegram_cfg["allow_bots"]).lower()
     if "guest_mode" in telegram_cfg and not os.getenv("TELEGRAM_GUEST_MODE"):
         os.environ["TELEGRAM_GUEST_MODE"] = str(telegram_cfg["guest_mode"]).lower()
     if "observe_unmentioned_group_messages" in telegram_cfg and not os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):

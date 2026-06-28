@@ -39,6 +39,17 @@ from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 
+# When the fallback chain is fully exhausted on a non-rate-limit failure
+# (e.g. every provider returns a non-retryable client error like HTTP 400),
+# arm a short cooldown so the NEXT turn's restore_primary_runtime stays gated
+# and does not reset _fallback_index=0 to replay the entire chain again.
+# Without this, a client/gateway that re-submits immediately would re-marshal
+# the full (potentially 80k-token) context once per provider every turn and
+# can drive a constrained host into memory/swap exhaustion.  Rate-limit /
+# billing reasons keep their own 60s cooldown (set above); this is the
+# narrower non-rate-limit case.  See issue #24996.
+_FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+
 
 def _ra():
     """Lazy ``run_agent`` reference.
@@ -247,6 +258,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                         invalidate_runtime_client(region)
                     raise
                 result["response"] = normalize_converse_response(raw_response)
+            elif agent.provider == "moa":
+                # MoA is a virtual chat-completions provider backed by the
+                # in-process MoAClient facade. Do not rebuild a request-local
+                # OpenAI client from the virtual runtime metadata.
+                result["response"] = agent.client.chat.completions.create(**api_kwargs)
             else:
                 request_client = _set_request_client(
                     agent._create_request_openai_client(
@@ -1112,8 +1128,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
     if agent._fallback_index >= len(agent._fallback_chain):
+        # Chain exhausted.  If we actually walked a non-empty chain and the
+        # failure was NOT a rate-limit/billing event (those already armed
+        # their own 60s cooldown above), arm a short cooldown so the next
+        # turn's restore_primary_runtime stays gated instead of resetting
+        # _fallback_index=0 and re-marshaling the whole context across every
+        # provider again.  Guards the cross-turn replay storm in #24996.
+        if (
+            len(agent._fallback_chain) > 0
+            and reason not in {FailoverReason.rate_limit, FailoverReason.billing}
+        ):
+            _existing_cooldown = getattr(agent, "_rate_limited_until", 0) or 0
+            agent._rate_limited_until = max(
+                _existing_cooldown,
+                time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S,
+            )
         return False
-
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
     fb_provider = (fb.get("provider") or "").strip().lower()
@@ -2429,12 +2459,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             diag=request_client_holder.get("diag"),
                         )
                         _close_request_client_once("stream_mid_tool_retry_cleanup")
-                        try:
-                            agent._replace_primary_openai_client(
-                                reason="stream_mid_tool_retry_pool_cleanup"
-                            )
-                        except Exception:
-                            pass
+                        if agent.api_mode == "anthropic_messages":
+                            try:
+                                agent._anthropic_client.close()
+                                agent._rebuild_anthropic_client()
+                            except Exception:
+                                pass
+                        else:
+                            try:
+                                agent._replace_primary_openai_client(
+                                    reason="stream_mid_tool_retry_pool_cleanup"
+                                )
+                            except Exception:
+                                pass
                         continue
 
                     # SSE error events from proxies (e.g. OpenRouter sends
@@ -2482,12 +2519,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             _close_request_client_once("stream_retry_cleanup")
                             # Also rebuild the primary client to purge
                             # any dead connections from the pool.
-                            try:
-                                agent._replace_primary_openai_client(
-                                    reason="stream_retry_pool_cleanup"
-                                )
-                            except Exception:
-                                pass
+                            if agent.api_mode == "anthropic_messages":
+                                try:
+                                    agent._anthropic_client.close()
+                                    agent._rebuild_anthropic_client()
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    agent._replace_primary_openai_client(
+                                        reason="stream_retry_pool_cleanup"
+                                    )
+                                except Exception:
+                                    pass
                             continue
                         # Retries exhausted. Log the final failure with
                         # full diagnostic detail (chain, headers,
@@ -2658,10 +2702,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pass
             # Rebuild the primary client too — its connection pool
             # may hold dead sockets from the same provider outage.
-            try:
-                agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
-            except Exception:
-                pass
+            if agent.api_mode == "anthropic_messages":
+                try:
+                    agent._anthropic_client.close()
+                    agent._rebuild_anthropic_client()
+                except Exception:
+                    pass
+            else:
+                try:
+                    agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                except Exception:
+                    pass
             # Reset the timer so we don't kill repeatedly while
             # the inner thread processes the closure.
             last_chunk_time["t"] = time.time()
@@ -2737,7 +2788,30 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,
             )
-            return SimpleNamespace(
+            # Detect provider output-layer content filtering (e.g. MiniMax
+            # "output new_sensitive (1027)", Azure/OpenAI content_filter,
+            # Anthropic safety refusal).  The raw error is about to be
+            # swallowed into a finish_reason=length stub, so classify it HERE
+            # while we still have it and stamp the stub.  Retrying such a
+            # content-deterministic filter on the same primary just re-hits
+            # the filter — the conversation loop reads this tag and activates
+            # the fallback chain instead of burning continuation retries.
+            # error_classifier is the single source of truth for "what counts
+            # as a content filter" (#32421).
+            _content_filter_terminated = False
+            try:
+                from agent.error_classifier import classify_api_error, FailoverReason
+                _cls = classify_api_error(
+                    result["error"],
+                    provider=str(getattr(agent, "provider", "") or ""),
+                    model=str(getattr(agent, "model", "") or ""),
+                )
+                _content_filter_terminated = (
+                    _cls.reason == FailoverReason.content_policy_blocked
+                )
+            except Exception:
+                _content_filter_terminated = False
+            _stub = SimpleNamespace(
                 id=PARTIAL_STREAM_STUB_ID,
                 model=getattr(agent, "model", "unknown"),
                 choices=[SimpleNamespace(
@@ -2746,6 +2820,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage=None,
                 _dropped_tool_names=_partial_names or None,
             )
+            if _content_filter_terminated:
+                _stub._content_filter_terminated = True
+            return _stub
         raise result["error"]
     return result["response"]
 

@@ -1146,6 +1146,22 @@ def _consume_pid_marker_for_self(
             pass
         return False
 
+    # Cross-profile guard (#29092): reject markers written by a gateway
+    # running under a different HERMES_HOME. When two profile gateway
+    # services share the same default ~/.hermes (HERMES_HOME not set
+    # distinctly), the marker path resolves to the same file for both. A
+    # --replace from profile B could land in profile A's marker, match on
+    # PID + start_time by coincidence of a shared PID namespace, and make
+    # profile A exit 0 — only to be revived by systemd Restart=always,
+    # which then races the replacer again, flapping indefinitely. The
+    # field is absent in markers written by older Hermes versions; treat
+    # absent as "same home" so old markers and single-profile setups are
+    # unaffected. Leave a mismatched marker in place so the correct
+    # profile can still consume it.
+    replacer_home = record.get("replacer_hermes_home")
+    if replacer_home is not None and replacer_home != str(get_hermes_home()):
+        return False
+
     our_pid = os.getpid()
     our_start_time = _get_process_start_time(our_pid)
     # Start-time is a PID-reuse guard. It is only meaningful when both
@@ -1192,6 +1208,7 @@ def write_takeover_marker(target_pid: int) -> bool:
             "target_pid": target_pid,
             "target_start_time": target_start_time,
             "replacer_pid": os.getpid(),
+            "replacer_hermes_home": str(get_hermes_home()),
             "written_at": _utc_now_iso(),
         }
         _write_json_file(_get_takeover_marker_path(), record)

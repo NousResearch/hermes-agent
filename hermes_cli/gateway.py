@@ -2267,11 +2267,33 @@ def _default_system_service_user() -> str | None:
 
 
 def prompt_linux_gateway_install_scope() -> str | None:
+    # A boot-time system service has to be created by root (writing the unit to
+    # /etc/systemd/system). We only offer that scope when the session is already
+    # root — a non-root user is never handed a "re-run yourself under sudo"
+    # recipe, since that just funnels them into a system install they can't
+    # actually perform from here. Non-root sessions get the user service.
+    is_root = os.geteuid() == 0  # windows-footgun: ok — Linux systemd install wizard, never invoked on Windows
+    if not is_root:
+        choice = prompt_choice(
+            "  Choose how the gateway should run in the background:",
+            [
+                "User service (no sudo; best for laptops/dev boxes; may need linger after logout)",
+                "Skip service install for now",
+            ],
+            default=0,
+        )
+        if choice == 0:
+            print_info(
+                "  Tip: for a boot-time system service, re-run setup as root "
+                "(e.g. from a root shell or `sudo -i`)."
+            )
+        return {0: "user", 1: None}[choice]
+
     choice = prompt_choice(
         "  Choose how the gateway should run in the background:",
         [
             "User service (no sudo; best for laptops/dev boxes; may need linger after logout)",
-            "System service (starts on boot; requires sudo; still runs as your user)",
+            "System service (starts on boot; runs as your chosen user)",
             "Skip service install for now",
         ],
         default=0,
@@ -2287,18 +2309,13 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
     if scope == "system":
         run_as_user = _default_system_service_user()
         if os.geteuid() != 0:  # windows-footgun: ok — Linux systemd install wizard, never invoked on Windows
+            # Unreachable from the wizard: prompt_linux_gateway_install_scope()
+            # only offers "system" to root sessions. Defensive guard for any
+            # direct caller — we do NOT print a self-elevation recipe.
             print_warning(
-                "  System service install requires sudo, so Hermes can't create it from this user session."
+                "  System service install requires root. Re-run setup from a "
+                "root shell, or install a user service instead: hermes gateway install"
             )
-            if run_as_user:
-                print_info(
-                    f"  After setup, run: sudo hermes gateway install --system --run-as-user {run_as_user}"
-                )
-            else:
-                print_info(
-                    "  After setup, run: sudo hermes gateway install --system --run-as-user <your-user>"
-                )
-            print_info("  Then start it with: sudo hermes gateway start --system")
             return scope, False
 
         if not run_as_user:
@@ -2691,6 +2708,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
+ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
@@ -2724,6 +2742,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
+ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal

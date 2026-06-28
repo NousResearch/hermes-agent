@@ -924,6 +924,10 @@ class SessionStore:
         """
         if self._has_active_processes_fn:
             if self._has_active_processes_fn(entry.session_key):
+                logger.debug(
+                    "Session %s not expired — active background processes",
+                    entry.session_key,
+                )
                 return False
 
         policy = self.config.get_reset_policy(
@@ -965,6 +969,10 @@ class SessionStore:
         if self._has_active_processes_fn:
             session_key = self._generate_session_key(source)
             if self._has_active_processes_fn(session_key):
+                logger.debug(
+                    "Session reset skipped for %s — active background processes",
+                    session_key,
+                )
                 return None
 
         policy = self.config.get_reset_policy(

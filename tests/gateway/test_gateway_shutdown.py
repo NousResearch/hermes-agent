@@ -94,6 +94,10 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
 @pytest.mark.asyncio
 async def test_gateway_stop_drains_running_agents_before_disconnect():
     runner, adapter = make_restart_runner()
+    # Opt into a grace window (the default is 0 = interrupt immediately).
+    # This exercises the path where an agent finishes within the drain
+    # window and must NOT be interrupted.
+    runner._restart_drain_timeout = 5.0
     disconnect_mock = AsyncMock()
     adapter.disconnect = disconnect_mock
 

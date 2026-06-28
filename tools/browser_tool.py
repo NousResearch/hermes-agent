@@ -70,6 +70,39 @@ from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli._subprocess_compat import windows_hide_flags
 
+# Browser-specific tool keys passed through to the agent-browser subprocess
+# AFTER credential stripping.  agent-browser is a Node process loading npm
+# deps; handing it the full operator keyring (#29157 / GHSA-m4m8-xjp4-5rmm)
+# means a compromised transitive dependency could read every Hermes secret
+# straight out of process.env.  Strip by default, then re-add only the
+# browser-backend keys the worker legitimately needs.
+_BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
+    "BROWSERBASE_API_KEY",
+    "BROWSERBASE_PROJECT_ID",
+    "BROWSER_USE_API_KEY",
+    "FIRECRAWL_API_KEY",
+    "FIRECRAWL_API_URL",
+    "FIRECRAWL_BROWSER_TTL",
+)
+
+
+def _build_browser_env() -> dict:
+    """Credential-scrubbed env for an agent-browser subprocess.
+
+    Strips Hermes-managed secrets (provider keys, gateway tokens, GitHub auth,
+    infra secrets) then re-adds only the browser-backend keys the worker needs.
+    The ``hermes_subprocess_env`` import is deferred to keep ``browser_tool``
+    importable under test harnesses that load it against a stubbed ``tools``
+    package (tests/tools/test_managed_browserbase_and_modal.py).
+    """
+    from tools.environments.local import hermes_subprocess_env
+
+    env = hermes_subprocess_env(inherit_credentials=False)
+    for _key in _BROWSER_PASSTHROUGH_KEYS:
+        if _key in os.environ:
+            env[_key] = os.environ[_key]
+    return env
+
 try:
     from tools.website_policy import check_website_access
 except Exception:
@@ -872,7 +905,8 @@ def _run_chrome_fallback_command(
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
-    browser_env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
+    browser_env = _build_browser_env()
+    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
     browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
@@ -2125,7 +2159,7 @@ def _run_browser_command(
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
-        browser_env = {**os.environ}
+        browser_env = _build_browser_env()
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
         # used during CLI discovery.

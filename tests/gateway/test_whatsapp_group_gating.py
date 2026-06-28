@@ -230,3 +230,30 @@ def test_broadcast_filter_runs_before_allowlist():
     assert adapter._should_process_message(msg) is False
 
 
+# --- _clean_bot_mention_text: strip configured wake word from body (#47493) ---
+
+def test_mention_pattern_wake_word_stripped_from_body():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)@andy\b"])
+    clean = adapter._clean_bot_mention_text
+    # Leading wake word, trailing punctuation, and mid-string occurrences.
+    assert clean("@andy show photos of Runi", {"botIds": []}) == "show photos of Runi"
+    assert clean("@andy, book a table at Andy's Diner", {"botIds": []}) == "book a table at Andy's Diner"
+    assert clean("hey @andy what's up", {"botIds": []}) == "hey what's up"
+
+
+def test_mention_pattern_only_body_is_preserved():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)@andy\b"])
+    # A message that is only the wake word must not be blanked out.
+    assert adapter._clean_bot_mention_text("@andy", {"botIds": []}) == "@andy"
+
+
+def test_clean_bot_mention_noop_without_patterns():
+    adapter = _make_adapter(require_mention=True)  # no mention_patterns configured
+    assert adapter._clean_bot_mention_text("@andy hi", {"botIds": []}) == "@andy hi"
+
+
+def test_real_jid_mention_still_stripped_alongside_pattern():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)@andy\b"])
+    data = {"botIds": ["12345@s.whatsapp.net"]}
+    assert adapter._clean_bot_mention_text("@12345 @andy ping", data) == "ping"
+

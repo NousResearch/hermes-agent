@@ -4,6 +4,7 @@ import sqlite3
 import time
 import pytest
 
+import hermes_state
 from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
 
 
@@ -4725,3 +4726,55 @@ def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
         chat_id="chat-1",
         chat_type="dm",
     ) is None
+
+
+def test_compression_failure_cooldown_round_trips_and_clears(db):
+    db.create_session("s1", "cli")
+
+    cooldown_until = time.time() + 60.0
+    db.record_compression_failure_cooldown("s1", cooldown_until, "timeout")
+
+    state = db.get_compression_failure_cooldown("s1")
+    assert state is not None
+    assert state["cooldown_until"] == cooldown_until
+    assert state["error"] == "timeout"
+
+    db.clear_compression_failure_cooldown("s1")
+    assert db.get_compression_failure_cooldown("s1") is None
+
+    row = db.get_session("s1")
+    assert row["compression_failure_cooldown_until"] is None
+    assert row["compression_failure_error"] is None
+
+
+def test_expired_compression_failure_cooldown_is_ignored(db):
+    db.create_session("s1", "cli")
+
+    db.record_compression_failure_cooldown("s1", time.time() - 60.0, "stale")
+
+    assert db.get_compression_failure_cooldown("s1") is None
+
+
+def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(db, monkeypatch):
+    db.create_session("s1", "cli")
+
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+    assert db.try_acquire_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
+
+    original_expires = db._conn.execute(
+        "SELECT expires_at FROM compression_locks WHERE session_id = ?",
+        ("s1",),
+    ).fetchone()[0]
+
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1005.0)
+    assert db.refresh_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
+    refreshed_expires = db._conn.execute(
+        "SELECT expires_at FROM compression_locks WHERE session_id = ?",
+        ("s1",),
+    ).fetchone()[0]
+    assert refreshed_expires > original_expires
+
+    assert db.refresh_compression_lock("s1", "holder-b", ttl_seconds=10.0) is False
+
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
+    assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True

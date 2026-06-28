@@ -177,6 +177,54 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     agent.context_compressor.compress.assert_not_called()
 
 
+def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypatch) -> None:
+    """The owning compression call must keep its lease alive while it runs."""
+    real_try_acquire = SessionDB.try_acquire_compression_lock
+
+    def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
+        return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
+
+    monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+
+    parent_sid = "REFRESH_TEST"
+    db.create_session(parent_sid, source="discord")
+
+    agent_a = _build_agent_with_db(db, parent_sid)
+    agent_a._compression_lock_ttl_seconds = 1.0
+    agent_a._compression_lock_refresh_interval = 0.25
+
+    def _slow_compress(*_a, **_kw):
+        time.sleep(2.0)
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent_a.context_compressor.compress.side_effect = _slow_compress
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    def run(agent):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    t_a = threading.Thread(target=run, args=(agent_a,), name="refresh_owner")
+    t_a.start()
+    deadline = time.time() + 2.0
+    while db.get_compression_lock_holder(parent_sid) is None and time.time() < deadline:
+        time.sleep(0.05)
+    assert db.get_compression_lock_holder(parent_sid) is not None
+    time.sleep(1.2)
+    assert db.try_acquire_compression_lock(
+        parent_sid, "refresh_probe", ttl_seconds=1.0
+    ) is False, "live owner lease expired and was reclaimable before compression finished"
+    t_a.join(timeout=10)
+
+    assert not t_a.is_alive()
+    assert _count_children(db, parent_sid) == 1
+    assert db.get_compression_lock_holder(parent_sid) is None
+
+
 class _NoLockSubsystemDB:
     """Wraps a real SessionDB but simulates a pre-#34351 version skew.
 
@@ -244,7 +292,7 @@ def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path) -> 
     assert agent.session_id != parent_sid
 
 
-def test_review_fork_disables_compression_to_prevent_stale_parent_fork() -> None:
+def test_review_fork_disables_compression_to_prevent_stale_parent_fork(tmp_path: Path) -> None:
     """The background-review fork must set ``compression_enabled = False``
     so it can never compress the parent it shares a session_id with
     (issue #38727).
@@ -270,8 +318,6 @@ def test_review_fork_disables_compression_to_prevent_stale_parent_fork() -> None
     ``AIAgent.run_conversation`` patched (so no LLM call happens) and
     captures the constructed review agent to assert the flag.
     """
-    import tempfile
-
     import agent.background_review as br
 
     captured = {}
@@ -283,21 +329,20 @@ def test_review_fork_disables_compression_to_prevent_stale_parent_fork() -> None
 
     parent_sid = "REVIEW_FORK_FLAG_TEST"
 
-    with tempfile.TemporaryDirectory() as td:
-        db = SessionDB(db_path=Path(td) / "state.db")
-        db.create_session(parent_sid, source="discord")
-        parent = _build_agent_with_db(db, parent_sid)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(parent_sid, source="discord")
+    parent = _build_agent_with_db(db, parent_sid)
 
-        # The worker does a local ``from run_agent import AIAgent``; patching
-        # the class method covers that import path.
-        from run_agent import AIAgent
+    # The worker does a local ``from run_agent import AIAgent``; patching
+    # the class method covers that import path.
+    from run_agent import AIAgent
 
-        with patch.object(AIAgent, "run_conversation", _fake_run_conversation):
-            br._run_review_in_thread(
-                parent,
-                [{"role": "user", "content": "hi"}],
-                "review this conversation",
-            )
+    with patch.object(AIAgent, "run_conversation", _fake_run_conversation):
+        br._run_review_in_thread(
+            parent,
+            [{"role": "user", "content": "hi"}],
+            "review this conversation",
+        )
 
     assert captured, (
         "_run_review_in_thread never reached run_conversation — the spawn path "
@@ -314,3 +359,4 @@ def test_review_fork_disables_compression_to_prevent_stale_parent_fork() -> None
         "conversation_loop.py only short-circuit when compression_enabled is "
         "False — this flag MUST be cleared on the review fork."
     )
+    db.close()

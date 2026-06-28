@@ -110,6 +110,75 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         return parent
 
 
+# Default context-usage fraction above which a same-server local review is
+# skipped for the turn. 0.45 keeps two equal-size slots (the main turn and the
+# review's full-transcript replay) roughly under 90% of the shared window.
+_DEFAULT_LOCAL_SKIP_FRACTION = 0.45
+
+
+def _review_local_skip_fraction() -> float:
+    """Return the configured local-skip context fraction.
+
+    Read from ``auxiliary.background_review.local_skip_context_fraction``.
+    A value outside ``(0, 1)`` disables the guard (caller treats it as
+    "never skip"). Falls back to :data:`_DEFAULT_LOCAL_SKIP_FRACTION` when
+    config is unreadable or unset.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return _DEFAULT_LOCAL_SKIP_FRACTION
+    aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    task = aux.get("background_review", {}) if isinstance(aux.get("background_review"), dict) else {}
+    if "local_skip_context_fraction" not in task:
+        return _DEFAULT_LOCAL_SKIP_FRACTION
+    try:
+        return float(task.get("local_skip_context_fraction"))
+    except (TypeError, ValueError):
+        return _DEFAULT_LOCAL_SKIP_FRACTION
+
+
+def _should_skip_same_model_review(agent: Any, runtime: Dict[str, Any]) -> bool:
+    """Whether to skip a same-server background review for this turn.
+
+    The default (non-routed) review forks the MAIN model and replays the full
+    transcript. On a single local inference server (llama.cpp, LM Studio,
+    Ollama, vLLM, ...) the main turn's slot and the review fork's slot share
+    one fixed ``n_ctx`` KV budget, so a concurrent replay can push combined
+    usage past the window and the server rejects the request ("Context size
+    has been exceeded", issue #54115). This returns True when live context
+    usage is already high enough that running the replay now would risk that.
+
+    Only applies to single-endpoint local servers — cloud providers handle
+    each request independently, so the combined-slot limit does not apply and
+    this returns False for them. Also returns False (don't skip) whenever the
+    inputs needed to decide are missing: the guard never blocks a review on
+    incomplete information. The skipped review simply re-triggers on a later
+    turn boundary, by which point compression has usually lowered usage.
+    """
+    try:
+        base_url = (runtime.get("base_url") if isinstance(runtime, dict) else None) or getattr(agent, "base_url", "") or ""
+        if not base_url:
+            return False
+        from agent.model_metadata import is_local_endpoint
+        if not is_local_endpoint(base_url):
+            return False
+        cc = getattr(agent, "context_compressor", None)
+        if cc is None:
+            return False
+        ctx = int(getattr(cc, "context_length", 0) or 0)
+        used = int(getattr(cc, "last_total_tokens", 0) or 0)
+        if ctx <= 0 or used <= 0:
+            return False
+        fraction = _review_local_skip_fraction()
+        if not (0.0 < fraction < 1.0):
+            return False  # guard disabled or misconfigured -> never skip
+        return used >= ctx * fraction
+    except Exception:
+        return False
+
+
 def _msg_text(m: Dict) -> str:
     c = m.get("content")
     if isinstance(c, str):
@@ -672,6 +741,22 @@ def _run_review_in_thread(
             # -> codex_responses downgrade is applied inside the resolver.
             _rt = _resolve_review_runtime(agent)
             _routed = bool(_rt.get("routed"))
+            # On the same-model path the fork replays the full transcript on the
+            # parent's server. When that server is a single local endpoint with a
+            # shared context window, skip this turn's review if live usage is high
+            # enough that the concurrent replay would risk exceeding n_ctx
+            # (issue #54115). Routed reviews run on a separate server with a
+            # digest replay, so they are never skipped here.
+            if not _routed and _should_skip_same_model_review(agent, _rt):
+                logger.info(
+                    "Background review skipped this turn: local server context "
+                    "usage is high; a concurrent same-model replay would risk "
+                    "exceeding the shared context window. Tune via "
+                    "auxiliary.background_review.local_skip_context_fraction, or "
+                    "route review to a separate model via "
+                    "auxiliary.background_review.{provider,model}."
+                )
+                return
             # skip_memory=True keeps the review fork from
             # touching external memory plugins (honcho, mem0,
             # supermemory, etc.).  Without it, the fork's

@@ -541,6 +541,25 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
+#
+#   # Background self-improvement review (memory/skill saves after a turn).
+#   # By default the review forks the MAIN model and replays the full
+#   # transcript (reuses the warm prompt cache). Set provider+model to route
+#   # it to a separate, cheaper model so it never touches the main server:
+#   background_review:
+#     provider: "auto"       # "auto"/empty = same as main model (full replay)
+#     model: ""              # set with provider to route to a different model
+#     base_url: ""           # optional explicit endpoint for the routed model
+#     api_key: ""            # optional explicit key for the routed model
+#     # OOM guard for single local servers (llama.cpp / LM Studio / Ollama /
+#     # vLLM). The main turn and the review fork share one fixed context
+#     # window, so a concurrent full replay can exceed it ("Context size has
+#     # been exceeded"). When live context usage is at or above this fraction
+#     # of the window, the same-model review is skipped for the turn and
+#     # re-triggers later, after compression lowers usage. Local endpoints
+#     # only -- cloud providers are never skipped. Range (0, 1); a value <= 0
+#     # or >= 1 disables the guard.
+#     local_skip_context_fraction: 0.45
 
 # =============================================================================
 # Persistent Memory

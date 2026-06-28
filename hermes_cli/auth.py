@@ -6448,11 +6448,14 @@ def _confirm_expensive_model_selection(
     try:
         from hermes_cli.model_cost_guard import expensive_model_warning
 
+        # P-028: read the models.dev cache/snapshot only — saving a model must
+        # never block on the network (fail-open: no data → no warning).
         warning = expensive_model_warning(
             model_id,
             provider=provider,
             base_url=base_url,
             api_key=api_key,
+            allow_network=False,
         )
     except Exception:
         warning = None

@@ -250,6 +250,7 @@ jobs:
             --collect-data hermes_cli \
             --collect-data gateway \
             --collect-data plugins \
+            --collect-data agent \
             --hidden-import gateway.status \
             --hidden-import uvicorn.loops.auto \
             --hidden-import uvicorn.protocols.http.auto \
@@ -374,6 +375,21 @@ jobs:
           done
           [[ "$fail" == 0 ]] || exit 1
           echo "All cn-desktop backends present in the frozen runtime"
+
+      - name: Verify bundled models.dev snapshot present
+        shell: bash
+        run: |
+          # P-028: the offline-first snapshot must ship in the frozen runtime
+          # so the cost guard / capability / context-length lookups never stall
+          # on models.dev (e.g. from mainland China). Assert it exists and is a
+          # non-empty JSON object — NOT its contents (no change-detector).
+          NAME="hermes-agent-cn-runtime-${{ matrix.platform }}-${{ matrix.arch }}"
+          snap="$(find "dist/$NAME" -path '*/agent/models_dev_snapshot.json' -print -quit)"
+          if [[ -z "$snap" ]]; then
+            echo "::error::Frozen runtime is missing agent/models_dev_snapshot.json" >&2
+            exit 1
+          fi
+          python -c "import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d, dict) and d, 'snapshot empty'; print('models.dev snapshot OK:', len(d), 'providers')" "$snap"
 
       - name: Smoke-test the binary
         shell: bash

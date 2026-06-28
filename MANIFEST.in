@@ -3,6 +3,9 @@ graft optional-skills
 graft plugins
 graft hermes_cli/web_dist
 graft gateway/assets
+# Offline-first models.dev snapshot (P-028) — sdist parity with the wheel
+# package-data entry so source builds also ship the bundled fallback.
+include agent/models_dev_snapshot.json
 
 graft optional-mcpsgraft locales
 # Bundled plugin manifests (plugin.yaml / plugin.yml). Without these the

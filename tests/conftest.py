@@ -379,6 +379,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # should never perform that implicit network/bootstrap path; Tirith-specific
     # tests opt back in by patching the security config directly.
     monkeypatch.setenv("TIRITH_ENABLED", "false")
+    # P-028: never spawn the models.dev background prewarm thread in tests —
+    # it would fire a real network fetch off-thread (non-deterministic, and
+    # the prewarm is exercised by its own focused tests instead).
+    monkeypatch.setenv("HERMES_DISABLE_MODELS_DEV_PREWARM", "1")
 
     # 5. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the

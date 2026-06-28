@@ -184,6 +184,17 @@ async def _lifespan(app: "FastAPI"):
     # the server socket is already open and accepting probes.
     asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
 
+    # Warm the models.dev registry off-thread (P-028). Hot paths read it
+    # non-blocking (cache/bundled snapshot), so this only refreshes the shared
+    # disk cache for freshness — fire-and-forget, exception-isolated, runs at
+    # most once, and honours HERMES_DISABLE_MODELS_DEV_PREWARM (tests).
+    try:
+        from agent.models_dev import prewarm_models_dev_async
+
+        prewarm_models_dev_async()
+    except Exception:
+        pass
+
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
     # dashboard` is unaffected — it relies on its own gateway.
@@ -3954,6 +3965,7 @@ def get_model_info(profile: Optional[str] = None):
                 base_url=base_url,
                 provider=provider,
                 config_context_length=None,  # ignore override — we want auto value
+                allow_network=False,  # P-028: never block this endpoint on models.dev/OpenRouter
             )
         except Exception:
             auto_ctx = 0
@@ -3969,7 +3981,11 @@ def get_model_info(profile: Optional[str] = None):
         caps = {}
         try:
             from agent.models_dev import get_model_capabilities
-            mc = get_model_capabilities(provider=provider, model=model_name)
+            # P-028: read cache/bundled snapshot only — this endpoint is hit on
+            # every model save and must never stall on the models.dev round-trip.
+            mc = get_model_capabilities(
+                provider=provider, model=model_name, allow_network=False
+            )
             if mc is not None:
                 caps = {
                     "supports_tools": mc.supports_tools,
@@ -4277,13 +4293,15 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
             try:
                 from hermes_cli.model_cost_guard import expensive_model_warning
 
-                # Pricing lookup can hit models.dev / a /models endpoint on a
-                # cache miss — keep it off the event loop.
+                # P-028: read the models.dev cache/bundled snapshot only — never
+                # block a model-set on the network round-trip. Still off the
+                # event loop for the cheap cache read.
                 warning = await asyncio.to_thread(
                     expensive_model_warning,
                     model,
                     provider=provider,
                     base_url=base_url,
+                    allow_network=False,
                 )
             except Exception:
                 warning = None
@@ -11917,7 +11935,11 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
             caps = {}
             try:
                 from agent.models_dev import get_model_capabilities
-                mc = get_model_capabilities(provider=provider, model=model_name)
+                # P-028: snapshot/cache only — capability flags don't need to be
+                # live-fresh and this must not stall on models.dev.
+                mc = get_model_capabilities(
+                    provider=provider, model=model_name, allow_network=False
+                )
                 if mc is not None:
                     caps = {
                         "supports_tools": mc.supports_tools,

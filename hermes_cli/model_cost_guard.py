@@ -61,11 +61,18 @@ def expensive_model_warning(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model_info: Optional[ModelInfo] = None,
+    allow_network: bool = True,
 ) -> Optional[ExpensiveModelWarning]:
     """Return a warning payload when known pricing exceeds safety thresholds.
 
     The guard only triggers when pricing is known. Callers should use this after
     model resolution so aliases and provider-specific model IDs have settled.
+
+    ``allow_network=False`` keeps the guard entirely off the network: pricing is
+    read from the caller-supplied ``model_info`` and the models.dev cache/bundled
+    snapshot only, and the live ``get_pricing_entry`` probe is skipped. This is
+    what the model-switch hot path uses so a /model action never blocks on
+    models.dev (fail-open: no data → no warning) — see P-028.
     """
     model = (model_name or "").strip()
     if not model:
@@ -77,11 +84,11 @@ def expensive_model_warning(
             from agent.models_dev import get_model_info
 
             input_cost, output_cost, source = _pricing_from_model_info(
-                get_model_info(provider, model)
+                get_model_info(provider, model, allow_network=allow_network)
             )
         except Exception:
             pass
-    if input_cost is None and output_cost is None:
+    if allow_network and input_cost is None and output_cost is None:
         try:
             from agent.usage_pricing import get_pricing_entry
 

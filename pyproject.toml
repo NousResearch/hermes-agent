@@ -359,6 +359,11 @@ locales = ["locales/*.yaml"]
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
+# Offline-first models.dev snapshot (P-028) — bundled so the cost guard,
+# capability lookup, and context-length resolution have data even when
+# models.dev is unreachable (e.g. from mainland China). Refresh via
+# scripts/refresh_models_dev_snapshot.py.
+agent = ["models_dev_snapshot.json"]
 plugins = [
   "**/*",
   "*/dashboard/manifest.json",

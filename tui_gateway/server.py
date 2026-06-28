@@ -2662,12 +2662,16 @@ def _apply_model_switch(
         try:
             from hermes_cli.model_cost_guard import expensive_model_warning
 
+            # Non-blocking: the cost guard reads result.model_info + the
+            # models.dev cache/bundled snapshot only, never the network, so a
+            # /model switch never stalls on the models.dev round-trip (P-028).
             warning = expensive_model_warning(
                 result.new_model,
                 provider=result.target_provider,
                 base_url=result.base_url or current_base_url,
                 api_key=result.api_key or current_api_key,
                 model_info=result.model_info,
+                allow_network=False,
             )
         except Exception:
             warning = None

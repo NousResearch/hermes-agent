@@ -304,6 +304,85 @@ class TestFetchModelsDev:
         assert "anthropic" in result
 
 
+class TestModelsDevOfflineFirst:
+    """P-028: offline-first bundled snapshot + non-blocking read mode.
+
+    These assert invariants (non-empty, no-network, fallback ordering) — never
+    snapshot contents, which would be a change-detector.
+    """
+
+    def _reset(self, md):
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+        md._bundled_snapshot_cache = None
+        md._bundled_snapshot_loaded = False
+
+    @patch("agent.models_dev.requests.get")
+    def test_non_blocking_never_touches_network(self, mock_get):
+        """allow_network=False must serve cache/snapshot without any HTTP call."""
+        import agent.models_dev as md
+        self._reset(md)
+        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
+             patch.object(md, "_load_disk_cache", return_value={}), \
+             patch.object(md, "_load_bundled_snapshot", return_value=SAMPLE_REGISTRY):
+            result = fetch_models_dev(allow_network=False)
+        mock_get.assert_not_called()
+        assert "anthropic" in result  # served from snapshot, non-empty
+
+    @patch("agent.models_dev.requests.get")
+    def test_non_blocking_prefers_stale_disk_over_snapshot(self, mock_get):
+        """Offline fallback prefers a (stale) disk cache before the snapshot."""
+        import agent.models_dev as md
+        self._reset(md)
+        disk = {"deepseek": SAMPLE_REGISTRY["deepseek"]}
+        with patch.object(md, "_disk_cache_age_seconds",
+                          return_value=md._MODELS_DEV_CACHE_TTL + 999), \
+             patch.object(md, "_load_disk_cache", return_value=disk), \
+             patch.object(md, "_load_bundled_snapshot", return_value=SAMPLE_REGISTRY):
+            result = fetch_models_dev(allow_network=False)
+        mock_get.assert_not_called()
+        assert result == disk
+
+    @patch("agent.models_dev.requests.get")
+    def test_blocking_failure_falls_back_to_snapshot(self, mock_get):
+        """When the network fails AND disk is empty, the bundled snapshot
+        rescues an otherwise-empty result (the old behaviour returned {})."""
+        mock_get.side_effect = Exception("blocked (simulated China network)")
+        import agent.models_dev as md
+        self._reset(md)
+        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
+             patch.object(md, "_load_disk_cache", return_value={}), \
+             patch.object(md, "_load_bundled_snapshot", return_value=SAMPLE_REGISTRY):
+            result = fetch_models_dev(force_refresh=True)
+        mock_get.assert_called_once()
+        assert "anthropic" in result
+
+    @patch("agent.models_dev.requests.get")
+    def test_capabilities_non_blocking(self, mock_get):
+        """get_model_capabilities(allow_network=False) resolves from snapshot
+        without any network call."""
+        import agent.models_dev as md
+        self._reset(md)
+        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
+             patch.object(md, "_load_disk_cache", return_value={}), \
+             patch.object(md, "_load_bundled_snapshot", return_value=SAMPLE_REGISTRY):
+            caps = get_model_capabilities(
+                "anthropic", "claude-opus-4-6", allow_network=False
+            )
+        mock_get.assert_not_called()
+        assert caps is not None
+        assert caps.context_window == 1000000
+
+    def test_bundled_snapshot_file_present_and_valid(self):
+        """The shipped agent/models_dev_snapshot.json must exist and parse to a
+        non-empty dict. Invariant only — no provider/model counts asserted."""
+        import agent.models_dev as md
+        md._bundled_snapshot_cache = None
+        md._bundled_snapshot_loaded = False
+        data = md._load_bundled_snapshot()
+        assert isinstance(data, dict) and data
+
+
 # ---------------------------------------------------------------------------
 # get_model_capabilities — vision via modalities.input
 # ---------------------------------------------------------------------------

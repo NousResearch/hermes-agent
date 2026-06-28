@@ -7402,12 +7402,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         try:
             from hermes_cli.model_cost_guard import expensive_model_warning
 
+            # P-028: read result.model_info + the models.dev cache/snapshot
+            # only — a /model switch must never block on the network.
             warning = expensive_model_warning(
                 result.new_model,
                 provider=result.target_provider,
                 base_url=result.base_url or self.base_url or "",
                 api_key=result.api_key or self.api_key or "",
                 model_info=result.model_info,
+                allow_network=False,
             )
         except Exception:
             warning = None

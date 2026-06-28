@@ -170,7 +170,8 @@ class TestXiaomiModelCatalog:
                 },
             }
         }
-        monkeypatch.setattr(md, "fetch_models_dev", lambda: fake_data)
+        # Signature-tolerant: callers pass force_refresh/allow_network kwargs.
+        monkeypatch.setattr(md, "fetch_models_dev", lambda *a, **k: fake_data)
 
         result = md.list_agentic_models("xiaomi")
         assert "mimo-v2-pro" in result

@@ -20,6 +20,9 @@ rather than parsing the raw JSON themselves.
 
 import json
 import logging
+import os
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,12 +34,45 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-MODELS_DEV_URL = "https://models.dev/api.json"
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a positive float from env var ``name``, else return ``default``."""
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# models.dev endpoint + network timeout are env-overridable so a China-side
+# mirror can be injected (HERMES_MODELS_DEV_URL) and the network probe bounded
+# (HERMES_MODELS_DEV_TIMEOUT). Now that hot paths (model save/switch, model
+# info) read cache/snapshot non-blocking, the timeout only gates the background
+# refresh — a short default is pure upside. See P-028.
+MODELS_DEV_URL = os.getenv("HERMES_MODELS_DEV_URL", "https://models.dev/api.json")
+_MODELS_DEV_TIMEOUT = _env_float("HERMES_MODELS_DEV_TIMEOUT", 3.0)
 _MODELS_DEV_CACHE_TTL = 3600  # 1 hour in-memory
+# Short in-mem grace applied when we fall back to a stale disk cache or the
+# bundled snapshot, so the next call still serves instantly while the
+# background refresh retries the network soon instead of pinning stale data
+# for a full hour.
+_MODELS_DEV_FALLBACK_GRACE = 300  # 5 minutes
+
+# Offline-first snapshot shipped inside the package (see _load_bundled_snapshot).
+# Parsed once and memoised.
+_BUNDLED_SNAPSHOT_FILENAME = "models_dev_snapshot.json"
+_bundled_snapshot_cache: Optional[Dict[str, Any]] = None
+_bundled_snapshot_loaded = False
 
 # In-memory cache
 _models_dev_cache: Dict[str, Any] = {}
 _models_dev_cache_time: float = 0
+
+# Process-level guard so the background prewarm runs at most once per process.
+_models_dev_prewarm_done = threading.Event()
 
 
 # ---------------------------------------------------------------------------
@@ -237,10 +273,101 @@ def _save_disk_cache(data: Dict[str, Any]) -> None:
         logger.debug("Failed to save models.dev disk cache: %s", e)
 
 
-def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
-    """Fetch models.dev registry. Cache hierarchy: in-mem → disk → network.
+def _bundled_snapshot_candidates() -> List[Path]:
+    """Candidate paths for the bundled snapshot across run modes.
 
-    Returns the full registry dict keyed by provider ID, or empty dict on failure.
+    Covers editable/source checkouts and wheel installs (the file sits next to
+    this module) and PyInstaller frozen runtimes (``sys._MEIPASS``).
+    ``importlib.resources`` is tried first so zip/namespace installs resolve.
+    """
+    candidates: List[Path] = []
+    try:
+        import importlib.resources as _res
+
+        candidates.append(
+            Path(str(_res.files("agent") / _BUNDLED_SNAPSHOT_FILENAME))
+        )
+    except Exception:
+        pass
+    candidates.append(Path(__file__).resolve().parent / _BUNDLED_SNAPSHOT_FILENAME)
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "agent" / _BUNDLED_SNAPSHOT_FILENAME)
+    return candidates
+
+
+def _load_bundled_snapshot() -> Dict[str, Any]:
+    """Load the package-bundled models.dev snapshot (offline-first fallback).
+
+    Parsed once and memoised. Returns the registry dict, or ``{}`` when the
+    snapshot is absent/unreadable. Never raises.
+    """
+    global _bundled_snapshot_cache, _bundled_snapshot_loaded
+    if _bundled_snapshot_loaded:
+        return _bundled_snapshot_cache or {}
+    _bundled_snapshot_loaded = True
+    for path in _bundled_snapshot_candidates():
+        try:
+            if path.is_file():
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and data:
+                    _bundled_snapshot_cache = data
+                    logger.debug(
+                        "Loaded bundled models.dev snapshot from %s (%d providers)",
+                        path, len(data),
+                    )
+                    return _bundled_snapshot_cache
+        except Exception as e:
+            logger.debug(
+                "Failed to load bundled models.dev snapshot %s: %s", path, e
+            )
+    _bundled_snapshot_cache = {}
+    return _bundled_snapshot_cache
+
+
+def _serve_offline_fallback() -> Dict[str, Any]:
+    """Return the best available registry WITHOUT touching the network.
+
+    Order: live in-mem cache (even if stale) → disk cache (even if stale) →
+    bundled snapshot. A loaded fallback gets a short in-mem grace TTL so a
+    later call serves instantly while the background refresh retries the
+    network. Guarantees a non-empty dict whenever a snapshot ships with the
+    package — this is what keeps model save/switch off the 15s network stall.
+    """
+    global _models_dev_cache, _models_dev_cache_time
+    if _models_dev_cache:
+        return _models_dev_cache
+    disk_data = _load_disk_cache()
+    if disk_data:
+        _models_dev_cache = disk_data
+        _models_dev_cache_time = (
+            time.time() - _MODELS_DEV_CACHE_TTL + _MODELS_DEV_FALLBACK_GRACE
+        )
+        logger.debug(
+            "Served models.dev from disk cache (%d providers)", len(disk_data)
+        )
+        return _models_dev_cache
+    snapshot = _load_bundled_snapshot()
+    if snapshot:
+        _models_dev_cache = snapshot
+        _models_dev_cache_time = (
+            time.time() - _MODELS_DEV_CACHE_TTL + _MODELS_DEV_FALLBACK_GRACE
+        )
+        logger.debug(
+            "Served models.dev from bundled snapshot (%d providers)",
+            len(snapshot),
+        )
+    return _models_dev_cache
+
+
+def fetch_models_dev(
+    force_refresh: bool = False, allow_network: bool = True
+) -> Dict[str, Any]:
+    """Fetch models.dev registry. Cache hierarchy: in-mem → disk → net → snapshot.
+
+    Returns the full registry dict keyed by provider ID. With a bundled
+    snapshot present this is never empty.
 
     Cache hierarchy (when ``force_refresh=False``):
       1. In-memory cache, populated and < TTL old → return immediately.
@@ -249,13 +376,18 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
          ``models.dev`` only changes when providers add new models, so a
          1 hour staleness window is acceptable (same TTL as in-mem cache).
       3. Network fetch → on success, save to disk + in-mem and return.
-      4. Network fails → fall back to ANY available disk cache (even stale)
-         with a short 5 min in-mem grace period before retrying network.
+      4. Network fails → serve the best offline data: stale disk cache, then
+         the package-bundled snapshot, with a short grace TTL before retrying.
 
-    When ``force_refresh=True`` (used by ``hermes config refresh``, the
-    \"refresh model catalog\" code path), stages 1 and 2 are skipped. The
-    function always hits the network and only falls back to disk if the
-    network call fails.
+    ``allow_network=False`` makes this **non-blocking**: stages 1–2 still run,
+    but instead of the network (stage 3) it goes straight to the offline
+    fallback (stage 4). This is what user-facing hot paths (model save/switch,
+    ``/api/model/info``) use so they never block on the models.dev round-trip —
+    the background ``prewarm_models_dev_async`` keeps the cache warm instead.
+
+    When ``force_refresh=True`` (``hermes config refresh``, the background
+    prewarm) stages 1 and 2 are skipped and the network is always attempted,
+    falling back to disk/snapshot only if it fails.
     """
     global _models_dev_cache, _models_dev_cache_time
 
@@ -288,9 +420,16 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
                 )
                 return _models_dev_cache
 
-    # Stage 3: network fetch.
+    # Non-blocking mode: never touch the network. Serve the best offline data
+    # we have (stale in-mem / disk / bundled snapshot) so the caller — a model
+    # save/switch on the user's critical path — returns instantly even when
+    # models.dev is slow or blocked (China). Background refresh updates it.
+    if not allow_network:
+        return _serve_offline_fallback()
+
+    # Stage 3: network fetch (timeout bounded + env-tunable).
     try:
-        response = requests.get(MODELS_DEV_URL, timeout=15)
+        response = requests.get(MODELS_DEV_URL, timeout=_MODELS_DEV_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         if isinstance(data, dict) and data:
@@ -306,29 +445,54 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     except Exception as e:
         logger.debug("Failed to fetch models.dev: %s", e)
 
-    # Stage 4: network failed — fall back to whatever disk cache exists,
-    # even if it's stale. Give it a short 5 min in-mem TTL so we retry
-    # the network soon instead of serving stale data for a full hour.
-    if not _models_dev_cache:
-        _models_dev_cache = _load_disk_cache()
-        if _models_dev_cache:
-            _models_dev_cache_time = time.time() - _MODELS_DEV_CACHE_TTL + 300
-            logger.debug("Loaded models.dev from disk cache (%d providers)", len(_models_dev_cache))
-
-    return _models_dev_cache
+    # Stage 4: network failed — serve stale disk cache, then bundled snapshot.
+    return _serve_offline_fallback()
 
 
-def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
+def prewarm_models_dev_async() -> Optional["threading.Thread"]:
+    """Refresh the models.dev cache in a background daemon thread.
+
+    Hot paths now read the registry non-blocking (``allow_network=False``), so
+    nothing on the user's critical path ever waits on models.dev. This warms
+    the in-mem + disk cache off-thread at startup (and could be re-armed on a
+    timer) so the served data is fresh whenever the network is reachable.
+
+    Fire-and-forget. Process-level ``Event`` guard ensures it runs at most
+    once. Fully exception-isolated — a slow/blocked models.dev can never affect
+    startup. Honours ``HERMES_DISABLE_MODELS_DEV_PREWARM=1`` (e.g. tests).
+    Returns the spawned thread (for tests) or None if skipped.
+    """
+    if os.getenv("HERMES_DISABLE_MODELS_DEV_PREWARM"):
+        return None
+    if _models_dev_prewarm_done.is_set():
+        return None
+    _models_dev_prewarm_done.set()
+
+    def _warm() -> None:
+        try:
+            fetch_models_dev(force_refresh=True)
+        except Exception:
+            logger.debug("models.dev prewarm failed", exc_info=True)
+
+    t = threading.Thread(target=_warm, daemon=True, name="models-dev-prewarm")
+    t.start()
+    return t
+
+
+def lookup_models_dev_context(
+    provider: str, model: str, allow_network: bool = True
+) -> Optional[int]:
     """Look up context_length for a provider+model combo in models.dev.
 
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
+    ``allow_network=False`` reads cache/snapshot only (non-blocking).
     """
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
         return None
 
-    data = fetch_models_dev()
+    data = fetch_models_dev(allow_network=allow_network)
     provider_data = data.get(mdev_provider_id)
     if not isinstance(provider_data, dict):
         return None
@@ -410,16 +574,19 @@ class ModelCapabilities:
     model_family: str = ""
 
 
-def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
+def _get_provider_models(
+    provider: str, allow_network: bool = True
+) -> Optional[Dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict from models.dev.
 
     Returns the models dict or None if the provider is unknown or has no data.
+    ``allow_network=False`` reads cache/snapshot only (non-blocking).
     """
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
         return None
 
-    data = fetch_models_dev()
+    data = fetch_models_dev(allow_network=allow_network)
     provider_data = data.get(mdev_provider_id)
     if not isinstance(provider_data, dict):
         return None
@@ -447,11 +614,14 @@ def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, 
     return None
 
 
-def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilities]:
+def get_model_capabilities(
+    provider: str, model: str, allow_network: bool = True
+) -> Optional[ModelCapabilities]:
     """Look up full capability metadata from models.dev cache.
 
     Uses the existing fetch_models_dev() and PROVIDER_TO_MODELS_DEV mapping.
-    Returns None if model not found.
+    Returns None if model not found. ``allow_network=False`` reads
+    cache/snapshot only (non-blocking) for hot paths like ``/api/model/info``.
 
     Extracts from model entry fields:
       - reasoning  (bool)  → supports_reasoning
@@ -461,7 +631,7 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
       - limit.output  (int) → max_output_tokens
       - family     (str)   → model_family
     """
-    models = _get_provider_models(provider)
+    models = _get_provider_models(provider, allow_network=allow_network)
     if models is None:
         return None
 
@@ -693,16 +863,17 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
 # ---------------------------------------------------------------------------
 
 def get_model_info(
-    provider_id: str, model_id: str
+    provider_id: str, model_id: str, allow_network: bool = True
 ) -> Optional[ModelInfo]:
     """Get full model metadata from models.dev.
 
     Accepts Hermes or models.dev provider ID.  Tries exact match then
     case-insensitive fallback.  Returns None if not found.
+    ``allow_network=False`` reads cache/snapshot only (non-blocking).
     """
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
-    data = fetch_models_dev()
+    data = fetch_models_dev(allow_network=allow_network)
     pdata = data.get(mdev_id)
     if not isinstance(pdata, dict):
         return None

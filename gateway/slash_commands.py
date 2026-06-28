@@ -1667,6 +1667,8 @@ class GatewaySlashCommandsMixin:
         try:
             from hermes_cli.model_cost_guard import expensive_model_warning
 
+            # P-028: read result.model_info + the models.dev cache/snapshot
+            # only — a /model switch must never block on the network.
             _cost_warning = await asyncio.to_thread(
                 expensive_model_warning,
                 result.new_model,
@@ -1674,6 +1676,7 @@ class GatewaySlashCommandsMixin:
                 base_url=result.base_url or current_base_url or "",
                 api_key=result.api_key or current_api_key or "",
                 model_info=result.model_info,
+                allow_network=False,
             )
         except Exception:
             _cost_warning = None

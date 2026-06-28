@@ -39,6 +39,17 @@ from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 
+# When the fallback chain is fully exhausted on a non-rate-limit failure
+# (e.g. every provider returns a non-retryable client error like HTTP 400),
+# arm a short cooldown so the NEXT turn's restore_primary_runtime stays gated
+# and does not reset _fallback_index=0 to replay the entire chain again.
+# Without this, a client/gateway that re-submits immediately would re-marshal
+# the full (potentially 80k-token) context once per provider every turn and
+# can drive a constrained host into memory/swap exhaustion.  Rate-limit /
+# billing reasons keep their own 60s cooldown (set above); this is the
+# narrower non-rate-limit case.  See issue #24996.
+_FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+
 
 def _ra():
     """Lazy ``run_agent`` reference.
@@ -1117,8 +1128,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
     if agent._fallback_index >= len(agent._fallback_chain):
+        # Chain exhausted.  If we actually walked a non-empty chain and the
+        # failure was NOT a rate-limit/billing event (those already armed
+        # their own 60s cooldown above), arm a short cooldown so the next
+        # turn's restore_primary_runtime stays gated instead of resetting
+        # _fallback_index=0 and re-marshaling the whole context across every
+        # provider again.  Guards the cross-turn replay storm in #24996.
+        if (
+            len(agent._fallback_chain) > 0
+            and reason not in {FailoverReason.rate_limit, FailoverReason.billing}
+        ):
+            _existing_cooldown = getattr(agent, "_rate_limited_until", 0) or 0
+            agent._rate_limited_until = max(
+                _existing_cooldown,
+                time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S,
+            )
         return False
-
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
     fb_provider = (fb.get("provider") or "").strip().lower()

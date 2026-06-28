@@ -233,6 +233,42 @@ The agent kicks off the meeting join, streams the transcription back into its co
 
 **Disabling:** `hermes plugins disable google_meet`. Any cached transcripts and recordings stay in `~/.hermes/cache/google_meet/` until you remove them.
 
+### olympus
+
+Adds a **read-only agent workstation monitor** to the dashboard. Olympus scans
+local Hermes evidence and turns it into readiness, tuning, privacy, policy,
+skill, Kanban, and performance signals. It is for deciding what to tune or
+review next; it is not a second Kanban board, Analytics ledger, profile editor,
+or agent builder.
+
+**How it works:**
+
+- Reads local Hermes state, profile metadata, sessions, cron, gateways, skill
+  usage, config structure, and Kanban boards.
+- Hides local labels, raw IDs, paths, prompt text, and secret-like values by
+  default.
+- Opens in Brief mode with readiness and top actions, then stages deeper
+  inspection behind Agents, Skills, Kanban, Policy, and Diagnostics tabs.
+- Links actions back to Hermes-owned pages such as `/sessions`, `/skills`,
+  `/kanban`, `/profiles`, `/config`, `/cron`, `/logs`, and `/analytics`.
+
+**API** — routes mount under `/api/plugins/olympus/`:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Liveness and coarse runtime health |
+| `GET /overview` | Full dashboard read model: readiness, tuning, profiles, sessions, Kanban, skills, policy, performance, Trace Spine, Operational Evals, Metrics Spine, and evidence sources |
+| `GET /tuning` | Tuning-focused read model with score details and operational evidence |
+
+**Privacy:** Olympus is read-only. It scans `.env` variable names, not values,
+and redacts secret-like strings in diagnostics. Set
+`OLYMPUS_EXPOSE_LOCAL_LABELS=1` only on a private machine if you want local
+session titles, task titles, and route labels to appear.
+
+**Enabling:** Nothing to enable — `olympus` is a dashboard-only bundled plugin
+with no model-visible tools. It auto-registers as the **Olympus** tab in
+`hermes dashboard`.
+
 ### hermes-achievements
 
 Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, tiered badges generated from your real Hermes session history. Tool-chain feats, debugging patterns, vibe-coding streaks, skill/memory usage, model/provider variety, lifestyle quirks (weekend and night sessions). Originally authored by [@PCinkusz](https://github.com/PCinkusz) as an external plugin; brought in-tree so it stays in lockstep with Hermes feature changes.

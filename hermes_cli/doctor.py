@@ -26,7 +26,7 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches
+from utils import base_url_host_matches, env_bool
 
 
 _PROVIDER_ENV_HINTS = (
@@ -1466,8 +1466,11 @@ def run_doctor(args):
             ssh_user = os.getenv("TERMINAL_SSH_USER")
             ssh_port = os.getenv("TERMINAL_SSH_PORT")
             ssh_key = os.getenv("TERMINAL_SSH_KEY")
+            ssh_identities_only = env_bool("TERMINAL_SSH_IDENTITIES_ONLY")
             target = f"{ssh_user}@{ssh_host}" if ssh_user else ssh_host
             cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+            if ssh_identities_only:
+                cmd += ["-o", "IdentitiesOnly=yes"]
             if ssh_port:
                 cmd += ["-p", ssh_port]
             if ssh_key:

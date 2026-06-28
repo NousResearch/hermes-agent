@@ -62,6 +62,32 @@ class TestBuildSSHCommand:
         cmd = env._build_ssh_command()
         assert "-i" in cmd and "/k" in cmd
 
+    def test_identities_only(self):
+        env = SSHEnvironment(host="h", user="u", identities_only=True)
+        cmd = env._build_ssh_command()
+        assert "-o" in cmd
+        assert "IdentitiesOnly=yes" in cmd
+
+    def test_identities_only_default_off(self):
+        env = SSHEnvironment(host="h", user="u")
+        assert "IdentitiesOnly=yes" not in env._build_ssh_command()
+
+    def test_scp_upload_uses_identities_only(self, monkeypatch):
+        env = SSHEnvironment(host="h", user="u", identities_only=True)
+        calls = []
+
+        def _capture_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", _capture_run)
+
+        env._scp_upload("/local/file", "/remote/file")
+
+        scp_calls = [cmd for cmd in calls if cmd and cmd[0] == "scp"]
+        assert scp_calls
+        assert "IdentitiesOnly=yes" in scp_calls[0]
+
     def test_user_host_suffix(self):
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
@@ -134,6 +160,16 @@ class TestControlSocketPath:
         assert SSHEnvironment(host="h", user="v", port=22).control_socket != base
         assert SSHEnvironment(host="g", user="u", port=22).control_socket != base
 
+    def test_path_differs_for_different_key_path(self):
+        """Different SSH identities must not reuse a stale ControlMaster socket."""
+        base = SSHEnvironment(host="h", user="u", key_path="/k1").control_socket
+        assert SSHEnvironment(host="h", user="u", key_path="/k2").control_socket != base
+
+    def test_path_differs_for_identities_only(self):
+        """IdentitiesOnly changes authentication semantics, so it changes socket identity."""
+        base = SSHEnvironment(host="h", user="u", identities_only=False).control_socket
+        assert SSHEnvironment(host="h", user="u", identities_only=True).control_socket != base
+
 
 class TestTerminalToolConfig:
     def test_ssh_persistent_default_true(self, monkeypatch):
@@ -160,6 +196,16 @@ class TestTerminalToolConfig:
         monkeypatch.setenv("TERMINAL_PERSISTENT_SHELL", "false")
         from tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is False
+
+    def test_ssh_identities_only_default_false(self, monkeypatch):
+        monkeypatch.delenv("TERMINAL_SSH_IDENTITIES_ONLY", raising=False)
+        from tools.terminal_tool import _get_env_config
+        assert _get_env_config()["ssh_identities_only"] is False
+
+    def test_ssh_identities_only_explicit_true(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_SSH_IDENTITIES_ONLY", "true")
+        from tools.terminal_tool import _get_env_config
+        assert _get_env_config()["ssh_identities_only"] is True
 
 
 class TestSSHPreflight:

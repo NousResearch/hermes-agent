@@ -915,6 +915,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "user": config.get("ssh_user", ""),
                     "port": config.get("ssh_port", 22),
                     "key": config.get("ssh_key", ""),
+                    "identities_only": config.get("ssh_identities_only", False),
                     "persistent": config.get("ssh_persistent", False),
                 }
 

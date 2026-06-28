@@ -1428,12 +1428,20 @@ def setup_terminal_backend(config: dict):
         if ssh_key:
             save_env_value("TERMINAL_SSH_KEY", ssh_key)
 
+        identities_only = prompt_yes_no(
+            "  Limit authentication to the configured SSH identity?",
+            bool(config["terminal"].get("ssh_identities_only", False)),
+        )
+        config["terminal"]["ssh_identities_only"] = identities_only
+
         # Test connection
         if host and prompt_yes_no("  Test SSH connection?", True):
             print_info("  Testing connection...")
             import subprocess
 
             ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+            if identities_only:
+                ssh_cmd.extend(["-o", "IdentitiesOnly=yes"])
             if ssh_key:
                 ssh_cmd.extend(["-i", ssh_key])
             if port and port != "22":

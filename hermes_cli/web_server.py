@@ -554,6 +554,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Modal sandbox mode",
         "options": ["sandbox", "function"],
     },
+    "terminal.ssh_identities_only": {
+        "type": "boolean",
+        "description": "Pass OpenSSH IdentitiesOnly=yes for SSH terminal connections",
+    },
     "tts.provider": {
         "type": "select",
         "description": "Text-to-speech provider",

@@ -1155,6 +1155,11 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # When true, pass OpenSSH IdentitiesOnly=yes for SSH backends. This
+        # forces SSH/SCP to use only the configured identity file(s), avoiding
+        # accidental authentication as a different account when an agent has
+        # multiple keys loaded.
+        "ssh_identities_only": False,
     },
 
     "web": {
@@ -6078,6 +6083,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
     "ssh_key": "TERMINAL_SSH_KEY",
+    "ssh_identities_only": "TERMINAL_SSH_IDENTITIES_ONLY",
     "container_cpu": "TERMINAL_CONTAINER_CPU",
     "container_memory": "TERMINAL_CONTAINER_MEMORY",
     "container_disk": "TERMINAL_CONTAINER_DISK",
@@ -7101,6 +7107,7 @@ def show_config():
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
+        print(f"  Identities:   {'configured only' if terminal.get('ssh_identities_only', False) else 'default SSH behavior'}")
     
     # Timezone
     print()

@@ -290,6 +290,20 @@ def test_docker_orphan_reaper_is_bridged_everywhere():
     assert "TERMINAL_DOCKER_ORPHAN_REAPER" in _terminal_tool_env_var_names()
 
 
+def test_ssh_identities_only_is_bridged_everywhere():
+    """Regression pin for SSH identity selection.
+
+    ``terminal.ssh_identities_only`` maps to OpenSSH ``IdentitiesOnly=yes``.
+    It must be bridged in every terminal entry point because an SSH backend can
+    initialize from CLI/TUI, gateway/desktop, or a one-shot ``hermes config
+    set`` update.
+    """
+    assert "ssh_identities_only" in _cli_env_map_keys()
+    assert "ssh_identities_only" in _gateway_env_map_keys()
+    assert "ssh_identities_only" in _save_config_env_sync_keys()
+    assert "TERMINAL_SSH_IDENTITIES_ONLY" in _terminal_tool_env_var_names()
+
+
 def test_docker_volumes_is_bridged_everywhere():
     """Regression pin for ``terminal.docker_volumes`` being silently dropped by
     ``hermes config set``.

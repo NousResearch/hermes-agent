@@ -1451,6 +1451,7 @@ if _config_path.exists():
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",
                 "ssh_key": "TERMINAL_SSH_KEY",
+                "ssh_identities_only": "TERMINAL_SSH_IDENTITIES_ONLY",
                 "container_cpu": "TERMINAL_CONTAINER_CPU",
                 "container_memory": "TERMINAL_CONTAINER_MEMORY",
                 "container_disk": "TERMINAL_CONTAINER_DISK",

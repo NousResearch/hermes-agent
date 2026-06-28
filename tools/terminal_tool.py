@@ -45,7 +45,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from utils import env_var_enabled
+from utils import env_bool, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1301,6 +1301,7 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_identities_only": env_bool("TERMINAL_SSH_IDENTITIES_ONLY"),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
@@ -1486,6 +1487,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             user=ssh_config["user"],
             port=ssh_config.get("port", 22),
             key_path=ssh_config.get("key", ""),
+            identities_only=ssh_config.get("identities_only", False),
             cwd=cwd,
             timeout=timeout,
         )
@@ -2152,6 +2154,7 @@ def terminal_tool(
                                 "user": config.get("ssh_user", ""),
                                 "port": config.get("ssh_port", 22),
                                 "key": config.get("ssh_key", ""),
+                                "identities_only": config.get("ssh_identities_only", False),
                                 "persistent": config.get("ssh_persistent", False),
                             }
 

@@ -309,22 +309,23 @@ Runs commands on a remote server over SSH. Uses ControlMaster for connection reu
 terminal:
   backend: ssh
   persistent_shell: true           # Keep a long-lived bash session (default: true)
+  ssh_host: my-server.example.com
+  ssh_user: ubuntu
+  ssh_port: 22
+  ssh_key: ~/.ssh/id_rsa           # Optional; uses ssh-agent/system defaults if omitted
+  ssh_identities_only: false       # true => pass -o IdentitiesOnly=yes
 ```
 
-**Required environment variables:**
+**SSH options:**
 
-```bash
-TERMINAL_SSH_HOST=my-server.example.com
-TERMINAL_SSH_USER=ubuntu
-```
-
-**Optional:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TERMINAL_SSH_PORT` | `22` | SSH port |
-| `TERMINAL_SSH_KEY` | (system default) | Path to SSH private key |
-| `TERMINAL_SSH_PERSISTENT` | `true` | Enable persistent shell |
+| Config key | Env override | Default | Description |
+|---|---|---|---|
+| `ssh_host` | `TERMINAL_SSH_HOST` | required | Remote server hostname |
+| `ssh_user` | `TERMINAL_SSH_USER` | required | SSH username |
+| `ssh_port` | `TERMINAL_SSH_PORT` | `22` | SSH port |
+| `ssh_key` | `TERMINAL_SSH_KEY` | (system default) | Path to SSH private key |
+| `ssh_identities_only` | `TERMINAL_SSH_IDENTITIES_ONLY` | `false` | Pass `-o IdentitiesOnly=yes` so SSH only offers the configured identity |
+| `persistent_shell` | `TERMINAL_SSH_PERSISTENT` | `true` | Enable persistent shell |
 
 **How it works:** Connects at init time with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`. Persistent shell keeps a single `bash -l` process alive on the remote host, communicating via temporary files. Commands that need `stdin_data` or `sudo` automatically fall back to one-shot mode.
 
@@ -393,7 +394,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 
 - **Local** — No special requirements. The safest default when getting started.
 - **Docker** — Run `docker version` to verify Docker is working. If it fails, fix Docker or `hermes config set terminal.backend local`.
-- **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
+- **SSH** — Both `terminal.ssh_host` and `terminal.ssh_user` must be set (or their `TERMINAL_SSH_HOST` / `TERMINAL_SSH_USER` overrides). Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.

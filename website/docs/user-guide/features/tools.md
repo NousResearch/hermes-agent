@@ -101,6 +101,7 @@ terminal:
 TERMINAL_SSH_HOST=my-server.example.com
 TERMINAL_SSH_USER=myuser
 TERMINAL_SSH_KEY=~/.ssh/id_rsa
+TERMINAL_SSH_IDENTITIES_ONLY=true  # Optional: pass -o IdentitiesOnly=yes
 ```
 
 ### Singularity/Apptainer

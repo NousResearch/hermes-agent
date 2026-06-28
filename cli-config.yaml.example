@@ -218,6 +218,7 @@ terminal:
 #   ssh_user: "myuser"
 #   ssh_port: 22
 #   ssh_key: "~/.ssh/id_rsa"  # Optional - uses ssh-agent if not specified
+#   ssh_identities_only: false  # Set true to pass -o IdentitiesOnly=yes
 
 # -----------------------------------------------------------------------------
 # OPTION 3: Docker container

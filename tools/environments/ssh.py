@@ -43,12 +43,14 @@ class SSHEnvironment(BaseEnvironment):
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
-                 timeout: int = 60, port: int = 22, key_path: str = ""):
+                 timeout: int = 60, port: int = 22, key_path: str = "",
+                 identities_only: bool = False):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host = host
         self.user = user
         self.port = port
         self.key_path = key_path
+        self.identities_only = identities_only
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
@@ -58,10 +60,10 @@ class SSHEnvironment(BaseEnvironment):
         # IPv6 host — plus the 16-byte random suffix SSH appends in
         # ControlMaster mode easily exceeds the limit under macOS's
         # deeply-nested $TMPDIR (e.g. /var/folders/xx/yy/T/). Hashing the
-        # triple keeps the path stable across reconnects so ControlMaster
-        # reuse still works.
+        # target/auth tuple keeps the path stable across reconnects while
+        # preventing reuse of a master connection opened with a different key.
         _socket_id = hashlib.sha256(
-            f"{user}@{host}:{port}".encode()
+            f"{user}@{host}:{port}:{key_path}:{identities_only}".encode()
         ).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
         _ensure_ssh_available()
@@ -80,6 +82,14 @@ class SSHEnvironment(BaseEnvironment):
 
         self.init_session()
 
+    def _ssh_identity_args(self) -> list[str]:
+        args = []
+        if self.identities_only:
+            args.extend(["-o", "IdentitiesOnly=yes"])
+        if self.key_path:
+            args.extend(["-i", self.key_path])
+        return args
+
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
         cmd.extend(["-o", f"ControlPath={self.control_socket}"])
@@ -90,8 +100,7 @@ class SSHEnvironment(BaseEnvironment):
         cmd.extend(["-o", "ConnectTimeout=10"])
         if self.port != 22:
             cmd.extend(["-p", str(self.port)])
-        if self.key_path:
-            cmd.extend(["-i", self.key_path])
+        cmd.extend(self._ssh_identity_args())
         if extra_args:
             cmd.extend(extra_args)
         cmd.append(f"{self.user}@{self.host}")
@@ -172,8 +181,7 @@ class SSHEnvironment(BaseEnvironment):
         scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
         if self.port != 22:
             scp_cmd.extend(["-P", str(self.port)])
-        if self.key_path:
-            scp_cmd.extend(["-i", self.key_path])
+        scp_cmd.extend(self._ssh_identity_args())
         scp_cmd.extend([host_path, f"{self.user}@{self.host}:{remote_path}"])
         result = subprocess.run(
             scp_cmd,
@@ -360,7 +368,11 @@ class SSHEnvironment(BaseEnvironment):
         if self.control_socket.exists():
             try:
                 cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",
-                       "-O", "exit", f"{self.user}@{self.host}"]
+                       "-O", "exit"]
+                if self.port != 22:
+                    cmd.extend(["-p", str(self.port)])
+                cmd.extend(self._ssh_identity_args())
+                cmd.append(f"{self.user}@{self.host}")
                 subprocess.run(
                     cmd,
                     capture_output=True,

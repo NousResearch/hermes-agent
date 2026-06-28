@@ -175,7 +175,7 @@ from hermes_cli.browser_connect import (
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches
+from utils import base_url_host_matches, env_bool
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -614,6 +614,7 @@ def load_cli_config() -> Dict[str, Any]:
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
+        "ssh_identities_only": "TERMINAL_SSH_IDENTITIES_ONLY",
         # Container resource config (docker, singularity, modal, daytona -- ignored for local/ssh)
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
@@ -6497,7 +6498,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             ssh_host = os.getenv("TERMINAL_SSH_HOST", "not set")
             ssh_user = os.getenv("TERMINAL_SSH_USER", "not set")
             ssh_port = os.getenv("TERMINAL_SSH_PORT", "22")
+            ssh_identities_only = env_bool("TERMINAL_SSH_IDENTITIES_ONLY")
             print(f"  SSH Target:   {ssh_user}@{ssh_host}:{ssh_port}")
+            identities_label = (
+                "configured only" if ssh_identities_only else "default SSH behavior"
+            )
+            print(f"  Identities:   {identities_label}")
         print(f"  Working Dir:  {terminal_cwd}")
         print(f"  Timeout:      {terminal_timeout}s")
         print()

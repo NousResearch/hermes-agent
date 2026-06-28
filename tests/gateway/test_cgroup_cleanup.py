@@ -27,7 +27,7 @@ class TestOwnCgroupPath:
         def _raise(_path):
             raise FileNotFoundError
 
-        monkeypatch.setattr(cgroup_cleanup.Path, "read_text", lambda self: _raise(self))
+        monkeypatch.setattr(cgroup_cleanup.Path, "read_text", lambda self, *a, **k: _raise(self))
         assert cgroup_cleanup._own_cgroup_path() is None
 
 

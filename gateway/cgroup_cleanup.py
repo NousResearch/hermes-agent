@@ -24,7 +24,7 @@ from pathlib import Path
 def _own_cgroup_path() -> str | None:
     """Return the cgroup v2 path for the calling process, or None."""
     try:
-        text = Path("/proc/self/cgroup").read_text()
+        text = Path("/proc/self/cgroup").read_text(encoding="utf-8")
     except OSError:
         return None
     match = re.search(r"^0::(.+)$", text, re.MULTILINE)
@@ -36,7 +36,7 @@ def _own_cgroup_path() -> str | None:
 def _read_cgroup_pids(cgroup_path: str) -> list[int]:
     procs_file = Path(f"/sys/fs/cgroup{cgroup_path}/cgroup.procs")
     try:
-        raw = procs_file.read_text()
+        raw = procs_file.read_text(encoding="utf-8")
     except OSError:
         return []
     pids: list[int] = []
@@ -63,7 +63,7 @@ def reap_cgroup(cgroup_path: str | None = None) -> int:
         if pid == own:
             continue
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only (reads /proc, /sys/fs/cgroup; runs from a systemd unit)
             killed += 1
         except ProcessLookupError:
             continue

@@ -2725,6 +2725,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
 
         # Track pending /update prompt responses per session.
+        # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
 
@@ -8247,6 +8248,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            # /side must bypass the running-agent guard — it answers a side
+            # question as a background task using current conversation context.
+            if _cmd_def_inner and _cmd_def_inner.name == "side":
+                return await self._handle_side_command(event)
+
+            # /sidereturn is kept for backwards compatibility but is a no-op
+            # in OpenClaw-style /side.
+            if _cmd_def_inner and _cmd_def_inner.name == "sidereturn":
+                return await self._handle_sidereturn_command(event)
+
             # /kanban must bypass the guard. It writes to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
             # /kanban unblock is often the only way to free a worker that
@@ -8762,6 +8773,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "side":
+            return await self._handle_side_command(event)
+
+        if canonical == "sidereturn":
+            return await self._handle_sidereturn_command(event)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.

@@ -541,6 +541,14 @@ async function startSocket() {
       };
 
       messageQueue.push(event);
+      console.log(JSON.stringify({
+        event: 'queued',
+        chatId,
+        senderId,
+        body_preview: body?.slice(0, 80) || '',
+        body_starts_with_slash: body?.startsWith('/'),
+        queue_length: messageQueue.length,
+      }));
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
       }

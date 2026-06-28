@@ -363,6 +363,10 @@ const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-sta
 // ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
+// File-backed session pins bridge. The renderer still owns the visible sidebar
+// state/localStorage, but external automation can update this JSON file and the
+// running Desktop process will push the new ids into the renderer immediately.
+const DESKTOP_PINNED_SESSIONS_PATH = path.join(app.getPath('userData'), 'pinned-sessions.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -4714,6 +4718,76 @@ function writeActiveDesktopProfile(name) {
   return value || null
 }
 
+function sanitizePinnedSessionIds(value) {
+  const rawIds = Array.isArray(value)
+    ? value
+    : Array.isArray(value?.ids)
+      ? value.ids
+      : []
+  const seen = new Set()
+  const ids = []
+
+  for (const item of rawIds) {
+    const id = typeof item === 'string' ? item.trim() : ''
+
+    if (id && !seen.has(id)) {
+      seen.add(id)
+      ids.push(id)
+    }
+  }
+
+  return ids
+}
+
+function readDesktopPinnedSessions() {
+  try {
+    const raw = fs.readFileSync(DESKTOP_PINNED_SESSIONS_PATH, 'utf8')
+    return { exists: true, ids: sanitizePinnedSessionIds(JSON.parse(raw)), path: DESKTOP_PINNED_SESSIONS_PATH }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      rememberLog(`[pins] failed to read ${DESKTOP_PINNED_SESSIONS_PATH}: ${error?.message || error}`)
+    }
+
+    return { exists: false, ids: [], path: DESKTOP_PINNED_SESSIONS_PATH }
+  }
+}
+
+function writeDesktopPinnedSessions(ids) {
+  const nextIds = sanitizePinnedSessionIds(ids)
+
+  fs.mkdirSync(path.dirname(DESKTOP_PINNED_SESSIONS_PATH), { recursive: true })
+  writeFileAtomic(
+    DESKTOP_PINNED_SESSIONS_PATH,
+    JSON.stringify({ ids: nextIds, updated_at: new Date().toISOString(), source: 'desktop' }, null, 2)
+  )
+
+  return { exists: true, ids: nextIds, path: DESKTOP_PINNED_SESSIONS_PATH }
+}
+
+function broadcastPinnedSessionsChanged() {
+  const payload = readDesktopPinnedSessions()
+
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send('hermes:pinnedSessions:changed', payload)
+    }
+  }
+}
+
+let pinnedSessionsWatcherStarted = false
+
+function ensurePinnedSessionsWatcher() {
+  if (pinnedSessionsWatcherStarted) return
+
+  pinnedSessionsWatcherStarted = true
+  fs.mkdirSync(path.dirname(DESKTOP_PINNED_SESSIONS_PATH), { recursive: true })
+  fs.watchFile(DESKTOP_PINNED_SESSIONS_PATH, { interval: 750 }, (curr, prev) => {
+    if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) {
+      broadcastPinnedSessionsChanged()
+    }
+  })
+}
+
 // Sanitize a connection config into the renderer-facing shape. With no
 // `profile` this describes the global/default connection (the existing
 // behavior); with a `profile` it describes that profile's per-profile remote
@@ -6273,6 +6347,16 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+ipcMain.handle('hermes:pinnedSessions:get', async () => {
+  ensurePinnedSessionsWatcher()
+  return readDesktopPinnedSessions()
+})
+ipcMain.handle('hermes:pinnedSessions:set', async (_event, ids) => {
+  ensurePinnedSessionsWatcher()
+  const result = writeDesktopPinnedSessions(ids)
+  broadcastPinnedSessionsChanged()
+  return result
+})
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 

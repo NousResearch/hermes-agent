@@ -681,3 +681,35 @@ class TestAuxiliaryEnvBlocklist:
         extra = {"AUXILIARY_VISION_API_KEY": "sk-extra-secret"}
         result = _sanitize_subprocess_env(base, extra)
         assert "AUXILIARY_VISION_API_KEY" not in result
+
+    def test_make_run_env_blocks_auxiliary_api_keys(self, monkeypatch):
+        from tools.environments.local import _make_run_env
+        poison = {
+            "PATH": "/usr/bin",
+            "AUXILIARY_VISION_API_KEY": "sk-vision-secret",
+            "AUXILIARY_COMPRESSION_API_KEY": "sk-compress-secret",
+            "AUXILIARY_APPROVAL_BASE_URL": "https://internal.api",
+        }
+        with patch.dict(os.environ, poison, clear=True):
+            result = _make_run_env({})
+        assert "AUXILIARY_VISION_API_KEY" not in result
+        assert "AUXILIARY_COMPRESSION_API_KEY" not in result
+        assert "AUXILIARY_APPROVAL_BASE_URL" not in result
+
+    def test_make_run_env_passes_auxiliary_non_secrets(self, monkeypatch):
+        from tools.environments.local import _make_run_env
+        env = {
+            "PATH": "/usr/bin",
+            "AUXILIARY_VISION_PROVIDER": "openai-api",
+            "AUXILIARY_VISION_MODEL": "gpt-4o",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            result = _make_run_env({})
+        assert result.get("AUXILIARY_VISION_PROVIDER") == "openai-api"
+        assert result.get("AUXILIARY_VISION_MODEL") == "gpt-4o"
+
+    def test_make_run_env_blocks_auxiliary_from_caller_env(self):
+        from tools.environments.local import _make_run_env
+        with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
+            result = _make_run_env({"AUXILIARY_CUSTOM_TASK_API_KEY": "sk-leaked"})
+        assert "AUXILIARY_CUSTOM_TASK_API_KEY" not in result

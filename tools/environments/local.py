@@ -630,6 +630,8 @@ def _make_run_env(env: dict) -> dict:
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             run_env[real_key] = v
+        elif _is_auxiliary_secret(k) and not _is_passthrough(k):
+            continue
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     path_key = _path_env_key(run_env)

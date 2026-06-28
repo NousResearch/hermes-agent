@@ -8909,9 +8909,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
-                        result = await result
+                    # Plugin slash-command handlers intentionally keep the
+                    # simple ``fn(raw_args)`` contract. Expose the originating
+                    # gateway context via short-lived env vars so detached
+                    # plugin runners can route completion notifications back
+                    # to the same chat/thread without widening the public
+                    # plugin command signature.
+                    _plugin_env_keys = [
+                        "HERMES_PLUGIN_PLATFORM",
+                        "HERMES_PLUGIN_CHAT_ID",
+                        "HERMES_PLUGIN_THREAD_ID",
+                        "HERMES_PLUGIN_MESSAGE_ID",
+                    ]
+                    _plugin_env_prev = {k: os.environ.get(k) for k in _plugin_env_keys}
+                    try:
+                        if source.platform:
+                            os.environ["HERMES_PLUGIN_PLATFORM"] = source.platform.value
+                        if source.chat_id:
+                            os.environ["HERMES_PLUGIN_CHAT_ID"] = str(source.chat_id)
+                        if source.thread_id:
+                            os.environ["HERMES_PLUGIN_THREAD_ID"] = str(source.thread_id)
+                        if getattr(source, "message_id", None):
+                            os.environ["HERMES_PLUGIN_MESSAGE_ID"] = str(source.message_id)
+                        result = plugin_handler(user_args)
+                        if asyncio.iscoroutine(result):
+                            result = await result
+                    finally:
+                        for _key, _old in _plugin_env_prev.items():
+                            if _old is None:
+                                os.environ.pop(_key, None)
+                            else:
+                                os.environ[_key] = _old
                     return str(result) if result else None
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)

@@ -343,6 +343,21 @@ class WhatsAppBehaviorMixin:
                 cleaned = re.sub(
                     rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned
                 )
+        # Strip the configured wake word(s) too — the same mention_patterns
+        # that admit the message in _message_matches_mention_patterns. Without
+        # this, a custom wake word like "@andy" gates the message but then
+        # leaks into the prompt verbatim (real JID @mentions, above, do not).
+        # Remove only the first match of each pattern (plus trailing
+        # separators) so arbitrary in-content matches aren't rewritten.
+        for pattern in self._mention_patterns:
+            m = pattern.search(cleaned)
+            if not m:
+                continue
+            end = m.end()
+            trailing = re.match(r"[,:\-]*\s*", cleaned[end:])
+            if trailing:
+                end += trailing.end()
+            cleaned = cleaned[: m.start()] + cleaned[end:]
         return cleaned.strip() or text
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:

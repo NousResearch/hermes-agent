@@ -1319,7 +1319,7 @@ DEFAULT_CONFIG = {
                                       # gpt-5.5 compaction threshold but suppress
                                       # the one-time CLI/gateway informational
                                       # notice about the automatic raise.
-        "in_place": False,            # When True, compaction rewrites the message
+        "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation
                                       # keeps one durable id for its whole life

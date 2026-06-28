@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Parallel v1 Extract — batch URLs to extracted_docs.json. Requires PARALLEL_API_KEY."""
+import argparse
 import json
+import sys
+from pathlib import Path
+
 from parallel import Parallel
 
 EXTRACTION_OBJECTIVE = (
@@ -30,6 +34,7 @@ def extract_urls(urls, out_path="extracted_docs.json", full_content=True):
     all_results, all_errors, all_usage = [], [], []
 
     for batch_idx, batch in enumerate(chunk(urls, BATCH_SIZE)):
+        print(f"[batch {batch_idx}] extracting {len(batch)} URLs...", file=sys.stderr)
         resp = client.extract(
             urls=batch,
             objective=EXTRACTION_OBJECTIVE,
@@ -49,6 +54,10 @@ def extract_urls(urls, out_path="extracted_docs.json", full_content=True):
         all_results.extend(resp.results)
         all_errors.extend(resp.errors)
         all_usage.extend(getattr(resp, "usage", None) or [])
+        print(
+            f"  ok={len(resp.results)} err={len(resp.errors)}",
+            file=sys.stderr,
+        )
 
     out = {
         "session_id": session_id,
@@ -78,4 +87,45 @@ def extract_urls(urls, out_path="extracted_docs.json", full_content=True):
     }
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
+    print(
+        f"Wrote {len(all_results)} results, {len(all_errors)} errors to {out_path}",
+        file=sys.stderr,
+    )
     return out
+
+
+def _load_urls(path: Path) -> list[str]:
+    lines = path.read_text().splitlines()
+    return [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="Batch Parallel Extract to JSON")
+    p.add_argument(
+        "urls_file",
+        nargs="?",
+        help="Text file with one URL per line (# comments allowed)",
+    )
+    p.add_argument(
+        "-o",
+        "--output",
+        default="extracted_docs.json",
+        help="Output JSON path (default: extracted_docs.json)",
+    )
+    p.add_argument(
+        "--no-full-content",
+        action="store_true",
+        help="Omit full page markdown (excerpts only)",
+    )
+    args = p.parse_args(argv)
+    if not args.urls_file:
+        p.error("urls_file is required (one URL per line)")
+    urls = _load_urls(Path(args.urls_file))
+    if not urls:
+        p.error(f"No URLs in {args.urls_file}")
+    extract_urls(urls, out_path=args.output, full_content=not args.no_full_content)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

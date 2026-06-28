@@ -107,9 +107,15 @@ Serialize JSON yourself; prefer `full_content` for embedding, `excerpts` for qui
 
 ## Hermes workflow
 
-1. Collect URL list from user or prior Search.
-2. Run `scripts/extract_docs.py` from this skill (`extract_urls(urls, out_path=...)`).
-3. Run: `PARALLEL_API_KEY=... python3 skills/research/parallel-extract/scripts/extract_docs.py` from repo root, or import `extract_urls` in a one-off script.
+1. Collect URL list from user or prior Search; save as `urls.txt` (one URL per line, `#` comments OK).
+2. From repo root or any cwd:
+
+```bash
+export PARALLEL_API_KEY="..."
+python3 skills/research/parallel-extract/scripts/extract_docs.py urls.txt -o extracted_docs.json
+```
+
+3. Or import `extract_urls(urls, out_path=...)` from that script in a one-off notebook/script.
 4. Verify: `len(results) + len(errors) == len(urls)`; spot-check largest `full_content` lengths.
 5. Optional: split each `full_content` to `docs/<slug>.md` for llm-wiki / vector store.
 
@@ -143,4 +149,8 @@ print(len(r.results), r.errors, r.usage)
 "
 ```
 
-**Full corpus:** Pass URL list into `extract_urls()` in `scripts/extract_docs.py`.
+**Full corpus:**
+
+```bash
+python3 skills/research/parallel-extract/scripts/extract_docs.py urls.txt -o extracted_docs.json
+```

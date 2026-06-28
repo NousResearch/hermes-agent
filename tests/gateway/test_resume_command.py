@@ -501,6 +501,43 @@ class TestHandleSessionsCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_blocks_no_identity_caller_on_persisted_row(self, tmp_path):
+        """A caller with no user_id must not resume a persisted row on
+        same-platform alone: the row has no chat_id to prove ownership, so a
+        Telegram group caller in chat-a (user_id=None) cannot bind to a row
+        owned by another chat/user (IDOR regression for the no-identity branch)."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("victim_chat_b_uid", "telegram", user_id="victim")
+        db.set_session_title("victim_chat_b_uid", "Victim Chat B")
+        db.create_session("current_session_001", "telegram")
+
+        for name in ("Victim Chat B", "victim_chat_b_uid"):
+            event = _make_event(text=f"/resume {name}", user_id=None,
+                                chat_id="chat-a")
+            event.source.chat_type = "group"
+            runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                                  event=event)
+            result = await runner._handle_resume_command(event)
+            runner.session_store.switch_session.assert_not_called()
+            assert "Resumed" not in result, name
+        db.close()
+
+    def test_resume_target_allowed_blocks_no_identity_persisted(self, tmp_path):
+        """Unit-level: the persisted-row fallback fails closed for an
+        identity-less caller (no live origin resolvable)."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("victim_chat_b_uid", "telegram", user_id="victim")
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda sid: None  # inactive/persisted-only
+        caller = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-a",
+                               chat_type="group", user_id=None)
+        assert runner._resume_target_allowed(caller, "victim_chat_b_uid",
+                                             allow_override=False) is False
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_gateway_dispatches_sessions_command(self, tmp_path):
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")

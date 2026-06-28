@@ -804,9 +804,15 @@ class GatewaySlashCommandsMixin:
                 and bool(row_src) and bool(caller_src)
                 and str(row_src) == str(caller_src)
             )
-        # No caller identity (single-user / no-identity context): there is no
-        # cross-user boundary to enforce beyond the same-platform check above.
-        return True
+        # No caller identity: the persisted row carries only source + user_id
+        # (the sessions table has no chat_id), so a same-platform row can belong
+        # to a DIFFERENT chat or user. Same-platform alone is therefore NOT
+        # ownership proof — an identity-less caller must not bind to, or
+        # enumerate, a persisted session by id/title. Fail closed. A legitimate
+        # same-chat resume of an ACTIVE session still works through the
+        # live-origin branch above (which compares chat_id), and an operator can
+        # use the admin --all override. (CWE-639: IDOR on session routing.)
+        return False
 
     async def _resume_row_visible(
         self, source: SessionSource, row: dict, allow_all: bool

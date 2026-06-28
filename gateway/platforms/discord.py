@@ -3277,14 +3277,7 @@ class DiscordAdapter(BasePlatformAdapter):
             conn.close()
 
     def _format_task_created_notice(self, task_data: Dict[str, str]) -> str:
-        return (
-            "依頼として受け取りました。\n"
-            "カンバンでは実行待ちです。AI側で進め、確認が必要なものだけ確認待ちに戻します。\n\n"
-            f"タスクID: `{task_data['id']}`\n"
-            f"タスク: {task_data['title']}\n"
-            f"担当: {task_data['assignee']}\n"
-            f"状態: {self._format_task_slash_status(task_data['status'])}"
-        )
+        return "依頼として受け取りました。AI側で進めます。"
 
     async def _handle_task_slash(self, interaction: discord.Interaction, prompt: str) -> None:
         """Create an AI Company kanban task from an explicit Discord /task command."""
@@ -3340,6 +3333,12 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_id: Optional[str],
         has_attachments: bool,
     ) -> bool:
+        """Register natural task-like messages without replacing normal chat flow.
+
+        Returns True when the message looked like a task request. Callers can use
+        that to bypass mention gating, but should continue into the regular agent
+        response path so Discord does not receive a separate "registered" notice.
+        """
         if has_attachments:
             return False
         if not self._natural_task_requests_enabled():
@@ -3365,17 +3364,12 @@ class DiscordAdapter(BasePlatformAdapter):
             task_data = await asyncio.to_thread(_create_task)
         except Exception:
             logger.exception("[%s] Failed to create kanban task from natural Discord request", self.name)
-            await self.send(
-                chat_id,
-                "依頼として受け取りましたが、カンバン登録に失敗しました。内部ログではなく、状態を確認してからもう一度対応します。",
-                metadata={"thread_id": thread_id} if thread_id else None,
-            )
             return True
 
-        await self.send(
-            chat_id,
-            self._format_task_created_notice(task_data),
-            metadata={"thread_id": thread_id} if thread_id else None,
+        logger.info(
+            "[%s] Registered natural Discord request as kanban task %s",
+            self.name,
+            task_data.get("id", "?"),
         )
         return True
 
@@ -5012,7 +5006,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     # Kanban intake: task-like Discord messages should
                     # become kanban cards even when the channel normally
                     # requires an @mention before starting a chat session.
-                    if await self._maybe_handle_natural_task_request(
+                    if not await self._maybe_handle_natural_task_request(
                         message=message,
                         prompt=normalized_content,
                         chat_id=str(message.channel.id),
@@ -5022,7 +5016,6 @@ class DiscordAdapter(BasePlatformAdapter):
                         ),
                     ):
                         return
-                    return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -5231,14 +5224,13 @@ class DiscordAdapter(BasePlatformAdapter):
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 
-        if await self._maybe_handle_natural_task_request(
+        await self._maybe_handle_natural_task_request(
             message=message,
             prompt=event_text,
             chat_id=str(effective_channel.id),
             thread_id=thread_id,
             has_attachments=bool(all_attachments),
-        ):
-            return
+        )
 
         # ── History backfill ─────────────────────────────────────────
         # When require_mention is active, the bot only processes messages

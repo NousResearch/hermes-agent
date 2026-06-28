@@ -64,6 +64,32 @@ class TestClarifyPrimitive:
         assert entry.awaiting_text is False
         assert cm.get_pending_for_session("sk3") is None
 
+    def test_include_choice_prompts_returns_multi_choice_entry(self):
+        """Gateway typed replies must see active choice prompts too."""
+        from tools import clarify_gateway as cm
+
+        cm.register("id3b", "sk3b", "Pick", ["X", "Y"])
+        pending = cm.get_pending_for_session("sk3b", include_choice_prompts=True)
+        assert pending is not None
+        assert pending.clarify_id == "id3b"
+
+    def test_resolve_text_response_maps_numeric_choice(self):
+        """Typed numbers should resolve to the canonical choice string."""
+        from tools import clarify_gateway as cm
+
+        cm.register("id3c", "sk3c", "Pick", ["X", "Y"])
+        assert cm.resolve_text_response_for_session("sk3c", "2") is True
+        assert cm.wait_for_response("id3c", timeout=0.1) == "Y"
+
+    def test_resolve_text_response_accepts_custom_other_text(self):
+        """Arbitrary typed text should resolve as a custom Other answer."""
+        from tools import clarify_gateway as cm
+
+        cm.register("id3d", "sk3d", "Pick", ["X", "Y"])
+        custom = "None of those are valid options"
+        assert cm.resolve_text_response_for_session("sk3d", custom) is True
+        assert cm.wait_for_response("id3d", timeout=0.1) == custom
+
     def test_other_button_flips_to_text_mode(self):
         """mark_awaiting_text makes get_pending_for_session find the entry."""
         from tools import clarify_gateway as cm

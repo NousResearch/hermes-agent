@@ -546,10 +546,29 @@ def _pid_exists(pid: int) -> bool:
     """
     try:
         import psutil  # type: ignore
+
+        # A zombie (defunct) process is still in the process table, so
+        # ``psutil.pid_exists()`` returns True for it — but it is already
+        # dead: SIGKILL has no effect and it cannot be a running gateway.
+        # Treating a zombie as alive makes ``--replace`` wait for the old
+        # PID to die (it never does, until its parent reaps it), then abort
+        # with exit 1 — a silent crash loop under systemd ``Restart=always``,
+        # which respawns the gateway before reaping the previous process
+        # (issue #42126). Report zombies as dead so the takeover proceeds.
+        # Best-effort: any failure to read status (partial/stub psutil,
+        # access denied, transient race) falls through to the authoritative
+        # ``pid_exists()`` below rather than raising.
+        try:
+            if psutil.Process(int(pid)).status() == psutil.STATUS_ZOMBIE:
+                return False
+        except getattr(psutil, "NoSuchProcess", ()):
+            return False
+        except Exception:
+            pass
         return bool(psutil.pid_exists(int(pid)))
+
     except ImportError:
         pass  # Fall through to stdlib fallback.
-
     if _IS_WINDOWS:
         try:
             import ctypes
@@ -584,6 +603,31 @@ def _pid_exists(pid: int) -> bool:
         except (OSError, AttributeError):
             return False
     else:
+        # psutil missing (stripped install / scaffold phase). Catch the same
+        # zombie case as the psutil path above (issue #42126): a zombie
+        # answers os.kill(pid, 0) successfully, so without this check
+        # ``--replace`` would wait on a dead PID and abort with exit 1.
+        try:
+            stat_fields = (
+                Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8").split()
+            )
+            if len(stat_fields) > 2 and stat_fields[2] == "Z":
+                return False
+        except FileNotFoundError:
+            # No /proc (macOS/BSD) — fall back to ps state.
+            try:
+                r = subprocess.run(
+                    ["ps", "-o", "state=", "-p", str(int(pid))],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if r.returncode == 0 and r.stdout.strip().startswith("Z"):
+                    return False
+            except Exception:
+                pass
+        except (IndexError, PermissionError, OSError):
+            pass
         try:
             os.kill(int(pid), 0)  # windows-footgun: ok — POSIX-only branch (the whole point of _pid_exists)
             return True

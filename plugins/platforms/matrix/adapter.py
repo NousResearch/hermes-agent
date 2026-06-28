@@ -4253,12 +4253,24 @@ async def _standalone_send(
     """Out-of-process Matrix delivery via the Client-Server API.
 
     Implements the standalone_sender_fn contract so deliver=matrix cron jobs
-    succeed when cron runs separately from the gateway. Converts markdown to
-    HTML for rich rendering, falling back to plain text when the markdown
-    library is absent. Replaces the legacy _send_matrix helper.
+    can succeed when cron runs separately from the gateway. Plaintext
+    ``m.room.message`` fallback is only allowed when Matrix E2EE is explicitly
+    disabled; encrypted configurations must use a live Matrix adapter with a
+    crypto store so E2EE rooms fail closed instead of leaking plaintext.
     """
     extra = getattr(pconfig, "extra", {}) or {}
     token = getattr(pconfig, "token", None)
+    e2ee_mode = _resolve_e2ee_mode(extra)
+    if e2ee_mode != "off":
+        return {
+            "error": (
+                "Matrix standalone delivery refused because E2EE is "
+                f"{e2ee_mode!r}. Out-of-process Matrix delivery would send "
+                "a plaintext m.room.message; run the gateway/live adapter "
+                "with E2EE enabled or set MATRIX_E2EE_MODE=off only for "
+                "non-encrypted rooms."
+            )
+        }
     try:
         import aiohttp
     except ImportError:

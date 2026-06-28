@@ -359,6 +359,106 @@ class TestMatrixConfigLoading:
         assert mc.extra.get("user_id") == "@hermes:example.org"
 
 
+def _install_fake_matrix_aiohttp(monkeypatch):
+    """Install a fake aiohttp module so the red path never touches the network."""
+    fake = types.ModuleType("aiohttp")
+
+    class _Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def json(self):
+            return {"event_id": "$plaintext"}
+
+        async def text(self):
+            return ""
+
+    class _Session:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def put(self, *args, **kwargs):
+            return _Response()
+
+    setattr(fake, "ClientSession", _Session)
+    setattr(fake, "ClientTimeout", lambda *args, **kwargs: object())
+    monkeypatch.setitem(sys.modules, "aiohttp", fake)
+
+
+class TestMatrixStandaloneSendE2EEGuard:
+    @pytest.mark.asyncio
+    async def test_required_e2ee_refuses_plaintext_standalone_send(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_E2EE_MODE", "required")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        _install_fake_matrix_aiohttp(monkeypatch)
+
+        from plugins.platforms.matrix.adapter import _standalone_send
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "!encrypted:example.org",
+            "hello",
+        )
+
+        assert result == {
+            "error": (
+                "Matrix standalone delivery refused because E2EE is 'required'. "
+                "Out-of-process Matrix delivery would send a plaintext m.room.message; "
+                "run the gateway/live adapter with E2EE enabled or set MATRIX_E2EE_MODE=off "
+                "only for non-encrypted rooms."
+            )
+        }
+
+    @pytest.mark.asyncio
+    async def test_legacy_encryption_true_refuses_plaintext_standalone_send(self, monkeypatch):
+        monkeypatch.delenv("MATRIX_E2EE_MODE", raising=False)
+        monkeypatch.setenv("MATRIX_ENCRYPTION", "true")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        _install_fake_matrix_aiohttp(monkeypatch)
+
+        from plugins.platforms.matrix.adapter import _standalone_send
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "!encrypted:example.org",
+            "hello",
+        )
+
+        assert "refused because E2EE is 'required'" in result.get("error", "")
+        assert "plaintext m.room.message" in result.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_optional_e2ee_refuses_plaintext_standalone_send(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_E2EE_MODE", "optional")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        _install_fake_matrix_aiohttp(monkeypatch)
+
+        from plugins.platforms.matrix.adapter import _standalone_send
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "!possibly-encrypted:example.org",
+            "hello",
+        )
+
+        assert "refused because E2EE is 'optional'" in result.get("error", "")
+        assert "plaintext m.room.message" in result.get("error", "")
+
+
 # ---------------------------------------------------------------------------
 # Adapter helpers
 # ---------------------------------------------------------------------------

@@ -101,6 +101,19 @@ def _build_subprocess_env() -> dict[str, str]:
     env = hermes_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
     env["HOME"] = home
+    # Recompute from the HOME we're about to hand to the ACP child when HOME is
+    # already the real account home. A stale parent-process HERMES_REAL_HOME can
+    # otherwise override test/session-local HOME and point Copilot at the wrong
+    # account directory. If HOME itself is the Hermes profile home, preserve the
+    # existing real-home hint so apply_subprocess_home_env() can repair it.
+    hermes_home = env.get("HERMES_HOME", "").strip()
+    profile_home = os.path.join(hermes_home, "home") if hermes_home else ""
+    if home and not (
+        profile_home
+        and os.path.isdir(profile_home)
+        and os.path.normcase(os.path.abspath(home)) == os.path.normcase(os.path.abspath(profile_home))
+    ):
+        env["HERMES_REAL_HOME"] = home
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
     return env

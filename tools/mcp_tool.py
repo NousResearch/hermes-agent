@@ -338,6 +338,17 @@ _SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({
     "WINDIR",
 })
 
+# Windows may surface selected location variables uppercased even though some
+# launchers look for their canonical mixed-case spelling.  Normalize only
+# names that are already in the safe allowlist; this does not widen the set of
+# variables passed to MCP subprocesses.
+_WINDOWS_ENV_CANONICAL_KEYS = {
+    "PROGRAMFILES": "ProgramFiles",
+    "PROGRAMFILES(X86)": "ProgramFiles(x86)",
+    "PROGRAMDATA": "ProgramData",
+    "PROGRAMW6432": "ProgramW6432",
+}
+
 # Regex for credential patterns to strip from error messages
 _CREDENTIAL_PATTERN = re.compile(
     r"(?:"
@@ -375,12 +386,13 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     """
     env = {}
     for key, value in os.environ.items():
+        key_upper = key.upper()
         if (
             key in _SAFE_ENV_KEYS
-            or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE
+            or key_upper in _SAFE_ENV_KEYS_CASE_INSENSITIVE
             or key.startswith("XDG_")
         ):
-            env[key] = value
+            env[_WINDOWS_ENV_CANONICAL_KEYS.get(key_upper, key)] = value
     if user_env:
         env.update(user_env)
     return env

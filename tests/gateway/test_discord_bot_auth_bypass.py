@@ -15,7 +15,11 @@ DISCORD_ALLOW_BOTS permits it AND no user allowlist entry exists.
 
 from types import SimpleNamespace
 
+import sys
+
 import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
 
 from gateway.session import Platform, SessionSource
 

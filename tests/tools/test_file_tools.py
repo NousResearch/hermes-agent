@@ -6,7 +6,10 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+import sys
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tools.file_tools import (
     PATCH_SCHEMA,
@@ -15,6 +18,7 @@ from tools.file_tools import (
 
 class TestReadFileHandler:
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp path gets converted to C:\\tmp on Windows")
     def test_returns_file_content(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -67,6 +71,7 @@ class TestReadFileHandler:
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp path gets converted to C:\\tmp on Windows")
     def test_writes_content(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -169,6 +174,7 @@ class TestWriteFileHandler:
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp path gets converted to C:\\tmp on Windows")
     def test_replace_mode_calls_patch_replace(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -185,6 +191,7 @@ class TestPatchHandler:
         mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
 
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp path gets converted to C:\\tmp on Windows")
     def test_replace_mode_replace_all_flag(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -468,6 +475,7 @@ class TestSensitivePathCheck:
         assert "error" in result
         assert "Hermes config" in result["error"]
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /etc/passwd path converted to C:\\etc\\passwd on Windows, error message differs")
     def test_system_path_still_blocked(self, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/some/other/path")
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)

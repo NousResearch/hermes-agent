@@ -9,10 +9,13 @@ Run with:  python -m pytest tests/tools/test_file_read_guards.py -v
 
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 from tools.file_tools import (
     read_file_tool,
@@ -64,7 +67,17 @@ def _make_safe_tempdir(prefix: str) -> str:
 # ---------------------------------------------------------------------------
 
 class TestDevicePathBlocking(unittest.TestCase):
-    """Paths like /dev/zero should be rejected before any I/O."""
+    """Paths like /dev/zero should be rejected before any I/O.
+
+    On Windows, /dev/* and /proc/* paths don't exist and realpath resolution
+    doesn't produce the expected blocklist matches. Skip the POSIX-only
+    device-path assertions on win32.
+    """
+
+    pytestmark = pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX device paths (/dev/*, /proc/*) not available on Windows",
+    )
 
     def test_blocked_device_detection(self):
         for dev in ("/dev/zero", "/dev/random", "/dev/urandom", "/dev/stdin",

@@ -285,19 +285,28 @@ def test_review_fork_disables_compression_to_prevent_stale_parent_fork() -> None
 
     with tempfile.TemporaryDirectory() as td:
         db = SessionDB(db_path=Path(td) / "state.db")
-        db.create_session(parent_sid, source="discord")
-        parent = _build_agent_with_db(db, parent_sid)
+        parent = None
+        try:
+            db.create_session(parent_sid, source="discord")
+            parent = _build_agent_with_db(db, parent_sid)
 
-        # The worker does a local ``from run_agent import AIAgent``; patching
-        # the class method covers that import path.
-        from run_agent import AIAgent
+            # The worker does a local ``from run_agent import AIAgent``; patching
+            # the class method covers that import path.
+            from run_agent import AIAgent
 
-        with patch.object(AIAgent, "run_conversation", _fake_run_conversation):
-            br._run_review_in_thread(
-                parent,
-                [{"role": "user", "content": "hi"}],
-                "review this conversation",
-            )
+            with patch.object(AIAgent, "run_conversation", _fake_run_conversation):
+                br._run_review_in_thread(
+                    parent,
+                    [{"role": "user", "content": "hi"}],
+                    "review this conversation",
+                )
+        finally:
+            # Windows keeps sqlite files locked until every connection owner is
+            # closed.  Close explicitly before TemporaryDirectory attempts to
+            # delete state.db.
+            if parent is not None:
+                parent.close()
+            db.close()
 
     assert captured, (
         "_run_review_in_thread never reached run_conversation — the spawn path "

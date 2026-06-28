@@ -1,7 +1,10 @@
 """Shared SKILL.md preprocessing helpers."""
 
 import logging
+import os
+import platform
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -20,6 +23,45 @@ _INLINE_SHELL_RE = re.compile(r"!`([^`\n]+)`")
 
 # Cap inline-shell output so a runaway command can't blow out the context.
 _INLINE_SHELL_MAX_OUTPUT = 4000
+_IS_WINDOWS = platform.system() == "Windows"
+
+
+def _find_inline_shell_bash() -> str:
+    """Find bash for inline SKILL.md snippets without picking WSL on Windows."""
+    if not _IS_WINDOWS:
+        return (
+            shutil.which("bash")
+            or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
+            or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+            or os.environ.get("SHELL")
+            or "/bin/sh"
+        )
+
+    custom = os.environ.get("HERMES_GIT_BASH_PATH")
+    if custom and os.path.isfile(custom):
+        return custom
+
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    hermes_git = os.path.join(local_appdata, "hermes", "git") if local_appdata else ""
+    for candidate in (
+        os.path.join(hermes_git, "bin", "bash.exe") if hermes_git else "",
+        os.path.join(hermes_git, "usr", "bin", "bash.exe") if hermes_git else "",
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        os.path.join(local_appdata, "Programs", "Git", "bin", "bash.exe") if local_appdata else "",
+    ):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+
+    found = shutil.which("bash.exe") or shutil.which("bash")
+    if found:
+        system32_bash = os.path.normcase(os.path.normpath(
+            os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "bash.exe")
+        ))
+        if os.path.normcase(os.path.normpath(found)) != system32_bash:
+            return found
+
+    raise FileNotFoundError("Git Bash not found")
 
 
 def load_skills_config() -> dict:
@@ -71,7 +113,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         completed = subprocess.run(
-            ["bash", "-c", command],
+            [_find_inline_shell_bash(), "-c", command],
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,

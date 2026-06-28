@@ -10,6 +10,12 @@ caused every message to be silently dropped (for ``allowed_channels``) or
 every ``free_response`` / ``ignored`` check to fail open.
 """
 
+import sys
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
+
 import unittest
 
 

@@ -17,9 +17,21 @@ Fix: _exec() now prefers the LIVE ``env.cwd`` over the init-time
 
 from __future__ import annotations
 
+import sys
 
+import pytest
 
 from tools.file_operations import ShellFileOperations
+
+
+# _FakeEnv.execute() shells out via subprocess.run(["bash", "-c", command]),
+# which requires a real bash binary in PATH. On Windows the MSYS bash spawn
+# path and cwd tracking differ from POSIX, causing the live-cwd assertions to
+# fail. Skip the entire module on win32.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Live-cwd tracking tests spawn bash subprocesses (POSIX only)",
+)
 
 
 class _FakeEnv:

@@ -517,8 +517,11 @@ def classify_sandbox_mirror_target(path: str) -> Optional[dict]:
     if inner_idx is None:
         return None
 
-    mirror_root = str(Path(*parts[: inner_idx + 1]))
-    inner_path = str(Path(*parts[inner_idx + 1 :])) if inner_idx + 1 < len(parts) else ""
+    # These fields are model/user-facing diagnostics, not paths used for I/O.
+    # Keep them POSIX-style so warnings and tests are stable across Windows
+    # and POSIX hosts; ``target_path`` below remains the native resolved path.
+    mirror_root = "/".join(str(part) for part in parts[: inner_idx + 1])
+    inner_path = "/".join(str(part) for part in parts[inner_idx + 1 :])
 
     return {
         "target_path": str(target),

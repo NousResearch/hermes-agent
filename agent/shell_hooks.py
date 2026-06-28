@@ -111,6 +111,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -415,6 +416,76 @@ def _parse_single_entry(
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
 
+def _strip_outer_quotes(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+        return token[1:-1]
+    return token
+
+
+def _split_command(command: str, *, expand_user: bool = True) -> List[str]:
+    """Split a configured hook command without corrupting Windows paths."""
+    expanded = os.path.expanduser(command) if expand_user else command
+    parts = shlex.split(expanded, posix=(os.name != "nt"))
+    if os.name == "nt":
+        parts = [_strip_outer_quotes(part) for part in parts]
+    return parts
+
+
+def _git_bash_path() -> Optional[str]:
+    """Return Git Bash on Windows, avoiding System32\\bash.exe (WSL shim)."""
+    if os.name != "nt":
+        return shutil.which("bash")
+
+    candidates: List[str] = []
+    env_path = os.environ.get("HERMES_GIT_BASH_PATH", "").strip()
+    if env_path:
+        candidates.append(env_path)
+
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    for root in (
+        os.path.join(local_appdata, "hermes", "git") if local_appdata else "",
+        os.path.join(local_appdata, "Programs", "Git") if local_appdata else "",
+        os.path.join(program_files, "Git"),
+        os.path.join(program_files_x86, "Git"),
+    ):
+        if root:
+            candidates.extend([
+                os.path.join(root, "bin", "bash.exe"),
+                os.path.join(root, "usr", "bin", "bash.exe"),
+            ])
+
+    found = shutil.which("bash.exe") or shutil.which("bash")
+    if found:
+        candidates.append(found)
+
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            normalized = os.path.normcase(os.path.normpath(candidate))
+            system32_bash = os.path.normcase(os.path.normpath(
+                os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "bash.exe")
+            ))
+            if normalized != system32_bash:
+                return candidate
+    return None
+
+
+def _argv_for_subprocess(argv: List[str]) -> List[str]:
+    """Return the argv that should be passed to subprocess.run().
+
+    Windows CreateProcess cannot execute POSIX shell scripts directly.  If the
+    hook is a bare .sh/.bash path, run it through Git Bash explicitly while
+    keeping shell=False.
+    """
+    if os.name == "nt" and argv:
+        first = argv[0]
+        if first.lower().endswith((".sh", ".bash")) and os.path.isfile(first):
+            bash = _git_bash_path()
+            return [bash or "bash", first, *argv[1:]]
+    return argv
+
+
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     """Run ``spec.command`` as a subprocess with ``stdin_json`` on stdin.
 
@@ -433,20 +504,22 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "elapsed_seconds": 0.0,
         "error": None,
     }
+
     try:
-        argv = shlex.split(os.path.expanduser(spec.command))
+        argv = _split_command(spec.command)
     except ValueError as exc:
         result["error"] = f"command {spec.command!r} cannot be parsed: {exc}"
         return result
     if not argv:
         result["error"] = "empty command"
         return result
+    run_argv = _argv_for_subprocess(argv)
 
     t0 = time.monotonic()
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         proc = subprocess.run(
-            argv,
+            run_argv,
             input=stdin_json,
             capture_output=True,
             timeout=spec.timeout,
@@ -479,7 +552,7 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
     """Build the closure that ``invoke_hook()`` will call per firing."""
 
     def _callback(**kwargs: Any) -> Optional[Dict[str, Any]]:
-        # Matcher gate — only meaningful for tool-scoped events.
+
         if spec.event in {"pre_tool_call", "post_tool_call"}:
             if not spec.matches_tool(kwargs.get("tool_name")):
                 return None
@@ -779,6 +852,16 @@ _SCRIPT_EXTENSIONS: Tuple[str, ...] = (
 )
 
 
+def _expand_script_path_for_stat(path: str) -> str:
+    """Expand a script path for filesystem checks, honoring HOME in tests."""
+    if path == "~" or path.startswith(("~/", "~\\")):
+        home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
+        if home:
+            suffix = path[2:] if len(path) > 1 else ""
+            return os.path.join(home, suffix) if suffix else home
+    return os.path.expanduser(path)
+
+
 def _command_script_path(command: str) -> str:
     """Return the script path from ``command`` for doctor / drift checks.
 
@@ -788,7 +871,7 @@ def _command_script_path(command: str) -> str:
     common bare-path form.
     """
     try:
-        parts = shlex.split(command)
+        parts = _split_command(command, expand_user=False)
     except ValueError:
         return command
     if not parts:
@@ -852,7 +935,7 @@ def script_mtime_iso(command: str) -> Optional[str]:
     if not path:
         return None
     try:
-        expanded = os.path.expanduser(path)
+        expanded = _expand_script_path_for_stat(path)
         return datetime.fromtimestamp(
             os.path.getmtime(expanded), tz=timezone.utc,
         ).isoformat().replace("+00:00", "Z")
@@ -871,14 +954,24 @@ def script_is_executable(command: str) -> bool:
     path = _command_script_path(command)
     if not path:
         return False
-    expanded = os.path.expanduser(path)
+    expanded = _expand_script_path_for_stat(path)
     if not os.path.isfile(expanded):
         return False
     try:
-        argv = shlex.split(command)
+        argv = _split_command(command)
     except ValueError:
         return False
     is_bare_invocation = bool(argv) and argv[0] == path
+    if os.name == "nt":
+        if not is_bare_invocation:
+            return os.access(expanded, os.R_OK)
+        lower = expanded.lower()
+        if lower.endswith((".sh", ".bash")):
+            return _git_bash_path() is not None and os.access(expanded, os.R_OK)
+        if lower.endswith((".py", ".pyw", ".rb", ".pl", ".lua", ".js", ".mjs", ".cjs", ".ts")):
+            return False
+        return os.access(expanded, os.R_OK)
+
     required = os.X_OK if is_bare_invocation else os.R_OK
     return os.access(expanded, required)
 

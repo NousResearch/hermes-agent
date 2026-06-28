@@ -4,6 +4,7 @@ Based on PR #1085 by ismoilh (salvaged).
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -169,7 +170,18 @@ class TestMultipleSafeWriteRoots:
 
 
 class TestCheckSensitivePathMacOSBypass:
-    """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
+    """Verify _check_sensitive_path blocks /private/etc paths (issue #8734).
+
+    These tests check macOS/Linux-specific sensitive paths (/etc/hosts,
+    /private/etc/*, /boot/grub/*).  On Windows these paths don't exist and
+    realpath resolution doesn't produce the expected blocklist matches.
+    Skip on win32.
+    """
+
+    pytestmark = pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="macOS/Linux-specific sensitive path checks (/etc, /private, /boot)",
+    )
 
     def test_etc_hosts_blocked(self):
         from tools.file_tools import _check_sensitive_path
@@ -205,6 +217,12 @@ class TestAtomicWrite:
     run against a real LocalEnvironment so the actual shell script executes.
     """
 
+    # Real LocalEnvironment shell scripts + inode/mode-bit assertions are
+    # POSIX-only; skip on Windows.
+    pytestmark = pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Atomic write tests use real LocalEnvironment shell + POSIX inode/mode semantics",
+    )
     @pytest.fixture
     def ops(self, tmp_path: Path):
         from tools.environments.local import LocalEnvironment
@@ -280,6 +298,12 @@ class TestBomHandling:
     but a file that had one on disk must keep it after an edit so the byte
     signature is preserved.
     """
+
+    # Real LocalEnvironment shell scripts for read/write/patch.
+    pytestmark = pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="BOM handling tests use real LocalEnvironment shell (POSIX only)",
+    )
 
     BOM = "\ufeff"
 

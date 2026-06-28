@@ -15,6 +15,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/48552
 """
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,6 +31,7 @@ import tools.file_tools as ft
 class TestExpandTilde:
     """Verify the _expand_tilde() helper resolves ~ to the profile home."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Path separator mismatch: \\ vs / on Windows")
     def test_tilde_expands_to_profile_home(self):
         """When get_subprocess_home returns a value, ~/path uses it."""
         with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):

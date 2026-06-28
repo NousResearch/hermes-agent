@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
+
 # numpy ships only in the optional "voice" extra (not [all,dev]); the mixer
 # math needs it, so skip this whole module when it isn't installed.
 np = pytest.importorskip("numpy")

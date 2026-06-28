@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
+
 from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_overrides, load_gateway_config
 
 

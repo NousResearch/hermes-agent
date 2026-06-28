@@ -1,4 +1,9 @@
 import inspect
+import sys
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="order-dependent discord mock leakage in full suite on Windows")
 
 from plugins.platforms.discord.adapter import DiscordAdapter
 

@@ -13,7 +13,20 @@ runs when the main provider has no working client.
 
 from __future__ import annotations
 
+import pytest
 from unittest.mock import MagicMock, patch
+
+
+@pytest.fixture(autouse=True)
+def _clear_aux_unhealthy_cache():
+    """Keep main-first tests independent of prior fallback/unhealthy-cache tests."""
+    from agent.auxiliary_client import _aux_unhealthy_logged_at, _aux_unhealthy_until
+
+    _aux_unhealthy_until.clear()
+    _aux_unhealthy_logged_at.clear()
+    yield
+    _aux_unhealthy_until.clear()
+    _aux_unhealthy_logged_at.clear()
 
 
 

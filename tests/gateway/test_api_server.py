@@ -502,6 +502,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
+    app.router.add_get("/api/model/options", adapter._handle_model_options)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
@@ -744,6 +745,65 @@ class TestModelsEndpoint:
             assert resp.status == 200
 
 
+    @pytest.mark.asyncio
+    async def test_model_options_returns_provider_inventory(self, adapter):
+        fake_payload = {
+            "providers": [
+                {"slug": "openai-codex", "name": "OpenAI Codex", "models": ["gpt-5.5"], "authenticated": True},
+            ],
+            "provider": "openai-codex",
+            "model": "gpt-5.5",
+        }
+        with patch("hermes_cli.inventory.load_picker_context", return_value=MagicMock()), patch(
+            "hermes_cli.inventory.build_models_payload",
+            return_value=dict(fake_payload),
+        ) as build_payload:
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/api/model/options?refresh=true")
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["object"] == "hermes.model_options"
+        assert data["providers"] == fake_payload["providers"]
+        assert data["provider"] == "openai-codex"
+        assert data["model"] == "gpt-5.5"
+        build_payload.assert_called_once()
+        kwargs = build_payload.call_args.kwargs
+        assert kwargs["include_unconfigured"] is True
+        assert kwargs["picker_hints"] is True
+        assert kwargs["canonical_order"] is True
+        assert kwargs["capabilities"] is True
+        assert kwargs["refresh"] is True
+
+    @pytest.mark.asyncio
+    async def test_model_options_requires_auth(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/model/options")
+            assert resp.status == 401
+
+            with patch("hermes_cli.inventory.load_picker_context", return_value=MagicMock()), patch(
+                "hermes_cli.inventory.build_models_payload",
+                return_value={"providers": [], "provider": "", "model": ""},
+            ):
+                authed = await cli.get(
+                    "/api/model/options",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+            assert authed.status == 200
+
+    @pytest.mark.asyncio
+    async def test_model_options_handles_inventory_failure(self, adapter):
+        with patch("hermes_cli.inventory.load_picker_context", side_effect=RuntimeError("boom")):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/api/model/options")
+                assert resp.status == 500
+                data = await resp.json()
+                assert "error" in data
+
+
 # ---------------------------------------------------------------------------
 # /v1/capabilities endpoint
 # ---------------------------------------------------------------------------
@@ -770,7 +830,9 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
+            assert data["features"]["model_options_api"] is True
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+            assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
 

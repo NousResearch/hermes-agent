@@ -1201,6 +1201,39 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
+    async def _handle_model_options(self, request: "web.Request") -> "web.Response":
+        """GET /api/model/options — provider-aware Hermes model inventory.
+
+        Keep /v1/models OpenAI-compatible by advertising the synthetic Hermes
+        alias there. Browser and dashboard clients that need the real provider
+        registry use this route, which mirrors the TUI/dashboard picker payload.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.inventory import build_models_payload, load_picker_context
+
+            refresh = str(request.query.get("refresh", "")).lower() in {"1", "true", "yes", "on"}
+            payload = build_models_payload(
+                load_picker_context(),
+                include_unconfigured=True,
+                picker_hints=True,
+                canonical_order=True,
+                pricing=False,
+                capabilities=True,
+                refresh=refresh,
+            )
+            payload.setdefault("object", "hermes.model_options")
+            return web.json_response(payload)
+        except Exception:
+            logger.exception("GET /api/model/options failed")
+            return web.json_response(
+                _openai_error("Failed to enumerate model options", err_type="server_error"),
+                status=500,
+            )
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -1250,6 +1283,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
+                "model_options_api": True,
                 "audio_api": False,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -1260,6 +1294,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "model_options": {"method": "GET", "path": "/api/model/options"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
@@ -4386,6 +4421,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
+            self._app.router.add_get("/api/model/options", self._handle_model_options)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)

@@ -720,7 +720,30 @@ def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):
     assert "--system" in out
 
 
-def test_install_linux_gateway_from_setup_system_choice_without_root_prints_followup(monkeypatch, capsys):
+def test_install_linux_gateway_from_setup_non_root_never_offers_system(monkeypatch, capsys):
+    # Non-root sessions must not be offered system scope, and must never be
+    # handed a `sudo hermes …` self-elevation recipe.
+    captured = {}
+
+    def fake_prompt_choice(_msg, options, default=0):
+        captured["options"] = options
+        return 0  # pick "user"
+
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(gateway, "prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr(gateway, "systemd_install", lambda *a, **k: None)
+
+    scope = gateway.prompt_linux_gateway_install_scope()
+    out = capsys.readouterr().out
+
+    assert scope == "user"
+    assert not any("System service" in opt for opt in captured["options"])
+    assert "sudo hermes" not in out
+
+
+def test_install_linux_gateway_from_setup_system_choice_without_root_no_sudo_recipe(monkeypatch, capsys):
+    # Defensive guard: if "system" is forced non-root (not reachable via wizard),
+    # we refuse and do NOT print a self-elevation recipe.
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
     monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
@@ -730,8 +753,8 @@ def test_install_linux_gateway_from_setup_system_choice_without_root_prints_foll
 
     out = capsys.readouterr().out
     assert (scope, did_install) == ("system", False)
-    assert "sudo hermes gateway install --system --run-as-user alice" in out
-    assert "sudo hermes gateway start --system" in out
+    assert "sudo hermes" not in out
+    assert "requires root" in out
 
 
 def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):

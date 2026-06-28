@@ -42,13 +42,20 @@ from hermes_cli.auth import (
 logger = logging.getLogger(__name__)
 
 
+_AUTH_ERROR_SECRET_ASSIGNMENT_RE = re.compile(
+    r"\b((?:access|refresh|id)?_?token|api_?key|client_secret|secret|password)\s*=\s*([^\s,;]+)",
+    re.IGNORECASE,
+)
+
+
 def _redact_exception_message(exc: Exception) -> str:
     """Return a redacted string representation of *exc* for safe storage."""
     try:
         from agent.redact import redact_sensitive_text
-        return redact_sensitive_text(str(exc), force=True)
+        redacted = redact_sensitive_text(str(exc), force=True)
+        return _AUTH_ERROR_SECRET_ASSIGNMENT_RE.sub(r"\1=***", redacted)
     except Exception:
-        return str(exc)
+        return "credential refresh failed"
 
 
 def _load_config_safe() -> Optional[dict]:

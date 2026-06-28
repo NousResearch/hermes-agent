@@ -543,7 +543,33 @@ def compress_context(
 
     todo_snapshot = agent._todo_store.format_for_injection()
     if todo_snapshot:
-        compressed.append({"role": "user", "content": todo_snapshot})
+        # Inject the preserved task list so the model keeps its plan across the
+        # compaction boundary. When the compressed transcript already ends with
+        # a user message, fold the snapshot into that message (blank-line
+        # separated) instead of appending a second standalone user message —
+        # consecutive user/user turns are a content-ordering violation some
+        # providers reject, and a merged turn keeps the latest user content
+        # carrying both the original text and the task list. Only plain string
+        # content is mergeable; an empty transcript, a non-user tail, or
+        # structured (list) content falls back to the append path so image/tool
+        # parts aren't corrupted.
+        _merged_into_tail = False
+        if compressed:
+            _tail = compressed[-1]
+            if (
+                isinstance(_tail, dict)
+                and _tail.get("role") == "user"
+                and isinstance(_tail.get("content"), str)
+            ):
+                _tail_content = _tail["content"]
+                _tail["content"] = (
+                    f"{_tail_content}\n\n{todo_snapshot}"
+                    if _tail_content
+                    else todo_snapshot
+                )
+                _merged_into_tail = True
+        if not _merged_into_tail:
+            compressed.append({"role": "user", "content": todo_snapshot})
 
     agent._invalidate_system_prompt()
     new_system_prompt = agent._build_system_prompt(system_message)

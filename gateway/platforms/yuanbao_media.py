@@ -29,6 +29,9 @@ from typing import Optional, Any
 
 import httpx
 
+from gateway.platforms.base import _ssrf_redirect_guard, safe_url_for_log
+from tools import url_safety
+
 logger = logging.getLogger(__name__)
 
 # ============ 常量 ============
@@ -217,8 +220,17 @@ async def download_url(
         ValueError:  内容超过大小限制
         httpx.HTTPError: 网络/HTTP 错误
     """
+    if not url_safety.is_safe_url(url):
+        raise ValueError(
+            f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}"
+        )
+
     max_bytes = max_size_mb * 1024 * 1024
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [_ssrf_redirect_guard]},
+    ) as client:
         # 先 HEAD 检查大小
         try:
             head = await client.head(url)

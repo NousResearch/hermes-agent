@@ -210,6 +210,20 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["input_tokens"] == 300
         assert session["output_tokens"] == 150
+        assert session["last_prompt_tokens"] == 0
+
+    def test_update_token_counts_tracks_last_prompt_tokens(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=10, last_prompt_tokens=123)
+        db.update_token_counts("s1", input_tokens=5)
+
+        session = db.get_session("s1")
+        assert session["input_tokens"] == 15
+        assert session["last_prompt_tokens"] == 123
+
+        db.update_token_counts("s1", input_tokens=1, last_prompt_tokens=0)
+        session = db.get_session("s1")
+        assert session["last_prompt_tokens"] == 0
 
     def test_update_token_counts_tracks_api_call_count(self, db):
         """api_call_count increments with each update_token_counts call."""

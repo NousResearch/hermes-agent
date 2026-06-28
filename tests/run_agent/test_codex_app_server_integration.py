@@ -106,6 +106,9 @@ class TestRunConversationCodexPath:
             CodexAppServerSession, "ensure_started", lambda self: "thread-usage-1"
         )
         agent = _make_codex_agent()
+        agent.session_id = "session-usage-1"
+        agent._session_db = MagicMock()
+        agent._session_db_created = True
         with patch.object(agent, "_spawn_background_review", return_value=None):
             result = agent.run_conversation("hello")
 
@@ -133,6 +136,11 @@ class TestRunConversationCodexPath:
         assert agent.context_compressor.last_completion_tokens == 25
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
+        agent._session_db.update_token_counts.assert_called_once()
+        assert (
+            agent._session_db.update_token_counts.call_args.kwargs["last_prompt_tokens"]
+            == 100
+        )
 
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()
@@ -588,4 +596,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

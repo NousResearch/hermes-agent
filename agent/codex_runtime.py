@@ -210,6 +210,7 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 billing_mode="subscription_included"
                 if cost_result.status == "included" else None,
                 model=agent.model,
+                last_prompt_tokens=prompt_tokens,
                 api_call_count=1,
             )
         except Exception as exc:

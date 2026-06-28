@@ -654,6 +654,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cache_read_tokens INTEGER DEFAULT 0,
     cache_write_tokens INTEGER DEFAULT 0,
     reasoning_tokens INTEGER DEFAULT 0,
+    last_prompt_tokens INTEGER DEFAULT 0,
     cwd TEXT,
     git_branch TEXT,
     git_repo_root TEXT,
@@ -1799,6 +1800,7 @@ class SessionDB:
         billing_base_url: Optional[str] = None,
         billing_mode: Optional[str] = None,
         api_call_count: int = 0,
+        last_prompt_tokens: Optional[int] = None,
         absolute: bool = False,
     ) -> None:
         """Update token counters and backfill model if not already set.
@@ -1834,6 +1836,7 @@ class SessionDB:
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
                    model = COALESCE(model, ?),
+                   last_prompt_tokens = COALESCE(?, last_prompt_tokens),
                    api_call_count = ?
                    WHERE id = ?"""
         else:
@@ -1855,6 +1858,7 @@ class SessionDB:
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
                    model = COALESCE(model, ?),
+                   last_prompt_tokens = COALESCE(?, last_prompt_tokens),
                    api_call_count = COALESCE(api_call_count, 0) + ?
                    WHERE id = ?"""
         params = (
@@ -1873,6 +1877,7 @@ class SessionDB:
             billing_base_url,
             billing_mode,
             model,
+            last_prompt_tokens,
             api_call_count,
             session_id,
         )

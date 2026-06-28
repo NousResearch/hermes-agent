@@ -1223,6 +1223,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     if (tier := current.get("create_service_tier_override")) is not None:
                         kw["service_tier_override"] = tier
                 agent = _make_agent(sid, key, **kw)
+                _restore_session_usage(
+                    agent,
+                    current.get("resume_stored_usage"),
+                    context_tokens=_usage_int(current.get("resume_context_tokens")),
+                )
             finally:
                 _clear_session_context(tokens)
 
@@ -2960,7 +2965,7 @@ def _get_usage(agent) -> dict:
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
-        ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
+        ctx_used = _usage_int(getattr(comp, "last_prompt_tokens", 0))
         ctx_max = getattr(comp, "context_length", 0) or 0
         if ctx_max:
             usage["context_used"] = ctx_used
@@ -2985,6 +2990,102 @@ def _get_usage(agent) -> dict:
         except Exception:
             pass
     return usage
+
+
+def _usage_int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_float(value) -> float:
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _resume_context_tokens(history: list | None) -> int:
+    """Estimate the context currently loaded by a cold-resumed conversation."""
+    if not history:
+        return 0
+    try:
+        from agent.model_metadata import estimate_messages_tokens_rough
+
+        return _usage_int(estimate_messages_tokens_rough(history))
+    except Exception:
+        return 0
+
+
+def _stored_session_usage(stored: dict | None, *, context_tokens: int = 0) -> dict:
+    """Normalize persisted SessionDB counters into the gateway usage shape."""
+    if not stored:
+        return {"calls": 0, "input": 0, "output": 0, "reasoning": 0, "total": 0}
+    input_tokens = _usage_int(stored.get("input_tokens"))
+    output_tokens = _usage_int(stored.get("output_tokens"))
+    cache_read_tokens = _usage_int(stored.get("cache_read_tokens"))
+    cache_write_tokens = _usage_int(stored.get("cache_write_tokens"))
+    reasoning_tokens = _usage_int(stored.get("reasoning_tokens"))
+    total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+    context_used = _usage_int(stored.get("last_prompt_tokens")) or _usage_int(context_tokens)
+    usage = {
+        "calls": _usage_int(stored.get("api_call_count")),
+        "input": input_tokens,
+        "output": output_tokens,
+        "reasoning": reasoning_tokens,
+        "total": total_tokens,
+    }
+    if context_used:
+        usage["context_used"] = context_used
+    return usage
+
+
+def _restore_session_usage(agent, stored: dict | None, *, context_tokens: int = 0) -> None:
+    """Restore persisted token counters onto a freshly resumed agent."""
+    if agent is None or not stored:
+        return
+    usage = _stored_session_usage(stored, context_tokens=context_tokens)
+    has_usage = any(
+        _usage_int(stored.get(key))
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "api_call_count",
+        )
+    )
+    has_cost = stored.get("estimated_cost_usd") is not None or stored.get("cost_status")
+    if not has_usage and not has_cost:
+        return
+    setattr(agent, "session_input_tokens", usage["input"])
+    setattr(agent, "session_output_tokens", usage["output"])
+    setattr(agent, "session_cache_read_tokens", _usage_int(stored.get("cache_read_tokens")))
+    setattr(agent, "session_cache_write_tokens", _usage_int(stored.get("cache_write_tokens")))
+    setattr(agent, "session_reasoning_tokens", usage["reasoning"])
+    setattr(
+        agent,
+        "session_prompt_tokens",
+        usage["input"]
+        + _usage_int(stored.get("cache_read_tokens"))
+        + _usage_int(stored.get("cache_write_tokens")),
+    )
+    setattr(agent, "session_completion_tokens", usage["output"])
+    setattr(agent, "session_total_tokens", usage["total"])
+    setattr(agent, "session_api_calls", usage["calls"])
+    if usage.get("context_used"):
+        comp = getattr(agent, "context_compressor", None)
+        if comp is not None and _usage_int(getattr(comp, "last_prompt_tokens", 0)) == 0:
+            try:
+                comp.last_prompt_tokens = usage["context_used"]
+            except Exception:
+                pass
+    if stored.get("estimated_cost_usd") is not None:
+        setattr(agent, "session_estimated_cost_usd", _usage_float(stored.get("estimated_cost_usd")))
+    if stored.get("cost_status"):
+        setattr(agent, "session_cost_status", str(stored.get("cost_status")))
 
 
 def _probe_credentials(agent) -> str:
@@ -5114,7 +5215,13 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"verification": {"status": "unknown", "evidence": None}})
 
 
-def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
+def _lazy_resume_info(
+    cwd: str,
+    *,
+    model: str = "",
+    provider: str = "",
+    usage: dict | None = None,
+) -> dict:
     """session.info for a not-yet-built session (the shape session.create
     returns). tools/skills land later when the deferred build emits session.info."""
     info = {
@@ -5129,6 +5236,8 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
     }
     if provider:
         info["provider"] = provider
+    if usage:
+        info["usage"] = usage
     return info
 
 
@@ -5146,6 +5255,8 @@ def _deferred_session_record(
     lazy: bool = False,
     model_override=None,
     resume_runtime_overrides: dict | None = None,
+    resume_context_tokens: int = 0,
+    resume_stored_usage: dict | None = None,
 ) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold
     resume) — _init_session's shape minus the agent."""
@@ -5173,6 +5284,8 @@ def _deferred_session_record(
         "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
+        "resume_context_tokens": _usage_int(resume_context_tokens),
+        "resume_stored_usage": resume_stored_usage,
         "resume_runtime_overrides": resume_runtime_overrides,
         "resume_session_id": session_key,
         "running": False,
@@ -5405,6 +5518,8 @@ def _(rid, params: dict) -> dict:
         # the build drops the provider ("No LLM provider configured").
         overrides = _stored_session_runtime_overrides(found) or {}
         model_override = overrides.get("model_override") or {}
+        resume_context_tokens = _resume_context_tokens(history)
+        stored_usage = _stored_session_usage(found, context_tokens=resume_context_tokens)
         cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
         record = _deferred_session_record(
             target,
@@ -5418,6 +5533,8 @@ def _(rid, params: dict) -> dict:
             profile_home=profile_home,
             model_override=overrides.get("model_override"),
             resume_runtime_overrides=overrides or None,
+            resume_context_tokens=resume_context_tokens,
+            resume_stored_usage=found,
         )
         if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
             return _ok(rid, _reuse_live_payload(*live))
@@ -5437,6 +5554,7 @@ def _(rid, params: dict) -> dict:
                     cwd,
                     model=model_override.get("model") or "",
                     provider=overrides.get("provider_override") or "",
+                    usage=stored_usage,
                 ),
                 "inflight": None,
                 "running": False,
@@ -5490,6 +5608,11 @@ def _(rid, params: dict) -> dict:
                 session_id=target,
                 session_db=db,
                 **stored_runtime_overrides,
+            )
+            _restore_session_usage(
+                agent,
+                found,
+                context_tokens=_resume_context_tokens(history),
             )
         finally:
             _clear_session_context(tokens)

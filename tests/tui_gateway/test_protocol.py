@@ -353,6 +353,12 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
                 "id": target,
                 "model": "vendor/cool-model",
                 "model_config": {"provider": "vendor"},
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "cache_read_tokens": 7,
+                "cache_write_tokens": 3,
+                "reasoning_tokens": 5,
+                "api_call_count": 4,
             }
 
         def get_session_by_title(self, _title):
@@ -380,6 +386,7 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
     )
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: builds.append(sid))
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_resume_context_tokens", lambda history: 42)
 
     resp = server.handle_request(
         {
@@ -403,6 +410,14 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
     assert result["info"]["lazy"] is True
     assert result["info"]["model"] == "vendor/cool-model"
     assert result["info"]["provider"] == "vendor"
+    assert result["info"]["usage"] == {
+        "calls": 4,
+        "input": 120,
+        "output": 30,
+        "reasoning": 5,
+        "total": 160,
+        "context_used": 42,
+    }
     assert result["info"]["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
 
     sid = result["session_id"]
@@ -411,6 +426,8 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
     # later prompt.submit / _sess() upgrade continues THIS stored conversation.
     assert session["agent"] is None
     assert session["resume_session_id"] == target
+    assert session["resume_stored_usage"]["input_tokens"] == 120
+    assert session["resume_context_tokens"] == 42
     assert not session["agent_ready"].is_set()
     # Not a watch spectator: a normal deferred resume is a real session.
     assert not session.get("lazy")

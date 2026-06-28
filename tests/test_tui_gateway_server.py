@@ -8214,6 +8214,158 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         server._sessions.clear()
 
 
+# ── session.resume usage restoration ──────────────────────────────────────
+
+
+def test_restore_session_usage_copies_persisted_counters_to_agent():
+    agent = types.SimpleNamespace(
+        session_input_tokens=0,
+        session_output_tokens=0,
+        session_cache_read_tokens=0,
+        session_cache_write_tokens=0,
+        session_reasoning_tokens=0,
+        session_prompt_tokens=0,
+        session_completion_tokens=0,
+        session_total_tokens=0,
+        session_api_calls=0,
+        session_estimated_cost_usd=0.0,
+        session_cost_status="unknown",
+    )
+
+    server._restore_session_usage(
+        agent,
+        {
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "cache_read_tokens": 7,
+            "cache_write_tokens": 3,
+            "reasoning_tokens": 5,
+            "api_call_count": 4,
+            "estimated_cost_usd": 0.0123,
+            "cost_status": "estimated",
+        },
+    )
+
+    assert agent.session_input_tokens == 120
+    assert agent.session_output_tokens == 30
+    assert agent.session_cache_read_tokens == 7
+    assert agent.session_cache_write_tokens == 3
+    assert agent.session_reasoning_tokens == 5
+    assert agent.session_prompt_tokens == 130
+    assert agent.session_completion_tokens == 30
+    assert agent.session_total_tokens == 160
+    assert agent.session_api_calls == 4
+    assert agent.session_estimated_cost_usd == 0.0123
+    assert agent.session_cost_status == "estimated"
+
+
+def test_restore_session_usage_seeds_context_from_resume_history_estimate():
+    agent = types.SimpleNamespace(
+        model="restored-model",
+        session_input_tokens=0,
+        session_output_tokens=0,
+        session_cache_read_tokens=0,
+        session_cache_write_tokens=0,
+        session_reasoning_tokens=0,
+        session_prompt_tokens=0,
+        session_completion_tokens=0,
+        session_total_tokens=0,
+        session_api_calls=0,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=0,
+            context_length=1000,
+            compression_count=0,
+        ),
+    )
+
+    server._restore_session_usage(
+        agent,
+        {
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "cache_read_tokens": 7,
+            "cache_write_tokens": 3,
+            "reasoning_tokens": 5,
+            "api_call_count": 4,
+        },
+        context_tokens=64,
+    )
+
+    usage = server._get_usage(agent)
+
+    assert usage["total"] == 160
+    assert usage["context_used"] == 64
+    assert usage["context_max"] == 1000
+    assert usage["context_percent"] == 6
+
+
+def test_restore_session_usage_prefers_persisted_last_prompt_tokens():
+    agent = types.SimpleNamespace(
+        model="restored-model",
+        session_input_tokens=0,
+        session_output_tokens=0,
+        session_cache_read_tokens=0,
+        session_cache_write_tokens=0,
+        session_reasoning_tokens=0,
+        session_prompt_tokens=0,
+        session_completion_tokens=0,
+        session_total_tokens=0,
+        session_api_calls=0,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=0,
+            context_length=1000,
+            compression_count=0,
+        ),
+    )
+
+    server._restore_session_usage(
+        agent,
+        {
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "cache_read_tokens": 7,
+            "cache_write_tokens": 3,
+            "reasoning_tokens": 5,
+            "api_call_count": 4,
+            "last_prompt_tokens": 512,
+        },
+        context_tokens=64,
+    )
+
+    usage = server._get_usage(agent)
+
+    assert usage["context_used"] == 512
+    assert usage["context_percent"] == 51
+
+
+def test_get_usage_does_not_use_session_total_for_context_bar(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="restored-model",
+        session_input_tokens=120,
+        session_output_tokens=30,
+        session_cache_read_tokens=7,
+        session_cache_write_tokens=3,
+        session_reasoning_tokens=5,
+        session_prompt_tokens=130,
+        session_completion_tokens=30,
+        session_total_tokens=18_900_000,
+        session_api_calls=4,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=0,
+            context_length=1_000_000,
+            compression_count=0,
+        ),
+    )
+
+    monkeypatch.setattr("tools.async_delegation.active_count", lambda: 0)
+    usage = server._get_usage(agent)
+
+    assert usage["total"] == 18_900_000
+    assert usage["context_used"] == 0
+    assert usage["context_max"] == 1_000_000
+    assert usage["context_percent"] == 0
+
+
 # ── _get_usage active_subagents (TUI status-bar ⛓ indicator) ──────────────
 # Mirrors the classic CLI status bar: _get_usage embeds a live count of
 # background/async subagents from tools.async_delegation.active_count() so the

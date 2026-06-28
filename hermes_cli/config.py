@@ -5248,7 +5248,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_mc, dict) and raw_mc.get("ttl_hours") == 24:
             raw_mc["ttl_hours"] = 1
             config["model_catalog"] = raw_mc
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append("model_catalog.ttl_hours 24→1")
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
@@ -5277,7 +5277,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 f"{subsystem}.write_mode → write_approval={sub['write_approval']}"
             )
         if touched:
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
 
@@ -5296,7 +5296,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_curator, dict) and "consolidate" not in raw_curator:
             raw_curator["consolidate"] = False
             config["curator"] = raw_curator
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append("curator.consolidate=false")
             if not quiet:
                 print(
@@ -5325,7 +5325,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if cur is None or is_auto_sentinel:
             raw_agent["verify_on_stop"] = False
             config["agent"] = raw_agent
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append("agent.verify_on_stop=false")
             if not quiet:
                 print(
@@ -5364,7 +5364,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
             if mcp_touched:
                 config["mcp_servers"] = raw_mcp_servers
-                save_config(config)
+                save_config(config, strip_defaults=False)
 
     # ── Always: validate platform_toolsets after migration ──
     # A migration (or hand-edit) that leaves an invalid toolset name in

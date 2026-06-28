@@ -117,12 +117,14 @@ class TestFeishuExecApproval:
         # Verify card payload contains the command and buttons
         card = json.loads(kwargs["payload"])
         assert card["header"]["template"] == "orange"
+        assert card["config"]["update_multi"] is True
         assert "rm -rf /important" in card["elements"][0]["content"]
         assert "dangerous deletion" in card["elements"][0]["content"]
 
         # Check buttons
         actions = card["elements"][1]["actions"]
         assert len(actions) == 4
+        assert all("disabled" not in a for a in actions)
         action_names = [a["value"]["hermes_action"] for a in actions]
         assert action_names == [
             "approve_once", "approve_session", "approve_always", "deny"
@@ -501,6 +503,46 @@ class TestCardActionCallbackResponse:
         assert card["header"]["template"] == "green"
         assert "Approved once" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
+        actions = card["elements"][1]["actions"]
+        assert all(action["disabled"] is True for action in actions)
+        assert "Clicked" in actions[0]["text"]["content"]
+        assert actions[0]["value"]["hermes_action"] == "approve_once"
+        assert adapter._approval_state[1]["status"] == "resolving"
+        assert adapter._approval_state[1]["choice"] == "once"
+
+    def test_second_click_while_resolving_returns_clicked_card_without_rescheduling(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._approval_state[10] = {
+            "session_key": "sess-10",
+            "message_id": "msg-10",
+            "chat_id": "oc_12345",
+            "status": "resolving",
+            "choice": "once",
+            "user_name": "Alice",
+            "command_preview": "rm -rf /tmp/example",
+            "description": "test duplicate click handling",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "deny", "approval_id": 10},
+            open_id="ou_bob",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        mock_submit.assert_not_called()
+        card = response.card.data
+        assert "Approved once" in card["header"]["title"]["content"]
+        assert "Alice" in card["elements"][0]["content"]
+        assert "rm -rf /tmp/example" in card["elements"][0]["content"]
+        actions = card["elements"][1]["actions"]
+        assert all(action["disabled"] is True for action in actions)
+        assert "Clicked" in actions[0]["text"]["content"]
 
     def test_returns_card_for_deny_action(self, _patch_callback_card_types):
         adapter = _make_adapter()

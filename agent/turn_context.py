@@ -297,8 +297,23 @@ def build_turn_context(
             should_review_memory = True
             agent._turns_since_memory = 0
 
+    try:
+        current_generation = max(
+            int(m.get("compression_generation") or 0)
+            for m in messages
+            if isinstance(m, dict)
+        )
+    except (TypeError, ValueError):
+        current_generation = 0
+    agent._current_compression_generation = current_generation
+
     # Add user message.
-    user_msg = {"role": "user", "content": user_message}
+    user_msg = {
+        "role": "user",
+        "content": user_message,
+        "turn_id": turn_id,
+        "compression_generation": current_generation,
+    }
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx

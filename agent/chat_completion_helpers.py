@@ -923,6 +923,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         "content": _san_content,
         "reasoning": reasoning_text,
         "finish_reason": finish_reason,
+        "turn_id": getattr(agent, "_current_turn_id", "") or "",
+        "compression_generation": int(
+            getattr(agent, "_current_compression_generation", 0) or 0
+        ),
     }
 
     raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)

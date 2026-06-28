@@ -71,6 +71,16 @@ def _budget_for_agent(agent) -> BudgetConfig:
 _MAX_TOOL_WORKERS = 8
 
 
+def _make_turn_tool_result_message(agent, name: str, content: Any, tool_call_id: str) -> dict:
+    return make_tool_result_message(
+        name,
+        content,
+        tool_call_id,
+        turn_id=getattr(agent, "_current_turn_id", "") or "",
+        compression_generation=getattr(agent, "_current_compression_generation", 0) or 0,
+    )
+
+
 def _flush_session_db_after_tool_progress(
     agent,
     messages: list,
@@ -299,7 +309,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         for tc in tool_calls:
-            messages.append(make_tool_result_message(
+            messages.append(_make_turn_tool_result_message(
+                agent,
                 tc.function.name,
                 f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
                 tc.id,
@@ -828,7 +839,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
-        messages.append(make_tool_result_message(name, _tool_content, tc.id))
+        messages.append(_make_turn_tool_result_message(agent, name, _tool_content, tc.id))
         _flush_session_db_after_tool_progress(
             agent,
             messages,
@@ -869,7 +880,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
-                messages.append(make_tool_result_message(
+                messages.append(_make_turn_tool_result_message(
+                    agent,
                     skipped_name,
                     f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                     skipped_tc.id,
@@ -1477,7 +1489,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
-        messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
+        messages.append(_make_turn_tool_result_message(agent, function_name, _tool_content, tool_call.id))
         _flush_session_db_after_tool_progress(
             agent,
             messages,
@@ -1504,7 +1516,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
             for skipped_tc in assistant_message.tool_calls[i:]:
                 skipped_name = skipped_tc.function.name
-                messages.append(make_tool_result_message(
+                messages.append(_make_turn_tool_result_message(
+                    agent,
                     skipped_name,
                     f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
                     skipped_tc.id,

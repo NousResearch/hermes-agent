@@ -2152,6 +2152,20 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    metadata_fields = ("turn_id", "compression_generation")
+    if any(
+        isinstance(msg, dict) and any(field in msg for field in metadata_fields)
+        for msg in messages
+    ):
+        cleaned = []
+        for msg in messages:
+            if isinstance(msg, dict) and any(field in msg for field in metadata_fields):
+                msg = dict(msg)
+                for field in metadata_fields:
+                    msg.pop(field, None)
+            cleaned.append(msg)
+        messages = cleaned
+
     surviving_call_ids: set = set()
     for msg in messages:
         if msg.get("role") == "assistant":

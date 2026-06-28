@@ -150,6 +150,9 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - SessionDB-only message metadata (``turn_id`` and
+          ``compression_generation``), which is useful for durable replay but
+          unknown to provider schemas.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -173,6 +176,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "codex_message_items" in msg
                 or "tool_name" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
+                or "turn_id" in msg
+                or "compression_generation" in msg
             ):
                 needs_sanitize = True
                 break
@@ -203,6 +208,8 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
             msg.pop("timestamp", None)  # #47868 — leak into strict providers
+            msg.pop("turn_id", None)
+            msg.pop("compression_generation", None)
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.

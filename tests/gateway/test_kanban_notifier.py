@@ -233,3 +233,26 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+def test_kanban_notifier_marks_notify_to_prevent_phantom_typing(tmp_path, monkeypatch):
+    """Kanban terminal-event notifications are standalone FINAL alerts, so they
+    must be marked ``notify=True``.
+
+    Without the marker the Telegram adapter re-arms its ~5s typing indicator
+    after each completion/crash alert lands — treating the alert as an
+    intermediate progress message — and leaves a phantom "…typing" bubble with
+    nothing behind it. Same root cause as the cron-delivery path in
+    tests/gateway/test_delivery.py.
+    """
+    db_path = tmp_path / "notify-flag.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    _create_completed_subscription()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["metadata"].get("notify") is True

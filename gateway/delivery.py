@@ -393,6 +393,15 @@ class DeliveryRouter:
             }
 
         send_metadata = dict(metadata or {})
+        # Proactive/job deliveries (cron jobs, kanban alerts, home-channel
+        # pushes) are standalone FINAL messages — never intermediate progress.
+        # Mark them notify-worthy so the Telegram adapter does NOT re-arm its
+        # ~5s typing indicator after the message lands: an unmarked send is
+        # treated as a progress message and keeps the "…typing" bubble alive,
+        # leaving a phantom bubble with nothing behind it (the interactive
+        # final-reply path sets the same marker via _mark_notify_metadata).
+        # setdefault preserves an explicit caller opt-out (notify=False).
+        send_metadata.setdefault("notify", True)
         is_named_telegram_private_topic = False
         named_telegram_private_topic_name: Optional[str] = None
         if target.thread_id:

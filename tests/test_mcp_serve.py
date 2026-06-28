@@ -1232,6 +1232,73 @@ class TestEventBridgePollE2E:
         assert len(r2["events"]) == 1
         assert r2["events"][0]["content"] == "New reply!"
 
+    def test_poll_detects_message_with_tied_or_regressed_timestamp(self, tmp_path, monkeypatch):
+        """A new message whose timestamp ties/regresses must not be dropped.
+
+        Message timestamps come from time.time() and can tie (coarse clock,
+        rapid messages) or regress (WSL2/NTP backward jump). The bridge dedups
+        by autoincrement row id, so such a message is still delivered even
+        though its timestamp is <= the previously seen timestamp.
+        """
+        import mcp_serve
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        session_id = "20260329_150000_tied_ts"
+        db_path = tmp_path / "state.db"
+
+        sessions_data = {
+            "agent:main:telegram:dm:tied": {
+                "session_key": "agent:main:telegram:dm:tied",
+                "session_id": session_id,
+                "platform": "telegram",
+                "updated_at": "2026-03-29T15:00:05",
+                "origin": {"platform": "telegram", "chat_id": "tied"},
+            }
+        }
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+        _create_test_db(db_path, session_id, [
+            {"role": "user", "content": "First", "timestamp": "2026-03-29T15:00:05"},
+        ])
+
+        class TestDB:
+            def get_messages(self, sid):
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                    (sid,),
+                ).fetchall()
+                conn.close()
+                return [dict(r) for r in rows]
+
+        db = TestDB()
+        bridge = mcp_serve.EventBridge()
+
+        bridge._poll_once(db)
+        r1 = bridge.poll_events(after_cursor=0)
+        assert len(r1["events"]) == 1
+
+        # New reply lands with an EARLIER timestamp than the first message
+        # (simulated clock regression). A timestamp watermark would drop it.
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            (session_id, "assistant", "Regressed reply", "2026-03-29T15:00:01"),
+        )
+        conn.commit()
+        conn.close()
+        os.utime(db_path, None)
+
+        sessions_data["agent:main:telegram:dm:tied"]["updated_at"] = "2026-03-29T15:00:10"
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+
+        bridge._poll_once(db)
+        r2 = bridge.poll_events(after_cursor=r1["next_cursor"])
+        assert len(r2["events"]) == 1
+        assert r2["events"][0]["content"] == "Regressed reply"
+
     def test_poll_interval_is_200ms(self):
         """Verify the poll interval constant."""
         from mcp_serve import POLL_INTERVAL

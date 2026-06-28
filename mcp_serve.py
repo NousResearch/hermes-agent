@@ -223,7 +223,7 @@ class EventBridge:
         self._new_event = threading.Event()
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
+        self._last_poll_ids: Dict[str, int] = {}  # session_key -> last emitted message row id
         # In-memory approval tracking (populated from events)
         self._pending_approvals: Dict[str, dict] = {}
         # mtime cache — skip expensive work when files haven't changed
@@ -390,7 +390,7 @@ class EventBridge:
             if not session_id:
                 continue
 
-            last_seen = self._last_poll_timestamps.get(session_key, 0.0)
+            last_seen_id = self._last_poll_ids.get(session_key, 0)
 
             try:
                 messages = db.get_messages(session_id)
@@ -400,30 +400,29 @@ class EventBridge:
             if not messages:
                 continue
 
-            # Normalize timestamps to float for comparison
-            def _ts_float(ts) -> float:
-                if isinstance(ts, (int, float)):
-                    return float(ts)
-                if isinstance(ts, str) and ts:
-                    try:
-                        return float(ts)
-                    except ValueError:
-                        # ISO string — parse to epoch
-                        try:
-                            from datetime import datetime
-                            return datetime.fromisoformat(ts).timestamp()
-                        except Exception:
-                            return 0.0
-                return 0.0
+            def _msg_id(msg) -> int:
+                try:
+                    return int(msg.get("id", 0) or 0)
+                except (TypeError, ValueError):
+                    return 0
 
-            # Find messages newer than our last seen timestamp
+            # Dedup by autoincrement row id, not timestamp. get_messages
+            # returns rows ordered by id (true insertion order) precisely
+            # because the message timestamp comes from time.time() and can
+            # tie (coarse clock, rapid messages) or regress (WSL2/NTP
+            # backward jumps) — see hermes_state.get_messages. A timestamp
+            # watermark would silently and permanently drop any message whose
+            # ts is <= the watermark, so use the monotonic id instead.
             new_messages = []
+            max_id = last_seen_id
             for msg in messages:
-                ts = _ts_float(msg.get("timestamp", 0))
+                msg_id = _msg_id(msg)
+                if msg_id > max_id:
+                    max_id = msg_id
                 role = msg.get("role", "")
                 if role not in {"user", "assistant"}:
                     continue
-                if ts > last_seen:
+                if msg_id > last_seen_id:
                     new_messages.append(msg)
 
             for msg in new_messages:
@@ -442,12 +441,10 @@ class EventBridge:
                     },
                 ))
 
-            # Update last seen to the most recent message timestamp
-            all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
-            if all_ts:
-                latest = max(all_ts)
-                if latest > last_seen:
-                    self._last_poll_timestamps[session_key] = latest
+            # Advance the watermark to the highest row id seen this poll
+            # (including tool/system rows) so they don't re-trigger scans.
+            if max_id > last_seen_id:
+                self._last_poll_ids[session_key] = max_id
 
 
 # ---------------------------------------------------------------------------

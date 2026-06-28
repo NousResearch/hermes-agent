@@ -156,6 +156,56 @@ class TestDeepSeekAnthropicPreservesThinking:
             "DeepSeek cannot validate Anthropic-proprietary signatures."
         )
 
+    def test_custom_deepseek_relay_rebuilds_unsigned_thinking_from_reasoning_content(self) -> None:
+        """Custom Anthropic relays for DeepSeek still need unsigned thinking replay.
+
+        Some /code-style relays expose Anthropic Messages but sit on a non-
+        DeepSeek hostname. If their first response persists a signed thinking
+        block plus Hermes' reasoning_content, replay must strip the signed block
+        and keep a newly synthesised unsigned thinking block; otherwise the
+        second turn fails with "content[].thinking must be passed back".
+        """
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "reasoning_content": "deepseek relay thinking",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "signed proxy thinking",
+                        "signature": "proxy-sig",
+                    }
+                ],
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+
+        _system, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="https://model-api-v2.myaifast.com/code",
+            model="DeepSeek-V4-Pro",
+        )
+
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        thinking_blocks = [
+            b
+            for b in assistant_msg["content"]
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0]["thinking"] == "deepseek relay thinking"
+        assert "signature" not in thinking_blocks[0]
+
     def test_cache_control_stripped_from_thinking_block(self) -> None:
         """cache_control must still be stripped even when the block is preserved.
 

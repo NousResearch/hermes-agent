@@ -501,7 +501,7 @@ def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> 
     return False
 
 
-def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
+def _is_deepseek_anthropic_endpoint(base_url: str | None, model: str | None = None) -> bool:
     """Return True for DeepSeek's Anthropic-compatible endpoint.
 
     DeepSeek's ``/anthropic`` route speaks the Anthropic Messages protocol
@@ -515,17 +515,21 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     Per DeepSeek's published compatibility matrix the blocks are unsigned
     (no Anthropic-proprietary signature, no ``redacted_thinking`` support),
     so this endpoint is handled with the same strip-signed / keep-unsigned
-    policy used for Kimi's ``/coding`` endpoint.  The match is pinned to
-    the ``/anthropic`` path so the OpenAI-compatible ``api.deepseek.com``
-    base URL (which never reaches this adapter) is not misclassified.
-    See hermes-agent#16748.
+    policy used for Kimi's ``/coding`` endpoint.
+
+    Custom relays may expose DeepSeek through an unrelated hostname (for
+    example a ``/code`` gateway) while still enforcing the same thinking
+    echo-back contract.  In Anthropic mode, use the model name as a second
+    signal so those relays keep unsigned thinking blocks too.
+    See hermes-agent#16748, #17341.
     """
-    if not base_url_host_matches(base_url or "", "api.deepseek.com"):
-        return False
-    normalized = _normalize_base_url_text(base_url)
-    if not normalized:
-        return False
-    return "/anthropic" in normalized.rstrip("/").lower()
+    if base_url_host_matches(base_url or "", "api.deepseek.com"):
+        normalized = _normalize_base_url_text(base_url)
+        if normalized and "/anthropic" in normalized.rstrip("/").lower():
+            return True
+    if model and "deepseek" in model.lower():
+        return True
+    return False
 
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
@@ -1891,7 +1895,11 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
+def _convert_assistant_message(
+    m: Dict[str, Any],
+    *,
+    preserve_unsigned_thinking: bool = False,
+) -> Dict[str, Any]:
     """Convert an assistant message to Anthropic content blocks.
 
     Handles thinking blocks, regular content, tool calls, and
@@ -1983,17 +1991,32 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     # Prepend (not append): Anthropic protocol requires thinking
     # blocks before text and tool_use blocks.
     #
-    # Guard: only add when reasoning_details didn't already contribute
-    # thinking blocks.  On native Anthropic, reasoning_details produces
-    # signed thinking blocks — adding another unsigned one from
-    # reasoning_content would create a duplicate (same text) that gets
-    # downgraded to a spurious text block on the last assistant message.
+    # Guard: usually add only when reasoning_details didn't already contribute
+    # thinking blocks.  On native Anthropic, reasoning_details produces signed
+    # thinking blocks — adding another unsigned one from reasoning_content
+    # would create a duplicate (same text) that gets downgraded to a spurious
+    # text block on the last assistant message.
+    #
+    # Kimi/DeepSeek-compatible relays are different: they cannot validate
+    # Anthropic signatures, so _manage_thinking_signatures strips signed
+    # blocks later. If a signed block is present here, still synthesize an
+    # unsigned block from reasoning_content so something valid survives.
     reasoning_content = m.get("reasoning_content")
     _already_has_thinking = any(
         isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
         for b in blocks
     )
-    if isinstance(reasoning_content, str) and not _already_has_thinking:
+    _already_has_unsigned_thinking = any(
+        isinstance(b, dict)
+        and b.get("type") == "thinking"
+        and not b.get("signature")
+        and not b.get("data")
+        for b in blocks
+    )
+    if isinstance(reasoning_content, str) and (
+        not _already_has_thinking
+        or (preserve_unsigned_thinking and not _already_has_unsigned_thinking)
+    ):
         blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
     # Anthropic rejects empty assistant content
     effective = blocks or content
@@ -2217,7 +2240,7 @@ def _manage_thinking_signatures(
     # ones synthesised from reasoning_content.  See #13848, #16748.
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
+        or _is_deepseek_anthropic_endpoint(base_url, model)
     )
 
     last_assistant_idx = None
@@ -2377,7 +2400,15 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "assistant":
-            result.append(_convert_assistant_message(m))
+            result.append(
+                _convert_assistant_message(
+                    m,
+                    preserve_unsigned_thinking=(
+                        _is_kimi_family_endpoint(base_url, model)
+                        or _is_deepseek_anthropic_endpoint(base_url, model)
+                    ),
+                )
+            )
             continue
 
         if role == "tool":

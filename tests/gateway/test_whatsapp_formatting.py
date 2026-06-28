@@ -54,7 +54,6 @@ def _make_adapter():
     adapter._human_cascade_max_bubbles = 3
     adapter._human_cascade_delay_seconds = 0
     adapter._human_cascade_delay_jitter_seconds = 0
-    adapter._human_cascade_typing_indicators = False
     adapter._human_cascade_max_total_chars = 900
     adapter._human_cascade_min_total_chars = 320
     adapter._human_cascade_min_lead_chars = 40
@@ -274,29 +273,6 @@ class TestSendChunking:
         ]
         assert result.message_id == "msg3"
         assert result.continuation_message_ids == ("msg1", "msg2")
-        assert result.raw_response["human_cascade"] is True
-
-    @pytest.mark.asyncio
-    async def test_human_cascade_sends_typing_indicator_between_bubbles(self):
-        adapter = _make_adapter()
-        adapter._human_cascade_typing_indicators = True
-        responses = []
-        for msg_id in ("msg1", None, "msg2"):
-            resp = MagicMock(status=200)
-            resp.json = AsyncMock(return_value={"success": True} if msg_id is None else {"messageId": msg_id})
-            responses.append(_AsyncCM(resp))
-        adapter._http_session.post = MagicMock(side_effect=responses)
-
-        first = "First paragraph is substantial and useful enough to land immediately as a natural WhatsApp bubble, giving the reader a clean opening thought before the follow-up arrives."
-        second = "Second paragraph is also substantial enough to follow after a typing presence event, making the delivery feel typed instead of sprayed into the chat, and it pushes the combined text over the mobile split threshold."
-        result = await adapter.send("chat1", first + "\n\n" + second)
-
-        assert result.success
-        urls = [call.args[0] for call in adapter._http_session.post.call_args_list]
-        assert urls[0].endswith("/send")
-        assert urls[1].endswith("/typing")
-        assert urls[2].endswith("/send")
-        assert adapter._http_session.post.call_args_list[1].kwargs["json"] == {"chatId": "chat1"}
         assert result.raw_response["human_cascade"] is True
 
     @pytest.mark.asyncio

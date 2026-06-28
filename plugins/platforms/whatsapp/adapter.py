@@ -437,11 +437,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             0.25,
             env_var="WHATSAPP_HUMAN_CASCADE_DELAY_JITTER_SECONDS",
         )
-        self._human_cascade_typing_indicators = self._coerce_bool_extra(
-            "human_cascade_typing_indicators",
-            True,
-            env_var="WHATSAPP_HUMAN_CASCADE_TYPING_INDICATORS",
-        )
         self._human_cascade_groups = self._coerce_bool_extra(
             "human_cascade_groups", False, env_var="WHATSAPP_HUMAN_CASCADE_GROUPS"
         )
@@ -1091,23 +1086,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._close_bridge_log()
         print(f"[{self.name}] Disconnected")
     
-    async def _send_typing_indicator(self, chat_id: str) -> None:
-        """Best-effort WhatsApp typing indicator before the next cascade bubble."""
-        if not self._human_cascade_typing_indicators or not self._http_session:
-            return
-        try:
-            import aiohttp
-
-            async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/typing",
-                json={"chatId": chat_id},
-                timeout=aiohttp.ClientTimeout(total=5),
-            ):
-                return
-        except Exception:
-            # Typing presence is pure UX sugar; never fail message delivery.
-            return
-
     async def send(
         self,
         chat_id: str,
@@ -1178,12 +1156,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         return SendResult(success=False, error=error)
 
                 # Small delay between chunks to avoid rate limiting.  Human
-                # cascade gets a slightly longer delay plus a best-effort typing
-                # indicator before the next bubble, so the follow-up feels typed
-                # rather than machine-gun posted.
+                # cascade gets a slightly longer delay so the bubbles feel
+                # deliberate instead of a bursty auto-split.
                 if len(chunks) > 1 and idx < len(chunks) - 1:
-                    if human_cascade:
-                        await self._send_typing_indicator(chat_id)
                     await asyncio.sleep(
                         self._cascade_delay_seconds() if human_cascade else self._chunk_delay_seconds
                     )

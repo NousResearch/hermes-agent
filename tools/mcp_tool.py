@@ -101,6 +101,35 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+def _normalize_headers(raw: Any) -> dict:
+    """Normalize MCP server headers config value into a dict.
+
+    Accepts a dict (proper YAML mapping) or a JSON string (common when
+    the whole header block is single-quoted in config.yaml). Returns
+    an empty dict for None/empty. Raises nothing on parse failure —
+    logs a warning and returns {} so a malformed header stanza doesn't
+    crash the MCP server task (which surfaces as an opaque CancelledError).
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+            logger.warning(
+                "MCP headers JSON string did not parse to a dict (got %s); ignoring",
+                type(parsed).__name__,
+            )
+            return {}
+        except json.JSONDecodeError as exc:
+            logger.warning("MCP headers string is not valid JSON: %s; ignoring", exc)
+            return {}
+    logger.warning("MCP headers config has unexpected type %s; ignoring", type(raw).__name__)
+    return {}
+
 # Upper bound for the OSV malware preflight during stdio MCP startup. The
 # check makes a blocking urllib HTTPS call whose own timeout can fail to
 # interrupt a stalled SSL handshake, which froze the asyncio event loop and
@@ -2025,7 +2054,7 @@ class MCPServerTask:
             )
 
         url = config["url"]
-        headers = dict(config.get("headers") or {})
+        headers = _normalize_headers(config.get("headers"))
         # Some MCP servers require MCP-Protocol-Version on the initial
         # initialize request and reject session-less POSTs otherwise.
         # Seed it as a client-level default, but treat user overrides as
@@ -2314,7 +2343,7 @@ class MCPServerTask:
             # round-trip against a known-good server on every reconnect.
             if config.get("transport") != "sse" and not self._ready.is_set():
                 try:
-                    _probe_headers = dict(config.get("headers") or {})
+                    _probe_headers = _normalize_headers(config.get("headers"))
                     await self._preflight_content_type(
                         config["url"],
                         headers=_probe_headers,

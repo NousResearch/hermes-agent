@@ -2853,15 +2853,25 @@ def run_conversation(
                     # Fall through to normal error handling if compression
                     # is exhausted or didn't help.
 
-                # Eager fallback for rate-limit errors (429 or quota exhaustion).
-                # When a fallback model is configured, switch immediately instead
-                # of burning through retries with exponential backoff -- the
-                # primary provider won't recover within the retry window.
+                # Eager fallback for rate-limit errors (429 or quota exhaustion)
+                # and transport errors (connection failure / timeout / provider
+                # overloaded).  Rate limits and billing: switch immediately —
+                # the primary provider won't recover within the retry window.
+                # Transport errors: allow 1 retry first (transient hiccups
+                # recover), then fall back if the provider is truly unreachable.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                 }
-                if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
+                _is_transport_failure = classified.reason in {
+                    FailoverReason.timeout,
+                    FailoverReason.overloaded,
+                }
+                _should_fallback = (
+                    is_rate_limited
+                    or (_is_transport_failure and retry_count >= 2)
+                )
+                if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
@@ -2875,6 +2885,10 @@ def run_conversation(
                         if classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                            )
+                        elif _is_transport_failure:
+                            agent._buffer_status(
+                                "⚠️ Provider unreachable — switching to fallback provider..."
                             )
                         else:
                             agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")

@@ -2,7 +2,7 @@
 
 Covers:
 
-- All three bundled plugins (browserbase, browser-use, firecrawl)
+- All four bundled plugins (browserbase, browser-use, firecrawl, kernel)
   instantiate and self-report the expected ABC defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The browser_registry resolves an active provider in the documented
@@ -11,7 +11,7 @@ Covers:
       a typed credentials error)
     * legacy preference walk: browser-use → browserbase (filtered by
       availability)
-    * firecrawl is NOT in the legacy walk — explicit-only
+    * firecrawl and kernel are NOT in the legacy walk — explicit-only
     * unknown name falls through to auto-detect
     * ``local`` short-circuits to None
 
@@ -42,6 +42,13 @@ def _clear_browser_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_BROWSER_TTL",
+        "KERNEL_API_KEY",
+        "KERNEL_STEALTH",
+        "KERNEL_HEADLESS",
+        "KERNEL_TIMEOUT_SECONDS",
+        "KERNEL_PROXY_ID",
+        "KERNEL_PROFILE",
+        "KERNEL_BASE_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
     ):
@@ -72,14 +79,14 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All three bundled browser plugins discover and register correctly."""
+    """All four bundled browser plugins discover and register correctly."""
 
-    def test_all_three_plugins_present_in_registry(self) -> None:
+    def test_all_four_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.browser_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
-        assert names == ["browser-use", "browserbase", "firecrawl"]
+        assert names == ["browser-use", "browserbase", "firecrawl", "kernel"]
 
     @pytest.mark.parametrize(
         "plugin_name,expected_display",
@@ -87,6 +94,7 @@ class TestBundledPluginsRegister:
             ("browserbase", "Browserbase"),
             ("browser-use", "Browser Use"),
             ("firecrawl", "Firecrawl"),
+            ("kernel", "Kernel"),
         ],
     )
     def test_each_plugin_has_name_and_display_name(
@@ -102,7 +110,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
+        ["browserbase", "browser-use", "firecrawl", "kernel"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -121,7 +129,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
+        ["browserbase", "browser-use", "firecrawl", "kernel"],
     )
     def test_each_plugin_implements_full_lifecycle(self, plugin_name: str) -> None:
         """The ABC's three lifecycle methods are all overridden."""
@@ -199,6 +207,16 @@ class TestIsAvailable:
         monkeypatch.setenv("FIRECRAWL_API_KEY", "key")
         assert p.is_available() is True
 
+    def test_kernel_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.browser_registry import get_provider
+
+        p = get_provider("kernel")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("KERNEL_API_KEY", "key")
+        assert p.is_available() is True
+
 
 # ---------------------------------------------------------------------------
 # Registry resolution semantics
@@ -244,6 +262,20 @@ class TestRegistryResolution:
         provider = _resolve("firecrawl")
         assert provider is not None
         assert provider.name == "firecrawl"
+
+    def test_explicit_kernel_returns_provider_even_when_unavailable(self) -> None:
+        """Kernel behaves the same as firecrawl under explicit config.
+
+        Returned even without credentials so the dispatcher surfaces a typed
+        "KERNEL_API_KEY is not set" error rather than silently falling back.
+        """
+        _ensure_plugins_loaded()
+        from agent.browser_registry import _resolve
+
+        provider = _resolve("kernel")
+        assert provider is not None
+        assert provider.name == "kernel"
+        assert provider.is_available() is False  # confirms "ignoring availability"
 
     def test_explicit_unknown_falls_back_to_auto_detect(self) -> None:
         """Rule 1 miss: unknown name → fall through to legacy walk."""
@@ -302,6 +334,23 @@ class TestRegistryResolution:
         # Only firecrawl is_available() — but it's not in the legacy walk.
         assert _resolve(None) is None
 
+    def test_kernel_not_in_legacy_walk_even_when_only_one_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Kernel is explicit-only — never auto-selected by the legacy walk.
+
+        Mirrors the firecrawl gate: the walk is browser-use → browserbase, so
+        a Kernel-only environment falls through to local mode unless the user
+        explicitly sets ``browser.cloud_provider: kernel``.
+        """
+        _ensure_plugins_loaded()
+        from agent.browser_registry import _resolve
+
+        monkeypatch.setenv("KERNEL_API_KEY", "k")
+
+        # Only kernel is_available() — but it's not in the legacy walk.
+        assert _resolve(None) is None
+
 
 # ---------------------------------------------------------------------------
 # Legacy ABC backward-compat aliases (is_configured / provider_name)
@@ -313,7 +362,7 @@ class TestLegacyAbcAliases:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
+        ["browserbase", "browser-use", "firecrawl", "kernel"],
     )
     def test_is_configured_delegates_to_is_available(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -329,6 +378,7 @@ class TestLegacyAbcAliases:
             ("browserbase", "Browserbase"),
             ("browser-use", "Browser Use"),
             ("firecrawl", "Firecrawl"),
+            ("kernel", "Kernel"),
         ],
     )
     def test_provider_name_returns_display_name(
@@ -348,7 +398,7 @@ class TestLegacyAbcAliases:
 
 
 class TestPickerIntegration:
-    """`_plugin_browser_providers()` exposes all three plugins as picker rows."""
+    """`_plugin_browser_providers()` exposes all four plugins as picker rows."""
 
     def test_picker_rows_match_registered_plugins(self) -> None:
         _ensure_plugins_loaded()
@@ -356,7 +406,7 @@ class TestPickerIntegration:
 
         rows = _plugin_browser_providers()
         names = sorted(r.get("browser_provider") for r in rows)
-        assert names == ["browser-use", "browserbase", "firecrawl"]
+        assert names == ["browser-use", "browserbase", "firecrawl", "kernel"]
 
     def test_picker_rows_carry_post_setup_hook(self) -> None:
         """Every browser plugin row has post_setup='agent_browser' so

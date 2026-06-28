@@ -1,0 +1,7 @@
+name: browser-kernel
+version: 1.0.0
+description: "Kernel (https://kernel.sh) cloud browser backend. Requires KERNEL_API_KEY. Stealth-on-by-default sandboxed Chrome via the Kernel REST API; supports headless toggle, inactivity timeout, proxies, profile persistence, and a human-watchable live view URL."
+author: Kernel
+kind: backend
+provides_browser_providers:
+  - kernel

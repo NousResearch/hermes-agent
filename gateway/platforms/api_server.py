@@ -19,6 +19,10 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
+- POST /v1/realtime/turn           — low-latency talker/orchestrator turn
+- GET/POST /v1/realtime/context    — read or patch live realtime context
+- GET/POST /v1/realtime/tasks      — list or create realtime task records
+- GET  /v1/realtime/events         — SSE stream of realtime context/task events
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -810,6 +814,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # Number of in-flight runs on the non-streaming chat/responses paths
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
+        from agent.realtime_loop import RealtimeLoop
+
+        self._realtime_loop = RealtimeLoop()
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1047,6 +1054,36 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return raw, None
 
+    def _realtime_session_key_from_request(
+        self, request: "web.Request", body: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Optional[str], Optional["web.Response"]]:
+        """Resolve the realtime session key from header or JSON body."""
+        header_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return None, key_err
+        if header_key:
+            return header_key, None
+
+        body_key = ""
+        if isinstance(body, dict):
+            body_key = str(body.get("session_key") or "").strip()
+        if not body_key:
+            body_key = str(request.query.get("session_key") or "").strip()
+        if not body_key:
+            body_key = "realtime:default"
+
+        if re.search(r'[\r\n\x00]', body_key):
+            return None, web.json_response(
+                _openai_error("Invalid realtime session key", code="invalid_session_key"),
+                status=400,
+            )
+        if len(body_key) > self._MAX_SESSION_HEADER_LEN:
+            return None, web.json_response(
+                _openai_error("Realtime session key too long", code="session_key_too_long"),
+                status=400,
+            )
+        return body_key, None
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -1260,7 +1297,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "memory_write_api": False,
                 "skills_api": True,
                 "audio_api": False,
-                "realtime_voice": False,
+                "realtime_voice": True,
+                "realtime_turn": True,
+                "realtime_context": True,
+                "realtime_tasks": True,
+                "realtime_events_sse": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -1276,6 +1317,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "realtime_turn": {"method": "POST", "path": "/v1/realtime/turn"},
+                "realtime_context": {"method": "GET/POST", "path": "/v1/realtime/context"},
+                "realtime_tasks": {"method": "GET/POST", "path": "/v1/realtime/tasks"},
+                "realtime_events": {"method": "GET", "path": "/v1/realtime/events"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
@@ -1376,6 +1421,207 @@ class APIServerAdapter(BasePlatformAdapter):
             "platform": "api_server",
             "data": data,
         })
+
+    # ------------------------------------------------------------------
+    # /v1/realtime — low-latency conversation coordination
+    # ------------------------------------------------------------------
+
+    async def _handle_realtime_turn(self, request: "web.Request") -> "web.Response":
+        """POST /v1/realtime/turn — fast talker/orchestrator turn.
+
+        This endpoint intentionally bypasses AIAgent/tool execution and uses
+        the auxiliary LLM route. Slow work should be spawned via /v1/runs or a
+        client-owned worker after the turn returns.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        session_key, key_err = self._realtime_session_key_from_request(request, body)
+        if key_err is not None:
+            return key_err
+
+        user_text = str(
+            body.get("input")
+            or body.get("message")
+            or body.get("text")
+            or body.get("user_text")
+            or ""
+        ).strip()
+        if not user_text:
+            return web.json_response(
+                _openai_error("Missing realtime turn input", code="missing_input"),
+                status=400,
+            )
+
+        transcript = body.get("transcript") if isinstance(body.get("transcript"), list) else []
+        context_patch = body.get("context_patch")
+        if context_patch is not None and not isinstance(context_patch, dict):
+            return web.json_response(
+                _openai_error("'context_patch' must be an object", code="invalid_context_patch"),
+                status=400,
+            )
+        extra_body = body.get("extra_body")
+        if extra_body is not None and not isinstance(extra_body, dict):
+            return web.json_response(
+                _openai_error("'extra_body' must be an object", code="invalid_extra_body"),
+                status=400,
+            )
+
+        try:
+            result = await self._realtime_loop.handle_turn(
+                session_key=session_key or "realtime:default",
+                user_text=user_text,
+                transcript=transcript,
+                context_patch=context_patch,
+                base_prompt=body.get("base_prompt"),
+                provider=body.get("provider"),
+                model=body.get("model"),
+                temperature=body.get("temperature"),
+                max_tokens=body.get("max_tokens", 256),
+                timeout=body.get("timeout", 3.0),
+                extra_body=extra_body,
+            )
+            return web.json_response(result)
+        except TimeoutError as exc:
+            return web.json_response(
+                _openai_error(_redact_api_error_text(exc), code="realtime_timeout"),
+                status=504,
+            )
+        except Exception as exc:
+            logger.exception("[api_server] realtime turn failed")
+            return web.json_response(
+                _openai_error(_redact_api_error_text(exc), code="realtime_turn_failed"),
+                status=500,
+            )
+
+    async def _handle_realtime_context(self, request: "web.Request") -> "web.Response":
+        """GET/POST /v1/realtime/context — read or patch live context."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        body: Dict[str, Any] = {}
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except Exception:
+                return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        session_key, key_err = self._realtime_session_key_from_request(request, body)
+        if key_err is not None:
+            return key_err
+        effective_key = session_key or "realtime:default"
+
+        if request.method == "GET":
+            return web.json_response({
+                "object": "hermes.realtime.context",
+                "session_key": session_key,
+                "context": self._realtime_loop.store.get_context(effective_key),
+            })
+
+        patch = body.get("patch", body.get("context_patch", body))
+        if not isinstance(patch, dict):
+            return web.json_response(
+                _openai_error("Realtime context patch must be an object", code="invalid_context_patch"),
+                status=400,
+            )
+        patch = {k: v for k, v in patch.items() if k != "session_key"}
+        context = self._realtime_loop.store.patch_context(effective_key, patch)
+        return web.json_response({
+            "object": "hermes.realtime.context",
+            "session_key": session_key,
+            "context": context,
+        })
+
+    async def _handle_realtime_tasks(self, request: "web.Request") -> "web.Response":
+        """GET/POST /v1/realtime/tasks — list or create realtime task records."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        body: Dict[str, Any] = {}
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except Exception:
+                return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        session_key, key_err = self._realtime_session_key_from_request(request, body)
+        if key_err is not None:
+            return key_err
+        effective_key = session_key or "realtime:default"
+
+        if request.method == "GET":
+            return web.json_response({
+                "object": "list",
+                "data": self._realtime_loop.store.list_tasks(effective_key),
+            })
+
+        task_request = str(body.get("input") or body.get("request") or "").strip()
+        if not task_request:
+            return web.json_response(
+                _openai_error("Missing realtime task request", code="missing_task_request"),
+                status=400,
+            )
+        task = self._realtime_loop.store.create_task(
+            effective_key,
+            task_request,
+            source=str(body.get("source") or "api"),
+        )
+        return web.json_response(task.to_public_dict(), status=202)
+
+    async def _handle_realtime_events(self, request: "web.Request") -> "web.StreamResponse":
+        """GET /v1/realtime/events — SSE stream of realtime events."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_key, key_err = self._realtime_session_key_from_request(request, None)
+        if key_err is not None:
+            return key_err
+        effective_key = session_key or "realtime:default"
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+        await response.prepare(request)
+
+        async def _write_event(event: Dict[str, Any]) -> None:
+            event_name = str(event.get("event") or "message")
+            data = json.dumps(event, default=str)
+            await response.write(f"event: {event_name}\ndata: {data}\n\n".encode())
+
+        for event in self._realtime_loop.store.recent_events(effective_key):
+            await _write_event(event)
+
+        queue = self._realtime_loop.store.subscribe(effective_key)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
+                    continue
+                await _write_event(event)
+        except asyncio.CancelledError:
+            raise
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+        except Exception:
+            logger.debug("Realtime SSE stream closed", exc_info=True)
+        finally:
+            self._realtime_loop.store.unsubscribe(effective_key, queue)
+        return response
 
     # ------------------------------------------------------------------
     # /api/sessions — thin client/session resource API
@@ -4457,6 +4703,14 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            # Realtime conversation coordination API. The turn path is an
+            # auxiliary-model fast lane; it intentionally does not run tools.
+            self._app.router.add_post("/v1/realtime/turn", self._handle_realtime_turn)
+            self._app.router.add_get("/v1/realtime/context", self._handle_realtime_context)
+            self._app.router.add_post("/v1/realtime/context", self._handle_realtime_context)
+            self._app.router.add_get("/v1/realtime/tasks", self._handle_realtime_tasks)
+            self._app.router.add_post("/v1/realtime/tasks", self._handle_realtime_tasks)
+            self._app.router.add_get("/v1/realtime/events", self._handle_realtime_events)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

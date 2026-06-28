@@ -1522,6 +1522,7 @@ html.hermes-mobile-standalone [data-slot='aui_intro'] {
   padding-block: 0;
 }
 
+
 html.hermes-mobile-standalone [data-slot='aui_intro'] > div {
   max-width: min(100%, 28rem);
 }
@@ -1664,7 +1665,11 @@ html.hermes-mobile-standalone [data-slot='overlay-view'] textarea {
   min-height: 2.75rem;
 }
 
-html.hermes-mobile-standalone [data-sidebar='group']:first-child {
+/* Only the nav SidebarGroup at the very top of the drawer needs notch +
+   titlebar clearance. Without the `[data-sidebar='content'] >` qualifier,
+   this matched any SidebarGroup that happened to be a :first-child (e.g.
+   PINNED inside the sessions wrapper), shoving the section ~110px down. */
+html.hermes-mobile-standalone [data-sidebar='content'] > [data-sidebar='group']:first-child {
   padding-top: calc(env(safe-area-inset-top) + 3.25rem) !important;
 }
 

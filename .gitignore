@@ -137,3 +137,14 @@ RELEASE_v*.md
 # Desktop demo-run scratch output (hermes writes demo/*.txt during recorded
 # walkthroughs). Throwaway artifacts, never part of the app.
 apps/desktop/demo/
+
+# Ignore Iranian Notification Plugins
+plugins/platforms/bale/
+plugins/platforms/eitaa/
+plugins/platforms/gap/
+plugins/platforms/ghasedak/
+plugins/platforms/kavenegar/
+plugins/platforms/melipayamak/
+plugins/platforms/najva/
+plugins/platforms/paket/
+plugins/platforms/pushe/

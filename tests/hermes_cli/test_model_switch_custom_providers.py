@@ -5,6 +5,8 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+from unittest.mock import patch
+
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
@@ -791,3 +793,114 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
     assert gateway_prov is not None
     assert calls == [], "string 'false' must disable live discovery"
     assert gateway_prov["models"] == ["only-model"]
+
+
+# ---------------------------------------------------------------------------
+# Same-provider credential fallback (issue #44490)
+# ---------------------------------------------------------------------------
+
+class TestSameProviderCredentialFallback:
+    """Same-provider switch should preserve current credentials when resolution
+    returns empty values."""
+
+    @patch("hermes_cli.model_switch.get_model_capabilities", return_value=None)
+    @patch("hermes_cli.model_switch.get_model_info", return_value=None)
+    @patch("hermes_cli.models.validate_requested_model", return_value=_MOCK_VALIDATION)
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_empty_resolved_key_falls_back_to_current(
+        self, mock_resolve, mock_validate, mock_info, mock_caps
+    ):
+        """When resolve_runtime_provider returns empty api_key, keep current key."""
+        mock_resolve.return_value = {
+            "api_key": "",
+            "base_url": "https://api.opencode-go.com/v1",
+            "api_mode": "chat",
+        }
+
+        result = switch_model(
+            raw_input="kimi-k2.5",
+            current_provider="opencode-go",
+            current_model="mimo-v2.5",
+            current_api_key="sk-current-key",
+            current_base_url="https://api.opencode-go.com/v1",
+        )
+
+        assert result.success is True
+        assert result.api_key == "sk-current-key"
+
+    @patch("hermes_cli.model_switch.get_model_capabilities", return_value=None)
+    @patch("hermes_cli.model_switch.get_model_info", return_value=None)
+    @patch("hermes_cli.models.validate_requested_model", return_value=_MOCK_VALIDATION)
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_empty_resolved_base_falls_back_to_current(
+        self, mock_resolve, mock_validate, mock_info, mock_caps
+    ):
+        """When resolve_runtime_provider returns empty base_url, keep current."""
+        mock_resolve.return_value = {
+            "api_key": "sk-new-key",
+            "base_url": "",
+            "api_mode": "chat",
+        }
+
+        result = switch_model(
+            raw_input="kimi-k2.5",
+            current_provider="opencode-go",
+            current_model="mimo-v2.5",
+            current_api_key="sk-current-key",
+            current_base_url="https://api.opencode-go.com/v1",
+        )
+
+        assert result.success is True
+        assert result.base_url == "https://api.opencode-go.com/v1"
+
+    @patch("hermes_cli.model_switch.get_model_capabilities", return_value=None)
+    @patch("hermes_cli.model_switch.get_model_info", return_value=None)
+    @patch("hermes_cli.models.validate_requested_model", return_value=_MOCK_VALIDATION)
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_non_empty_resolved_values_preferred_over_current(
+        self, mock_resolve, mock_validate, mock_info, mock_caps
+    ):
+        """When resolve returns non-empty values, use them (credential rotation)."""
+        mock_resolve.return_value = {
+            "api_key": "sk-rotated-key",
+            "base_url": "https://api.opencode-go.com/v2",
+            "api_mode": "chat",
+        }
+
+        result = switch_model(
+            raw_input="kimi-k2.5",
+            current_provider="opencode-go",
+            current_model="mimo-v2.5",
+            current_api_key="sk-old-key",
+            current_base_url="https://api.opencode-go.com/v1",
+        )
+
+        assert result.success is True
+        assert result.api_key == "sk-rotated-key"
+        assert result.base_url == "https://api.opencode-go.com/v2"
+
+    @patch("hermes_cli.model_switch.get_model_capabilities", return_value=None)
+    @patch("hermes_cli.model_switch.get_model_info", return_value=None)
+    @patch("hermes_cli.models.validate_requested_model", return_value=_MOCK_VALIDATION)
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_both_empty_falls_back_to_both_current(
+        self, mock_resolve, mock_validate, mock_info, mock_caps
+    ):
+        """When resolve returns both api_key and base_url as empty, keep both current."""
+        mock_resolve.return_value = {
+            "api_key": "",
+            "base_url": "",
+            "api_mode": "",
+        }
+
+        result = switch_model(
+            raw_input="kimi-k2.5",
+            current_provider="opencode-go",
+            current_model="mimo-v2.5",
+            current_api_key="sk-current-key",
+            current_base_url="https://api.opencode-go.com/v1",
+        )
+
+        assert result.success is True
+        assert result.api_key == "sk-current-key"
+        assert result.base_url == "https://api.opencode-go.com/v1"

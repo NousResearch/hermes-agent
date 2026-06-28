@@ -1199,8 +1199,10 @@ def switch_model(
             # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
             # credentials. Otherwise use the resolved values (picks up credential rotation,
             # base_url adjustments for OpenCode, etc.).
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
+            _resolved_key = runtime.get("api_key", "")
+            _resolved_base = runtime.get("base_url", "")
+            api_key = _resolved_key or current_api_key
+            base_url = _resolved_base or current_base_url
             api_mode = runtime.get("api_mode", "")
         except Exception:
             pass

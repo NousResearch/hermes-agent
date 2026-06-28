@@ -1,7 +1,7 @@
 """Tests for gateway restart-loop defenses (#30719).
 
 Covers:
-- Defense 1: gateway stop/restart refuse when _HERMES_GATEWAY=1
+- Defense 1: gateway start/stop/restart refuse when _HERMES_GATEWAY=1
 - Defense 2: cron create rejects prompts containing gateway lifecycle commands
 - _contains_gateway_lifecycle_command pattern matching
 """
@@ -29,6 +29,9 @@ class TestGatewayLifecyclePattern:
         "hermes gateway restart",
         "hermes gateway stop",
         "hermes gateway start",
+        "hermes -p alex gateway start",
+        "hermes --profile alex gateway restart",
+        "hermes --profile=alex gateway stop",
         "hermes  gateway  restart",         # double spaces
         "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
         "HERMES GATEWAY RESTART",           # uppercase
@@ -191,11 +194,19 @@ class TestCronCreateLifecycleBlock:
 
 
 # ---------------------------------------------------------------------------
-# Defense 1: gateway stop/restart refuse inside gateway
+# Defense 1: gateway start/stop/restart refuse inside gateway
 # ---------------------------------------------------------------------------
 
 class TestGatewaySelfTargetingGuard:
-    """Verify hermes gateway stop/restart refuse when _HERMES_GATEWAY=1."""
+    """Verify hermes gateway start/stop/restart refuse when _HERMES_GATEWAY=1."""
+
+    def test_start_refuses_inside_gateway(self, monkeypatch):
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        from hermes_cli.gateway import gateway_command
+        args = Namespace(gateway_command="start", all=False, system=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_command(args)
+        assert exc_info.value.code == 1
 
     def test_stop_refuses_inside_gateway(self, monkeypatch):
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
@@ -252,6 +263,24 @@ class TestGatewaySelfTargetingGuard:
         with pytest.raises(_Reached):
             gw.gateway_command(args)
 
+    def test_start_allows_outside_gateway(self, monkeypatch):
+        # With the gateway marker unset, start should reach the normal start
+        # path. Sentinel the first downstream call so no real service-manager
+        # operation is attempted.
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        import hermes_cli.gateway as gw
+
+        class _Reached(Exception):
+            pass
+
+        def _sentinel(*a, **k):
+            raise _Reached()
+
+        monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", _sentinel)
+        args = Namespace(gateway_command="start", all=False, system=False)
+        with pytest.raises(_Reached):
+            gw.gateway_command(args)
+
 
 # ---------------------------------------------------------------------------
 # Defense 3: terminal_tool hard-blocks gateway lifecycle commands inside gateway
@@ -292,7 +321,11 @@ class TestTerminalToolGatewayLifecycleGuard:
         "systemctl restart hermes-gateway",
         "systemctl --user restart hermes-gateway",
         "systemctl stop hermes-gateway.service",
+        "systemctl start hermes-gateway.service",
         "hermes gateway restart",
+        "hermes gateway start",
+        "hermes -p alex gateway start",
+        "hermes --profile alex gateway start",
         "launchctl kickstart gui/501/ai.hermes.gateway",
         "pkill -f hermes.*gateway",
     ])

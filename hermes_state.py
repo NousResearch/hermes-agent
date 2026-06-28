@@ -16,6 +16,7 @@ Key design decisions:
 
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -455,6 +456,14 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         if problems:
             return "; ".join(problems[:3])
         conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        for table_name in ("messages_fts", "messages_fts_trigram"):
+            try:
+                conn.execute(f"SELECT * FROM {table_name} LIMIT 0").fetchall()
+            except sqlite3.DatabaseError as exc:
+                msg = str(exc).lower()
+                if "no such table" in msg:
+                    continue
+                return str(exc)
 
         # FTS write probe: drive a row through the messages_fts* triggers in a
         # transaction that is always rolled back, so a corrupt FTS index that
@@ -492,6 +501,104 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         conn.close()
 
 
+_CANONICAL_STATE_TABLES = (
+    "sessions",
+    "messages",
+    "state_meta",
+    "compression_locks",
+)
+
+
+def _copy_state_table_rows(
+    conn: sqlite3.Connection,
+    table_name: str,
+) -> int:
+    dest_cols = [
+        row[1] for row in conn.execute(f"PRAGMA main.table_info({table_name})")
+    ]
+    source_cols = [
+        row[1] for row in conn.execute(f"PRAGMA source.table_info({table_name})")
+    ]
+    shared_cols = [col for col in dest_cols if col in source_cols]
+    if not shared_cols:
+        return 0
+    quoted_cols = ", ".join(f'"{col.replace(chr(34), chr(34) * 2)}"' for col in shared_cols)
+    conn.execute(f"DELETE FROM main.{table_name}")
+    conn.execute(
+        f"INSERT INTO main.{table_name} ({quoted_cols}) "
+        f"SELECT {quoted_cols} FROM source.{table_name}"
+    )
+    row = conn.execute(f"SELECT COUNT(*) FROM main.{table_name}").fetchone()
+    return int(row[0] if row else 0)
+
+
+def _rebuild_state_db_from_canonical_tables(db_path: Path) -> Optional[str]:
+    temp_path = db_path.with_name(f"{db_path.name}.repair-{time.time_ns()}.tmp")
+    try:
+        fresh = SessionDB(db_path=temp_path)
+        fresh.close()
+
+        conn = sqlite3.connect(str(temp_path), isolation_level=None)
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("ATTACH DATABASE ? AS source", (str(db_path),))
+            source_session_count = conn.execute(
+                "SELECT COUNT(*) FROM source.sessions"
+            ).fetchone()[0]
+            source_message_count = conn.execute(
+                "SELECT COUNT(*) FROM source.messages"
+            ).fetchone()[0]
+            copied_counts = {
+                table_name: _copy_state_table_rows(conn, table_name)
+                for table_name in _CANONICAL_STATE_TABLES
+            }
+            conn.execute("DETACH DATABASE source")
+            conn.execute("PRAGMA foreign_keys=ON")
+
+            if copied_counts["sessions"] != source_session_count:
+                return (
+                    "canonical rebuild copied "
+                    f"{copied_counts['sessions']} of {source_session_count} sessions"
+                )
+            if copied_counts["messages"] != source_message_count:
+                return (
+                    "canonical rebuild copied "
+                    f"{copied_counts['messages']} of {source_message_count} messages"
+                )
+
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()
+            if not integrity or str(integrity[0]).lower() != "ok":
+                return f"rebuilt DB failed integrity_check: {integrity[0] if integrity else 'no result'}"
+            conn.execute("SELECT * FROM messages_fts LIMIT 0").fetchall()
+            conn.execute("SELECT * FROM messages_fts_trigram LIMIT 0").fetchall()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(db_path.name + suffix)
+            try:
+                sidecar.unlink()
+            except FileNotFoundError:
+                pass
+        os.replace(temp_path, db_path)
+        return None
+    except sqlite3.DatabaseError as exc:
+        return str(exc)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        for suffix in ("-wal", "-shm"):
+            temp_sidecar = temp_path.with_name(temp_path.name + suffix)
+            try:
+                temp_sidecar.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:
     """Repair a state.db whose ``sqlite_master`` schema is malformed or whose
     FTS indexes reject writes.
@@ -509,7 +616,10 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
       2. **De-duplicate** ``sqlite_master`` (keep the lowest rowid per
          ``type``/``name``). Fixes the canonical "table X already exists"
          case and PRESERVES the existing FTS index intact.
-      3. **Drop the FTS schema** (every ``messages_fts*`` object) + ``VACUUM``.
+      3. **Rebuild from canonical tables** into a fresh current-schema DB.
+         Fixes FTS virtual-table constructor failures where SQLite cannot even
+         drop the broken virtual table through ordinary DDL.
+      4. **Drop the FTS schema** (every ``messages_fts*`` object) + ``VACUUM``.
          The next ``SessionDB()`` open rebuilds the FTS indexes from the
          canonical ``messages`` table.
 
@@ -598,7 +708,21 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     except sqlite3.DatabaseError as exc:
         logger.warning("state.db dedup repair pass failed: %s", exc)
 
-    # ── Strategy 2: drop all FTS schema, VACUUM, rebuild on next open ──
+    # ── Strategy 2: rebuild a fresh DB from canonical tables ─────────────
+    reason = _rebuild_state_db_from_canonical_tables(db_path)
+    if reason is None and _db_opens_cleanly(db_path) is None:
+        report["repaired"] = True
+        report["strategy"] = "rebuild_canonical_tables"
+        logger.warning(
+            "state.db repaired by rebuilding derived schema from canonical "
+            "tables: %s",
+            db_path,
+        )
+        return report
+    if reason is not None:
+        logger.warning("state.db canonical-table rebuild failed: %s", reason)
+
+    # ── Strategy 3: drop all FTS schema, VACUUM, rebuild on next open ──
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:

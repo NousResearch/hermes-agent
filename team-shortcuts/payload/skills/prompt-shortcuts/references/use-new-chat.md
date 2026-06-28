@@ -18,11 +18,15 @@ tags:
   - startup-gate
   - flow-guardian
 status: active
-version: 1.6
-updated: 2026-06-24
+version: 1.8
+updated: 2026-06-28
+schema: memory-schema-v1.1
+pairs_with: use-close-chat >= 2.2
 ---
 
-# Use New Chat
+# Use New Chat (v1.8 · 2026-06-28)
+
+คู่กับ Use Close Chat ≥ v2.0 · อ้าง Memory Schema v1.1 · เช็ก schema version ตอนเริ่ม ไม่ตรง = เตือนก่อน
 
 ## Shortcut
 
@@ -35,130 +39,138 @@ Use New Chat
 ```text
 Use New Chat
 
-เป้าหมาย: เริ่มแชทใหม่ให้พร้อมทำงานจริง โดยตรวจของจริงก่อน ไม่ใช่แค่ตอบว่า "พร้อมรับคำสั่ง"
-หลักการ: capability-based — มีอะไรตรวจอันนั้น · ไม่มีก็ใส่ N/A ไม่ใช่บังคับมีทุกช่อง
+คู่กับ Use Close Chat ≥ v2.0 · อ้าง Memory Schema v1.1 · เช็ก schema version ตอนเริ่ม ไม่ตรง = เตือนก่อน
+เป้าหมาย: เริ่มแชทใหม่ให้พร้อมทำงานจริง โดยตรวจของจริงก่อน + เรียนรู้ทั้งโปรเจกต์ ไม่ใช่แค่ตอบ "พร้อมรับคำสั่ง"
+หลักการ: capability-based — มีอะไรตรวจอันนั้น · ไม่มีก็ N/A
 
 กฎบังคับ:
+- เจ้าของงานอาจเป็น non-dev → อธิบายภาษาคน · เสนอคำสั่งก๊อปวางได้ · ห้ามถามว่า "ใช้ test ตัวไหน" ค้นเอง (Schema §5)
 - ห้ามตอบ "พร้อมรับคำสั่ง" ก่อนตรวจสถานะจริง
-- ห้ามเดา project / worktree / branch / dirty / remote / VPS / service · ตรวจด้วย command จริงก่อนสรุป
-- ทุกค่าที่รายงานต้องมาจาก command จริง · แนบ timestamp + host + cwd ท้าย report (กัน report ที่ดูเหมือนตรวจแต่ไม่ได้ตรวจ)
-- ผู้ใช้พิมพ์ไทย ตอบไทย แปลศัพท์เทคนิคทันที
-- ห้ามแก้ไฟล์ก่อนส่ง startup report เว้นแต่ผู้ใช้สั่งทำต่อเอง
-- redact secret ใน remote URL เสมอ (เช่น token ใน https://token@... ให้แสดงเป็น https://***@...)
+- ห้ามเดา project/worktree/branch/dirty/remote/VPS/CI · ตรวจด้วย command จริงก่อนสรุป
+- ทุกค่าจาก command จริง · แนบ Evidence (timestamp/host/cwd/commands) ท้ายรายงาน
+- ผู้ใช้พิมพ์ไทย ตอบไทย แปลศัพท์ทันที
+- ห้ามแก้ไฟล์ก่อนส่ง startup report เว้นแต่เจ้าของสั่งทำต่อเอง
+- redact secret ใน remote URL เสมอ (https://***@...)
 
-แหล่ง config (ลำดับความสำคัญ · ห้าม fallback ไปค่า default ของโปรเจกต์อื่น):
-project config > repo runbook > AGENTS.md/.hermes context > ถามเจ้าของงาน
+แหล่ง config (ห้าม fallback ไปค่า default ของโปรเจกต์อื่น):
+project config > repo runbook > AGENTS.md/.hermes context > ถามเจ้าของ
 
 ขั้นตอน (ทำเท่าที่โปรเจกต์มี):
 
-0. อ่านความจำล่าสุดก่อนเริ่ม (บังคับ — คู่กับ Use Close Chat แก้ AI ลืมงานข้ามแชท)
-- เปิดอ่าน `handoff.md` + session log ล่าสุด (ตามตัวชี้ `latest-close.md` ของโปรเจกต์) ก่อนตอบงานเสมอ
-- สรุปให้เจ้าของงานเห็นว่า แชทก่อนทำอะไรค้าง / decision อะไร / งานค้างของใคร
-- ถ้า decision token ล่าสุด = CLOSED_WITH_PENDING ต้องอ่านงานค้างก่อนเริ่ม · = NEED_OWNER_ACTION_BEFORE_CLOSE แปลว่ารอบก่อนยังไม่ปิดจริง ให้เตือน
+0. อ่านความจำ + เรียนรู้ทั้งโปรเจกต์ (บังคับ)
+
+0a. ความจำรอบล่าสุด (แก้ AI ลืมงานข้ามแชท):
+- เปิด `handoff.md` + session log ล่าสุด (ตาม `latest-close.md` ของ staff ตัวเอง — Schema §6) + `.hermes/active.md`
+- memory guard: ยืนยันว่า memory ที่อ่านเป็นของ project + worktree นี้จริงก่อนใช้ · ไม่ใช่ = ไม่ใช้ รายงาน
 - หา latest-close/handoff ไม่เจอ = บอกว่าไม่พบความจำรอบก่อน ไม่เดาว่าทำอะไรไป
-- บังคับสรุปออกมา 3 บรรทัดตายตัว (ไม่ครบ = ยังไม่เริ่มงาน):
-  · Process อยู่ขั้นไหน
-  · งานล่าสุดทำถึงไหน (commit/PR/SHA ล่าสุด)
-  · สิ่งที่ต้องทำต่อ 1 ข้อ
-- "งานถึงไหน" ต้องเทียบ `git log -5` + branch ปัจจุบัน + PR/timestamp ด้วย ไม่เชื่อ handoff/session log อย่างเดียว (อาจ stale)
+- reality-overrides-token (Schema §2): เทียบ token รอบก่อนกับของจริง (git/CI/SHA)
+  - token = `CLOSED_CLEAN` แต่เจอ dirty / SHA ไม่ตรง / CI แดง → เชื่อของจริง + ตีธงว่ารอบก่อนปิดไม่ตรงจริง
+  - `CLOSED_WITH_PENDING` → อ่านงานค้าง + claimed ก่อนเริ่ม
+  - `NEED_OWNER_ACTION_BEFORE_CLOSE` → รอบก่อนยังไม่ปิดจริง เตือนเจ้าของ
+
+0b. เรียนรู้ทั้งโปรเจกต์ (แก้ AI ไม่อ่านภาพรวม):
+- อ่าน + สรุปสั้น: `AGENTS.md` / runbook / architecture / `.hermes/decisions.md` (สะสมทั้งหมด ไม่ใช่แค่ decision ล่าสุด)
+- [ใหม่] อ่านชุด Project OS ถ้ามี (capability-based): `.project/OverviewProgress.md` (ภาพรวม+ค้าง) · `.project/FeatureSpec.md` (ฟีเจอร์ real/mock) · `.project/BusinessPlan.md` (ธุรกิจ) · `.project/DesignSystem.md` (ดีไซน์) — แต่ยึด reality-overrides-token: ถ้าไฟล์ขัดกับ git/โค้ดจริง เชื่อของจริง
+- สรุปออกมาให้เจ้าของเห็นว่าโปรเจกต์นี้คืออะไร / โครงหลัก / ข้อตกลงสำคัญที่ตัดสินไปแล้ว
+
+0c. สรุปบังคับ 3 บรรทัด (ไม่ครบ = ยังไม่เริ่มงาน):
+- Process อยู่ขั้นไหน
+- งานล่าสุดถึงไหน (commit/PR/SHA ล่าสุด — เทียบ `git log -5` + branch + PR/timestamp ไม่เชื่อ handoff อย่างเดียวเพราะอาจ stale)
+- สิ่งที่ต้องทำต่อ 1 ข้อ
 
 1. Project Detection
-- project path ปัจจุบัน + repo name
-- execution target: local หรือ VPS (ถ้า shell อยู่ local แต่ target เป็น VPS ต้องรายงานทั้งสองค่า ห้ามบอกว่า "อยู่บน VPS แล้ว")
-- repo-local context ที่เจอ: AGENTS.md / .hermes/context.md / active.md / decisions.md
+- project path + repo name · execution target (local/VPS — ถ้า shell local แต่ target VPS รายงานทั้งสอง ห้ามบอก "อยู่บน VPS แล้ว") · context ที่เจอ (AGENTS.md/.hermes/*)
 
 2. Git Gate
-- git rev-parse --show-toplevel / git branch --show-current / git status --short --branch / git worktree list
-- แปลผล clean หรือ dirty
-- ถ้าไม่ใช่ git repo / เป็น nested git / monorepo ที่ไม่ชัด → สถานะ NEED_OWNER_INPUT ห้ามเดา
+- `git rev-parse --show-toplevel` / `branch --show-current` / `status --short --branch` / `worktree list` → แปลผล clean/dirty
+- ไม่ใช่ git repo / nested / monorepo ไม่ชัด → `NEED_OWNER_INPUT` ห้ามเดา
 
 3. Remote Gate
-- ตรวจ remote · ถ้ามีหลาย remote ให้รายงาน candidate ทั้งหมด แล้วถามว่าอันไหนคือ remote หลัก ห้ามเลือกมั่ว
-- เทียบ local HEAD กับ remote หลัก (เมื่อรู้แน่)
+- ตรวจ remote · หลาย remote = รายงาน candidate ทั้งหมด แล้วถามอันไหนหลัก ห้ามเลือกมั่ว · เทียบ local HEAD กับ remote หลัก
 
-4. Staff / Worktree Routing Gate — [ทำเฉพาะเมื่อ project config ระบุว่าใช้ worktree/ownership routing]
-- ระบุ staff id (เช่น nat/may/mind) · ถ้าไม่รู้ → ถามก่อน ห้าม fallback ไป worktree คนอื่น
-- ตรวจว่า staff id + project มี worktree จริงไหม (ถ้ามี scripts/hermes_worktree_route.py ให้รัน)
-- ไม่เจอ worktree → รายงาน missing worktree หยุดก่อนแก้ไฟล์
-- โปรเจกต์ทั่วไปที่ config ไม่ได้ระบุ routing → ข้ามขั้นนี้ (ไม่ต้องถาม staff id)
+4. Staff / Worktree Routing Gate — [เฉพาะเมื่อ project config ใช้ worktree/ownership routing]
+- ระบุ staff id (nat/may/mind) · ไม่รู้ → ถาม ห้าม fallback ไป worktree คนอื่น
+- ตรวจว่า staff id + project มี worktree จริง (รัน `scripts/hermes_worktree_route.py` ถ้ามี) · ไม่เจอ = รายงาน missing หยุดก่อนแก้
+- โปรเจกต์ที่ config ไม่ระบุ routing → ข้ามขั้นนี้
 
-5. VPS / Runtime Gate — [capability-based]
-- โปรเจกต์มี VPS/service ตาม config → ตรวจ service/endpoint ที่ config ระบุเท่านั้น (ห้าม port-scan กว้าง)
-- โปรเจกต์ไม่มี VPS → ใส่ "N/A: โปรเจกต์นี้ไม่มี VPS"
-- ตรวจไม่ได้ → ระบุว่าไม่ได้ตรวจ เพราะอะไร ห้ามบอกว่าใช้ได้
+5. Quality Gate Detection (ค้นเอง · เจ้าของไม่ต้องบอก)
+- ค้นว่ามี gate อะไร (Schema §5: package.json/Makefile/pyproject/CI) → รายงานว่าโปรเจกต์ตรวจงานด้วยอะไร
+- ยังไม่ต้องรันตอนเปิด (รันตอน Close/ก่อน commit) แต่ต้องรู้ว่ามีอะไร เพื่อบอกเจ้าของได้ว่าจะ verify งานยังไง
+- ไม่พบ gate = รายงานตรง ๆ ว่าโปรเจกต์นี้ไม่มีตัวตรวจอัตโนมัติ (ความเสี่ยงที่ต้องรู้)
 
-6. Risk Gate
-- dirty files → แยกว่าเป็นไฟล์แก้ค้างหรือไฟล์ใหม่
-- งานถัดไปเป็น feature/deploy/migration/security/multi-file → บอกว่าต้อง audit ก่อนแก้
-- worktree dirty + งานเป็น feature ใหม่ → หยุดถามหรือเลือก worktree ปลอดภัยกว่า
+6. VPS / Runtime + Deploy Gate — [capability-based · โปรเจกต์ deploy แบบ CI/CD on-merge]
+- service/endpoint ตาม config เท่านั้น (ห้าม port-scan กว้าง) · ไม่มี VPS → N/A
+- เทียบ deployed SHA กับ main/branch: prod ตามโค้ดล่าสุดทันไหม
+  - ดู CI run ล่าสุดของ main (เช่น `gh run list` สำหรับ GitHub / `glab ci status` หรือ pipeline API สำหรับ GitLab) เขียวไหม · live SHA = HEAD ของ main ไหม
+  - main นำหน้า live SHA = มีโค้ดที่ merge แล้วแต่ยังไม่ขึ้น prod → flag
+- ตรวจไม่ได้ = ระบุว่าไม่ได้ตรวจเพราะอะไร ห้ามบอกว่าใช้ได้
+
+7. Risk Gate
+- dirty files → แยกไฟล์แก้ค้าง vs ไฟล์ใหม่
+- งานถัดไปเป็น feature/deploy/migration/security/multi-file → ต้อง audit ก่อนแก้
+- worktree dirty + งานเป็น feature ใหม่ → หยุดถาม/เลือก worktree ปลอดภัยกว่า
 
 [Hermes Agent เท่านั้น — ตรวจจาก repo marker ไม่ใช่ชื่อโฟลเดอร์]
-- ถ้า project config ยืนยันว่าเป็น Hermes Agent: Mac = local controller · VPS target ตามที่ runbook ระบุ · ใช้ ssh/enter script ของโปรเจกต์ ไม่ hardcode IP/path ใน prompt
-- กฎแสดงผล branch: ถ้า branch จริงเป็นชื่อพนักงาน (เช่น nat) แสดงในรายงานเป็น "Update Feature (branch จริง: nat)" — เป็น config เฉพาะ Hermes ไม่ใช่กฎสากล · ห้ามเปลี่ยนชื่อ branch git จริง
+- ถ้า config ยืนยันเป็น Hermes: Mac = local controller · VPS target ตาม runbook · ใช้ ssh/enter script ของโปรเจกต์ ไม่ hardcode IP/path
+- branch จริงเป็นชื่อพนักงาน (เช่น nat) → แสดงเป็น "Update Feature (branch จริง: nat)" · ห้ามเปลี่ยนชื่อ branch git จริง
 
 [New Feature Branch Gate — บังคับสร้าง branch ใหม่ก่อนแก้โค้ดฟีเจอร์ใหม่]
-เป็น "ฟีเจอร์ใหม่" เมื่อ: เพิ่ม behavior/UI/command/tool/config/integration ใหม่ หรือเจ้าของงานใช้คำว่า build/add/create/implement/ทำ
-เป็น "งานต่อเดิม" ต้องมีหลักฐาน: handoff ระบุ branch เดิม / task-PR เดิม / commit ล่าสุดตรงกับงานนั้น · ไม่มีหลักฐาน = ถือเป็นงานใหม่ ห้ามเดาว่าต่อ
-
-ก่อนแก้โค้ดทุกครั้งเช็ก:
-- branch ปัจจุบันเป็น main/master/develop/shared/release/ของคนอื่น + เป็นฟีเจอร์ใหม่ → STOP ห้ามแก้โค้ด
+"ฟีเจอร์ใหม่" = เพิ่ม behavior/UI/command/tool/config/integration ใหม่ หรือเจ้าของใช้คำ build/add/create/implement/ทำ
+"งานต่อเดิม" ต้องมีหลักฐาน: handoff ระบุ branch เดิม / task-PR เดิม / commit ล่าสุดตรง · ไม่มีหลักฐาน = ถือเป็นงานใหม่
+ก่อนแก้โค้ดเช็ก:
+- branch เป็น main/master/develop/shared/release/ของคนอื่น + ฟีเจอร์ใหม่ → STOP
 - detached HEAD → STOP เสมอ
-- dirty worktree → STOP ถามจะพา changes ไป branch ใหม่ / stash / ให้เจ้าของจัดการก่อน
-ต้องสร้าง branch ใหม่ก่อน: ทีม/VPS = `worktree/<staff>/<slug>` · local = `feature/<slug>` (มี ticket id ใส่ในชื่อ) ·
-ชื่อชนของเดิม = เสนอชื่อใหม่ ไม่เขียนทับ · เสนอชื่อ + ขอยืนยันก่อนสร้าง
+- dirty worktree → STOP ถามจะพา changes ไป branch ใหม่ / stash / ให้เจ้าของจัดการ
+สร้าง branch ใหม่: ทีม/VPS = `worktree/<staff>/<slug>` · local = `feature/<slug>` (มี ticket id) · ชื่อชน = เสนอชื่อใหม่ ไม่ทับ · เสนอ+ขอยืนยันก่อนสร้าง
+ยกเว้น: อ่านอย่างเดียว/audit/review/explain/test/grep/git · typo/docs เล็ก (เจ้าของยืนยัน) · hotfix → `hotfix/<slug>` · งานต่อ PR เดิมที่มีหลักฐาน
 
-ยกเว้น (ไม่บังคับสร้าง branch · กัน over-block):
-- งานอ่านอย่างเดียว / audit / review / explain / รัน test / grep / ดู git
-- แก้ typo หรือ docs เล็กมาก ถ้าเจ้าของยืนยันให้ทำบน branch ปัจจุบัน
-- hotfix เร่งด่วน → ใช้ `hotfix/<slug>`
-- งานต่อ PR/branch เดิมที่มีหลักฐานชัด (ยืนยันจาก branch/handoff/PR/task id ก่อน)
-
-[Team-Safe Flow — กันงานทับซ้อน/dirty เมื่อหลายคน+หลาย AI ทำร่วมกัน]
-ทำเมื่อ project config ระบุว่าเป็นงานทีม/มี worktree routing · งานแค่ถาม-ไม่แก้ repo ข้ามได้
-
-ลำดับ:
-1. ระบุ staff id → route ไป worktree ของตัวเองด้วย hermes_worktree_route.py · ห้ามไป worktree คนอื่น
-2. อ่านไฟล์ประสานทีม (อ่านอย่างเดียว ตามลำดับ): handoff.md → .hermes/active.md → .hermes/decisions.md
-3. เช็กการจองงาน: รัน `hermes_worktree_route.py claim list` (ห้ามอ่าน/เขียน markdown จอง้เอง)
-   - งานที่จะทำมี path "ซ้อนทับ" กับ claim ของคนอื่นไหม (เทียบแบบ path overlap เช่น gateway/ ซ้อน gateway/run.py ไม่ใช่ชื่อตรงเป๊ะ)
-   - ชน → STOP รายงานว่าใครจอง path ไหน
-   - เจอ claim หมดอายุ (เลย expires_at) → สถานะ STALE_CLAIM_REVIEW · ไฟล์เสี่ยง (config/migration/deploy/secret) ห้ามยึดอัตโนมัติ ต้องถามเจ้าของ
-4. เช็ก dirty บน worktree ตัวเอง: dirty + ไม่ใช่งานที่ตัวเองค้าง → STOP (อาจเป็นงานคนอื่น/รอบก่อน)
-5. จองงานก่อนเริ่มแก้: `hermes_worktree_route.py claim acquire` (staff_id/project/worktree/branch/issue/paths/expires_at)
-   - claim = "ตั้งใจจะเริ่มแก้" เท่านั้น · แหล่งจริงของ "แก้อะไรไปแล้ว" คือ git status/branch — ต้องเทียบทั้งสองเสมอ
-6. ปลด claim เมื่อจบ: หลัง commit/handoff รัน `claim release` หรือเปลี่ยนเป็น handoff
-ถ้าไม่มีคำสั่ง claim/registry → อ่าน handoff/active.md ได้ แต่รายงานว่า claim เป็น unverified ห้ามทำเหมือนล็อกแล้ว
+[Team-Safe Flow — กันงานทับซ้อน/dirty เมื่อหลายคน+หลาย AI]
+ทำเมื่อ config เป็นงานทีม/มี worktree routing · งานแค่ถาม-ไม่แก้ ข้ามได้
+1. ระบุ staff id → route ไป worktree ตัวเองด้วย `hermes_worktree_route.py` · ห้ามไป worktree คนอื่น
+2. อ่านไฟล์ประสาน (อ่านอย่างเดียว): `handoff.md` → `.hermes/active.md` → `.hermes/decisions.md`
+3. เช็กการจอง: `hermes_worktree_route.py claim list` (ห้ามอ่าน/เขียน markdown จองเอง)
+   - path "ซ้อนทับ" claim คนอื่นไหม (เทียบ path overlap เช่น `gateway/` ซ้อน `gateway/run.py`) · ชน → STOP รายงานใครจอง path ไหน
+   - claim หมดอายุ → `STALE_CLAIM_REVIEW` · ไฟล์เสี่ยง (config/migration/deploy/secret) ห้ามยึดอัตโนมัติ ถามเจ้าของ
+4. เช็ก dirty บน worktree ตัวเอง: dirty + ไม่ใช่งานตัวเองค้าง → STOP
+5. จองก่อนแก้: `claim acquire` (staff/project/worktree/branch/issue/paths/expires_at)
+   - claim = "ตั้งใจจะเริ่มแก้" · แหล่งจริงของ "แก้อะไรไปแล้ว" = git status/branch — เทียบทั้งสองเสมอ
+6. ปลด claim เมื่อจบ: หลัง commit/handoff → `claim release` หรือเปลี่ยนเป็น handoff
+ไม่มี claim/registry → อ่าน handoff/active.md ได้ แต่รายงาน claim เป็น unverified ห้ามทำเหมือนล็อกแล้ว
 
 รูปแบบคำตอบบังคับ:
 
 New Chat Startup Report
 Project: path / repo / execution target / local controller / context loaded
-Git: worktree / branch / dirty / HEAD / remote match (หรือ candidate ถ้ายังไม่รู้)
-Routing: staff id / target worktree / route status (หรือ N/A ถ้าโปรเจกต์ไม่ใช้ routing)
-VPS / Runtime: service / endpoint (หรือ N/A)
+Project Overview (3 บรรทัด): โปรเจกต์คืออะไร / โครงหลัก / ข้อตกลงสำคัญ
+Memory: process ขั้นไหน / งานล่าสุดถึงไหน(SHA) / ต้องทำต่อ 1 ข้อ / token รอบก่อน(+ธงถ้าไม่ตรงจริง)
+Git: worktree / branch / dirty / HEAD / remote match (หรือ candidate)
+Routing: staff id / target worktree / route status (หรือ N/A)
+Quality Gate: gate ที่ค้นเจอ (หรือ "ไม่พบตัวตรวจอัตโนมัติ")
+VPS / Deploy: service / endpoint / live SHA vs main (หรือ N/A)
 Evidence: timestamp / host / cwd / commands ที่รัน
 Readiness: READY / BLOCKED / NEED_OWNER_INPUT + เหตุผล + งานที่ควรทำต่อ
 
-ตัวอย่าง READY (โปรเจกต์ทั่วไปไม่มี VPS):
-Readiness: READY · git clean บน main ตรง origin · ไม่มี VPS (N/A) · พร้อมรับงานต่อ
+ตัวอย่าง READY: Readiness: READY · git clean บน feature/login ตรง origin · main live SHA ตรง CI เขียว · พร้อมรับงานต่อ
+ตัวอย่าง BLOCKED: Readiness: NEED_OWNER_INPUT · มี 2 remote ยังไม่รู้อันไหนหลัก + ไม่รู้ staff id · ขอ 2 ข้อนี้ก่อน
 
-ตัวอย่าง BLOCKED:
-Readiness: NEED_OWNER_INPUT · มี 2 remote (origin, fork) ยังไม่รู้อันไหนหลัก + ไม่รู้ staff id ของ worktree routing · ขอ 2 ข้อนี้ก่อน
-
-ข้อห้าม: ตอบแค่ "พร้อมรับคำสั่ง" · บอก clean โดยไม่รัน git status · บอก VPS ใช้ได้โดยไม่ตรวจ endpoint · สรุปด้วยศัพท์เทคนิคโดยไม่แปล
+ข้อห้าม: ตอบแค่ "พร้อมรับคำสั่ง" · บอก clean โดยไม่รัน git status · บอก deploy ใช้ได้โดยไม่เทียบ SHA/CI · เชื่อ token โดยไม่เทียบของจริง · ถามเจ้าของว่าใช้ test ตัวไหน · สรุปด้วยศัพท์เทคนิคโดยไม่แปล
 ```
 
 ## Changelog
 
-- v1.6 (2026-06-24): ผ่านตรวจ 2 AI · แก้ 2 ปัญหาเจ้าของงาน — (1) บังคับสรุปบริบทเก่า 3 บรรทัด (Process ขั้นไหน/งานล่าสุดถึงไหน/ต้องทำต่ออะไร) + เทียบ git log ไม่เชื่อ handoff อย่างเดียว (2) เพิ่ม New Feature Branch Gate (hard gate): ฟีเจอร์ใหม่บน main/shared/detached/dirty = STOP ต้องสร้าง branch ใหม่ (worktree/<staff>/<slug> หรือ feature/<slug>) ก่อนแก้โค้ด · ยกเว้นงานอ่าน/typo/hotfix/งานต่อที่มีหลักฐาน (กัน over-block)
-- v1.5 (2026-06-24): ปิดวงจรความจำคู่กับ Use Close Chat · เพิ่มขั้น 0 บังคับอ่าน handoff.md + session log ล่าสุด (ตาม latest-close.md) ก่อนเริ่มงานเสมอ → แก้ AI ลืมงานข้ามแชท · อ่าน decision token รอบก่อน (CLOSED_WITH_PENDING/NEED_OWNER_ACTION) · หาความจำไม่เจอ = บอก ไม่เดา
-- v1.4 (2026-06-24): เพิ่ม Team-Safe Flow กันงานทับซ้อน/dirty เมื่อหลายคน+หลาย AI ทำร่วมกัน (ผ่านตรวจ Codex) · จองงานผ่านคำสั่ง `hermes_worktree_route.py claim acquire/release/list` (มี file lock + expires_at) ไม่ให้ AI เขียน markdown จองเอง · เช็กชนแบบ path overlap · claim หมดอายุ = STALE_CLAIM_REVIEW · git/branch เป็นแหล่งจริงของ "แก้ไปแล้ว" claim เป็นแค่ "ตั้งใจจะแก้" · ปลด claim เมื่อ commit/handoff
-- v1.3 (2026-06-24): ผ่านตรวจ 2 AI (Claude+Codex) · เปลี่ยนเป็น capability-based gate (มีอะไรตรวจอันนั้น ไม่มีใส่ N/A) · แยก Core gate (ทุกโปรเจกต์) ออกจาก Hermes-only · เลิก hardcode IP/port/path/ssh (อ่านจาก config/runbook ของโปรเจกต์) · staff id/worktree/VPS บังคับเฉพาะโปรเจกต์ที่ config ระบุ · เพิ่ม Input contract (ไม่รู้ staff id/remote = ถามก่อน) · redact secret ใน remote URL · เพิ่ม Evidence (timestamp/host/cwd) กัน report ปลอม · Readiness เป็น token READY/BLOCKED/NEED_OWNER_INPUT + ตัวอย่าง
+- v1.8 (2026-06-28): ขั้น 0b อ่านชุด Project OS ตอนเปิดแชท (`.project/OverviewProgress/FeatureSpec/BusinessPlan/DesignSystem`) แบบ capability-based + ยึด reality-overrides-token ถ้าไฟล์ขัดของจริง · pair กับ Use Close Chat v2.2 (ที่เขียนไฟล์ชุดนี้ตอนปิด)
+- v1.7 (2026-06-26): เขียนใหม่ทั้งฉบับให้เกาะ Memory Schema v1.1 · เพิ่มขั้น 0b เรียนรู้ทั้งโปรเจกต์ (อ่านคู่มือ/โครงสร้าง/decisions ทั้งหมด สรุปภาพรวม) · ยก reality-overrides-token เป็นกฎชัด · เพิ่ม memory guard (ยืนยัน memory เป็นของ project+worktree นี้) · เพิ่ม Quality Gate Detection ตอนเปิด · เพิ่ม Deploy Gate เทียบ live SHA กับ main · latest-close แยก pointer ต่อ staff · เพิ่ม Project Overview ใน output · เช็ก schema version
+- v1.6 (2026-06-24): บังคับสรุปบริบทเก่า 3 บรรทัด + เทียบ git log · เพิ่ม New Feature Branch Gate (ฟีเจอร์ใหม่บน main/shared/detached/dirty = STOP)
+- v1.5 (2026-06-24): ปิดวงจรความจำคู่กับ Use Close Chat · ขั้น 0 อ่าน handoff + session log + decision token รอบก่อน
+- v1.4 (2026-06-24): เพิ่ม Team-Safe Flow กันงานทับซ้อนเมื่อหลายคน+หลาย AI · จองงานผ่าน claim acquire/release/list
+- v1.3 (2026-06-24): เปลี่ยนเป็น capability-based gate · เลิก hardcode IP/port/path · เพิ่ม Evidence · Readiness token
 - v1.2 (2026-06-06): เวอร์ชันก่อนหน้า
 
 ## Graph Links
 
 - Parent hub: [[skills/prompt-shortcuts/Prompt Shortcuts|Prompt Shortcuts]]
 - Registry: [[ai-context/prompt-shortcut-registry|Prompt Shortcut Registry]]
+- Schema: [[skills/prompt-shortcuts/references/memory-schema|Memory Schema v1.1]]
+- Pair: [[skills/prompt-shortcuts/references/use-close-chat|Use Close Chat]]
 - Related: [[ai-context/session-start-contract|Session Start Contract]]
-```
+- คู่มือเจ้าของงาน: [[skills/prompt-shortcuts/references/memory-system-owner-guide-th|ระบบความจำข้ามแชท — คู่มือเจ้าของงาน]]

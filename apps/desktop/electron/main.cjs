@@ -7431,45 +7431,45 @@ if (!_gotSingleInstanceLock) {
       mainWindow.focus()
     }
   })
-}
 
-// macOS delivers deep links via 'open-url' — register early (can fire before
-// whenReady; handleDeepLink queues until the renderer is ready).
-app.on('open-url', (event, url) => {
-  event.preventDefault()
-  handleDeepLink(url)
-})
-
-app.whenReady().then(() => {
-  if (IS_MAC) {
-    Menu.setApplicationMenu(buildApplicationMenu())
-  } else {
-    Menu.setApplicationMenu(null)
-  }
-  installMediaPermissions()
-  registerMediaProtocol()
-  installEmbedReferer()
-  registerDeepLinkProtocol()
-  ensureWslWindowsFonts()
-  configureSpellChecker()
-  registerPowerResumeListeners()
-  createWindow()
-
-  // Win/Linux cold start: the launching hermes:// URL is in our own argv.
-  const _coldStartLink = _extractDeepLink(process.argv)
-  if (_coldStartLink) handleDeepLink(_coldStartLink)
-
-  app.on('activate', () => {
-    // Recreate the primary window if it's gone. Guard on mainWindow directly
-    // (not just total window count) so a dock click still restores the main
-    // window when only secondary session windows remain open.
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      createWindow()
-    } else {
-      focusWindow(mainWindow)
-    }
+  // macOS delivers deep links via 'open-url' — register early (can fire before
+  // whenReady; handleDeepLink queues until the renderer is ready).
+  app.on('open-url', (event, url) => {
+    event.preventDefault()
+    handleDeepLink(url)
   })
-})
+
+  app.whenReady().then(() => {
+    if (IS_MAC) {
+      Menu.setApplicationMenu(buildApplicationMenu())
+    } else {
+      Menu.setApplicationMenu(null)
+    }
+    installMediaPermissions()
+    registerMediaProtocol()
+    installEmbedReferer()
+    registerDeepLinkProtocol()
+    ensureWslWindowsFonts()
+    configureSpellChecker()
+    registerPowerResumeListeners()
+    createWindow()
+
+    // Win/Linux cold start: the launching hermes:// URL is in our own argv.
+    const _coldStartLink = _extractDeepLink(process.argv)
+    if (_coldStartLink) handleDeepLink(_coldStartLink)
+
+    app.on('activate', () => {
+      // Recreate the primary window if it's gone. Guard on mainWindow directly
+      // (not just total window count) so a dock click still restores the main
+      // window when only secondary session windows remain open.
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        createWindow()
+      } else {
+        focusWindow(mainWindow)
+      }
+    })
+  })
+}
 
 // Seed Chromium's spellchecker with the system locale (falling back to en-US).
 // On macOS Electron uses the native spellchecker which ignores this list, but

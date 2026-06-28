@@ -776,15 +776,28 @@ def content_hash(skill_path: Path) -> str:
     """
     h = hashlib.sha256()
     if skill_path.is_dir():
-        for f in sorted(skill_path.rglob("*")):
-            if f.is_file():
-                try:
-                    rel = f.relative_to(skill_path).as_posix()
-                    h.update(rel.encode("utf-8"))
-                    h.update(b"\x00")
-                    h.update(f.read_bytes())
-                except OSError:
-                    continue
+        file_entries = []
+        for f in skill_path.rglob("*"):
+            if not f.is_file():
+                continue
+            try:
+                file_entries.append((f.relative_to(skill_path).as_posix(), f))
+            except OSError:
+                continue
+
+        # Keep ordering symmetric with ``bundle_content_hash()``, which sorts
+        # by relative POSIX path strings. Sorting ``Path`` objects directly can
+        # disagree with pure string ordering when a skill has both a file and a
+        # nested directory sharing the same prefix (e.g. ``references/styles.md``
+        # and ``references/styles/blueprint.md``), producing false update
+        # detections for unchanged skills.
+        for rel, f in sorted(file_entries, key=lambda item: item[0]):
+            try:
+                h.update(rel.encode("utf-8"))
+                h.update(b"\x00")
+                h.update(f.read_bytes())
+            except OSError:
+                continue
     elif skill_path.is_file():
         h.update(skill_path.read_bytes())
     return f"sha256:{h.hexdigest()[:16]}"

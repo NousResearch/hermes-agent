@@ -831,7 +831,9 @@ def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza
 
 
 @pytest.mark.asyncio
-async def test_natural_language_task_request_creates_ready_kanban_task(adapter, monkeypatch):
+async def test_natural_language_task_request_creates_ready_kanban_task_without_immediate_reply(
+    adapter, monkeypatch
+):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
@@ -872,7 +874,7 @@ async def test_natural_language_task_request_creates_ready_kanban_task(adapter, 
 
     await adapter._handle_message(msg)
 
-    adapter.handle_message.assert_awaited_once()
+    adapter.handle_message.assert_not_awaited()
     adapter.send.assert_not_awaited()
     assert created["board"] == "ai-company-2-0"
     assert created["kwargs"]["title"] == "この表示を直してください"
@@ -953,7 +955,7 @@ async def test_natural_language_task_request_bypasses_mention_requirement(adapte
 
     await adapter._handle_message(msg)
 
-    adapter.handle_message.assert_awaited_once()
+    adapter.handle_message.assert_not_awaited()
     adapter.send.assert_not_awaited()
     assert created["board"] == "ai-company-2-0"
     assert created["kwargs"]["title"] == "ダッシュボードの表示を直してください"
@@ -962,7 +964,7 @@ async def test_natural_language_task_request_bypasses_mention_requirement(adapte
 
 
 @pytest.mark.asyncio
-async def test_natural_language_explicit_task_registration_with_question_creates_task(
+async def test_natural_language_explicit_task_registration_with_question_defers_immediate_reply(
     adapter, monkeypatch
 ):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -1007,7 +1009,7 @@ async def test_natural_language_explicit_task_registration_with_question_creates
 
     await adapter._handle_message(msg)
 
-    adapter.handle_message.assert_awaited_once()
+    adapter.handle_message.assert_not_awaited()
     adapter.send.assert_not_awaited()
     assert created["board"] == "ai-company-2-0"
     assert created["kwargs"]["title"] == prompt
@@ -1022,6 +1024,18 @@ def test_natural_language_classifier_registers_regular_discord_messages():
     )
     assert DiscordAdapter._looks_like_natural_task_request("この説明の意味わかりますか？")
     assert not DiscordAdapter._looks_like_natural_task_request("/status")
+
+
+def test_natural_language_reply_deferral_classifier():
+    assert DiscordAdapter._should_defer_natural_task_reply(
+        "テストで新規タスクを登録したい。まずはどんなスキルがあるかを箇条書きで出して"
+    )
+    assert DiscordAdapter._should_defer_natural_task_reply(
+        "どんなスキルがあるかを箇条書きで出して"
+    )
+    assert DiscordAdapter._should_defer_natural_task_reply("ダッシュボードの状態を確認して")
+    assert not DiscordAdapter._should_defer_natural_task_reply("この説明の意味わかりますか？")
+    assert not DiscordAdapter._should_defer_natural_task_reply("/status")
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,26 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_NATURAL_TASK_DEFER_REPLY_RE = re.compile(
+    r"(直して|なおして|修正して|実装して|作って|作成して|追加して|更新して|反映して|"
+    r"確認して|調べて|調査して|見て|進めて|対応して|テストして|チェックして|"
+    r"整理して|まとめて|一覧|箇条書き|リスト|列挙|棚卸|スキル|skill|"
+    r"状態|状況|原因|なぜ|どうして|ログ|ダッシュボード|dashboard|カンバン|kanban|"
+    r"github|vps|openai|メール|権限|警告|本当に|直った|なおった)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class NaturalTaskIntakeResult:
+    matched: bool = False
+    created: bool = False
+    task_id: Optional[str] = None
+
+    def __bool__(self) -> bool:
+        return self.matched
+
+
 def _summarize_exec_approval(command: str, description: str = "") -> str:
     """Return a short human-facing summary for Discord exec approval prompts."""
     cmd = (command or "").strip()
@@ -3114,6 +3135,13 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         return True
 
+    @staticmethod
+    def _should_defer_natural_task_reply(prompt: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (prompt or "").strip())
+        if not DiscordAdapter._looks_like_natural_task_request(normalized):
+            return False
+        return bool(_NATURAL_TASK_DEFER_REPLY_RE.search(normalized))
+
     def _build_task_payload(
         self,
         *,
@@ -3319,23 +3347,23 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         thread_id: Optional[str],
         has_attachments: bool,
-    ) -> bool:
-        """Register regular Discord messages without replacing normal chat flow.
+    ) -> NaturalTaskIntakeResult:
+        """Register regular Discord messages and report intake outcome.
 
         Discord is treated as the owner's work intake, not a casual chat
-        surface. Registration and natural replies are separate: this stores the
-        message as a kanban task, then the caller continues into the regular
-        agent response path without sending a separate "registered" notice.
+        surface. Registration and natural replies are separate. Callers decide
+        whether the natural reply can run immediately or should wait for the
+        kanban worker's final notification.
         """
         if not self._natural_task_requests_enabled():
-            return False
+            return NaturalTaskIntakeResult()
         if not self._looks_like_natural_task_request(prompt):
-            return False
+            return NaturalTaskIntakeResult()
 
         try:
             payload = self._build_natural_task_payload(message, prompt)
         except ValueError:
-            return False
+            return NaturalTaskIntakeResult()
 
         def _create_task() -> Dict[str, str]:
             message_id = str(getattr(message, "id", "") or "")
@@ -3350,14 +3378,18 @@ class DiscordAdapter(BasePlatformAdapter):
             task_data = await asyncio.to_thread(_create_task)
         except Exception:
             logger.exception("[%s] Failed to create kanban task from natural Discord request", self.name)
-            return True
+            return NaturalTaskIntakeResult(matched=True, created=False)
 
         logger.info(
             "[%s] Registered natural Discord request as kanban task %s",
             self.name,
             task_data.get("id", "?"),
         )
-        return True
+        return NaturalTaskIntakeResult(
+            matched=True,
+            created=True,
+            task_id=task_data.get("id"),
+        )
 
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
@@ -4940,6 +4972,7 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        natural_task_intake = NaturalTaskIntakeResult()
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -4992,7 +5025,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     # Kanban intake: task-like Discord messages should
                     # become kanban cards even when the channel normally
                     # requires an @mention before starting a chat session.
-                    if not await self._maybe_handle_natural_task_request(
+                    natural_task_intake = await self._maybe_handle_natural_task_request(
                         message=message,
                         prompt=normalized_content,
                         chat_id=str(message.channel.id),
@@ -5000,7 +5033,18 @@ class DiscordAdapter(BasePlatformAdapter):
                         has_attachments=bool(
                             getattr(message, "attachments", []) or snapshot_attachments
                         ),
+                    )
+                    if not natural_task_intake:
+                        return
+                    if (
+                        natural_task_intake.created
+                        and self._should_defer_natural_task_reply(normalized_content)
                     ):
+                        logger.info(
+                            "[%s] Deferred Discord reply to kanban worker for task %s",
+                            self.name,
+                            natural_task_intake.task_id or "?",
+                        )
                         return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
@@ -5210,13 +5254,24 @@ class DiscordAdapter(BasePlatformAdapter):
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 
-        await self._maybe_handle_natural_task_request(
-            message=message,
-            prompt=event_text,
-            chat_id=str(effective_channel.id),
-            thread_id=thread_id,
-            has_attachments=bool(all_attachments),
-        )
+        if not natural_task_intake:
+            natural_task_intake = await self._maybe_handle_natural_task_request(
+                message=message,
+                prompt=event_text,
+                chat_id=str(effective_channel.id),
+                thread_id=thread_id,
+                has_attachments=bool(all_attachments),
+            )
+        if (
+            natural_task_intake.created
+            and self._should_defer_natural_task_reply(event_text)
+        ):
+            logger.info(
+                "[%s] Deferred Discord reply to kanban worker for task %s",
+                self.name,
+                natural_task_intake.task_id or "?",
+            )
+            return
 
         # ── History backfill ─────────────────────────────────────────
         # When require_mention is active, the bot only processes messages

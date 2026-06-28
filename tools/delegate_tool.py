@@ -1210,6 +1210,19 @@ def _build_child_agent(
     # Inheriting the parent's mode causes 404 errors when the child routes to the
     # wrong endpoint.  Derive the mode from the target provider when it differs.
     _parent_provider = getattr(parent_agent, "provider", None) or ""
+    # Same anti-leak guard for base_url + api_key (Hermes leak fix 2026-06-28):
+    # when the child targets a different provider than the parent, drop the
+    # parent's stale URL and key so init_agent() re-resolves them from the
+    # target provider's own config / credential pool. Without this, a parent
+    # holding an openrouter credential could silently forward it to a subagent
+    # whose model override targets a different provider — the subagent would
+    # then call openrouter.ai with the parent's key, billing the user for
+    # models they never authorised through that route.
+    if override_provider and effective_provider != _parent_provider:
+        if not override_base_url:
+            effective_base_url = None
+        if not override_api_key:
+            effective_api_key = None
     if override_api_mode is not None:
         effective_api_mode = override_api_mode
     elif effective_provider != _parent_provider:
@@ -3208,7 +3221,7 @@ def _resolve_model_provider_override(
             f"Cannot import model switch resolver for delegation override: {exc}"
         ) from exc
 
-    parsed_model, parsed_provider, _ignored_global, _ignored_refresh = parse_model_flags(raw_model)
+    parsed_model, parsed_provider, _ignored_global, _ignored_refresh, _ignored_session = parse_model_flags(raw_model)
     if explicit_provider and parsed_provider and explicit_provider != parsed_provider:
         raise ValueError(
             f"Conflicting provider overrides: provider={explicit_provider!r} "

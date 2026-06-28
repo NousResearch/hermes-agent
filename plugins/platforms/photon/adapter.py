@@ -621,6 +621,19 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
         ctype = content.get("type")
+        if ctype == "text":
+            raw_text = content.get("text") or ""
+            # iMessage emits U+FFFC OBJECT REPLACEMENT CHARACTER as a transient
+            # placeholder for some media bubbles (notably voice notes). Photon
+            # can then deliver the real attachment/voice event immediately
+            # afterwards with a different message id. If we dispatch the
+            # placeholder as a standalone text turn, the subsequent media event
+            # arrives while that turn is active and the gateway sends a bogus
+            # "Interrupting current task" busy ack. Drop placeholder-only text
+            # at the platform boundary; the real media event carries the bytes.
+            if raw_text.strip() == "\ufffc":
+                logger.debug("[photon] ignoring iMessage object-placeholder text event")
+                return
         if ctype == "reaction":
             # Route only tapbacks on messages WE sent — those are implicitly
             # addressed to the bot (feishu precedent: synthetic text event).

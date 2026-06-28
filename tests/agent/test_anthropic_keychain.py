@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 from agent.anthropic_adapter import (
     _read_claude_code_credentials_from_keychain,
     read_claude_code_credentials,
+    _refresh_oauth_token,
 )
 
 
@@ -265,3 +266,72 @@ class TestReadClaudeCodeCredentialsDesync:
 
         assert creds is not None
         assert creds["accessToken"] == "newer-expired-file"
+
+
+class TestRefreshOAuthTokenAdoptsFreshCredential:
+    """``_refresh_oauth_token`` should adopt a credential Claude Code has
+    already refreshed rather than POSTing a (possibly already-rotated)
+    single-use refresh token and racing Claude Code into ``invalid_grant``.
+    """
+
+    _FRESH = 9_999_999_999_999
+
+    def test_adopts_already_refreshed_token_without_posting(self, monkeypatch):
+        """When a live source already holds a valid token, return it and skip
+        the network refresh entirely.
+        """
+        fresh = {
+            "accessToken": "already-refreshed-token",
+            "refreshToken": "live-refresh",
+            "expiresAt": self._FRESH,
+        }
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            lambda: fresh,
+        )
+
+        def _should_not_be_called(*args, **kwargs):  # pragma: no cover - guard
+            raise AssertionError("refresh_anthropic_oauth_pure must not be called")
+
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.refresh_anthropic_oauth_pure",
+            _should_not_be_called,
+        )
+
+        # Stale creds passed in by the caller — should be ignored in favor
+        # of the live, already-refreshed token.
+        result = _refresh_oauth_token({"refreshToken": "stale", "expiresAt": 1})
+        assert result == "already-refreshed-token"
+
+    def test_falls_back_to_network_refresh_when_no_fresh_credential(self, monkeypatch):
+        """When no live source has a valid token, fall back to refreshing
+        ourselves using the freshest available refresh token.
+        """
+        # Live read returns an expired credential carrying a refresh token.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            lambda: {"accessToken": "expired", "refreshToken": "live-refresh", "expiresAt": 1},
+        )
+        captured = {}
+
+        def _fake_refresh(refresh_token, **kwargs):
+            captured["refresh_token"] = refresh_token
+            return {
+                "access_token": "newly-minted",
+                "refresh_token": "rotated",
+                "expires_at_ms": self._FRESH,
+            }
+
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.refresh_anthropic_oauth_pure", _fake_refresh
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._write_claude_code_credentials",
+            lambda *a, **k: None,
+        )
+
+        result = _refresh_oauth_token({"refreshToken": "caller-refresh", "expiresAt": 1})
+        assert result == "newly-minted"
+        # Prefers the live source's refresh token over the caller's stale copy.
+        assert captured["refresh_token"] == "live-refresh"
+

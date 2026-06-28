@@ -1639,3 +1639,149 @@ class TestMediaDeliveryDiagnosability:
         assert any(r.endswith("cache/documents") for r in roots)
         # Legacy layout still present.
         assert any(r.endswith("image_cache") for r in roots)
+
+
+class TestDockerContainerPathTranslation:
+    """Tests for _translate_docker_container_path and docker-aware media delivery."""
+
+    def _make_config(self, backend="docker", volumes=None):
+        """Return a mock load_config result."""
+        return {
+            "terminal": {
+                "backend": backend,
+                "docker_volumes": volumes or [],
+            }
+        }
+
+    def test_translates_output_path_to_host(self, monkeypatch):
+        """Container /output/file.txt -> host ~/cache/documents/file.txt."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: self._make_config(volumes=["/home/user/.hermes/cache/documents:/output"]),
+        )
+        from gateway.platforms.base import _translate_docker_container_path
+        result = _translate_docker_container_path("/output/report.pdf")
+        assert result == "/home/user/.hermes/cache/documents/report.pdf"
+
+    def test_translates_nested_container_path(self, monkeypatch):
+        """Container /output/subdir/file.txt -> host path with subdir."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: self._make_config(volumes=["/home/user/.hermes/cache/documents:/output"]),
+        )
+        from gateway.platforms.base import _translate_docker_container_path
+        result = _translate_docker_container_path("/output/subdir/data.csv")
+        assert result == "/home/user/.hermes/cache/documents/subdir/data.csv"
+
+    def test_longest_prefix_match(self, monkeypatch):
+        """More specific volume mount wins over shorter one."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: self._make_config(volumes=[
+                "/host/a:/output",
+                "/host/b:/output/special",
+            ]),
+        )
+        from gateway.platforms.base import _translate_docker_container_path
+        # /output/special/file.txt should match /host/b:/output/special (longer prefix)
+        result = _translate_docker_container_path("/output/special/file.txt")
+        assert result == "/host/b/file.txt"
+        # /output/other.txt should match /host/a:/output (shorter prefix)
+        result2 = _translate_docker_container_path("/output/other.txt")
+        assert result2 == "/host/a/other.txt"
+
+    def test_returns_none_for_non_docker_backend(self, monkeypatch):
+        """No translation when backend is not docker."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: self._make_config(backend="local", volumes=["/host:/output"]),
+        )
+        from gateway.platforms.base import _translate_docker_container_path
+        result = _translate_docker_container_path("/output/report.pdf")
+        assert result is None
+
+    def test_returns_none_for_no_matching_volume(self, monkeypatch):
+        """No translation when path doesn't match any volume mount."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: self._make_config(volumes=["/host/data:/workspace"]),
+        )
+        from gateway.platforms.base import _translate_docker_container_path
+        result = _translate_docker_container_path("/output/report.pdf")
+        assert result is None
+
+    def test_returns_none_for_empty_volumes(self, monkeypatch):
+        """No translation when docker_volumes is empty."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: self._make_config(volumes=[]),
+        )
+        from gateway.platforms.base import _translate_docker_container_path
+        result = _translate_docker_container_path("/output/report.pdf")
+        assert result is None
+
+    def test_returns_none_on_config_error(self, monkeypatch):
+        """No translation when config loading fails."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: (_ for _ in ()).throw(RuntimeError("config error")),
+        )
+        from gateway.platforms.base import _translate_docker_container_path
+        result = _translate_docker_container_path("/output/report.pdf")
+        assert result is None
+
+    def test_exact_mount_point_match(self, monkeypatch):
+        """Container path exactly at mount point translates correctly."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: self._make_config(volumes=["/host/data:/data"]),
+        )
+        from gateway.platforms.base import _translate_docker_container_path
+        result = _translate_docker_container_path("/data")
+        assert result == "/host/data"
+
+    def test_validate_with_docker_translation(self, tmp_path, monkeypatch):
+        """Integration: validate_media_delivery_path translates container paths."""
+        host_dir = tmp_path / "cache" / "documents"
+        host_dir.mkdir(parents=True)
+        host_file = host_dir / "report.pdf"
+        host_file.write_bytes(b"%PDF-1.4")
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: self._make_config(volumes=[f"{host_dir}:/output"]),
+        )
+        # Non-strict mode so any existing file passes
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+
+        from gateway.platforms.base import validate_media_delivery_path
+        result = validate_media_delivery_path("/output/report.pdf")
+        assert result == str(host_file.resolve())
+
+    def test_validate_rejects_container_path_without_docker_backend(self, tmp_path, monkeypatch):
+        """Non-docker backend: container path is not translated, so resolve fails."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: self._make_config(backend="local", volumes=[f"{tmp_path}:/output"]),
+        )
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+
+        from gateway.platforms.base import validate_media_delivery_path
+        result = validate_media_delivery_path("/output/report.pdf")
+        # /output/report.pdf doesn't exist on the host, so resolve fails
+        assert result is None
+
+    def test_validate_docker_denylist_still_applies(self, tmp_path, monkeypatch):
+        """Docker translation doesn't bypass the system-path denylist."""
+        # Map container /hostroot to host / so /hostroot/etc/passwd -> /etc/passwd.
+        # /etc is on _MEDIA_DELIVERY_DENIED_PREFIXES, so it should be blocked
+        # even after docker path translation.
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: self._make_config(volumes=["/:/hostroot"]),
+        )
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+
+        from gateway.platforms.base import validate_media_delivery_path
+        result = validate_media_delivery_path("/hostroot/etc/passwd")
+        assert result is None

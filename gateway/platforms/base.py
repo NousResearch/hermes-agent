@@ -1169,6 +1169,57 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _translate_docker_container_path(candidate: str) -> Optional[str]:
+    """Translate a Docker container path to its host-side equivalent.
+
+    When ``terminal.backend`` is ``docker``, the agent emits paths that
+    exist inside the container (e.g. ``/output/report.pdf``).  The gateway
+    runs on the host and cannot resolve those paths directly.  This helper
+    maps the container prefix to the host prefix using the longest-prefix
+    match against ``terminal.docker_volumes`` entries (``host:container``
+    format).
+
+    Returns the translated host path string, or ``None`` if translation
+    is not applicable (backend is not docker, no matching volume, etc.).
+    """
+    try:
+        from hermes_cli.config import load_config as _load_config
+        cfg = _load_config()
+        terminal_cfg = cfg.get("terminal", {})
+        if not isinstance(terminal_cfg, dict):
+            return None
+        if terminal_cfg.get("backend") != "docker":
+            return None
+        volumes = terminal_cfg.get("docker_volumes", [])
+        if not isinstance(volumes, list):
+            return None
+    except Exception:
+        return None
+
+    # Longest-prefix match on container mount points.
+    best_match_len = 0
+    best_host_prefix = None
+    for vol in volumes:
+        if not isinstance(vol, str) or ":" not in vol:
+            continue
+        host_part, _, container_part = vol.rpartition(":")
+        if not container_part or not host_part:
+            continue
+        container_prefix = container_part.rstrip("/")
+        if not container_prefix:
+            continue
+        if candidate == container_prefix or candidate.startswith(container_prefix + "/"):
+            if len(container_prefix) > best_match_len:
+                best_match_len = len(container_prefix)
+                best_host_prefix = host_part.rstrip("/")
+
+    if best_host_prefix is None:
+        return None
+
+    suffix = candidate[best_match_len:]
+    return best_host_prefix + suffix
+
+
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
@@ -1206,6 +1257,17 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
         return None
     if not expanded.is_absolute():
         return None
+
+    # When running inside a Docker sandbox, the agent emits container-local
+    # paths (e.g. /output/report.pdf) that don't exist on the host.
+    # Translate them to the host-side path using docker_volumes config
+    # before resolving.
+    translated = _translate_docker_container_path(str(expanded))
+    if translated is not None:
+        try:
+            expanded = Path(translated)
+        except (OSError, RuntimeError, ValueError):
+            return None
 
     try:
         resolved = expanded.resolve(strict=True)

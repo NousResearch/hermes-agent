@@ -1130,6 +1130,11 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        # MCP server integration — used by ``/browser connect`` to sync the
+        # chrome-devtools-mcp server's ``--browser-url`` flag.  Customize if
+        # you use a different browser MCP server (e.g. chromium-cdp, browser-kit).
+        "mcp_server_name": "chrome-devtools",  # Server entry in mcp_servers section
+        "mcp_browser_url_arg": "--browser-url",  # CLI flag for the browser CDP URL
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
         # Active only when a CDP-capable backend is attached (Browserbase or
         # local Chrome via /browser connect). See
@@ -4026,11 +4031,15 @@ def clear_model_endpoint_credentials(
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).
-    
+
     Walks the DEFAULT_CONFIG tree at arbitrary depth and reports any keys
-    present in defaults but absent from the user's loaded config.
+    present in defaults but absent from the user's current (raw) config.
+    Uses ``read_raw_config()`` instead of ``load_config()`` so that new
+    DEFAULT_CONFIG keys that haven't been persisted yet are detected —
+    ``load_config()`` always returns every default key (deep-merge), which
+    would make this function always return empty.
     """
-    config = load_config()
+    raw = read_raw_config()
     missing = []
 
     def _check(defaults: dict, current: dict, prefix: str = ""):
@@ -4047,7 +4056,7 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
             elif isinstance(default_value, dict) and isinstance(current.get(key), dict):
                 _check(default_value, current[key], full_key)
 
-    _check(DEFAULT_CONFIG, config)
+    _check(DEFAULT_CONFIG, raw)
     return missing
 
 

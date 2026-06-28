@@ -10272,6 +10272,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
 
+            # Sync the auto-reload watcher's tracking state so it doesn't
+            # re-detect the config.yaml change we just loaded and trigger a
+            # duplicate reload on the next poll cycle.
+            try:
+                from hermes_cli.config import get_config_path as _get_config_path
+                _cfg_path = _get_config_path()
+                self._config_mtime = _cfg_path.stat().st_mtime
+                import yaml as _yaml
+                self._config_mcp_servers = (
+                    _yaml.safe_load(_cfg_path.read_text(encoding="utf-8")) or {}
+                ).get("mcp_servers") or {}
+            except Exception:
+                pass  # Non-fatal — watcher may fire once more if this fails
+
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
 

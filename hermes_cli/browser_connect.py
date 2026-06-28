@@ -14,6 +14,10 @@ from hermes_constants import get_hermes_home
 DEFAULT_BROWSER_CDP_PORT = 9222
 DEFAULT_BROWSER_CDP_URL = f"http://127.0.0.1:{DEFAULT_BROWSER_CDP_PORT}"
 
+# Config key defaults (mirror DEFAULT_CONFIG in config.py).
+_MCP_SERVER_NAME_KEY = ("browser", "mcp_server_name")
+_MCP_BROWSER_URL_ARG_KEY = ("browser", "mcp_browser_url_arg")
+
 _DARWIN_APPS = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -215,3 +219,43 @@ def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | 
         except Exception:
             continue
     return False
+
+
+# ── config helpers ──────────────────────────────────────────────────────────
+
+
+def _read_browser_config(key_path: tuple[str, ...], default):
+    """Deep-read a dotpath key from the **merged** config's ``browser`` section.
+
+    Uses ``load_config()`` (not ``read_raw_config()``) so that keys present
+    only in ``DEFAULT_CONFIG`` (e.g. new keys added after the user's
+    ``config.yaml`` was created) are found via the deep-merge fallback.
+    Returns *default* when the key is absent or the path doesn't exist.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        val = cfg
+        for k in key_path:
+            if not isinstance(val, dict):
+                return default
+            val = val.get(k)
+            if val is None:
+                return default
+        return val if not isinstance(val, dict) else default
+    except Exception:
+        return default
+
+
+def get_mcp_server_name() -> str:
+    """Read ``browser.mcp_server_name`` from config (default: chrome-devtools)."""
+    return str(
+        _read_browser_config(_MCP_SERVER_NAME_KEY, "chrome-devtools") or "chrome-devtools"
+    )
+
+
+def get_mcp_browser_url_arg() -> str:
+    """Read ``browser.mcp_browser_url_arg`` from config (default: --browser-url)."""
+    return str(
+        _read_browser_config(_MCP_BROWSER_URL_ARG_KEY, "--browser-url") or "--browser-url"
+    )

@@ -2521,7 +2521,15 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
 
-    result = _run_browser_command(nav_session_key, "open", [url], timeout=max(_get_command_timeout(), 60))
+    # When connected via CDP to an existing browser, open a new tab in the
+    # existing context instead of spawning a new incognito window (which
+    # "open" does via Playwright's browser.newContext()).
+    # In local headless mode, keep using "open" (no persistent context).
+    cdp_active = bool(session_info.get("cdp_url"))
+    if cdp_active:
+        result = _run_browser_command(nav_session_key, "tab", ["new", url], timeout=max(_get_command_timeout(), 60))
+    else:
+        result = _run_browser_command(nav_session_key, "open", [url], timeout=max(_get_command_timeout(), 60))
 
     # Remember which session served this nav so snapshot/click/fill/...
     # on the same task_id hit it (critical when hybrid routing has both a
@@ -2532,6 +2540,17 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         data = result.get("data", {})
         title = data.get("title", "")
         final_url = data.get("url", url)
+
+        # BUGFIX: After "tab new" in CDP mode, select the new tab so subsequent
+        # browser_snapshot / browser_vision calls target the right page.
+        # "tab new" returns data with tabId (string like "t4") or index (int)
+        # but does NOT auto-select the tab — it stays in the background.
+        if cdp_active:
+            tab_id = data.get("tabId") or data.get("index")
+            if tab_id is not None:
+                _run_browser_command(
+                    nav_session_key, "tab", [str(tab_id)], timeout=10
+                )
 
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
@@ -2548,7 +2567,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             and final_url != url
             and _is_always_blocked_url(final_url)
         ):
-            _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+            # In CDP mode, open a new tab instead of a new window
+            if cdp_active:
+                _run_browser_command(nav_session_key, "tab", ["new", "about:blank"], timeout=10)
+            else:
+                _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
             return json.dumps({
                 "success": False,
                 "error": "Blocked: redirect landed on a cloud metadata endpoint",
@@ -2561,7 +2584,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             and final_url and final_url != url and not _is_safe_url(final_url)
         ):
             # Navigate away to a blank page to prevent snapshot leaks
-            _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+            if cdp_active:
+                _run_browser_command(nav_session_key, "tab", ["new", "about:blank"], timeout=10)
+            else:
+                _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
             return json.dumps({
                 "success": False,
                 "error": "Blocked: redirect landed on a private/internal address",
@@ -3093,7 +3119,18 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 
 def _maybe_start_recording(task_id: str):
-    """Start recording if browser.record_sessions is enabled in config."""
+    """Start recording if browser.record_sessions is enabled in config.
+
+    Skips recording when CDP override is active — the browser is externally
+    managed (the user's own Chrome via ``/browser connect`` or config's
+    ``browser.cdp_url``), so Hermes should not control recording lifecycle.
+    Additionally, the recording engine in agent-browser <0.27 can create a
+    new incognito browser context when started in CDP mode, causing a
+    spurious extra window.
+    """
+    if _get_cdp_override():
+        return
+
     with _cleanup_lock:
         if task_id in _recording_sessions:
             return

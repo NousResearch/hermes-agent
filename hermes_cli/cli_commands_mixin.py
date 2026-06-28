@@ -1760,6 +1760,18 @@ class CLICommandsMixin:
                 return
 
             os.environ["BROWSER_CDP_URL"] = cdp_url
+            # Update the MCP chrome-devtools server's browser URL AND reload
+            # immediately — the auto-reload watcher would eventually do this but
+            # the agent's next turn can arrive before the watcher fires (~5s).
+            try:
+                from hermes_cli.mcp_config import _update_mcp_browser_url
+                if _update_mcp_browser_url(cdp_url):
+                    print(f"   ✓ Updated MCP chrome-devtools endpoint to {cdp_url}")
+                    # Reload MCP servers so the new --browser-url is picked up
+                    # before the agent's next tool call.
+                    self._reload_mcp()
+            except Exception:
+                pass  # Non-fatal — MCP update is a convenience
             # Eagerly start the CDP supervisor so pending_dialogs + frame_tree
             # show up in the next browser_snapshot.  No-op if already started.
             try:
@@ -1790,6 +1802,24 @@ class CLICommandsMixin:
         elif sub == "disconnect":
             if current:
                 os.environ.pop("BROWSER_CDP_URL", None)
+                # Reset MCP chrome-devtools browser URL to the persistent config
+                # value (browser.cdp_url) so both systems stay in sync.
+                # Falls back to http://127.0.0.1:9222 if the config key is not set.
+                try:
+                    from hermes_cli.config import read_raw_config
+                    from hermes_cli.mcp_config import _update_mcp_browser_url
+                    _cfg_data = read_raw_config()
+                    _reset_url = str(
+                        _cfg_data.get("browser", {}).get("cdp_url", "http://127.0.0.1:9222")
+                        or "http://127.0.0.1:9222"
+                    )
+                    if _update_mcp_browser_url(_reset_url):
+                        print(f"   ✓ Reset MCP chrome-devtools endpoint to {_reset_url}")
+                        # Reload MCP servers so the reset --browser-url is
+                        # picked up before the next agent tool call.
+                        self._reload_mcp()
+                except Exception:
+                    pass  # Non-fatal — MCP update is a convenience
                 try:
                     from tools.browser_tool import cleanup_all_browsers, _stop_cdp_supervisor
                     _stop_cdp_supervisor("default")

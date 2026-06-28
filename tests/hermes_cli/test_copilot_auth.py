@@ -107,6 +107,30 @@ class TestResolveToken:
         assert source == ""
 
 
+class TestGhCliCreationFlags:
+    """_try_gh_cli_token passes CREATE_NO_WINDOW on Windows."""
+
+    def test_subprocess_run_receives_creationflags(self, monkeypatch):
+        """subprocess.run must receive creationflags to suppress console flash."""
+        import subprocess
+        from unittest.mock import MagicMock
+        from hermes_cli.copilot_auth import _try_gh_cli_token
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        fake_result = MagicMock(returncode=0, stdout="gho_test_token\n")
+        with patch("hermes_cli.copilot_auth.subprocess.run", return_value=fake_result) as mock_run:
+            with patch("hermes_cli.copilot_auth._gh_cli_candidates", return_value=["/usr/bin/gh"]):
+                _try_gh_cli_token()
+
+        _, kwargs = mock_run.call_args
+        assert "creationflags" in kwargs
+        assert kwargs["creationflags"] == windows_hide_flags()
+
+
 class TestRequestHeaders:
     """Copilot API header generation."""
 

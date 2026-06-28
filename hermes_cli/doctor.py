@@ -10,6 +10,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
@@ -2196,6 +2197,7 @@ def run_doctor(args):
             result = subprocess.run(
                 ["gh", "auth", "status", "--json", "authenticated"],
                 capture_output=True, timeout=10,
+                creationflags=windows_hide_flags(),
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):

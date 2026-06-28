@@ -196,7 +196,7 @@ def _frames_for(
         return list(raw)
     from PIL import Image
 
-    return [f.resize((scale_w, scale_h), Image.LANCZOS) for f in raw]
+    return [f.resize((scale_w, scale_h), Image.NEAREST) for f in raw]
 
 
 def state_frame_counts(
@@ -450,7 +450,7 @@ def _downscale_cells(frame, *, target_cols: int) -> list[list[Cell]]:
     target_cols = max(4, target_cols)
     aspect = frame.height / max(1, frame.width)
     target_rows = max(2, int(round(target_cols * aspect * 0.5)) * 2)
-    small = frame.resize((target_cols, target_rows), Image.LANCZOS).convert("RGBA")
+    small = frame.resize((target_cols, target_rows), Image.NEAREST).convert("RGBA")
     px = small.load()
 
     grid: list[list[Cell]] = []

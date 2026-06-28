@@ -40,7 +40,7 @@ hermes-agent/
 │   │                     #   yuanbao, webhook, api_server, ...). See ADDING_A_PLATFORM.md.
 │   └── builtin_hooks/    # Extension point for always-registered gateway hooks (none shipped)
 ├── plugins/              # Plugin system (see "Plugins" section below)
-│   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
+│   ├── memory/           # Memory-provider plugins (honcho, memgw, mem0, supermemory, ...)
 │   ├── context_engine/   # Context-engine plugins
 │   ├── model-providers/  # Inference backend plugins (openrouter, anthropic, gmi, ...)
 │   ├── kanban/           # Multi-agent board dispatcher + worker plugin
@@ -513,7 +513,7 @@ explicitly (it's idempotent).
 ### Memory-provider plugins (`plugins/memory/<name>/`)
 
 Separate discovery system for pluggable memory backends. Current built-in
-providers include **honcho, mem0, supermemory, byterover, hindsight,
+providers include **honcho, memgw, mem0, supermemory, byterover, hindsight,
 holographic, openviking, retaindb**.
 
 Each provider implements the `MemoryProvider` ABC (see `agent/memory_provider.py`)
@@ -545,6 +545,13 @@ landing in this tree. PRs that add a new directory under
 `plugins/memory/` will be closed with a pointer to publish the
 provider as its own repo. Existing in-tree providers stay; bug fixes
 to them are welcome.
+
+**Fork exception:** `plugins/memory/memgw/` is intentionally bundled in this
+fork because Memory Gateway is the owner's default backend and must be
+available on every synced machine without per-host plugin installation. It
+degrades to built-in memory when the `mcp` dependency or required gateway auth
+is absent. If this fork is upstreamed, move `memgw` to a standalone user plugin
+or pip entry point before submission.
 
 ### Model-provider plugins (`plugins/model-providers/<name>/`)
 

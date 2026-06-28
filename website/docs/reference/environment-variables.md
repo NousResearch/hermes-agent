@@ -153,6 +153,8 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |
+| `MEMGW_API_URL` | Memory Gateway MCP endpoint for the `memgw` memory provider (default: `https://mcp.danizhaky.com/mcp`). Base hosts are normalized to `/mcp`. |
+| `MEMGW_API_KEY` | Bearer token for the `memgw` memory provider. Required for non-loopback endpoints; omitted only for exact loopback hosts (`localhost`, `127.0.0.1`, `::1`). |
 | `HINDSIGHT_TIMEOUT` | Timeout in seconds for Hindsight memory-provider API calls (default: `60`). Bump this if your Hindsight instance is slow to respond during `/sync` or `on_session_switch` and you're seeing timeouts in `errors.log`. |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |

@@ -2,8 +2,8 @@
 
 Connects Hermes to the self-hosted **Memory Gateway** (Neo4j + Qdrant + Notion)
 over its Streamable-HTTP MCP endpoint. Unlike sealed memory backends, the
-gateway fuses **semantic + keyword + graph** retrieval and grounds answers in a
-knowledge graph and the Obsidian vault.
+gateway combines **semantic + keyword** retrieval with graph context and grounds
+answers in a knowledge graph and the Obsidian vault.
 
 ## Why this over a generic memory backend
 
@@ -18,14 +18,15 @@ knowledge graph and the Obsidian vault.
 
 ## Tools exposed to the model
 
-- `memgw_recall` — hybrid recall (semantic + keyword + graph fusion via RRF)
+- `memgw_recall` — hybrid recall (semantic + keyword retrieval with graph context from the gateway)
 - `memgw_retain` — store a durable memory
 - `memgw_reflect` — synthesized beliefs (mental models) on a topic
 
 ## Auto behaviour
 
 - **prefetch** — background `recall` (or `reflect`) injected before each turn
-- **sync_turn** — store completed turns (non-blocking, single-writer)
+- **on_session_switch** — clear cached prefetch and invalidate in-flight workers
+- **sync_turn** — store completed turns (non-blocking; all active writer threads are joined on shutdown)
 - **on_delegation** — record a subagent task+result as an `experience`
 - **on_session_end** — store a lightweight session summary
 
@@ -43,12 +44,30 @@ export MEMGW_API_URL="https://mcp.danizhaky.com/mcp"   # or http://localhost:808
 export MEMGW_API_KEY="<gateway bearer token>"          # required for cloud mode
 ```
 
-Config can also live in `$HERMES_HOME/memgw.json`.
+Config can also live in `$HERMES_HOME/memgw.json`. File values override
+environment defaults:
+
+```json
+{
+  "api_url": "https://mcp.danizhaky.com/mcp",
+  "api_key": "...",
+  "recall_limit": 5,
+  "prefetch_method": "recall"
+}
+```
+
+`prefetch_method` may be `recall`, `reflect`, or `off`.
 
 ### Modes
 
 - **Cloud** (default): hosted gateway at `mcp.danizhaky.com`, Bearer-authenticated.
-- **Local**: point `MEMGW_API_URL` at a `localhost` gateway — no key required.
+- **Local**: point `MEMGW_API_URL` at an exact loopback host (`localhost`,
+  `127.0.0.1`, or `::1`) — no key required. URLs that only contain
+  "localhost" in another component are not trusted.
+
+Gateway sessions pass `user_id` through recall and turn-sync calls so a shared
+gateway can scope memory per chat user. Delegation and session-summary writes use
+the provider's initialized user scope.
 
 A circuit breaker pauses calls for 120s after 5 consecutive failures so a
 gateway outage never blocks the turn loop; recall degrades gracefully to empty.

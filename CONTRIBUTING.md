@@ -51,7 +51,7 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 ## Memory Providers: Ship as a Standalone Plugin
 
-**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
+**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, memgw, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
 
 Standalone memory plugins:
 
@@ -61,7 +61,7 @@ Standalone memory plugins:
 - Can register their own CLI subcommands via `register_cli(subparser)` in a `cli.py` file
 - Get all the same lifecycle hooks and config plumbing as in-tree providers
 
-PRs that add a new directory under `plugins/memory/` will be closed with a pointer to publish the provider as its own repo. Existing in-tree providers stay; bug fixes to them are welcome.
+PRs that add a new directory under `plugins/memory/` will be closed with a pointer to publish the provider as its own repo. Existing in-tree providers stay; bug fixes to them are welcome. `memgw` is a fork-specific exception because Memory Gateway is the owner's default backend and is intentionally synchronized with this fork.
 
 This isn't a quality bar — it's a coupling-and-maintenance decision. Memory providers are the most common plugin type and they shouldn't all live in this tree.
 

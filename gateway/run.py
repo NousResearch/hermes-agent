@@ -8764,6 +8764,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)
 
+        if canonical == "proactive":
+            return await self._handle_proactive_command(event)
+
         if canonical == "blueprint":
             _blueprint_result = await self._handle_blueprint_command(event)
             _blueprint_seed = getattr(_blueprint_result, "agent_seed", None)
@@ -11257,6 +11260,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.debug("suggestions command failed: %s", e)
             return f"Suggestions command failed: {e}"
+
+    async def _handle_proactive_command(self, event: MessageEvent) -> str:
+        """Handle /proactive in the gateway."""
+        args = (event.get_command_args() or "").strip()
+        try:
+            from hermes_cli.proactive_cmd import handle_proactive_command
+
+            return handle_proactive_command(args)
+        except Exception as e:
+            logger.debug("proactive command failed: %s", e)
+            return f"Proactive command failed: {e}"
 
     async def _handle_blueprint_command(self, event: MessageEvent):
         """Handle /blueprint in the gateway.

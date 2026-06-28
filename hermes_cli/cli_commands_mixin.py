@@ -1386,6 +1386,23 @@ class CLICommandsMixin:
             output = f"Suggestions command failed: {e}"
         self._console_print(output)
 
+    def _handle_proactive_command(self, cmd: str):
+        """Handle /proactive — preview reusable workflow opportunities."""
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(shlex.quote(t) for t in tokens)
+        try:
+            from hermes_cli.proactive_cmd import handle_proactive_command
+
+            output = handle_proactive_command(args)
+        except Exception as e:
+            output = f"Proactive command failed: {e}"
+        self._console_print(output)
+
     def _handle_blueprint_command(self, cmd: str):
         """Handle /blueprint — set up an automation from a blueprint template.
 

@@ -83,6 +83,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
+| `hermes proactive` | Preview reusable workflow opportunities from repeated session patterns. |
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
@@ -1375,6 +1376,26 @@ hermes insights [--days N] [--source platform]
 |--------|-------------|
 | `--days <n>` | Analyze the last `n` days (default: 30). |
 | `--source <platform>` | Filter by source such as `cli`, `telegram`, or `discord`. |
+
+## `hermes proactive`
+
+```bash
+hermes proactive [--days N] [--source platform] [--limit N] [--json]
+```
+
+Preview Proactive Mode opportunities from recent session history. Hermes looks
+for repeated user task shapes and suggests consent-first ways to package them as
+skills, quick commands, scheduled jobs, Kanban templates, or workflow runbooks.
+The command is read-only: it does not create skills, jobs, commands, memories,
+or workflows by itself.
+
+| Option | Description |
+|--------|-------------|
+| `--days <n>` | Analyze the last `n` days (default: 30). |
+| `--source <platform>` | Filter by source such as `cli`, `telegram`, or `discord`. |
+| `--limit <n>` | Maximum opportunities to show (default: 5). |
+| `--min-messages <n>` | Minimum similar user asks before proposing an opportunity (default: 2). |
+| `--json` | Print the raw structured report. |
 
 ## `hermes claw`
 

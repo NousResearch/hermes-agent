@@ -1006,3 +1006,53 @@ def test_force_adhoc_signing_respects_explicit_caller_flag(monkeypatch):
     env = {"CSC_IDENTITY_AUTO_DISCOVERY": "true"}
     assert cli_main._force_adhoc_macos_signing(env, source_mode=False) is False
     assert env["CSC_IDENTITY_AUTO_DISCOVERY"] == "true"
+
+
+# --- desktop.* launch options (config.yaml) -------------------------------
+
+
+def test_desktop_launch_options_defaults_when_no_config():
+    with patch("hermes_cli.config.load_config", return_value={}):
+        flags, gpu = cli_main._desktop_launch_options()
+    assert flags == []
+    assert gpu == "auto"
+
+
+def test_desktop_launch_options_reads_flags_list():
+    cfg = {"desktop": {"electron_flags": ["--ozone-platform=x11", "--disable-gpu"]}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        flags, gpu = cli_main._desktop_launch_options()
+    assert flags == ["--ozone-platform=x11", "--disable-gpu"]
+    assert gpu == "auto"
+
+
+def test_desktop_launch_options_splits_flag_string():
+    cfg = {"desktop": {"electron_flags": "--ozone-platform=x11 --disable-gpu"}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        flags, _ = cli_main._desktop_launch_options()
+    assert flags == ["--ozone-platform=x11", "--disable-gpu"]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (True, "1"),
+        (False, "0"),
+        ("true", "1"),
+        ("off", "0"),
+        ("auto", "auto"),
+        ("garbage", "auto"),
+    ],
+)
+def test_desktop_launch_options_normalizes_disable_gpu(raw, expected):
+    cfg = {"desktop": {"disable_gpu": raw}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        _, gpu = cli_main._desktop_launch_options()
+    assert gpu == expected
+
+
+def test_desktop_launch_options_survives_config_error():
+    with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+        flags, gpu = cli_main._desktop_launch_options()
+    assert flags == []
+    assert gpu == "auto"

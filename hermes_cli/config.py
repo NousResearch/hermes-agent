@@ -2982,6 +2982,24 @@ DEFAULT_CONFIG = {
         "cua_telemetry": False,
     },
 
+    # Hermes Desktop (Electron app) launch options. These only affect
+    # `hermes desktop`; they do not touch the CLI/gateway.
+    "desktop": {
+        # Extra Electron command-line flags appended to every desktop launch,
+        # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
+        # explicit ozone backend, or GPU workaround flags. A list of strings;
+        # a single string is also accepted and shell-split.
+        "electron_flags": [],
+        # GPU hardware acceleration policy for the desktop app:
+        #   "auto"  - let the app detect remote displays (SSH/VNC/RDP) and
+        #             disable GPU only then (default; current behavior).
+        #   true    - always disable GPU acceleration (software rendering).
+        #             Use on no-GPU VMs / Proxmox hosts where the GPU path hangs.
+        #   false   - always keep GPU acceleration on, even over a remote display.
+        # Bridged to the HERMES_DESKTOP_DISABLE_GPU env var the Electron app reads.
+        "disable_gpu": "auto",
+    },
+
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 31,

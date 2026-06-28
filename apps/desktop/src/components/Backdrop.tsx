@@ -93,7 +93,7 @@ export function Backdrop() {
           className="pointer-events-none absolute inset-0 z-2"
           style={{
             mixBlendMode: statue.blendMode as CSSProperties['mixBlendMode'],
-            opacity: statue.opacity
+            opacity: `calc(${statue.opacity} * var(--ui-backdrop-opacity, 1))`
           }}
         >
           <img

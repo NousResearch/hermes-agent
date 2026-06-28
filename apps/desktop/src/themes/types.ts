@@ -45,6 +45,52 @@ export interface DesktopThemeColors {
   sidebarBorder?: string
   userBubble?: string
   userBubbleBorder?: string
+  /**
+   * Inline code (`` `like this` ``) foreground / fill / hairline. All optional:
+   * when a theme omits them the styles.css `:root` / `:root.dark` defaults win,
+   * so existing themes render byte-identically. A theme that wants code tokens
+   * to read in its own palette (e.g. lavender identifiers on a green body) sets
+   * these and `applyTheme` paints them over the defaults.
+   */
+  inlineCodeForeground?: string
+  inlineCodeBackground?: string
+  inlineCodeBorder?: string
+  /**
+   * Chat markdown headings + bold (`<strong>`). Optional: when omitted the body
+   * foreground is used (styles.css `--ui-emphasis-foreground` default), so
+   * existing themes are unchanged. A terminal-style skin can set this brighter
+   * than `foreground` so bold/headings "brighten" against the body.
+   */
+  emphasisForeground?: string
+  /**
+   * Sidebar section headers ("PINNED", "SESSIONS"). Optional: defaults to the
+   * brand accent (`--ui-sidebar-heading` → `--theme-primary`). Set e.g. white
+   * for a terminal look where headers read as bold white over a tinted sidebar.
+   */
+  sidebarHeadingForeground?: string
+  /**
+   * Sidebar entry text (session rows, nav labels). Optional: defaults to the
+   * body foreground (`--sidebar-foreground`). Set to decouple sidebar text from
+   * chat body text — e.g. near-white rows over a dark-green sidebar.
+   */
+  sidebarForeground?: string
+  /** Top navigation rows in the left sidebar (New session, Skills, Messaging). */
+  sidebarNavForeground?: string
+  /** Profile/workspace group headings in the left sidebar. */
+  sidebarWorkspaceForeground?: string
+  /** Child session row text under a profile/workspace group. */
+  sidebarSessionForeground?: string
+  /** Multiplier for the decorative backdrop image/statue; `0` disables it. */
+  backdropOpacity?: string
+  /** Optional colored statusbar tones. Defaults preserve the original muted chrome. */
+  statusGatewayForeground?: string
+  statusAgentsForeground?: string
+  statusCronForeground?: string
+  statusContextForeground?: string
+  statusSessionForeground?: string
+  statusYoloForeground?: string
+  statusTerminalForeground?: string
+  statusVersionForeground?: string
 }
 
 export interface DesktopThemeTypography {
@@ -94,6 +140,14 @@ export interface DesktopTheme {
   /** Hand-tuned dark palette. Skins like `nous` ship one. */
   darkColors?: DesktopThemeColors
   typography?: Partial<DesktopThemeTypography>
+  /**
+   * Shiki syntax-highlighting theme for fenced code blocks, per color mode.
+   * Optional — omitted means the app default (`github-dark-default` /
+   * `github-light-default`). Each side is a bundled Shiki theme name; a missing
+   * side falls back to the default for that mode. Lets a skin ship code blocks
+   * that match its surface instead of always GitHub-dark.
+   */
+  shikiTheme?: { light?: string; dark?: string }
   /** Light-variant terminal ANSI palette (also the fallback for dark). */
   terminal?: DesktopTerminalPalette
   /** Dark-variant terminal ANSI palette. Falls back to `terminal`. */

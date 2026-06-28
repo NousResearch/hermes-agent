@@ -16,6 +16,7 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { codiconForLanguage, isLikelyProseCodeBlock, sanitizeLanguageTag } from '@/lib/markdown-code'
+import { useTheme } from '@/themes/context'
 
 /**
  * Streamdown's code adapter renders header + body as inline siblings, so we
@@ -122,7 +123,17 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   defer = false
 }) => {
   const { t } = useI18n()
+  const { theme } = useTheme()
   const trimmed = (code ?? '').replace(/^\n+/, '').trimEnd()
+
+  // Resolve the Shiki theme: the active skin may override either mode; each
+  // missing side falls back to the app default. `defaultColor="light-dark()"`
+  // then picks the right side from the document's color-scheme. Omitting
+  // `shikiTheme` (every built-in today) keeps the exact GitHub defaults.
+  const shikiTheme = {
+    dark: theme.shikiTheme?.dark ?? SHIKI_THEME.dark,
+    light: theme.shikiTheme?.light ?? SHIKI_THEME.light
+  }
 
   // Streaming may hand us empty/incomplete fences — render nothing rather
   // than a transient empty card.
@@ -169,7 +180,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
                 delay={120}
                 language={language || 'text'}
                 showLanguage={false}
-                theme={SHIKI_THEME}
+                theme={shikiTheme}
               >
                 {trimmed}
               </ShikiHighlighter>

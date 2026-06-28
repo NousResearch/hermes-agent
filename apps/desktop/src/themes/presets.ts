@@ -277,12 +277,108 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/**
+ * cmux — terminal-IDE dark theme. Tuned to Jeff's cmux screenshots: true black
+ * chat surface, terminal-green prose, brighter-green bold/headings, white/blue
+ * sidebar structure, lavender inline-code identifiers, and a colored statusbar.
+ */
+export const cmuxTheme: DesktopTheme = {
+  name: 'cmux',
+  label: 'cmux',
+  description: 'Homebrew-green terminal on black — cmux vibes',
+  colors: {
+    // Main chat surface is true black; only the sidebar carries a green tint.
+    background: '#000000',
+    // Body text stays green — this is the soul of the cmux look. Headings/bold
+    // brighten via emphasisForeground below; scaffolding/hints stay gray-white.
+    foreground: '#33d96a',
+    card: '#070b07',
+    cardForeground: '#33d96a',
+    muted: '#0d140d',
+    // Scaffolding / hint text ("Ran N commands", timestamps) is dim white,
+    // not green, so it doesn't compete with bold/heading emphasis.
+    mutedForeground: '#aab4aa',
+    popover: '#0a100a',
+    popoverForeground: '#33d96a',
+    primary: '#7dffae',
+    primaryForeground: '#04130a',
+    secondary: '#13231a',
+    secondaryForeground: '#9be8b5',
+    accent: '#102018',
+    accentForeground: '#9bf6bd',
+    border: '#1c2c20',
+    input: '#1c2c20',
+    ring: '#7dffae',
+    midground: '#7dffae',
+    composerRing: '#33d96a',
+    destructive: '#f0635a',
+    destructiveForeground: '#000000',
+    // Sidebar: dark olive-green surface (not black), white-bold top nav +
+    // section headers, blue profile/workspace names, dim-white child rows.
+    sidebarBackground: '#0d170d',
+    sidebarBorder: '#1f2d1f',
+    sidebarHeadingForeground: '#ffffff',
+    sidebarForeground: '#f2f4f2',
+    sidebarNavForeground: '#ffffff',
+    sidebarWorkspaceForeground: '#7dcfff',
+    sidebarSessionForeground: '#b7c1b7',
+    userBubble: '#0e1a12',
+    userBubbleBorder: '#28402f',
+    // Headings + bold brighten to a lighter green than the body.
+    emphasisForeground: '#7dffae',
+    backdropOpacity: '0',
+    statusGatewayForeground: '#7dffae',
+    statusAgentsForeground: '#bb9af7',
+    statusCronForeground: '#7dcfff',
+    statusContextForeground: '#7dcfff',
+    statusSessionForeground: '#e0af68',
+    statusYoloForeground: '#f7768e',
+    statusTerminalForeground: '#7aa2f7',
+    statusVersionForeground: '#bb9af7',
+    // Inline code reads lavender against the green body (the cmux identifier
+    // look). Tints derive from the same lavender.
+    inlineCodeForeground: '#b0b9f9',
+    inlineCodeBackground: 'rgba(176, 185, 249, 0.10)',
+    inlineCodeBorder: 'rgba(176, 185, 249, 0.22)'
+  },
+  typography: {
+    fontSans: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`
+  },
+  // Fenced code blocks: everforest-dark is green-tinted with lavender/aqua
+  // identifiers, so syntax highlighting sits in the cmux palette instead of
+  // GitHub-dark blue. Same theme for both modes (cmux is dark-only).
+  shikiTheme: { dark: 'everforest-dark', light: 'everforest-dark' },
+  terminal: {
+    foreground: '#33d96a',
+    cursor: '#6dfca0',
+    selectionBackground: '#28402f',
+    black: '#000000',
+    red: '#f0635a',
+    green: '#41d97d',
+    yellow: '#d4b758',
+    blue: '#6ab0f3',
+    magenta: '#c3b0f0',
+    cyan: '#5fc9c9',
+    white: '#cfe6d6',
+    brightBlack: '#6f8f70',
+    brightRed: '#ff7a70',
+    brightGreen: '#86efac',
+    brightYellow: '#e6cf7a',
+    brightBlue: '#8cc6ff',
+    brightMagenta: '#cbb6f0',
+    brightCyan: '#7fdede',
+    brightWhite: '#e8f5e9'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
+  cmux: cmuxTheme,
   slate: slateTheme
 }
 

@@ -210,6 +210,7 @@ export function useStatusbarItems({
       label,
       onSelect: () => openUpdateOverlayFor('client'),
       title: tooltip || undefined,
+      tone: 'version',
       variant: 'action'
     }
   }, [
@@ -259,6 +260,7 @@ export function useStatusbarItems({
       label,
       onSelect: () => openUpdateOverlayFor('backend'),
       title: tooltip || undefined,
+      tone: 'version',
       variant: 'action'
     }
   }, [
@@ -297,6 +299,7 @@ export function useStatusbarItems({
         menuClassName: 'w-72',
         menuContent: gatewayMenuContent,
         title: inferenceStatus?.reason || copy.gatewayTitle,
+        tone: inferenceReady || gatewayRestarting ? 'gateway' : undefined,
         variant: 'menu'
       },
       {
@@ -322,6 +325,7 @@ export function useStatusbarItems({
         label: copy.agents,
         onSelect: openAgents,
         title: agentsOpen ? copy.closeAgents : copy.openAgents,
+        tone: subagentsFailed > 0 ? undefined : 'agents',
         variant: 'action'
       },
       {
@@ -329,6 +333,7 @@ export function useStatusbarItems({
         id: 'cron',
         label: copy.cron,
         title: copy.openCron,
+        tone: 'cron',
         to: CRON_ROUTE,
         variant: 'action'
       }
@@ -367,6 +372,7 @@ export function useStatusbarItems({
         id: 'context-usage',
         label: contextUsage,
         title: copy.contextUsage,
+        tone: 'context',
         variant: 'text'
       },
       {
@@ -375,6 +381,7 @@ export function useStatusbarItems({
         id: 'session-timer',
         label: copy.session,
         title: copy.runtimeSessionElapsed,
+        tone: 'session',
         variant: 'text'
       },
       {
@@ -388,6 +395,7 @@ export function useStatusbarItems({
         id: 'yolo',
         onSelect: modifiers => void toggleYolo(modifiers),
         title: yoloActive ? copy.yoloOn : copy.yoloOff,
+        tone: 'yolo',
         variant: 'action'
       },
       {
@@ -397,6 +405,7 @@ export function useStatusbarItems({
         id: 'terminal',
         onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
         title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
+        tone: 'terminal',
         variant: 'action'
       },
       clientVersionItem,

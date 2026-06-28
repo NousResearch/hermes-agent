@@ -50,6 +50,13 @@ class TestGuidanceConstants:
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
+    def test_memory_guidance_includes_routine_turn_test(self):
+        """Memory guidance must tell the model to test whether a fact would
+        cause a mistake on a routine turn before saving it."""
+        assert "would it make a mistake" in MEMORY_GUIDANCE
+        assert "do not duplicate" in MEMORY_GUIDANCE
+        assert "When in doubt, leave it out" in MEMORY_GUIDANCE
+
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE

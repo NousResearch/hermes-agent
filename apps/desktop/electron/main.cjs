@@ -24,6 +24,7 @@ const https = require('node:https')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
+const { installEmbedReferer } = require('./embed-referer.cjs')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
@@ -533,9 +534,10 @@ function getTitleBarOverlayOptions() {
     return { height: TITLEBAR_HEIGHT }
   }
 
-  // Windows + WSLg paint WCO natively; plain Linux disables it (frameless hidden
-  // titlebar still applies).
-  if (!IS_WINDOWS && !IS_WSL) {
+  // WSLg paints WCO via the RDP host's own min/max/close, so requesting
+  // an Electron overlay there just leaves a dead gap. Plain Linux (KDE,
+  // GNOME) can use the native overlay — let it through.
+  if (!IS_WINDOWS && IS_WSL) {
     return false
   }
 
@@ -3787,7 +3789,7 @@ function getWindowButtonPosition() {
 }
 
 function getNativeOverlayWidth() {
-  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL })
+  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
 }
 
 function getWindowState() {
@@ -7447,6 +7449,7 @@ app.whenReady().then(() => {
   }
   installMediaPermissions()
   registerMediaProtocol()
+  installEmbedReferer()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()
   configureSpellChecker()

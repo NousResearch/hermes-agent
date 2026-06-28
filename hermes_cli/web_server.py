@@ -56,6 +56,7 @@ from hermes_cli.config import (
     get_hermes_home,
     load_config,
     load_env,
+    read_raw_config,
     save_config,
     save_env_value,
     remove_env_value,
@@ -65,6 +66,7 @@ from hermes_cli.config import (
     recommended_update_command_for_method,
     redact_key,
     write_platform_config_field,
+    _deep_merge,
 )
 from hermes_cli.memory_providers import (
     MemoryProvider,
@@ -167,6 +169,7 @@ def _resolve_restart_drain_timeout() -> float:
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
+    app.state.pty_active_session_files = {}  # dict[str, Path]
     # Serializes chat-argv resolution so concurrent /api/pty connections
     # don't trigger overlapping ``npm install`` / ``npm run build`` work.
     # On app.state (not a module global) so the Lock binds to the running
@@ -232,6 +235,15 @@ def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
     except AttributeError:
         app.state.chat_argv_lock = asyncio.Lock()
         return app.state.chat_argv_lock
+
+
+def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
+    """Return channel -> active-session-file state for dashboard PTYs."""
+    try:
+        return app.state.pty_active_session_files
+    except AttributeError:
+        app.state.pty_active_session_files = {}
+        return app.state.pty_active_session_files
 
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
@@ -482,6 +494,11 @@ async def _dashboard_auth_gate(request: Request, call_next):
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
+    # A request already authenticated by the token-auth seam (a service caller
+    # presenting a bearer token on a registered token route) carries
+    # ``token_authenticated`` — never bounce it through the cookie/session gate.
+    if getattr(request.state, "token_authenticated", False):
+        return await call_next(request)
     # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
     # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
     # and is skipped here so the gate's session attachment isn't overridden.
@@ -495,6 +512,20 @@ async def auth_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _token_auth_seam(request: Request, call_next):
+    """Outermost auth seam: non-interactive bearer-token auth for opted-in routes.
+
+    Registered LAST so it runs FIRST (Starlette middleware is outermost-last).
+    A registered token route is fully owned here — authenticate by token,
+    attach the principal + ``token_authenticated`` flag, and let the downstream
+    cookie/session gates skip enforcement. Non-token routes pass straight
+    through untouched.
+    """
+    from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
+    return await token_auth_middleware(request, call_next)
 
 
 # ---------------------------------------------------------------------------
@@ -2620,6 +2651,71 @@ async def restart_gateway(profile: Optional[str] = None):
     }
 
 
+@app.post("/api/gateway/drain")
+async def gateway_drain(request: Request):
+    """Begin or cancel an external (NAS-driven) gateway drain.
+
+    Authenticated by the non-interactive token-auth seam: the
+    ``dashboard_auth/drain`` plugin registers this exact path as a token route
+    and verifies the ``Authorization`` bearer secret. If that plugin isn't
+    active (no ``HERMES_DASHBOARD_DRAIN_SECRET``), the route is NOT a token
+    route, so on a gated bind the cookie gate handles it (a browser session can
+    still drive it from the dashboard) and on a loopback bind the legacy
+    session-token gate applies — either way it is never unauthenticated on a
+    network-exposed bind.
+
+    Body: ``{"action": "drain"}`` (begin) or ``{"action": "cancel"}`` (cancel).
+    Begin writes the ``.drain_request.json`` marker the gateway's
+    ``_drain_control_watcher`` observes (flip to ``draining`` + refuse new
+    turns); cancel removes it (revert to ``running`` + re-accept). Idempotent
+    on both sides. This endpoint only writes/removes the marker — the gateway
+    process owns the actual state transition (there is no HTTP control channel
+    into the running gateway; the marker IS the channel, decisions.md Q-B).
+
+    The force-override (D6: "unless a user commands it") is NOT here — an
+    immediate, drain-skipping action maps onto the existing
+    ``POST /api/gateway/restart`` force path, which supersedes a drain.
+    """
+    from gateway.drain_control import (
+        clear_drain_request,
+        drain_requested,
+        write_drain_request,
+    )
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    action = str((body or {}).get("action", "drain")).strip().lower()
+
+    # Attribute the request to the verified token principal when present
+    # (token-auth seam attaches it); fall back to a generic label otherwise.
+    principal_obj = getattr(request.state, "token_principal", None)
+    principal = getattr(principal_obj, "principal", None) or "dashboard"
+
+    if action == "cancel":
+        existed = clear_drain_request()
+        _log.info("Gateway drain CANCEL requested by %s (existed=%s)", principal, existed)
+        return {"ok": True, "action": "cancel", "was_draining": existed}
+
+    if action != "drain":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown drain action {action!r}; expected 'drain' or 'cancel'",
+        )
+
+    payload = write_drain_request(principal=str(principal))
+    _log.info("Gateway drain BEGIN requested by %s", principal)
+    return {
+        "ok": True,
+        "action": "drain",
+        "requested_at": payload["requested_at"],
+        # Echo so a caller polling /api/status knows the marker is now set;
+        # the gateway watcher flips gateway_state -> draining within ~1s.
+        "draining": drain_requested(),
+    }
+
+
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
@@ -4174,6 +4270,56 @@ def _apply_model_assignment_sync(
 
 
 
+def _infer_provider_on_model_change(model_val: str, prev_provider: str) -> tuple[str, str]:
+    """Infer which provider serves ``model_val`` when the flat Config-page Model
+    field changes, given the previously-saved ``prev_provider``.
+
+    Returns ``(provider, model)``; ``provider`` is empty when no switch is
+    warranted (leave the existing provider untouched). Two signals, in order:
+
+    1. Curated-catalog detection (``detect_provider_for_model``) — handles the
+       ~28 OpenRouter-curated models and direct provider-static catalogs.
+    2. Vendor-slug heuristic — a ``vendor/model`` slug cannot belong to a
+       single-model / non-aggregator provider (e.g. ``ollama-local``). When the
+       current provider is not an aggregator that serves vendor-prefixed slugs,
+       route to an aggregator. ``_normalize_main_model_assignment`` (called by
+       the caller) keeps the user's current aggregator when they're already on
+       one, else falls back to openrouter — the same chokepoint logic as
+       ``POST /api/model/set``.
+    """
+    name = (model_val or "").strip()
+    if not name:
+        return "", name
+    try:
+        from hermes_cli.models import (
+            _AGGREGATOR_PROVIDERS,
+            detect_provider_for_model,
+            normalize_provider,
+        )
+    except Exception:
+        return "", name
+
+    try:
+        detected = detect_provider_for_model(name, prev_provider)
+    except Exception:
+        detected = None
+    if detected:
+        return detected[0], detected[1]
+
+    # Vendor-prefixed slug under a non-aggregator provider → reassign. Use a
+    # sentinel "openrouter" here; _normalize_main_model_assignment resolves the
+    # real aggregator (keeps a current aggregator, else openrouter).
+    if "/" in name:
+        try:
+            cur_is_aggregator = normalize_provider(prev_provider) in _AGGREGATOR_PROVIDERS
+        except Exception:
+            cur_is_aggregator = False
+        if not cur_is_aggregator:
+            return "openrouter", name
+
+    return "", name
+
+
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Reverse _normalize_config_for_web before saving.
 
@@ -4206,6 +4352,31 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
             disk_config = load_config()
             disk_model = disk_config.get("model")
             if isinstance(disk_model, dict):
+                prev_default = str(disk_model.get("default") or "").strip()
+                prev_provider = str(disk_model.get("provider") or "").strip()
+                # When the model name actually changed, re-detect which
+                # provider serves it. The Config-page Model field is a flat
+                # string with no provider info, so without this a user who
+                # picks an OpenRouter model while their default provider is
+                # ollama-local keeps the stale provider and 404s. Only fires
+                # on a real model change so saving unrelated config fields
+                # never overwrites an explicit provider.
+                if model_val != prev_default and prev_provider:
+                    new_provider, resolved_model = _infer_provider_on_model_change(
+                        model_val, prev_provider
+                    )
+                    if new_provider and new_provider.strip().lower() != prev_provider.lower():
+                        # Route through the canonical assignment chokepoints so
+                        # the model is normalized for the new provider and stale
+                        # base_url/api_mode/api_key are cleared on the switch
+                        # (and preserved on a same-provider re-pick).
+                        norm_provider, norm_model = _normalize_main_model_assignment(
+                            new_provider, resolved_model
+                        )
+                        disk_model = _apply_main_model_assignment(
+                            disk_model, norm_provider, norm_model
+                        )
+                        model_val = norm_model
                 # Preserve all subkeys, update default with the new value
                 disk_model["default"] = model_val
                 # Write context_length into the model dict (0 = remove/auto)
@@ -4230,7 +4401,15 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
-            save_config(_denormalize_config_from_web(body.config))
+            # The dashboard form is schema-driven (see CONFIG_SCHEMA). Any root
+            # key absent from the schema — most visibly ``custom_providers``, but
+            # also ``agent.personalities``, ``terminal.lifetime_seconds``, etc. —
+            # is not sent in the PUT body. A full-replace save would silently
+            # drop those keys. Deep-merge incoming over what's on disk so the
+            # frontend can only overwrite what it explicitly sends.
+            existing = read_raw_config()
+            incoming = _denormalize_config_from_web(body.config)
+            save_config(_deep_merge(existing, incoming))
         return {"ok": True}
     except HTTPException:
         raise
@@ -4655,6 +4834,11 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "required_env": ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
     },
+    "google_chat": {
+        "name": "Google Chat",
+        "description": "Connect Hermes to Google Chat via Cloud Pub/Sub.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat",
+    },
     "wecom": {
         "name": "WeCom (group bot)",
         "description": "Send-only WeCom group bot via webhook.",
@@ -4704,6 +4888,12 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "env_vars": ("QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_ALLOWED_USERS"),
         "required_env": ("QQ_APP_ID", "QQ_CLIENT_SECRET"),
     },
+    # Teams ships as a platform plugin, so its name/env vars come from the
+    # plugin registry. Only the docs link needs an override here so the
+    # Channels page can point at the Microsoft Teams setup guide.
+    "teams": {
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
+    },
     "yuanbao": {
         "name": "Yuanbao (元宝)",
         "description": "Connect Hermes to Tencent Yuanbao.",
@@ -4748,6 +4938,7 @@ _PLATFORM_ORDER: tuple[str, ...] = (
     "sms",
     "dingtalk",
     "feishu",
+    "google_chat",
     "wecom",
     "wecom_callback",
     "weixin",
@@ -7768,15 +7959,139 @@ async def get_logs(
 
 
 class CronJobCreate(BaseModel):
-    prompt: str
+    prompt: str = ""
     schedule: str
     name: str = ""
     deliver: str = "local"
     skills: Optional[List[str]] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    script: Optional[str] = None
+    context_from: Optional[Any] = None
+    enabled_toolsets: Optional[List[str]] = None
+    workdir: Optional[str] = None
+    no_agent: bool = False
 
 
 class CronJobUpdate(BaseModel):
     updates: dict
+
+
+def _cron_optional_text(value: Any, *, strip_trailing_slash: bool = False) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if strip_trailing_slash:
+        text = text.rstrip("/")
+    return text or None
+
+
+def _cron_string_list(value: Any) -> Optional[List[str]]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        raw_items = re.split(r"[\n,]", value)
+    elif isinstance(value, (list, tuple)):
+        raw_items = value
+    else:
+        return None
+    items = [str(item).strip() for item in raw_items if str(item).strip()]
+    return items or None
+
+
+def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional[str]:
+    """Validate a dashboard-selected cron script against the profile sandbox."""
+    text = _cron_optional_text(value)
+    if not text:
+        return None
+
+    scripts_root = (profile_home / "scripts").resolve()
+    raw_path = Path(text).expanduser()
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (scripts_root / raw_path).resolve()
+    try:
+        relative = candidate.relative_to(scripts_root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"script must be inside {scripts_root}",
+        ) from exc
+    if not candidate.exists():
+        raise HTTPException(status_code=400, detail=f"script does not exist: {candidate}")
+    if not candidate.is_file():
+        raise HTTPException(status_code=400, detail=f"script is not a file: {candidate}")
+    return str(relative)
+
+
+def _validate_dashboard_cron_effective_job(job: Dict[str, Any]) -> None:
+    prompt = _cron_optional_text(job.get("prompt"))
+    script = _cron_optional_text(job.get("script"))
+    skills = _cron_string_list(job.get("skills")) or _cron_string_list(job.get("skill"))
+    no_agent = bool(job.get("no_agent"))
+
+    if no_agent:
+        if not script:
+            raise HTTPException(
+                status_code=400,
+                detail="no_agent=True requires a script",
+            )
+        return
+
+    if not (prompt or skills or script):
+        raise HTTPException(
+            status_code=400,
+            detail="agent cron jobs require a prompt, skill, or script",
+        )
+
+
+def _normalize_dashboard_cron_updates(
+    updates: Dict[str, Any],
+    profile_home: Path,
+) -> Dict[str, Any]:
+    """Normalize dashboard JSON into cron.jobs.update_job's storage shape.
+
+    This intentionally stays in the dashboard adapter layer: cron/jobs.py is the
+    source of truth for scheduling behaviour; the dashboard only translates form
+    payloads into the shapes that existing core functions already accept.
+    """
+    normalized = dict(updates or {})
+
+    for key in ("model", "provider", "workdir"):
+        if key in normalized:
+            normalized[key] = _cron_optional_text(normalized[key])
+    if "script" in normalized:
+        normalized["script"] = _normalize_dashboard_cron_script(
+            normalized["script"],
+            profile_home,
+        )
+    if "base_url" in normalized:
+        normalized["base_url"] = _cron_optional_text(
+            normalized["base_url"], strip_trailing_slash=True
+        )
+    if "deliver" in normalized:
+        normalized["deliver"] = _cron_optional_text(normalized["deliver"]) or "local"
+    if "context_from" in normalized:
+        normalized["context_from"] = _cron_string_list(normalized["context_from"])
+    if "enabled_toolsets" in normalized:
+        normalized["enabled_toolsets"] = _cron_string_list(normalized["enabled_toolsets"])
+    return normalized
+
+
+def _validate_dashboard_cron_context_from(
+    refs: Optional[List[str]],
+    profile_name: str,
+) -> None:
+    if not refs:
+        return
+    for ref in refs:
+        if not _call_cron_for_profile(profile_name, "get_job", ref):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"context_from job '{ref}' not found in profile "
+                    f"'{profile_name}'"
+                ),
+            )
 
 
 _CRON_PROFILE_LOCK = threading.RLock()
@@ -7816,7 +8131,7 @@ def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[st
     return annotated
 
 
-def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
+def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args, **kwargs):
     """Run cron.jobs helpers against the selected profile's cron directory.
 
     cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
@@ -7824,13 +8139,18 @@ def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwar
     process that can inspect many profiles, so temporarily retarget those
     globals while holding a lock and restore them immediately after the call.
     """
-    profile_name, home = _cron_profile_home(profile)
+    profile_name, home = _cron_profile_home(target_profile)
     with _CRON_PROFILE_LOCK:
         from cron import jobs as cron_jobs
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
 
         old_cron_dir = cron_jobs.CRON_DIR
         old_jobs_file = cron_jobs.JOBS_FILE
         old_output_dir = cron_jobs.OUTPUT_DIR
+        token = set_hermes_home_override(str(home))
         cron_jobs.CRON_DIR = home / "cron"
         cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
         cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
@@ -7840,6 +8160,7 @@ def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwar
             cron_jobs.CRON_DIR = old_cron_dir
             cron_jobs.JOBS_FILE = old_jobs_file
             cron_jobs.OUTPUT_DIR = old_output_dir
+            reset_hermes_home_override(token)
 
     if isinstance(result, list):
         return [_annotate_cron_job(j, profile_name, home) for j in result]
@@ -7937,15 +8258,37 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
 @app.post("/api/cron/jobs")
 async def create_cron_job(body: CronJobCreate, profile: str = "default"):
     try:
+        profile_name, profile_home = _cron_profile_home(profile)
+        script = _normalize_dashboard_cron_script(body.script, profile_home)
+        skills = _cron_string_list(body.skills)
+        context_from = _cron_string_list(body.context_from)
+        _validate_dashboard_cron_context_from(context_from, profile_name)
+        no_agent = bool(body.no_agent)
+        _validate_dashboard_cron_effective_job({
+            "prompt": body.prompt,
+            "skills": skills,
+            "script": script,
+            "no_agent": no_agent,
+        })
         return _call_cron_for_profile(
-            profile,
+            profile_name,
             "create_job",
-            prompt=body.prompt,
+            prompt=body.prompt or "",
             schedule=body.schedule,
             name=body.name,
-            deliver=body.deliver,
-            skills=body.skills,
+            deliver=_cron_optional_text(body.deliver) or "local",
+            skills=skills,
+            model=_cron_optional_text(body.model),
+            provider=_cron_optional_text(body.provider),
+            base_url=_cron_optional_text(body.base_url, strip_trailing_slash=True),
+            script=script,
+            context_from=context_from,
+            enabled_toolsets=_cron_string_list(body.enabled_toolsets),
+            workdir=_cron_optional_text(body.workdir),
+            no_agent=no_agent,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")
         raise HTTPException(status_code=400, detail=str(e))
@@ -7985,7 +8328,28 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
     try:
-        job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+        profile_name, profile_home = _cron_profile_home(selected)
+        existing = _call_cron_for_profile(profile_name, "get_job", job_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Job not found")
+        updates = _normalize_dashboard_cron_updates(
+            body.updates,
+            profile_home,
+        )
+        if "context_from" in updates:
+            _validate_dashboard_cron_context_from(
+                updates.get("context_from"),
+                profile_name,
+            )
+        execution_fields = {"prompt", "skill", "skills", "script", "no_agent"}
+        if execution_fields.intersection(updates):
+            effective = {**existing, **updates}
+            if "skills" in updates and "skill" not in updates:
+                effective["skill"] = None
+            _validate_dashboard_cron_effective_job(effective)
+        job = _call_cron_for_profile(profile_name, "update_job", job_id, updates)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not job:
@@ -11460,6 +11824,7 @@ def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
+    active_session_file: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -11479,6 +11844,12 @@ def _resolve_chat_argv(
     `sidecar_url` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
     the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
     dashboard's ``/api/pub`` endpoint (see :func:`pub_ws`).
+
+    `active_session_file` (when set) is forwarded as
+    ``HERMES_TUI_ACTIVE_SESSION_FILE``. The TUI writes the current session id
+    there whenever it creates/resumes/switches sessions, giving the dashboard a
+    small cross-process breadcrumb for reconnecting after an unexpected browser
+    WebSocket close.
 
     `profile` (when set) scopes the ENTIRE chat to that profile by pointing
     ``HERMES_HOME`` at the profile dir in the child env. Every spawned
@@ -11526,6 +11897,9 @@ def _resolve_chat_argv(
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
+
+    if active_session_file:
+        env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
 
     # Profile-scoped chats must NOT attach to the dashboard's in-memory
     # gateway — it runs under the dashboard's own profile. Without the
@@ -11575,6 +11949,7 @@ async def _resolve_chat_argv_async(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
+    active_session_file: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv without blocking the dashboard event loop.
 
@@ -11586,12 +11961,18 @@ async def _resolve_chat_argv_async(
     multiple browser tabs connect at once without occupying worker threads
     while queued connections wait.
     """
+    kwargs = {
+        "resume": resume,
+        "sidecar_url": sidecar_url,
+        "profile": profile,
+    }
+    if active_session_file is not None:
+        kwargs["active_session_file"] = active_session_file
+
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(
             _resolve_chat_argv,
-            resume=resume,
-            sidecar_url=sidecar_url,
-            profile=profile,
+            **kwargs,
         )
 
 
@@ -11651,6 +12032,37 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     channel = ws.query_params.get("channel", "")
 
     return channel if _VALID_CHANNEL_RE.match(channel) else None
+
+
+def _active_session_file_for_channel(app: "FastAPI", channel: str) -> Path:
+    """Return the per-channel file where a dashboard TUI writes its active sid."""
+    files = _get_pty_active_session_files(app)
+    existing = files.get(channel)
+    if existing is not None:
+        return existing
+
+    fd, raw_path = tempfile.mkstemp(prefix="hermes-pty-active-", suffix=".json")
+    os.close(fd)
+    path = Path(raw_path)
+    files[channel] = path
+    return path
+
+
+def _read_active_session_file(path: Path) -> Optional[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    session_id = str(data.get("session_id") or "").strip()
+    return session_id or None
+
+
+def _forget_active_session_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _ws_close_reason(text: str) -> str:
@@ -11723,11 +12135,32 @@ async def pty_ws(ws: WebSocket) -> None:
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
+    force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    active_session_file: Optional[Path] = None
+
+    if channel:
+        active_session_file = _active_session_file_for_channel(ws.app, channel)
+        if force_fresh:
+            resume = None
+            _forget_active_session_file(active_session_file)
+        elif not resume:
+            resume = _read_active_session_file(active_session_file)
+
+    resolve_kwargs = {
+        "resume": resume,
+        "sidecar_url": sidecar_url,
+        "profile": profile,
+    }
+    if active_session_file is not None:
+        resolve_kwargs["active_session_file"] = str(active_session_file)
 
     try:
-        argv, cwd, env = await _resolve_chat_argv_async(
-            resume=resume, sidecar_url=sidecar_url, profile=profile
-        )
+        argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
     except HTTPException as exc:
         # Unknown/invalid profile from _resolve_profile_dir.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
@@ -11741,7 +12174,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
     try:
-        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+        bridge = await asyncio.to_thread(PtyBridge.spawn, argv, cwd=cwd, env=env)
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
@@ -11802,7 +12235,7 @@ async def pty_ws(ws: WebSocket) -> None:
             await reader_task
         except (asyncio.CancelledError, Exception):
             pass
-        bridge.close()
+        await asyncio.to_thread(bridge.close)
 
 
 # ---------------------------------------------------------------------------

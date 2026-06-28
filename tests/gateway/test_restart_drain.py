@@ -180,15 +180,64 @@ def test_load_restart_drain_timeout_prefers_env_then_config_then_default(
 async def test_request_restart_is_idempotent():
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
+    runner._launch_detached_restart_command = AsyncMock()
 
+    # _run_restart is held on self._restart_task and is intentionally NOT in
+    # _background_tasks, so _stop_impl's cancel loop can't abort it mid-await
+    # (see #12875).
     assert runner.request_restart(detached=True, via_service=False) is True
-    first_task = next(iter(runner._background_tasks))
+    assert runner._restart_task is not None
+    assert runner._restart_task not in runner._background_tasks
     assert runner.request_restart(detached=True, via_service=False) is False
 
-    await first_task
+    await runner._restart_task
 
+    runner._launch_detached_restart_command.assert_awaited_once_with()
     runner.stop.assert_awaited_once_with(
         restart=True, detached_restart=True, service_restart=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_restart_excluded_from_stop_cancel_loop():
+    """Regression for #12875: _run_restart is held on self._restart_task and
+    kept OUT of _background_tasks, and the _stop_impl cancel loop explicitly
+    skips it. If it were in _background_tasks, the cancel loop (which fires
+    while _run_restart is awaiting _stop_task) would propagate CancelledError
+    into _stop_impl and skip _shutdown_event.set() / _exit_code = 75."""
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+
+    # A decoy background task that SHOULD be cancelled, plus the restart task
+    # that must NOT be.
+    async def _decoy():
+        await asyncio.sleep(60)
+
+    decoy = asyncio.create_task(_decoy())
+    runner._background_tasks.add(decoy)
+    decoy.add_done_callback(runner._background_tasks.discard)
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    restart_task = runner._restart_task
+    assert restart_task is not None
+    assert restart_task not in runner._background_tasks
+
+    # Run the real cancel loop body in isolation (mirrors _stop_impl:7234).
+    runner._stop_task = None
+    for _task in list(runner._background_tasks):
+        if _task is runner._stop_task:
+            continue
+        if _task is runner._restart_task:
+            continue
+        _task.cancel()
+
+    await asyncio.sleep(0)  # let cancellation settle
+    assert decoy.cancelled()
+    assert not restart_task.cancelled()
+
+    await restart_task
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=False, service_restart=True
     )
 
 
@@ -216,12 +265,29 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert cmd[:2] == ["/usr/bin/setsid", "bash"]
     assert "gateway restart" in cmd[-1]
     assert "kill -0 321" in cmd[-1]
+    assert "deadline=$(( $(date +%s) +" in cmd[-1]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
     # The watcher must NOT inherit the gateway marker, or the CLI's
     # self-restart loop guard refuses to run `hermes gateway restart`.
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
+
+
+@pytest.mark.asyncio
+async def test_detached_restart_helper_is_idempotent(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popen_calls.append((a, k)))
+
+    await runner._launch_detached_restart_command()
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
 
 
 def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):

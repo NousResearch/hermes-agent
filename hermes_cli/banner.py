@@ -197,7 +197,10 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        return _check_via_rev(head_rev) if head_rev else None
+        checked = _check_via_rev(head_rev) if head_rev else None
+        if checked == UPDATE_AVAILABLE_NO_COUNT:
+            return 1
+        return checked
 
     # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
     # clone the history stops at a single commit, so a plain `git fetch` would
@@ -580,7 +583,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
-                         context_length: int = None):
+                         context_length: int = None,
+                         provider: str = None):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -592,6 +596,9 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
+        provider: Active provider id. When ``"moa"``, ``model`` is a MoA
+            preset name and the banner renders the aggregator instead of a
+            bare model slug.
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     from rich.panel import Panel
@@ -648,13 +655,36 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         _bskin = None
         _hero = HERMES_CADUCEUS
     left_lines = ["", _hero, ""]
-    model_short = model.split("/")[-1] if "/" in model else model
-    if model_short.endswith(".gguf"):
-        model_short = model_short[:-5]
-    if len(model_short) > 28:
-        model_short = model_short[:25] + "..."
-    ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+    if (provider or "").strip().lower() == "moa":
+        # MoA virtual provider: ``model`` is a preset name. Show the preset and
+        # its aggregator so the banner is meaningful instead of a bare slug.
+        preset_name = model
+        agg_label = ""
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import normalize_moa_config
+
+            _moa = normalize_moa_config(load_config().get("moa") or {})
+            _preset = _moa.get("presets", {}).get(preset_name)
+            if _preset:
+                _agg = _preset.get("aggregator") or {}
+                _am = str(_agg.get("model") or "")
+                agg_label = _am.split("/")[-1] if "/" in _am else _am
+        except Exception:
+            agg_label = ""
+        if len(preset_name) > 28:
+            preset_name = preset_name[:25] + "..."
+        agg_str = f" [dim {dim}]·[/] [dim {dim}]agg {agg_label}[/]" if agg_label else ""
+        ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+        left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+    else:
+        model_short = model.split("/")[-1] if "/" in model else model
+        if model_short.endswith(".gguf"):
+            model_short = model_short[:-5]
+        if len(model_short) > 28:
+            model_short = model_short[:25] + "..."
+        ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+        left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
 
     if os.getenv("HERMES_YOLO_MODE"):
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")

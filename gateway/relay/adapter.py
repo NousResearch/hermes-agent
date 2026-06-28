@@ -71,6 +71,15 @@ class RelayAdapter(BasePlatformAdapter):
         # recipient's author binding; we re-attach this user_id as
         # metadata.user_id on the outbound action so it can. See _capture_scope.
         self._dm_user_by_chat: Dict[str, str] = {}
+        # chat_id -> the UNDERLYING platform (e.g. "discord", "telegram") this
+        # chat belongs to (Phase 1.5 multi-platform-per-agent). One relay adapter
+        # fronts N platforms on one WS; an outbound reply must egress through the
+        # platform the inbound came from. We remember it per chat_id from the
+        # inbound event's source.platform and stamp it on the OutboundFrame so the
+        # connector dispatches to the right sender. Empty for a single-platform
+        # gateway (the connector falls back to its session default). See
+        # _capture_scope / send.
+        self._platform_by_chat: Dict[str, str] = {}
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
         # Phase 7 Unit 7d-B: watches the transport for a terminal auth revocation
         # (a 4401 close after a successful handshake = the operator opted this
@@ -243,6 +252,17 @@ class RelayAdapter(BasePlatformAdapter):
             chat = getattr(src, "chat_id", None)
             if not chat:
                 return
+            # Phase 1.5: remember the underlying platform for this chat so the
+            # reply egresses through the right sender (one relay adapter fronts N
+            # platforms). source.platform is a Platform enum (e.g. Platform.DISCORD,
+            # mapped from the connector's "discord" by ws_transport _frame_to_event);
+            # record its string VALUE, skipping the generic RELAY fallback (a
+            # single-platform connector that didn't tag a concrete platform — the
+            # connector's session default handles egress then).
+            platform = getattr(src, "platform", None)
+            platform_value = getattr(platform, "value", platform)
+            if platform_value and platform_value != "relay":
+                self._platform_by_chat[str(chat)] = str(platform_value)
             guild = getattr(src, "guild_id", None)
             if guild:
                 self._scope_by_chat[str(chat)] = str(guild)
@@ -281,6 +301,17 @@ class RelayAdapter(BasePlatformAdapter):
             if dm_user:
                 meta["user_id"] = dm_user
         return meta
+
+    def _platform_is_fronted(self, platform: str) -> bool:
+        """Whether ``platform`` is one of the platforms this gateway fronts over
+        the relay (Phase 1.5). Reads the transport's advertised identity set; used
+        to decide whether a follow-up's platform-prefixed `kind` names a real
+        fronted platform worth tagging on the frame (vs. leaving egress to the
+        session default). Safe when the transport is absent or single-identity."""
+        ids = getattr(self._transport, "_identities", None)
+        if not ids:
+            return False
+        return any(p == platform for p, _ in ids)
 
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the adapter's interrupt path.
@@ -456,7 +487,8 @@ class RelayAdapter(BasePlatformAdapter):
                 "content": content,
                 "reply_to": reply_to,
                 "metadata": self._with_scope(chat_id, metadata),
-            }
+            },
+            platform=self._platform_by_chat.get(str(chat_id)),
         )
         return SendResult(
             success=bool(result.get("success")),
@@ -487,6 +519,16 @@ class RelayAdapter(BasePlatformAdapter):
         """
         if self._transport is None:
             return SendResult(success=False, error="no transport")
+        # Phase 1.5: the capability `kind` is platform-prefixed (e.g.
+        # "discord.interaction_token"), so derive the egress platform from it when
+        # it names one we front — that tags the OutboundFrame so a multi-platform
+        # gateway routes the follow-up through the right sender. Falls back to the
+        # session default (connector-side) when the prefix isn't a fronted platform.
+        follow_up_platform = None
+        if kind and "." in kind:
+            prefix = kind.split(".", 1)[0]
+            if self._platform_is_fronted(prefix):
+                follow_up_platform = prefix
         result = await self._transport.send_follow_up(
             {
                 "op": "follow_up",
@@ -494,7 +536,8 @@ class RelayAdapter(BasePlatformAdapter):
                 "kind": kind,
                 "content": content,
                 "metadata": metadata or {},
-            }
+            },
+            platform=follow_up_platform,
         )
         return SendResult(
             success=bool(result.get("success")),

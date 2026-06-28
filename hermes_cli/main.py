@@ -255,6 +255,7 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import shlex
 import shutil
 import stat
 import subprocess
@@ -613,6 +614,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_bedrock,
     _model_flow_api_key_provider,
     _model_flow_anthropic,
+    _model_flow_moa,
 )
 logger = logging.getLogger(__name__)
 
@@ -3061,6 +3063,8 @@ def select_provider_and_model(args=None):
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
+    elif selected_provider == "moa":
+        _model_flow_moa(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
@@ -5439,6 +5443,46 @@ def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
     return True
 
 
+def _desktop_linux_needs_no_sandbox() -> bool:
+    """Return True when Chromium/Electron should bypass the Linux sandbox.
+
+    Ubuntu 23.10+ can enable AppArmor's
+    ``apparmor_restrict_unprivileged_userns`` hardening, which breaks
+    Chromium/Electron's user-namespace sandbox for normal users unless the app
+    ships a working root-owned 4755 ``chrome-sandbox`` helper. In headless or
+    non-interactive CLI contexts we may be unable to ``sudo chown/chmod`` that
+    helper, so detect the host restriction and fall back to ``--no-sandbox``
+    rather than hard-failing the launcher.
+
+    We intentionally do NOT return True for root users here: running Electron as
+    root without a sandbox is a qualitatively riskier path than launching as an
+    unprivileged desktop user on an AppArmor-restricted host. The root case
+    should remain an explicit user choice.
+    """
+    if sys.platform != "linux":
+        return False
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return False
+    try:
+        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
+            return f.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> bool:
+    """Return True when ``chrome-sandbox`` exists as a regular file."""
+    if sys.platform != "linux":
+        return False
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    try:
+        sandbox_lstat = sandbox.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(sandbox_lstat.st_mode)
+
+
+
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     """Configure Electron's Linux SUID sandbox helper when required."""
     if sys.platform != "linux":
@@ -5477,6 +5521,44 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     return True
 
 
+def _desktop_launch_options() -> tuple[list[str], str]:
+    """Read `desktop.*` launch options from config.yaml.
+
+    Returns ``(electron_flags, disable_gpu)`` where ``electron_flags`` is a list
+    of extra Electron CLI flags and ``disable_gpu`` is one of "auto"/"1"/"0"
+    (normalized for the HERMES_DESKTOP_DISABLE_GPU env var the Electron app
+    reads). Best-effort: any config error yields the safe defaults
+    ``([], "auto")`` so a malformed config never blocks the launch.
+    """
+    flags: list[str] = []
+    disable_gpu = "auto"
+    try:
+        from hermes_cli.config import load_config
+
+        desktop_cfg = (load_config() or {}).get("desktop") or {}
+    except Exception:
+        return flags, disable_gpu
+
+    raw_flags = desktop_cfg.get("electron_flags")
+    if isinstance(raw_flags, str):
+        flags = shlex.split(raw_flags, posix=(os.name != "nt"))
+    elif isinstance(raw_flags, (list, tuple)):
+        flags = [str(f) for f in raw_flags if str(f).strip()]
+
+    raw_gpu = desktop_cfg.get("disable_gpu", "auto")
+    if isinstance(raw_gpu, bool):
+        disable_gpu = "1" if raw_gpu else "0"
+    elif isinstance(raw_gpu, str):
+        low = raw_gpu.strip().lower()
+        if low in ("1", "true", "yes", "on"):
+            disable_gpu = "1"
+        elif low in ("0", "false", "no", "off"):
+            disable_gpu = "0"
+        else:
+            disable_gpu = "auto"
+    return flags, disable_gpu
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
@@ -5502,6 +5584,14 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
     if getattr(args, "cwd", None):
         env["HERMES_DESKTOP_CWD"] = str(Path(args.cwd).expanduser().resolve())
+
+    # Desktop launch options from config.yaml (`desktop.electron_flags`,
+    # `desktop.disable_gpu`). The GPU policy is bridged to the env var the
+    # Electron app already reads; an explicit env var still wins over config so
+    # `HERMES_DESKTOP_DISABLE_GPU=... hermes desktop` keeps working.
+    config_electron_flags, config_disable_gpu = _desktop_launch_options()
+    if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
+        env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
 
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
@@ -5583,10 +5673,20 @@ def cmd_gui(args: argparse.Namespace):
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
-            if build_result.returncode != 0 and not source_mode:
+            if (
+                build_result.returncode != 0
+                and not source_mode
+                and _desktop_packaged_executable(desktop_dir) is None
+            ):
                 # Corrupt cached Electron zip → partial unpack → ENOENT on rename.
                 # stdlib zipfile won't catch the common concat-junk case, so purge
                 # and retry once; @electron/get SHASUM is the real gate.
+                #
+                # Gate on a MISSING packaged executable: that is the signature of
+                # the corrupt-download class this recovery exists for. A late
+                # failure such as macOS code signing leaves the executable in
+                # place — redownloading Electron can't repair it, so the purge +
+                # retry would only add another slow, identical failure (#40187).
                 purged: list[Path] = []
                 restored = False
                 if not _electron_dist_ok(PROJECT_ROOT):
@@ -5600,7 +5700,12 @@ def cmd_gui(args: argparse.Namespace):
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
-            if build_result.returncode != 0 and not source_mode and not env.get("ELECTRON_MIRROR"):
+            if (
+                build_result.returncode != 0
+                and not source_mode
+                and not env.get("ELECTRON_MIRROR")
+                and _desktop_packaged_executable(desktop_dir) is None
+            ):
                 print("  ⚠ Desktop build still failing; the Electron download from "
                       "GitHub looks blocked. Re-downloading via a public mirror "
                       "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
@@ -5660,11 +5765,17 @@ def cmd_gui(args: argparse.Namespace):
         print("  Expected an unpacked Electron app for the current OS.")
         sys.exit(1)
 
+    launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
-        sys.exit(1)
+        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
+            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            launch_command.append("--no-sandbox")
+        else:
+            sys.exit(1)
 
-    print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
-    launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)
+    launch_command.extend(config_electron_flags)
+    print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
+    launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
 
 
@@ -7817,6 +7928,11 @@ def _update_node_dependencies() -> None:
     nixos_env = with_hermes_node_path(_nixos_build_env())
 
     # Step 1: root install (no workspace recursion).
+    # NOTE: capture_output=False here is deliberate (#18840) — optional
+    # postinstall scripts (e.g. @askjo/camofox-browser's browser-binary fetch)
+    # print download progress, and capturing it makes a long download look
+    # hung. The chatty npm-deprecation noise during `hermes update` comes from
+    # the *desktop* build, not this step; that one is captured to update.log.
     root_args = [*extra_args, "--workspaces=false"]
     root_result = _run_npm_install_deterministic(
         npm,
@@ -8003,6 +8119,50 @@ def _install_hangup_protection(gateway_mode: bool = False):
         state["log_file"] = None
 
     return state
+
+
+def _log_only_write(text: str) -> None:
+    """Write ``text`` to ``~/.hermes/logs/update.log`` only, never the terminal.
+
+    During ``hermes update`` ``sys.stdout`` is an ``_UpdateOutputStream`` that
+    mirrors to both the terminal and ``update.log``. Loud, low-signal
+    subprocess output (npm installs, the Electron/vite build, the cua-driver
+    installer's "Next steps" wall) should be captured and tucked into the log
+    so failures stay debuggable, without flooding the user's terminal. This
+    reaches past the mirroring stream straight to the underlying log handle.
+    """
+    if not text:
+        return
+    stream = sys.stdout
+    log_file = getattr(stream, "_log", None)
+    if log_file is None:
+        return
+    try:
+        log_file.write(text if text.endswith("\n") else text + "\n")
+        log_file.flush()
+    except Exception:
+        pass
+
+
+def _run_logged_subprocess(cmd, *, cwd=None, env=None):
+    """Run ``cmd`` capturing combined output into update.log (not the terminal).
+
+    Returns the ``CompletedProcess`` (with ``stdout`` populated) so the caller
+    can decide whether to surface the captured output on failure.
+    """
+    result = subprocess.run(
+        cmd,
+        cwd=cwd,
+        env=env,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    _log_only_write(result.stdout or "")
+    return result
 
 
 def _finalize_update_output(state):
@@ -9344,15 +9504,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
-            # Stream the build output live (long Electron builds otherwise
-            # look hung). On the rare nonzero exit, retry once after waiting
-            # again for the venv — this covers a still-settling rebuild window
-            # the first wait didn't fully catch.
-            build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
+            # Capture the (very loud) Electron/vite build output into
+            # update.log instead of streaming it to the terminal. On the rare
+            # nonzero exit, retry once after waiting again for the venv — this
+            # covers a still-settling rebuild window the first wait didn't fully
+            # catch — then surface the captured tail so the failure is
+            # debuggable.
+            build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
             if build_result.returncode != 0:
-                build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
+                build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+                tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
+                if tail:
+                    print(tail)
+                from hermes_constants import display_hermes_home as _dhh
+                print(f"  Full build log: {_dhh()}/logs/update.log")
+            else:
+                print("  ✓ Desktop app up to date")
 
         print()
         print("✓ Code updated!")

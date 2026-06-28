@@ -316,7 +316,7 @@ class ChunkedUploader:
         file_size: int,
         hashes: Dict[str, str],
     ) -> _PrepareResult:
-        base = "/v2/users" if chat_type == "c2c" else "/v2/groups"
+        base = "/v2/users" if chat_type in {"c2c", "dm"} else "/v2/groups"
         path = f"{base}/{target_id}/upload_prepare"
         body = {
             "file_type": file_type,
@@ -451,7 +451,7 @@ class ChunkedUploader:
         retry_timeout: float,
     ) -> None:
         """Call ``upload_part_finish``, retrying on biz_code 40093001."""
-        base = "/v2/users" if chat_type == "c2c" else "/v2/groups"
+        base = "/v2/users" if chat_type in {"c2c", "dm"} else "/v2/groups"
         path = f"{base}/{target_id}/upload_part_finish"
         body = {
             "upload_id": upload_id,
@@ -502,7 +502,7 @@ class ChunkedUploader:
         This reuses the ``/files`` endpoint (same as the simple URL-based upload)
         but signals the chunked-completion path by sending only ``upload_id``.
         """
-        base = "/v2/users" if chat_type == "c2c" else "/v2/groups"
+        base = "/v2/users" if chat_type in {"c2c", "dm"} else "/v2/groups"
         path = f"{base}/{target_id}/files"
         body = {"upload_id": upload_id}
 

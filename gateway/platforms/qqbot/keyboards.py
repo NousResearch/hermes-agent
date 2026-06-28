@@ -376,7 +376,7 @@ class ApprovalSender:
         )
 
         try:
-            if chat_type == "c2c":
+            if chat_type in {"c2c", "dm"}:
                 await self._post_c2c(chat_id, text, msg_id, keyboard)
             elif chat_type == "group":
                 await self._post_group(chat_id, text, msg_id, keyboard)

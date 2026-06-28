@@ -1100,7 +1100,7 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        if chat_type in {"c2c", "dm"}:
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:
@@ -2375,7 +2375,7 @@ class QQAdapter(BasePlatformAdapter):
         """Upload media and return file_info."""
         path = (
             f"/v2/users/{target_id}/files"
-            if target_type == "c2c"
+            if target_type in {"c2c", "dm"}
             else f"/v2/groups/{target_id}/files"
         )
 
@@ -2480,7 +2480,7 @@ class QQAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                if chat_type == "c2c":
+                if chat_type in {"c2c", "dm"}:
                     return await self._send_c2c_text(chat_id, content, reply_to)
                 elif chat_type == "group":
                     return await self._send_group_text(chat_id, content, reply_to)
@@ -2607,7 +2607,7 @@ class QQAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         truncated = formatted[: self.MAX_MESSAGE_LENGTH]
         try:
-            if chat_type == "c2c":
+            if chat_type in {"c2c", "dm"}:
                 return await self._send_c2c_text(
                     chat_id, truncated, reply_to, keyboard=keyboard,
                 )
@@ -2937,7 +2937,7 @@ class QQAdapter(BasePlatformAdapter):
                 "POST",
                 (
                     f"/v2/users/{chat_id}/messages"
-                    if chat_type == "c2c"
+                    if chat_type in {"c2c", "dm"}
                     else f"/v2/groups/{chat_id}/messages"
                 ),
                 body,

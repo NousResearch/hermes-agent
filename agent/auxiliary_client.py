@@ -3548,6 +3548,55 @@ def _resolve_auto(
     if not runtime_api_mode and _RUNTIME_MAIN_API_MODE:
         runtime_api_mode = _RUNTIME_MAIN_API_MODE
 
+    # ── MoA preset → aggregator resolution ──────────────────────────────
+    # When the main "provider" is the MoA virtual provider, the main
+    # "model" is a *preset name* (e.g. "local-moa-minimal"), NOT a model ID
+    # any real endpoint accepts. Auxiliary tasks (title generation,
+    # compression, vision, …) issue a single ordinary chat call and cannot
+    # run a MoA reference→aggregator loop, so passing the preset name through
+    # Step 1 yields HTTP 400 "<preset> is not a valid model ID". Resolve the
+    # preset to its aggregator's real (provider, model) — the aggregator is
+    # the callable backend that writes the final response in a MoA turn, so
+    # routing aux calls there keeps behavior (and locality/sovereignty)
+    # aligned with the active preset instead of falling back to a cloud
+    # default.
+    _main_prov_lc = str(runtime_provider or _read_main_provider() or "").strip().lower()
+    if _main_prov_lc == "moa":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import resolve_moa_preset
+
+            _preset_name = runtime_model or _read_main_model() or ""
+            _moa_cfg = (load_config() or {}).get("moa") or {}
+            _preset = resolve_moa_preset(_moa_cfg, _preset_name or None)
+            _agg = _preset.get("aggregator") if isinstance(_preset, dict) else None
+            _agg_provider = str((_agg or {}).get("provider") or "").strip()
+            _agg_model = str((_agg or {}).get("model") or "").strip()
+            if _agg_provider and _agg_model:
+                logger.info(
+                    "Auxiliary auto-detect: MoA preset %r → aggregator %s (%s)",
+                    _preset_name or "default", _agg_provider, _agg_model,
+                )
+                runtime_provider = _agg_provider
+                runtime_model = _agg_model
+                # The aggregator's provider carries its own base_url/api_key
+                # resolution (named custom: providers included), so drop any
+                # MoA-level runtime credentials that don't apply to it.
+                runtime_base_url = ""
+                runtime_api_key = ""
+                runtime_api_mode = ""
+            else:
+                # Preset has no usable aggregator slot — skip Step 1 entirely
+                # rather than 400 on the preset name. Fall through to the
+                # configured fallback / aggregator chain below.
+                runtime_provider = "auto"
+                runtime_model = ""
+        except Exception as exc:
+            logger.debug("Auxiliary client: MoA preset resolution failed (%s); "
+                         "skipping main-provider Step 1", exc)
+            runtime_provider = "auto"
+            runtime_model = ""
+
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
     #    scenario where a user switches providers via `hermes model` but the

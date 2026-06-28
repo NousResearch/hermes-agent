@@ -119,10 +119,10 @@ def cmd_promote(issue_id, root_text, data):
     cur = next((i for i in issues if i["id"] == issue_id), None)
     if cur is None:
         print("ไม่พบ %s" % issue_id)
-        return
+        sys.exit(1)
     if not root_text:
         print("ต้องใส่ --root \"<สาเหตุจริงที่ยืนยันแล้ว>\"")
-        return
+        sys.exit(1)
     from datetime import datetime
     cur["status"] = "verified"
     cur["root_cause"] = root_text

@@ -69,11 +69,15 @@ def main():
     print("สรุป: ผ่านเขียว %d / %d" % (ok, len(results)))
 
     if "--json" in args:
-        import json
-        jp = args[args.index("--json") + 1]
-        json.dump([{"project": p, "status": s} for p, s in results],
-                  open(jp, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-        print("เขียน JSON: %s" % jp)
+        idx = args.index("--json")
+        if idx + 1 < len(args) and not args[idx + 1].startswith("-"):
+            import json
+            jp = args[idx + 1]
+            json.dump([{"project": p, "status": s} for p, s in results],
+                      open(jp, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+            print("เขียน JSON: %s" % jp)
+        else:
+            print("--json ต้องตามด้วย path ไฟล์")
 
 
 if __name__ == "__main__":

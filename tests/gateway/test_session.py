@@ -459,7 +459,7 @@ class TestSenderPrefixWithBackfill:
             user_name="Alice",
         )
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_plain_message_gets_prefix(self, runner, source):
         """Normal message without backfill gets [sender] prefix."""
         event = MessageEvent(text="hello world", source=source)
@@ -468,7 +468,7 @@ class TestSenderPrefixWithBackfill:
         )
         assert result == "[Alice] hello world"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_backfill_prefix_only_on_trigger(self, runner, source):
         """Backfill context must NOT get the sender prefix."""
         event = MessageEvent(
@@ -483,7 +483,7 @@ class TestSenderPrefixWithBackfill:
         assert "[Alice] [Recent channel messages]" not in result
         assert "[New message]\n[Alice] hello world" in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_backfill_preserves_context_block(self, runner, source):
         """The backfill block should pass through unchanged — no double-prefixing."""
         context = "[Recent channel messages]\n[Bob] first\n[Charlie [bot]] second"

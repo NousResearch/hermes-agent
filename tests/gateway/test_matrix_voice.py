@@ -323,17 +323,26 @@ class TestMatrixSendVoiceMSC3245:
 
             self.adapter._client.send_message_event = mock_send_message_event
 
-            await self.adapter.send_voice(
-                chat_id="!room:example.org",
-                audio_path=temp_path,
-                caption="Test voice",
-            )
+            with patch(
+                "plugins.platforms.matrix.adapter._matrix_voice_metadata_for_file",
+                return_value={"duration": 1234, "waveform": [0, 512, 1024]},
+            ):
+                await self.adapter.send_voice(
+                    chat_id="!room:example.org",
+                    audio_path=temp_path,
+                    caption="Test voice",
+                )
 
             assert sent_content is not None, "No message was sent"
             assert "org.matrix.msc3245.voice" in sent_content, \
                 f"MSC3245 voice field missing from content: {sent_content.keys()}"
             assert sent_content["msgtype"] == "m.audio"
             assert sent_content["info"]["mimetype"] == "audio/ogg"
+            assert sent_content["info"]["duration"] == 1234
+            assert sent_content["org.matrix.msc1767.audio"] == {
+                "duration": 1234,
+                "waveform": [0, 512, 1024],
+            }
             assert self.upload_call is not None, "Expected upload_media() to be called"
             assert isinstance(self.upload_call["data"], bytes)
             assert self.upload_call["mime_type"] == "audio/ogg"

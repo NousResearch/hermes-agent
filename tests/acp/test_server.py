@@ -1051,6 +1051,36 @@ class TestPrompt:
         assert state.agent.thinking_callback is None
 
     @pytest.mark.asyncio
+    async def test_prompt_binds_session_cwd_for_agent_context(self, agent, tmp_path):
+        """ACP turns should expose the session cwd to prompt/tool context code."""
+        new_resp = await agent.new_session(cwd=str(tmp_path))
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def fake_run_conversation(**_kwargs):
+            from agent.runtime_cwd import resolve_context_cwd
+
+            assert resolve_context_cwd() == tmp_path
+            return {
+                "final_response": "ok",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "ok"},
+                ],
+            }
+
+        state.agent.run_conversation = MagicMock(side_effect=fake_run_conversation)
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hello")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "end_turn"
+        state.agent.run_conversation.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):
         """After a prompt, session history should be updated."""
         new_resp = await agent.new_session(cwd=".")

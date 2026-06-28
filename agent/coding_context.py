@@ -372,6 +372,41 @@ def _git_root(cwd: Path) -> Optional[Path]:
     return None
 
 
+def _git_dir_for_root(root: Path) -> Optional[Path]:
+    """Return the git metadata directory for a root without spawning git."""
+    dotgit = root / ".git"
+    try:
+        if dotgit.is_dir():
+            return dotgit
+        if dotgit.is_file():
+            text = dotgit.read_text(encoding="utf-8", errors="replace").strip()
+            prefix = "gitdir:"
+            if text.lower().startswith(prefix):
+                raw = text[len(prefix):].strip()
+                git_dir = Path(raw)
+                if not git_dir.is_absolute():
+                    git_dir = (root / git_dir).resolve()
+                return git_dir
+    except OSError:
+        return None
+    return None
+
+
+def _git_head_branch(root: Path) -> str:
+    """Read the current branch from .git/HEAD without invoking git."""
+    git_dir = _git_dir_for_root(root)
+    if git_dir is None:
+        return ""
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    prefix = "ref: refs/heads/"
+    if head.startswith(prefix):
+        return head[len(prefix):].strip()
+    return "(detached)" if head else ""
+
+
 def _home() -> Optional[Path]:
     try:
         return Path.home().resolve()
@@ -815,16 +850,13 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     lines.append(f"- Root: {root}")
 
     if git_root is not None:
-        branch, counts = _parse_status(_git(root, "status", "--porcelain=2", "--branch"))
-        head = branch.get("head", "")
+        # Prompt construction is on the first-token path. Even short git
+        # subprocesses can stall on Windows/ACP workspaces under active file
+        # watchers, so this snapshot reads only .git/HEAD directly. The brief
+        # tells the model to run git when it needs live repo state.
+        head = _git_head_branch(root)
         if head and head != "(detached)":
-            line = f"- Branch: {head}"
-            if branch.get("upstream"):
-                line += f" \u2192 {branch['upstream']}"
-                ahead, behind = branch.get("ahead", "0"), branch.get("behind", "0")
-                if ahead != "0" or behind != "0":
-                    line += f" (ahead {ahead}, behind {behind})"
-            lines.append(line)
+            lines.append(f"- Branch: {head}")
         elif head == "(detached)":
             lines.append("- Branch: (detached HEAD)")
 
@@ -833,20 +865,10 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
         # are shared state) but deliberately do NOT expose the primary tree path —
         # giving the model a second absolute path causes it to sometimes run commands
         # in the wrong directory.
-        git_dir, common_dir = _git(root, "rev-parse", "--git-dir"), _git(root, "rev-parse", "--git-common-dir")
-        if git_dir and common_dir and Path(git_dir).resolve() != Path(common_dir).resolve():
+        if (root / ".git").is_file():
             lines.append("- Worktree: linked (git state shared with primary tree)")
 
-        dirty = [f"{n} {label}" for label, n in (
-            ("staged", counts["staged"]), ("modified", counts["modified"]),
-            ("untracked", counts["untracked"]), ("conflicts", counts["conflicts"]),
-        ) if n]
-        lines.append(f"- Status: {', '.join(dirty) if dirty else 'clean'}")
-
-        recent = _git(root, "log", "-3", "--pretty=%h %s")
-        if recent:
-            lines.append("- Recent commits:")
-            lines.extend(f"    {c}" for c in recent.splitlines())
+        lines.append("- Status: not checked in prompt snapshot; run `git status` before acting")
 
     lines.extend(_project_facts(root))
     return "\n".join(lines)

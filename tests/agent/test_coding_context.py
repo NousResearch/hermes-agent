@@ -140,15 +140,26 @@ class TestWorkspaceBlock:
         assert "Workspace" in block
         assert f"Root: {tmp_path.resolve()}" in block or "Root:" in block
         assert "Branch: main" in block
-        assert "Status: clean" in block
-        assert "init commit" in block
+        assert "Status: not checked in prompt snapshot" in block
 
-    def test_reports_dirty_counts(self, tmp_path):
+    def test_does_not_scan_dirty_counts_on_prompt_path(self, tmp_path):
         _git_init(tmp_path)
-        (tmp_path / "untracked.txt").write_text("hi")
+        (tmp_path / "main.py").write_text("print('changed')\n")
         block = cc.build_coding_workspace_block(tmp_path)
-        assert "untracked" in block
-        assert "clean" not in block.split("Status:")[1].splitlines()[0]
+        status_line = block.split("Status:")[1].splitlines()[0]
+        assert "not checked" in status_line
+        assert "modified" not in status_line
+
+    def test_workspace_snapshot_does_not_spawn_git_for_prompt(self, tmp_path, monkeypatch):
+        _git_init(tmp_path)
+
+        def fail_git(*_args):
+            raise AssertionError("git subprocess not allowed during prompt snapshot")
+
+        monkeypatch.setattr(cc, "_git", fail_git)
+        block = cc.build_coding_workspace_block(tmp_path)
+        assert "Branch: main" in block
+        assert "Status: not checked in prompt snapshot" in block
 
 
 # ── project facts (verify-loop detection) ───────────────────────────────────

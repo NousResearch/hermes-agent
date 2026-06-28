@@ -1471,7 +1471,12 @@ class HermesACPAgent(acp.Agent):
                     clear_session_vars,
                     set_session_vars,
                 )
-                session_tokens = set_session_vars(session_key=session_id)
+                session_tokens = set_session_vars(
+                    platform="acp",
+                    session_key=session_id,
+                    session_id=session_id,
+                    cwd=getattr(state, "cwd", "") or "",
+                )
             except Exception:
                 session_tokens = None
                 clear_session_vars = None  # type: ignore[assignment]

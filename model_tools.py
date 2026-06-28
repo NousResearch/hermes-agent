@@ -23,6 +23,7 @@ Public API (signatures preserved from the original 2,400-line version):
 import os
 import json
 import re
+import shlex
 import asyncio
 import logging
 import threading
@@ -827,6 +828,82 @@ def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optio
     return "ok", None, None, None
 
 
+def _shell_command_class(command: Any) -> str:
+    """Return a low-cardinality, secret-safe class for a shell command."""
+    if not isinstance(command, str) or not command.strip():
+        return "unknown"
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.strip().split()
+    while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return "unknown"
+
+    executable = os.path.basename(tokens[0])
+    subcommand = tokens[1] if len(tokens) > 1 else ""
+
+    if executable == "python" or re.match(r"^python\d+(?:\.\d+)?$", executable):
+        if subcommand == "-m" and len(tokens) > 2 and tokens[2] in {"pytest", "unittest", "tox"}:
+            return "test"
+        return "python"
+    if executable in {"pytest", "tox", "nox"} or executable.startswith("run_tests"):
+        return "test"
+    if executable in {"npm", "pnpm", "yarn"} and subcommand in {"test", "vitest", "jest"}:
+        return "test"
+    if executable == "cargo" and subcommand == "test":
+        return "test"
+    if executable in {"npm", "pnpm", "yarn"} and subcommand in {"build", "compile"}:
+        return "build"
+    if executable == "cargo" and subcommand in {"build", "check", "clippy"}:
+        return "build"
+    if executable in {"make", "cmake", "ninja", "tsc", "vite", "webpack", "rollup"}:
+        return "build"
+    if executable == "git":
+        return "git"
+    if executable in {"pip", "pip3", "uv", "poetry", "npm", "pnpm", "yarn", "bun"}:
+        return "package_manager"
+    if executable in {"curl", "wget", "ssh", "scp", "rsync"}:
+        return "network"
+    if executable in {"ls", "pwd", "find", "grep", "rg", "cat", "head", "tail", "stat"}:
+        return "filesystem"
+    if subcommand in {"run", "serve", "server", "dev"}:
+        return "server"
+    return "shell"
+
+
+def _tool_command_metadata(function_name: str, function_args: Dict[str, Any]) -> Dict[str, Any]:
+    """Build secret-safe execution metadata for command-like tools."""
+    if function_name == "terminal":
+        metadata: Dict[str, Any] = {"command_class": _shell_command_class(function_args.get("command"))}
+        timeout = function_args.get("timeout")
+        if timeout is None:
+            try:
+                from tools.terminal_tool import _get_env_config
+
+                timeout = _get_env_config().get("timeout")
+            except Exception:
+                timeout = None
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            metadata["timeout_seconds"] = int(timeout)
+        for key in ("background", "notify_on_complete", "pty"):
+            metadata[key] = bool(function_args.get(key, False))
+        return metadata
+    if function_name == "execute_code":
+        metadata = {"command_class": "python"}
+        try:
+            from tools.code_execution_tool import DEFAULT_TIMEOUT, _load_config
+
+            timeout = _load_config().get("timeout", DEFAULT_TIMEOUT)
+        except Exception:
+            timeout = None
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            metadata["timeout_seconds"] = int(timeout)
+        return metadata
+    return {}
+
+
 def _emit_post_tool_call_hook(
     *,
     function_name: str,
@@ -842,6 +919,7 @@ def _emit_post_tool_call_hook(
     error_type: Optional[str] = None,
     error_message: Optional[str] = None,
     error_kind: Optional[str] = None,
+    command_metadata: Optional[Dict[str, Any]] = None,
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook.
@@ -859,23 +937,24 @@ def _emit_post_tool_call_hook(
             return
         if status is None:
             status, error_type, error_message, error_kind = _tool_result_observer_fields(result)
-        invoke_hook(
-            "post_tool_call",
-            tool_name=function_name,
-            args=function_args,
-            result=result,
-            task_id=task_id or "",
-            session_id=session_id or "",
-            tool_call_id=tool_call_id or "",
-            turn_id=turn_id or "",
-            api_request_id=api_request_id or "",
-            duration_ms=duration_ms,
-            status=status,
-            error_type=error_type,
-            error_message=error_message,
-            error_kind=error_kind,
-            middleware_trace=list(middleware_trace or []),
-        )
+        payload = {
+            "tool_name": function_name,
+            "args": function_args,
+            "result": result,
+            "task_id": task_id or "",
+            "session_id": session_id or "",
+            "tool_call_id": tool_call_id or "",
+            "turn_id": turn_id or "",
+            "api_request_id": api_request_id or "",
+            "duration_ms": duration_ms,
+            "status": status,
+            "error_type": error_type,
+            "error_message": error_message,
+            "error_kind": error_kind,
+            "middleware_trace": list(middleware_trace or []),
+        }
+        payload.update(command_metadata or {})
+        invoke_hook("post_tool_call", **payload)
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
@@ -1153,6 +1232,7 @@ def handle_function_call(
                 except Exception:
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+        _command_metadata = _tool_command_metadata(function_name, function_args)
 
         _emit_post_tool_call_hook(
             function_name=function_name,
@@ -1164,6 +1244,7 @@ def handle_function_call(
             turn_id=turn_id,
             api_request_id=api_request_id,
             duration_ms=duration_ms,
+            command_metadata=_command_metadata,
             middleware_trace=list(_tool_middleware_trace),
         )
 
@@ -1179,22 +1260,23 @@ def handle_function_call(
             from hermes_cli.plugins import has_hook, invoke_hook
             if has_hook("transform_tool_result"):
                 status, error_type, error_message, error_kind = _tool_result_observer_fields(result)
-                hook_results = invoke_hook(
-                    "transform_tool_result",
-                    tool_name=function_name,
-                    args=function_args,
-                    result=result,
-                    task_id=task_id or "",
-                    session_id=session_id or "",
-                    tool_call_id=tool_call_id or "",
-                    turn_id=turn_id or "",
-                    api_request_id=api_request_id or "",
-                    duration_ms=duration_ms,
-                    status=status,
-                    error_type=error_type,
-                    error_message=error_message,
-                    error_kind=error_kind,
-                )
+                payload = {
+                    "tool_name": function_name,
+                    "args": function_args,
+                    "result": result,
+                    "task_id": task_id or "",
+                    "session_id": session_id or "",
+                    "tool_call_id": tool_call_id or "",
+                    "turn_id": turn_id or "",
+                    "api_request_id": api_request_id or "",
+                    "duration_ms": duration_ms,
+                    "status": status,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "error_kind": error_kind,
+                }
+                payload.update(_command_metadata)
+                hook_results = invoke_hook("transform_tool_result", **payload)
                 for hook_result in hook_results:
                     if isinstance(hook_result, str):
                         result = hook_result

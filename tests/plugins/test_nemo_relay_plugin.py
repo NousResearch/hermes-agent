@@ -271,6 +271,35 @@ def test_nemo_relay_plugin_emits_llm_tool_and_exports_atif(tmp_path, monkeypatch
     assert (tmp_path / "atif" / "hermes-atif-s1.json").exists()
 
 
+def test_nemo_relay_plugin_exports_command_metadata(monkeypatch):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_pre_tool_call(session_id="s1", tool_name="terminal", tool_call_id="tool-1", args={"command": "SECRET=*** pytest"})
+    plugin.on_post_tool_call(
+        session_id="s1",
+        tool_name="terminal",
+        tool_call_id="tool-1",
+        result={"ok": True},
+        status="ok",
+        command_class="test",
+        timeout_seconds=120,
+        background=True,
+        notify_on_complete=True,
+        pty=False,
+    )
+
+    tool_end = next(event for event in fake.events if event[0] == "tool.call_end")
+    data = tool_end[3]["data"]
+    assert data["hermes.tool.command_class"] == "test"
+    assert data["hermes.tool.timeout_seconds"] == 120
+    assert data["hermes.tool.background"] is True
+    assert data["hermes.tool.notify_on_complete"] is True
+    assert data["hermes.tool.pty"] is False
+    assert "SECRET" not in repr({k: v for k, v in data.items() if k.startswith("hermes.tool.")})
+
+
 def test_nemo_relay_plugin_closes_api_span_on_error(monkeypatch):
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)

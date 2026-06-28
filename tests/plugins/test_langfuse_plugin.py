@@ -754,6 +754,11 @@ class TestToolCallOutputBackfill:
             error_type="tool_error",
             error_kind="match_not_found",
             error_message="Could not find old_string in file",
+            command_class="test",
+            timeout_seconds=120,
+            background=True,
+            notify_on_complete=True,
+            pty=False,
         )
 
         assert ended["observation"] is observation
@@ -767,6 +772,11 @@ class TestToolCallOutputBackfill:
         assert ended["metadata"]["error_kind"] == "match_not_found"
         assert ended["metadata"]["hermes.tool.error_kind"] == "match_not_found"
         assert ended["metadata"]["error_message"] == "Could not find old_string in file"
+        assert ended["metadata"]["hermes.tool.command_class"] == "test"
+        assert ended["metadata"]["hermes.tool.timeout_seconds"] == 120
+        assert ended["metadata"]["hermes.tool.background"] is True
+        assert ended["metadata"]["hermes.tool.notify_on_complete"] is True
+        assert ended["metadata"]["hermes.tool.pty"] is False
 
     def test_serialize_messages_keeps_tool_name_and_call_id(self):
         sys.modules.pop("plugins.observability.langfuse", None)

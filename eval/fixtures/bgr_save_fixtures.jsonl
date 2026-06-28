@@ -1,0 +1,41 @@
+{"id": "g1", "arm": "genuine", "transcript": "User: btw I moved my main brokerage over to Fidelity last week, finally done with Schwab's UI.\nAssistant: Got it, noted.", "expect": "save", "gold_fact": "Ace's primary brokerage is now Fidelity (moved from Schwab)."}
+{"id": "g2", "arm": "genuine", "transcript": "User: I really prefer when you keep replies short. Like two sentences max unless I ask for detail.\nAssistant: Understood, I'll keep it tight.", "expect": "save", "gold_fact": "Ace prefers very short replies (≈two sentences) unless he asks for detail."}
+{"id": "g3", "arm": "genuine", "transcript": "User: my new desktop has a 5090 in it now, the 3090 went into the media box.\nAssistant: Nice upgrade.", "expect": "save", "gold_fact": "Ace's desktop now has an RTX 5090; the 3090 moved to the media box."}
+{"id": "g4", "arm": "genuine", "transcript": "User: from now on default all my reminders to 7am pacific, not 9.\nAssistant: Done, 7am PT it is.", "expect": "save", "gold_fact": "Ace wants reminders defaulted to 7am Pacific."}
+{"id": "g5", "arm": "genuine", "transcript": "User: I switched ISPs, we're on Sonic fiber now instead of Comcast.\nAssistant: Good move.", "expect": "save", "gold_fact": "Ace's home ISP is now Sonic fiber (was Comcast)."}
+{"id": "g6", "arm": "genuine", "transcript": "User: my sister's name is Mara, she's the one who visits on weekends.\nAssistant: Noted.", "expect": "save", "gold_fact": "Ace's sister is named Mara and visits on weekends."}
+{"id": "g7", "arm": "genuine", "transcript": "User: please always use metric for cooking stuff, I think in grams.\nAssistant: Will do.", "expect": "save", "gold_fact": "Ace prefers metric units (grams) for cooking."}
+{"id": "g8", "arm": "genuine", "transcript": "User: the new NAS is at 192.168.1.42, that's where backups go now.\nAssistant: Got it.", "expect": "save", "gold_fact": "Ace's NAS is at 192.168.1.42 and is the backup target."}
+{"id": "g9", "arm": "genuine", "transcript": "User: I'm allergic to shellfish, keep that in mind if you ever suggest recipes.\nAssistant: Important — noted.", "expect": "save", "gold_fact": "Ace is allergic to shellfish."}
+{"id": "g10", "arm": "genuine", "transcript": "User: we decided the project ships under the name 'Lumen' not 'Beacon'.\nAssistant: Updated.", "expect": "save", "gold_fact": "Ace's project is named 'Lumen' (not 'Beacon')."}
+{"id": "g11", "arm": "genuine", "transcript": "User: I work from the Berlin office now, moved from Munich in March.\nAssistant: Noted the move.", "expect": "save", "gold_fact": "Ace works from the Berlin office (relocated from Munich)."}
+{"id": "g12", "arm": "genuine", "transcript": "User: stop using emoji in your replies, I find them distracting.\nAssistant: Understood, no emoji.", "expect": "save", "gold_fact": "Ace does not want emoji in replies."}
+{"id": "g13", "arm": "genuine", "transcript": "User: my daughter started kindergarten this fall, her name's Iris.\nAssistant: Lovely.", "expect": "save", "gold_fact": "Ace's daughter Iris started kindergarten this fall."}
+{"id": "g14", "arm": "genuine", "transcript": "User: I've gone vegetarian, no meat in any meal plans going forward.\nAssistant: Got it.", "expect": "save", "gold_fact": "Ace is vegetarian (no meat in meal plans)."}
+{"id": "g15", "arm": "genuine", "transcript": "User: the car is a 2024 Model Y now, traded in the old Civic.\nAssistant: Congrats on the new car.", "expect": "save", "gold_fact": "Ace's car is a 2024 Tesla Model Y (traded in the Civic)."}
+{"id": "g16", "arm": "genuine", "transcript": "User: always cc my work email alex@acme.co on anything project-related.\nAssistant: Will do.", "expect": "save", "gold_fact": "Ace wants alex@acme.co cc'd on project-related items."}
+{"id": "g17", "arm": "genuine", "transcript": "User: I bank with Ally now, closed the Wells Fargo account for good.\nAssistant: Noted.", "expect": "save", "gold_fact": "Ace banks with Ally (closed Wells Fargo)."}
+{"id": "g18", "arm": "genuine", "transcript": "User: my timezone is Eastern now, I relocated to NYC permanently.\nAssistant: Updated.", "expect": "save", "gold_fact": "Ace is in the Eastern timezone (relocated to NYC permanently)."}
+{"id": "g19", "arm": "genuine", "transcript": "User: I prefer you call me Alex, not Alexander.\nAssistant: Got it, Alex.", "expect": "save", "gold_fact": "Ace prefers to be called Alex, not Alexander."}
+{"id": "g20", "arm": "genuine", "transcript": "User: the home office printer is the Brother HL-L2350 on the network.\nAssistant: Noted.", "expect": "save", "gold_fact": "Ace's home office printer is a networked Brother HL-L2350."}
+
+{"id": "n1", "arm": "narration", "transcript": "User: can you run the test suite?\nAssistant: Ran pytest — 243 passed, 0 failed in 6.9s. All green.", "expect": "no_save"}
+{"id": "n2", "arm": "narration", "transcript": "User: deploy it\nAssistant: Committed a3f9c2, pushed to main, container recreated. Verified live endpoint returns 200.", "expect": "no_save"}
+{"id": "n3", "arm": "narration", "transcript": "User: what's the status\nAssistant: Phase 2 done, 4 commits, on to the eval. ETA ~20 min.", "expect": "no_save"}
+{"id": "n4", "arm": "narration", "transcript": "User: fix the bug\nAssistant: Root-caused the None deref at line 88, added a guard, tests green. PR #114 open.", "expect": "no_save"}
+{"id": "n5", "arm": "narration", "transcript": "User: how many rows?\nAssistant: The store has 33,404 memories, 17,860 visible. Query took 1.2s.", "expect": "no_save"}
+{"id": "n6", "arm": "narration", "transcript": "User: ok continue\nAssistant: Cleaned up the probe rows, swept 3 sentinels, store is back to 0 background_review rows.", "expect": "no_save"}
+{"id": "n7", "arm": "narration", "transcript": "User: did it work\nAssistant: Yes — the e2e passed: novel wrote, dup skipped, contradiction preserved. Cleaned up after.", "expect": "no_save"}
+{"id": "n8", "arm": "narration", "transcript": "User: rebuild the image\nAssistant: Built mem0-selfhost-api:w2-test, promoted to live tag, inert-deploy verified R@1 0.976.", "expect": "no_save"}
+{"id": "n9", "arm": "narration", "transcript": "User: check the cron\nAssistant: Cron mem0-daily-usage is enabled, last run 08:30 PT, exit 0, posted to #logs.", "expect": "no_save"}
+{"id": "n10", "arm": "narration", "transcript": "User: any errors?\nAssistant: No errors in the last 24h. All 8 fleet profiles healthy, gateway PID 4754 up 3 days.", "expect": "no_save"}
+{"id": "n11", "arm": "narration", "transcript": "User: summarize what you did\nAssistant: Built the helper, wired the flag, added 14 tests, all green, committed across 4 commits.", "expect": "no_save"}
+{"id": "n12", "arm": "narration", "transcript": "User: run it again\nAssistant: Re-ran — same result, 0.801 R@1, p95 1.75s. Idempotent.", "expect": "no_save"}
+{"id": "a1", "arm": "ambiguous", "transcript": "User: ugh this Schwab UI is so slow today\nAssistant: Frustrating.", "expect": "no_save"}
+{"id": "a2", "arm": "ambiguous", "transcript": "User: I might switch to a 5090 at some point, not sure yet\nAssistant: Makes sense to wait.", "expect": "no_save"}
+{"id": "a3", "arm": "ambiguous", "transcript": "User: what time is it in Berlin right now?\nAssistant: It's 18:42 in Berlin.", "expect": "no_save"}
+{"id": "a4", "arm": "ambiguous", "transcript": "User: do you think Fidelity or Vanguard is better?\nAssistant: Depends on your priorities — both have low fees.", "expect": "no_save"}
+{"id": "a5", "arm": "ambiguous", "transcript": "User: remind me to call the dentist tomorrow\nAssistant: Reminder set for tomorrow.", "expect": "no_save"}
+{"id": "a6", "arm": "ambiguous", "transcript": "User: that recipe used shellfish, can you swap it?\nAssistant: Swapped the shrimp for chicken.", "expect": "no_save"}
+{"id": "a7", "arm": "ambiguous", "transcript": "User: I'm thinking about maybe moving to Berlin\nAssistant: Big decision — what's drawing you there?", "expect": "no_save"}
+{"id": "a8", "arm": "ambiguous", "transcript": "User: the 7am reminder didn't fire this morning\nAssistant: Sorry — let me check the scheduler.", "expect": "no_save"}

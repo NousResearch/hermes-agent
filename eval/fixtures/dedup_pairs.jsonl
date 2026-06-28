@@ -1,0 +1,65 @@
+{"arm": "reworded_same", "a": "Ace's primary brokerage account is at Schwab.", "b": "Ace uses Schwab as his main brokerage.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace prefers concise, direct responses.", "b": "Ace likes answers kept short and to the point.", "label": "same"}
+{"arm": "reworded_same", "a": "The Mac Studio is Apollo's host machine.", "b": "Apollo runs on the Mac Studio.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace's iPhone uses an AT&T hotspot for connectivity.", "b": "Ace tethers his iPhone over an AT&T hotspot.", "label": "same"}
+{"arm": "reworded_same", "a": "ACE-AI hosts the self-hosted mem0 store.", "b": "The mem0 store is self-hosted on the ACE-AI box.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace wants the Clanker voice persona to be funny and bubbly.", "b": "Ace prefers Clanker's voice to sound bubbly and humorous.", "label": "same"}
+{"arm": "reworded_same", "a": "The morning brief is delivered at 8:30 AM Pacific.", "b": "Ace's morning brief goes out at 08:30 PT.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace runs model-serving workloads on ACE-AI, not the Mac Studio.", "b": "Model serving happens on the ACE-AI machine rather than the Mac Studio.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace's universal homelab password is stored in 1Password.", "b": "The homelab universal password lives in Ace's 1Password vault.", "label": "same"}
+{"arm": "reworded_same", "a": "Apollo is the sole user-facing orchestrator agent.", "b": "The only standing user-facing agent is Apollo, the orchestrator.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace prefers PT times by default in messages.", "b": "Default to Pacific Time when showing Ace timestamps.", "label": "same"}
+{"arm": "reworded_same", "a": "The HA N100 box lives at 192.168.1.5 for Home Assistant.", "b": "Home Assistant runs on the N100 at 192.168.1.5.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace likes multi-machine, multi-GPU homelab inference builds.", "b": "Ace enjoys building multi-GPU inference setups across several machines.", "label": "same"}
+{"arm": "reworded_same", "a": "Aegis is Apollo's break-glass backup agent.", "b": "The break-glass backup for Apollo is Aegis.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace wants granular per-device volume control for the house audio.", "b": "Ace would like to control house audio volume per device.", "label": "same"}
+{"arm": "reworded_same", "a": "Greenhouse nightly seeds run at 4:00 AM Pacific.", "b": "The Greenhouse nightly seed job fires at 04:00 PT.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace prefers simpler, recoverable configs over clever ones.", "b": "Ace would rather have simple recoverable configs than clever fragile ones.", "label": "same"}
+{"arm": "reworded_same", "a": "The media homelab uses a Servarr stack.", "b": "Ace's media automation runs on a Servarr-based stack.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace never wants Twitter posts published directly without approval.", "b": "Tweets must be queued for approval, never posted directly.", "label": "same"}
+{"arm": "reworded_same", "a": "Daedalus is the fleet's coding specialist agent.", "b": "The coding specialist in the fleet is Daedalus.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace's backups run nightly at 1:40 AM.", "b": "The nightly backup job kicks off at 01:40.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace uses Obsidian as the source-of-truth vault.", "b": "The canonical knowledge vault for Ace is Obsidian.", "label": "same"}
+{"arm": "reworded_same", "a": "Athena is the fleet's researcher and writer, reachable on Telegram.", "b": "The research-and-writing agent Athena is contacted via Telegram.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace wants honest blockers reported, not fake-green status.", "b": "Ace prefers a truthful blocker over a falsely-green result.", "label": "same"}
+{"arm": "reworded_same", "a": "The UDM-PRO-SE runs the legacy zone-based firewall on 10.4.57.", "b": "On 10.4.57 the UDM-PRO-SE still uses the legacy zone-based firewall.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace's Discord server is called Daemonarchy.", "b": "The Discord server Ace uses is named Daemonarchy.", "label": "same"}
+{"arm": "reworded_same", "a": "Apollo delivers results to the current chat, not a fixed side-channel.", "b": "Results from Apollo go to the conversation in progress, not a fixed channel.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace's MacBook is on the AT&T network.", "b": "Ace's laptop connects through AT&T.", "label": "same"}
+{"arm": "reworded_same", "a": "The mem0 add-pipeline LLM is gpt-5-nano.", "b": "mem0's add pipeline uses gpt-5-nano for extraction.", "label": "same"}
+{"arm": "reworded_same", "a": "Ace wants the kitchen voice reply to be MA-free, native PCM direct.", "b": "The kitchen reply must use native PCM directly, never the MA path.", "label": "same"}
+{"arm": "high_cosine_distinct", "a": "Ace's primary brokerage account is at Schwab.", "b": "Ace switched his primary brokerage to Fidelity.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Ace's main GPU is an RTX 5090.", "b": "Ace's main GPU is an RTX 3090.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "The morning brief is delivered at 8:30 AM Pacific.", "b": "The morning brief is delivered at 6:00 AM Pacific.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Ace prefers concise responses.", "b": "Ace prefers verbose, detailed responses.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "The HA box lives at 192.168.1.5.", "b": "The HA box lives at 192.168.1.208.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Ace's thermostat is set to 70 degrees.", "b": "Ace's thermostat is set to 64 degrees.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Model serving runs on ACE-AI.", "b": "Model serving runs on the Mac Studio.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Ace's iPhone uses an AT&T hotspot.", "b": "Ace's iPhone uses a Verizon hotspot.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "The backup runs nightly at 1:40 AM.", "b": "The backup runs nightly at 3:30 AM.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Ace wants Clanker's persona to be funny and bubbly.", "b": "Ace wants Clanker's persona to be dry and deadpan.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Apollo's gateway PID is 4754.", "b": "Apollo's gateway PID is 64108.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Ace's primary brokerage is Schwab.", "b": "Ace's primary bank is Chase.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "The graph extractor model is gemini-2.5-flash.", "b": "The graph extractor model is gpt-5-nano.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Ace's morning brief goes to Telegram.", "b": "Ace's morning brief goes to Discord.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Ace prefers PT times by default.", "b": "Ace prefers ET times by default.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Reflector freshness weight is 0.02.", "b": "Reflector freshness weight is 0.10.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "The reranker model is ms-marco-MiniLM-L-6-v2.", "b": "The reranker model is bge-reranker-large.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Ace's universal password is in the Engineering vault.", "b": "Ace's universal password is in the Personal vault.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "DEDUP cosine threshold is 0.95.", "b": "DEDUP cosine threshold is 0.85.", "label": "distinct"}
+{"arm": "high_cosine_distinct", "a": "Ace's media PC has an RTX 5090.", "b": "Ace's AI PC has an RTX Pro 6000.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "Ace's primary brokerage is Schwab.", "b": "Ace's GPU is an RTX 5090.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "The morning brief goes out at 8:30 PT.", "b": "Ace prefers concise responses.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "Apollo runs on the Mac Studio.", "b": "Ace's thermostat is a Nest.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "The mem0 store is self-hosted on ACE-AI.", "b": "Ace likes dry, deadpan humor.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "Ace's iPhone uses an AT&T hotspot.", "b": "The Greenhouse seeds run at 4 AM.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "Daedalus is the coding specialist.", "b": "The media homelab uses Servarr.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "Ace's universal password is in 1Password.", "b": "Twitter posts must be queued for approval.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "The HA box is at 192.168.1.5.", "b": "Ace wants granular per-device volume.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "Athena is reachable on Telegram.", "b": "Backups run nightly at 1:40 AM.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "Apollo is the sole orchestrator.", "b": "Ace's main GPU is an RTX 5090.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "The add-pipeline LLM is gpt-5-nano.", "b": "Ace prefers simpler configs.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "Clanker's voice should be bubbly.", "b": "The UDM-PRO-SE runs a legacy firewall.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "Ace's Discord server is Daemonarchy.", "b": "Model serving runs on ACE-AI.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "Obsidian is the source-of-truth vault.", "b": "Ace's iPhone is on AT&T.", "label": "distinct"}
+{"arm": "low_sim_distinct", "a": "The reranker is ms-marco-MiniLM.", "b": "Ace's morning brief is at 8:30 PT.", "label": "distinct"}

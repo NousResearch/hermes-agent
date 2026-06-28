@@ -283,6 +283,19 @@ class _DirectRestMem0Client:
                 response = response[:limit]
         return response
 
+    def search_meta_filtered(self, query, meta_filters, top_k=5):
+        """Search with a TRUE nested ``filters`` clause (metadata equality).
+
+        The regular ``search()`` spreads scope keys to the body top-level, which the
+        self-host server IGNORES for metadata equality (probe 2026-06-27: top-level
+        dedup_hash -> 20 unfiltered rows; nested filters -> exact 1). The dedup ladder
+        needs real server-side metadata filtering, so this builds the nested shape:
+        ``{"query":..., "user_id":..., "filters": {<meta equality>}, "top_k":...}``.
+        """
+        body = {"query": query or "", "user_id": self._user_id,
+                "filters": dict(meta_filters or {}), "top_k": top_k}
+        return self._request("POST", "/search", body=body)
+
     def get_all(self, filters=None, **kwargs):
         # reads scope to user_id only (see search) — agent-scoped recall would drop
         # historical agent-without-user memories.
@@ -366,6 +379,75 @@ CONCLUDE_SCHEMA = {
         "required": ["conclusion"],
     },
 }
+
+# --- mem0_remember: the background-review write helper (registry tool, manager-free) ---
+# Registered via ctx.register_tool(toolset="memory_write", ...) so it dispatches through
+# the regular tool registry (handle_function_call), NOT the memory-provider path that
+# requires _memory_manager (None in the skip_memory=True review fork). See spec §5A
+# Phase-0 correction. Inherits the mem0_conclude salience rubric verbatim.
+REMEMBER_SCHEMA = {
+    "name": "mem0_remember",
+    "description": (
+        "Deliberately store ONE durable fact about the user or their stable environment into "
+        "long-term memory (mem0), verbatim (no LLM extraction). Use this from the background "
+        "self-improvement review when you find a fact worth keeping across sessions; it is the "
+        "manager-free counterpart to mem0_conclude. Save the FACT, never the conversation or "
+        "this prompt.\n"
+        "SAVE when you learn: a preference or taste; a standing decision or directive; a correction "
+        "to something previously believed; an account / device / service / credential pointer "
+        "(not the secret itself); durable environment or topology (hosts, IPs, paths, tools, how "
+        "things are wired); a long-lived plan, goal, or constraint. One fact per call; phrase it as "
+        "a standalone declarative fact that will still make sense months from now.\n"
+        "Do NOT save: work-narration or what you did this turn (built, ran, tested, committed, "
+        "pushed, deployed, verified, reviewed); status / progress / ETA / cost / token counts; "
+        "PR / issue / commit / SHA / phase-done / task-state; transient state that will be stale in "
+        "a week; anything already obvious from a stable doc."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "fact": {"type": "string", "description": "The single durable fact to store, as a standalone declarative sentence."},
+        },
+        "required": ["fact"],
+    },
+}
+
+
+def _dedup_norm_hash(text: str) -> str:
+    """Normalize (lowercase + collapse-whitespace + strip) then MD5.
+
+    DD-5: raw-text MD5 is trivially defeated by a trailing space / case; normalize first
+    so Tier-1 catches byte-and-whitespace-equal dupes. Tier-2 (cosine) catches the rest.
+    """
+    import hashlib
+    norm = " ".join((text or "").lower().split()).strip()
+    return hashlib.md5(norm.encode("utf-8")).hexdigest()
+
+
+# Dedup Tier-2 thresholds (D-7, calibrated by eval/dedup_threshold_sweep.py 2026-06-27).
+# CALIBRATION FINDING: on this store, reworded-same-fact cosines (0.58–0.92) and
+# contradiction cosines (0.61–0.99) OVERLAP — there is NO cosine threshold that catches
+# paraphrase-dupes without ALSO swallowing contradictions (value-flips like "weight 0.02"
+# vs "0.10" embed at ~0.99). So Tier-2 cosine CANNOT safely auto-skip on a fidelity-first
+# store. Resolution (matches DD-1): IDENTICAL is set to 0.995 — a near-verbatim safety belt
+# that Tier-1 exact-hash already covers — so Tier-2 effectively NEVER auto-skips; the
+# ambiguous band always WRITES. Real semantic dedup is deferred to Tier-4 (LLM reconcile).
+_DEDUP_COSINE_THRESHOLD = 0.95
+_DEDUP_COSINE_IDENTICAL = 0.995
+
+
+def _dedup_cosine_band(top_score, threshold=_DEDUP_COSINE_THRESHOLD, identical=_DEDUP_COSINE_IDENTICAL):
+    """Map a top-hit similarity to a band: 'skip_identical' | 'write_ambiguous' | 'write'."""
+    try:
+        s = float(top_score)
+    except (TypeError, ValueError):
+        return "write"
+    if s >= identical:
+        return "skip_identical"
+    if s >= threshold:
+        return "write_ambiguous"
+    return "write"
+
 
 # --- Destructive tools (gated; appended only when destructive_tools_enabled) ---
 
@@ -741,6 +823,110 @@ class Mem0MemoryProvider(MemoryProvider):
         filters["metadata"] = metadata
         return filters
 
+    def _dedup_then_write(self, client, fact: str) -> Dict[str, Any]:
+        """Write a background-review fact through the dedup ladder (D-5).
+
+        Tier 1: exact-hash skip (normalized MD5, server-side `filters` lookup).
+        Tier 2: two-band cosine (>= IDENTICAL skip; ambiguous band WRITES — DD-1:
+                cosine is sign-blind, dropping the newer fact is unrecoverable).
+        Stamps write_origin=background_review + dedup_hash on the write.
+        Returns {"result": ..., "dedup": <tag>} so the digest can split outcomes.
+        """
+        norm_hash = _dedup_norm_hash(fact)
+
+        # Resolve thresholds (config-overridable, D-7).
+        try:
+            threshold = float(self._config.get("dedup_cosine_threshold", _DEDUP_COSINE_THRESHOLD))
+        except (TypeError, ValueError, AttributeError):
+            threshold = _DEDUP_COSINE_THRESHOLD
+        try:
+            identical = float(self._config.get("dedup_cosine_identical", _DEDUP_COSINE_IDENTICAL))
+        except (TypeError, ValueError, AttributeError):
+            identical = _DEDUP_COSINE_IDENTICAL
+
+        # --- Tier 1: exact-hash skip (TRUE nested-filters lookup, server-side) ---
+        try:
+            hit = client.search_meta_filtered(fact, {"dedup_hash": norm_hash}, top_k=1)
+            if self._unwrap_results(hit):
+                return {"result": "Already stored (exact dup).", "dedup": "skipped_exacthash"}
+        except Exception:
+            # Fail-open: a dedup-check failure must never block a real write.
+            pass
+
+        # --- Tier 2: two-band cosine pre-write check ---
+        # The live /search score is RRF-fused + reranked (top hit ~1.0 for ANY query),
+        # NOT a cosine — useless as a dedup signal (probe 2026-06-27). So we use /search
+        # only for CANDIDATE RETRIEVAL, then compute REAL cosine client-side against the
+        # candidate texts via the same embedder the store uses (text-embedding-3-small).
+        band = "write"
+        try:
+            sem = client.search(query=fact, top_k=self._dedup_candidate_k())
+            rows = self._drop_forgotten(self._unwrap_results(sem))
+            cand_texts = []
+            for r in rows:
+                if isinstance(r, dict):
+                    t = r.get("memory") or r.get("data") or ""
+                    if t:
+                        cand_texts.append(t)
+            if cand_texts:
+                vecs = self._dedup_embed([fact] + cand_texts)
+                if vecs and len(vecs) == len(cand_texts) + 1:
+                    qv = vecs[0]
+                    top_cos = max(self._dedup_cos(qv, cv) for cv in vecs[1:])
+                    band = _dedup_cosine_band(top_cos, threshold, identical)
+        except Exception:
+            band = "write"
+
+        if band == "skip_identical":
+            return {"result": "Already stored (near-identical).", "dedup": "skipped_identical"}
+
+        # band in ("write", "write_ambiguous") -> WRITE (ambiguous never skips, DD-1)
+        write_filters = self._write_filters(write_kind="deliberate")
+        meta = write_filters.get("metadata", {})
+        meta["write_origin"] = "background_review"
+        meta["dedup_hash"] = norm_hash
+        write_filters["metadata"] = meta
+        client.add([{"role": "user", "content": fact}], **write_filters, infer=False)
+        tag = "wrote_ambiguous" if band == "write_ambiguous" else "wrote"
+        return {"result": "Fact stored.", "dedup": tag}
+
+    def _dedup_candidate_k(self) -> int:
+        """How many retrieval candidates to cosine-check (config-overridable)."""
+        try:
+            return int(self._config.get("dedup_candidate_k", 5))
+        except (TypeError, ValueError, AttributeError):
+            return 5
+
+    def _dedup_embed(self, texts):
+        """Embed texts with the SAME model the store uses (text-embedding-3-small, 1536d).
+
+        Returns a list of vectors aligned to ``texts``, or None on any failure (the
+        caller fails-open to WRITE). Uses the OpenAI embeddings REST API directly with
+        the key already in the runtime env — no new dependency, no SDK.
+        """
+        import urllib.request as _u
+        key = os.environ.get("OPENAI_API_KEY", "") or (self._config.get("openai_api_key", "") if self._config else "")
+        if not key or not texts:
+            return None
+        model = (self._config.get("dedup_embed_model") if self._config else None) or "text-embedding-3-small"
+        body = json.dumps({"model": model, "input": list(texts)}).encode("utf-8")
+        req = _u.Request("https://api.openai.com/v1/embeddings", data=body, method="POST",
+                         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        try:
+            with _u.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return [d["embedding"] for d in data.get("data", [])]
+        except Exception:
+            return None
+
+    @staticmethod
+    def _dedup_cos(a, b) -> float:
+        import math
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(x * x for x in b))
+        return dot / (na * nb) if na and nb else 0.0
+
     @staticmethod
     def _unwrap_results(response: Any) -> list:
         """Normalize Mem0 API response — v2 wraps results in {"results": [...]}."""
@@ -985,6 +1171,18 @@ class Mem0MemoryProvider(MemoryProvider):
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Failed to store: {e}")
+
+        elif tool_name == "mem0_remember":
+            fact = args.get("fact", "")
+            if not fact:
+                return tool_error("Missing required parameter: fact")
+            try:
+                result = self._dedup_then_write(client, fact)
+                self._record_success()
+                return json.dumps(result)
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Failed to remember: {e}")
 
         elif tool_name in ("mem0_forget", "mem0_delete"):
             # C1 fail-closed: if the gate is off these tools were never registered,

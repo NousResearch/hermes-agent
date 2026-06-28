@@ -31,4 +31,44 @@ function isPackagedInstallPath(dir, { installRoots, isPackaged }) {
   return false
 }
 
-module.exports = { isPackagedInstallPath }
+function resolveWorkspaceCwd({
+  explicitCwd,
+  defaultProjectDir,
+  initCwd,
+  processCwd,
+  sourceRepoRoot,
+  homeDir,
+  isPackaged,
+  installRoots,
+  directoryExists
+}) {
+  const exists = typeof directoryExists === 'function' ? directoryExists : () => false
+  const candidates = [
+    explicitCwd,
+    defaultProjectDir,
+    isPackaged ? null : initCwd,
+    isPackaged ? null : processCwd,
+    !isPackaged ? sourceRepoRoot : null,
+    homeDir
+  ]
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue
+    }
+
+    const resolved = path.resolve(String(candidate))
+
+    if (isPackagedInstallPath(resolved, { installRoots, isPackaged })) {
+      continue
+    }
+
+    if (exists(resolved)) {
+      return resolved
+    }
+  }
+
+  return homeDir
+}
+
+module.exports = { isPackagedInstallPath, resolveWorkspaceCwd }

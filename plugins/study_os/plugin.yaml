@@ -1,0 +1,13 @@
+name: study_os
+version: 0.1.0
+description: "Study OS tools for reading Obsidian learning notes and writing review data under each vault's .StudyOS directory."
+author: NousResearch
+kind: backend
+provides_tools:
+  - study_list_notes
+  - study_read_note
+  - study_extract_concepts
+  - study_log_error
+  - study_create_review_task
+  - study_generate_weekly_report
+  - study_export_anki_candidates

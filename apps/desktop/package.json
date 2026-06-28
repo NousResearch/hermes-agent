@@ -4,6 +4,7 @@
   "private": true,
   "version": "0.17.0",
   "description": "Native desktop shell for Hermes Agent.",
+  "homepage": "https://hermes-agent.nousresearch.com/",
   "author": "Nous Research",
   "type": "module",
   "main": "electron/main.cjs",

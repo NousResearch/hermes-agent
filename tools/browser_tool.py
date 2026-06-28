@@ -3489,6 +3489,19 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "eval", [js_code])
 
     if result.get("success"):
+        # ── Private-network guard (sibling of snapshot/vision/eval guards) ──
+        if _eval_ssrf_guard_active(effective_task_id):
+            _blocked_url = _current_page_private_url(effective_task_id)
+            if _blocked_url:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "Blocked: page URL targets a private or internal address "
+                        f"({_blocked_url}). This may have been caused by a "
+                        "JavaScript navigation via browser_console."
+                    ),
+                }, ensure_ascii=False)
+
         data = result.get("data", {})
         raw_result = data.get("result", "[]")
 

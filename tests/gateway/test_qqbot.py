@@ -190,6 +190,31 @@ class TestVoiceAttachmentSSRFProtection:
         assert kwargs.get("follow_redirects") is True
         assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 
+    def test_connect_accepts_is_reconnect_kwarg(self):
+        """The gateway reconnect loop calls ``connect(is_reconnect=True)``.
+
+        BasePlatformAdapter.connect declares ``is_reconnect`` as a keyword
+        argument and gateway.run forwards it on every reconnect attempt, so
+        every adapter must accept it. Regression test for a TypeError
+        ("unexpected keyword argument 'is_reconnect'") that broke QQ
+        reconnection entirely.
+        """
+        import inspect
+        from gateway.platforms.qqbot import QQAdapter
+
+        sig = inspect.signature(QQAdapter.connect)
+        assert "is_reconnect" in sig.parameters
+
+        client = mock.AsyncMock()
+        with mock.patch("gateway.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client):
+            adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+            adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
+
+            # Must not raise TypeError on the reconnect call path.
+            connected = asyncio.run(adapter.connect(is_reconnect=True))
+
+        assert connected is False
+
 
 # ---------------------------------------------------------------------------
 # WebSocket proxy handling

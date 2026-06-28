@@ -202,9 +202,15 @@ _PRIVATE_KEY_RE = re.compile(
 )
 
 # Database connection strings: protocol://user:PASSWORD@host
-# Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password
+# Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password.
+# The userinfo and password groups forbid whitespace ([^:\s]+ / [^@\s]+) so the
+# match can never span a line break. A real DSN password never contains
+# whitespace; without this bound the greedy [^@]+ would scan past the end of a
+# code line to the next stray "@" (e.g. a Python decorator), swallowing
+# intervening lines and corrupting tool OUTPUT for any source containing a
+# postgresql:// f-string template. See issue #33801.
 _DB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:)([^@]+)(@)",
+    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:)([^@\s]+)(@)",
     re.IGNORECASE,
 )
 
@@ -483,9 +489,22 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "BEGIN" in text and "-----" in text:
         text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
 
-    # Database connection string passwords
+    # Database connection string passwords. With code_file=True, a password
+    # group that is a pure ``{...}`` brace expression is an f-string template
+    # reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a literal
+    # credential — preserve it. Literal passwords are still redacted. The regex
+    # forbids whitespace in the password group, so a single-line template's
+    # group(2) is exactly the brace expression. See issue #33801.
     if "://" in text:
-        text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+        if code_file:
+            def _redact_db(m):
+                pw = m.group(2)
+                if pw.startswith("{") and pw.endswith("}"):
+                    return m.group(0)
+                return f"{m.group(1)}***{m.group(3)}"
+            text = _DB_CONNSTR_RE.sub(_redact_db, text)
+        else:
+            text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
 
     # JWT tokens (eyJ... — base64-encoded JSON headers)
     if "eyJ" in text:

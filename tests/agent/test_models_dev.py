@@ -6,6 +6,7 @@ from agent.models_dev import (
     _extract_context,
     fetch_models_dev,
     get_model_capabilities,
+    get_model_info_by_base_url,
     lookup_models_dev_context,
 )
 
@@ -161,6 +162,41 @@ class TestLookupModelsDevContext:
     def test_empty_registry(self, mock_fetch):
         mock_fetch.return_value = {}
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") is None
+
+
+class TestGetModelInfoByBaseUrl:
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_matches_provider_api_host_and_model(self, mock_fetch):
+        mock_fetch.return_value = {
+            "provider-a": {
+                "api": "https://api.provider-a.test/v1",
+                "models": {
+                    "model-a": {
+                        "id": "model-a",
+                        "cost": {
+                            "input": 1.0,
+                            "output": 2.0,
+                            "cache_read": 0.25,
+                        },
+                    }
+                },
+            }
+        }
+
+        info = get_model_info_by_base_url(
+            "https://api.provider-a.test/v1/chat/completions",
+            "model-a",
+        )
+
+        assert info is not None
+        assert info.provider_id == "provider-a"
+        assert info.cost_cache_read == 0.25
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_unknown_host_returns_none(self, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+
+        assert get_model_info_by_base_url("https://unknown.test/v1", "claude-opus-4-6") is None
 
 
 class TestFetchModelsDev:

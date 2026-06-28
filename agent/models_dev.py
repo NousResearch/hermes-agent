@@ -723,3 +723,33 @@ def get_model_info(
             return _parse_model_info(mid, mdata, mdev_id)
 
     return None
+
+
+def get_model_info_by_base_url(base_url: str, model_id: str) -> Optional[ModelInfo]:
+    """Get model metadata for the provider whose models.dev API URL matches ``base_url``."""
+    from urllib.parse import urlparse
+
+    host = urlparse(base_url).hostname
+    if not host:
+        return None
+
+    data = fetch_models_dev()
+    for provider_id, pdata in data.items():
+        if not isinstance(pdata, dict):
+            continue
+        api_url = pdata.get("api")
+        if not isinstance(api_url, str) or urlparse(api_url).hostname != host:
+            continue
+        models = pdata.get("models", {})
+        if not isinstance(models, dict):
+            return None
+        raw = models.get(model_id)
+        if isinstance(raw, dict):
+            return _parse_model_info(model_id, raw, str(provider_id))
+        model_lower = model_id.lower()
+        for mid, mdata in models.items():
+            if mid.lower() == model_lower and isinstance(mdata, dict):
+                return _parse_model_info(mid, mdata, str(provider_id))
+        return None
+
+    return None

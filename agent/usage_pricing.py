@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
+from agent.models_dev import get_model_info, get_model_info_by_base_url
 from utils import base_url_host_matches
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
@@ -20,6 +21,7 @@ CostSource = Literal[
     "provider_cost_api",
     "provider_generation_api",
     "provider_models_api",
+    "models_dev_registry",
     "official_docs_snapshot",
     "user_override",
     "custom_contract",
@@ -79,7 +81,6 @@ class CostResult:
 
 
 _UTC_NOW = lambda: datetime.now(timezone.utc)
-
 
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
@@ -662,6 +663,29 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     )
 
 
+def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    info = (
+        get_model_info_by_base_url(route.base_url, route.model)
+        if route.base_url
+        else get_model_info(route.provider, route.model)
+    )
+    if not info or not info.has_cost_data():
+        return None
+    return PricingEntry(
+        input_cost_per_million=Decimal(str(info.cost_input)),
+        output_cost_per_million=Decimal(str(info.cost_output)),
+        cache_read_cost_per_million=(
+            Decimal(str(info.cost_cache_read)) if info.cost_cache_read is not None else None
+        ),
+        cache_write_cost_per_million=(
+            Decimal(str(info.cost_cache_write)) if info.cost_cache_write is not None else None
+        ),
+        source="models_dev_registry",
+        source_url="https://models.dev/api.json",
+        pricing_version="models-dev-registry",
+    )
+
+
 def _pricing_entry_from_metadata(
     metadata: Dict[str, Dict[str, Any]],
     model_id: str,
@@ -691,6 +715,8 @@ def _pricing_entry_from_metadata(
     def _per_token_to_per_million(value: Optional[Decimal]) -> Optional[Decimal]:
         if value is None:
             return None
+        if value > Decimal("0.1"):
+            return value
         return value * _ONE_MILLION
 
     return PricingEntry(
@@ -731,9 +757,29 @@ def get_pricing_entry(
             source_url=f"{route.base_url.rstrip('/')}/models",
             pricing_version="openai-compatible-models-api",
         )
+        models_dev_entry = _models_dev_pricing_entry(route)
+        if entry and models_dev_entry:
+            return PricingEntry(
+                input_cost_per_million=entry.input_cost_per_million,
+                output_cost_per_million=entry.output_cost_per_million,
+                cache_read_cost_per_million=entry.cache_read_cost_per_million
+                if entry.cache_read_cost_per_million is not None
+                else models_dev_entry.cache_read_cost_per_million,
+                cache_write_cost_per_million=entry.cache_write_cost_per_million
+                if entry.cache_write_cost_per_million is not None
+                else models_dev_entry.cache_write_cost_per_million,
+                request_cost=entry.request_cost,
+                source=entry.source,
+                source_url=entry.source_url,
+                pricing_version=entry.pricing_version,
+                fetched_at=entry.fetched_at,
+            )
         if entry:
             return entry
-    return _lookup_official_docs_pricing(route)
+    official_entry = _lookup_official_docs_pricing(route)
+    if official_entry:
+        return official_entry
+    return _models_dev_pricing_entry(route)
 
 
 def normalize_usage(

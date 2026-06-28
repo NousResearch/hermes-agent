@@ -112,6 +112,7 @@ describe('createBackendSessionForSend profile routing', () => {
     cleanup()
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
+    $currentCwd.set('')
     vi.restoreAllMocks()
   })
 
@@ -144,6 +145,14 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ profile: 'default' })
+  })
+
+  it('passes the current workspace cwd into session.create', async () => {
+    const params = await createWith(() => {
+      $currentCwd.set('/remote/worktree')
+    })
+
+    expect(params).toMatchObject({ cwd: '/remote/worktree' })
   })
 })
 
@@ -344,6 +353,7 @@ describe('resumeSession failure recovery', () => {
     const runtimeIdByStoredSessionIdRef = {
       current: new Map([['stored-1', 'runtime-stale']])
     } satisfies MutableRefObject<Map<string, string>>
+
     const sessionStateByRuntimeIdRef = {
       current: new Map([
         [

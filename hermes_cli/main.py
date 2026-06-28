@@ -10302,7 +10302,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                             "launchctl",
                                             "kickstart",
                                             "-k",
-                                            f"gui/{os.getuid()}/{label}",
+                                            f"gui/{os.getuid()}/{label}",  # windows-footgun: ok — macOS launchctl, Linux-only guard above
                                         ],
                                         capture_output=True,
                                         text=True,
@@ -10328,7 +10328,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                             ' "launchd"\' --last 5m\n'
                                             "    Recover manually:"
                                             f" launchctl kickstart -k"
-                                            f" gui/{os.getuid()}/{label}"
+                                            f" gui/{os.getuid()}/{label}"  # windows-footgun: ok — macOS launchctl, Linux-only guard above
                                         )
                             except subprocess.CalledProcessError as e:
                                 stderr = (getattr(e, "stderr", "") or "").strip()

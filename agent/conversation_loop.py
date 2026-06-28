@@ -72,6 +72,36 @@ logger = logging.getLogger(__name__)
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
+ITERATION_BUDGET_CAUTION_THRESHOLD = 0.7
+ITERATION_BUDGET_WARNING_THRESHOLD = 0.9
+
+
+def _iteration_budget_pressure_message(api_call_count: int, max_iterations: int) -> Optional[str]:
+    """Return an ephemeral max-iteration pressure warning for the model.
+
+    The returned text is injected only into the API-call message copy. It must
+    never be appended to the persistent transcript/session history.
+    """
+    if max_iterations <= 0 or api_call_count <= 0:
+        return None
+
+    used_fraction = api_call_count / max_iterations
+    remaining = max(max_iterations - api_call_count, 0)
+    if used_fraction >= ITERATION_BUDGET_WARNING_THRESHOLD:
+        return (
+            f"[SYSTEM: Iteration budget warning: API call {api_call_count}/{max_iterations}; "
+            f"{remaining} iterations remain before the hard limit. You MUST prepare the final "
+            "answer now. Avoid further tool calls unless they are absolutely critical to avoid "
+            "an incorrect response.]"
+        )
+    if used_fraction >= ITERATION_BUDGET_CAUTION_THRESHOLD:
+        return (
+            f"[SYSTEM: Iteration budget caution: API call {api_call_count}/{max_iterations}; "
+            f"{remaining} iterations remain before the hard limit. Start consolidating findings "
+            "and plan to provide a final response soon.]"
+        )
+    return None
+
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
@@ -821,6 +851,9 @@ def run_conversation(
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        budget_pressure = _iteration_budget_pressure_message(api_call_count, agent.max_iterations)
+        if budget_pressure:
+            effective_system = (effective_system + "\n\n" + budget_pressure).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

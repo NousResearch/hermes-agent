@@ -5,6 +5,7 @@ import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
+import { isDesktopFsRemoteMode, readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
 import {
   addComposerAttachment,
   type ComposerAttachment,
@@ -262,10 +263,11 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
-      const paths = await window.hermesDesktop?.selectPaths({
+      const paths = await selectDesktopPaths({
         title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
         defaultPath: currentCwd || undefined,
-        directories: kind === 'folder'
+        directories: kind === 'folder',
+        multiple: kind === 'folder' && isDesktopFsRemoteMode() ? false : undefined
       })
 
       if (!paths?.length) {
@@ -347,7 +349,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       attachToMain(baseAttachment)
 
       try {
-        const previewUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
+        const previewUrl = await readDesktopFileDataUrl(filePath)
 
         if (previewUrl) {
           addComposerAttachment({ ...baseAttachment, previewUrl })
@@ -395,7 +397,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
   )
 
   const pickImages = useCallback(async () => {
-    const paths = await window.hermesDesktop?.selectPaths({
+    const paths = await selectDesktopPaths({
       title: copy.attachImages,
       defaultPath: currentCwd || undefined,
       filters: [

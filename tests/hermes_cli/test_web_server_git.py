@@ -106,6 +106,14 @@ def test_stage_commit_roundtrip_clears_changes(client, repo):
     assert after["untracked"] == 1
 
 
+def test_commit_with_nothing_staged_commits_all_changes(client, repo):
+    assert client.post(
+        "/api/git/review/commit", json={"path": str(repo), "message": "commit all", "push": False}
+    ).json() == {"ok": True}
+
+    assert client.get("/api/git/status", params={"path": str(repo)}).json()["changed"] == 0
+
+
 def test_worktrees_and_branch_lifecycle(client, repo):
     worktrees = client.get("/api/git/worktrees", params={"path": str(repo)}).json()["worktrees"]
     assert any(tree["isMain"] and tree["path"] == str(repo) for tree in worktrees)
@@ -123,6 +131,26 @@ def test_worktrees_and_branch_lifecycle(client, repo):
         "/api/git/worktree/remove", json={"path": str(repo), "worktreePath": added["path"], "force": True}
     ).json()
     assert removed["removed"]
+
+
+def test_worktree_add_initializes_plain_folder(client, tmp_path):
+    folder = tmp_path / "plain-project"
+    folder.mkdir()
+    (folder / "notes.txt").write_text("not committed\n")
+
+    added = client.post(
+        "/api/git/worktree/add", json={"path": str(folder), "branch": "feature/plain"}
+    ).json()
+
+    assert added["branch"] == "feature/plain"
+    assert Path(added["path"]).is_dir()
+    assert (folder / ".git").exists()
+    _git(folder, "rev-parse", "--verify", "HEAD")
+
+    status = client.get("/api/git/status", params={"path": str(folder)}).json()
+    assert status["branch"] == "main"
+    # Existing files are not silently committed by repo initialization.
+    assert any(file["path"] == "notes.txt" and file["untracked"] for file in status["files"])
 
 
 def test_commit_context_includes_diff_and_untracked(client, repo):

@@ -4,6 +4,7 @@ import { $connection } from '@/store/session'
 
 import {
   desktopDefaultCwd,
+  desktopFileDiff,
   desktopGitRoot,
   readDesktopDir,
   readDesktopFileDataUrl,
@@ -37,6 +38,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
 
   if (path === '/api/fs/default-cwd') {
     return { cwd: '/backend/project', branch: 'main' }
+  }
+
+  if (path.startsWith('/api/git/file-diff?')) {
+    return { diff: 'remote diff' }
   }
 
   throw new Error(`unexpected path ${path}`)
@@ -105,6 +110,13 @@ describe('desktop filesystem facade', () => {
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(gitRoot).not.toHaveBeenCalled()
+  })
+
+  it('routes file diffs through backend git in remote mode', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    await expect(desktopFileDiff('/repo', 'src/a b.ts')).resolves.toBe('remote diff')
+    expect(api).toHaveBeenCalledWith({ path: '/api/git/file-diff?path=%2Frepo&file=src%2Fa%20b.ts' })
   })
 
   it('uses the registered in-app directory picker in remote mode', async () => {

@@ -141,6 +141,7 @@ MAX_WORKSPACE_DIFF_FILES = 100
 MAX_TERMINAL_COMMAND_CHARS = 4_000
 MAX_TERMINAL_TIMEOUT_SECONDS = 30
 MAX_TERMINAL_OUTPUT_CHARS = 60_000
+MAX_STATUS_PROBE_OUTPUT_CHARS = 2_000
 MAX_PROCESS_LIST_RESULTS = 50
 MAX_PROCESS_LOG_CHARS = 20_000
 PROCESS_TERMINATE_GRACE_SECONDS = 2
@@ -220,6 +221,10 @@ SAFE_WORKSPACE_PLAN_DIR = ".hermes/plans"
 SAFE_WORKSPACE_PLAN_SUFFIXES = (".md",)
 SAFE_GIT_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 SHELL_CONTROL_TOKENS = frozenset({";", "&&", "||", "|", "|&", "&", "(", ")"})
+CHATGPT_SCRATCH_SMOKE_DIR = "tmp"
+CHATGPT_SCRATCH_SMOKE_BASENAME_PREFIX = "chatgpt-hermes-action-smoke-"
+CHATGPT_SCRATCH_SMOKE_INITIAL = "alpha\n"
+CHATGPT_SCRATCH_SMOKE_PATCHED = "beta\n"
 MODEL_COMMAND_NAMES = frozenset(
     {
         "aider",
@@ -806,9 +811,9 @@ def _resolve_existing_local_path(path: str, field: str) -> Path:
     try:
         return Path(path).resolve(strict=True)
     except FileNotFoundError as exc:
-        raise ProfileRouterError("path_not_found", f"{field} not found: {path}") from exc
+        raise ProfileRouterError("path_not_found", f"{field} not found") from exc
     except OSError as exc:
-        raise ProfileRouterError("invalid_path", f"{field} is not accessible: {path}") from exc
+        raise ProfileRouterError("invalid_path", f"{field} is not accessible") from exc
 
 
 def _parse_host_policy(host_name: str, raw_policy: Any) -> HostRoutePolicy:
@@ -1237,6 +1242,29 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         description="Search bounded sanitized workspace files after workspace context hydration.",
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
+        requires_context=True,
+    ),
+    "workspace_status_probe": RouterToolMetadata(
+        name="workspace_status_probe",
+        description=(
+            "Run a fixed, sanitized workspace status probe after context hydration; "
+            "does not accept arbitrary commands and does not expose host roots."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        requires_context=True,
+    ),
+    "workspace_scratch_smoke": RouterToolMetadata(
+        name="workspace_scratch_smoke",
+        description=(
+            "Run a fixed scratch write/read/patch/delete smoke after context and "
+            "write-policy gates; does not accept arbitrary paths or content."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
         requires_context=True,
     ),
     "file_read": RouterToolMetadata(
@@ -1786,6 +1814,8 @@ ROUTER_WORKSPACE_REQUIRED_TOOLS = frozenset(
         "workspace_file_read",
         "workspace_file_stat",
         "workspace_file_search",
+        "workspace_status_probe",
+        "workspace_scratch_smoke",
         "workspace_diff",
         "file_read",
         "file_search",
@@ -1840,6 +1870,8 @@ def _router_capability_group(tool_name: str) -> str:
         "workspace_file_read",
         "workspace_file_stat",
         "workspace_file_search",
+        "workspace_status_probe",
+        "workspace_scratch_smoke",
         "workspace_diff",
         "file_read",
         "file_search",
@@ -4238,6 +4270,206 @@ def delete_workspace_file(
             "tool": "file_delete",
             "llm_calls": 0,
             "root_exposed": False,
+        },
+    }
+
+
+def probe_workspace_status(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Run a fixed status probe without exposing arbitrary command execution."""
+
+    assert_default_tools_are_no_model()
+    preflight = preflight_terminal_command(
+        workspace_id,
+        "pwd",
+        timeout=5,
+        working_directory=".",
+        max_output_chars=MAX_STATUS_PROBE_OUTPUT_CHARS,
+        context_token=context_token,
+        registry=registry,
+    )
+    if preflight["blocked"] or not preflight["execution_plan"]["available"]:
+        raise ProfileRouterError(
+            "workspace_status_probe_not_allowed",
+            "workspace status probe is not allowlisted by profile-router terminal policy",
+        )
+    terminal_result = _run_preflighted_terminal_command(
+        workspace_id,
+        "pwd",
+        preflight=preflight,
+        context_token=context_token,
+        registry=registry,
+    )
+    if terminal_result["status"] != "success":
+        raise ProfileRouterError(
+            "workspace_status_probe_failed",
+            "workspace status probe completed without success",
+        )
+    workspace = (registry or DEFAULT_WORKSPACE_REGISTRY).get(workspace_id)
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "status": "ok",
+        "probe": {
+            "kind": "workspace_status",
+            "fixed_server_side_action": True,
+            "command_exposed": False,
+            "cwd_workspace_relative": terminal_result["working_directory"],
+            "stdout_workspace_marker_seen": "<workspace>" in terminal_result["stdout"]["text"],
+            "returncode": terminal_result["returncode"],
+            "output_truncated": terminal_result["output"]["truncated"],
+            "root_exposed": False,
+        },
+        "audit": {
+            "tool": "workspace_status_probe",
+            "llm_calls": 0,
+            "root_exposed": False,
+            "uses_shell": False,
+            "executes": True,
+            "arbitrary_command_accepted": False,
+        },
+    }
+
+
+def run_workspace_scratch_smoke(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Run a fixed scratch write/read/patch/read/delete smoke safely."""
+
+    assert_default_tools_are_no_model()
+    selected_registry = registry or DEFAULT_WORKSPACE_REGISTRY
+    workspace = _require_workspace_write_access(
+        workspace_id,
+        context_token=context_token,
+        registry=selected_registry,
+    )
+    scratch_dir = CHATGPT_SCRATCH_SMOKE_DIR
+    create_workspace_directory(
+        workspace_id,
+        scratch_dir,
+        parents=True,
+        exist_ok=True,
+        context_token=context_token,
+        registry=selected_registry,
+    )
+    for _attempt in range(10):
+        scratch_path = posixpath.join(
+            scratch_dir,
+            f"{CHATGPT_SCRATCH_SMOKE_BASENAME_PREFIX}{uuid4().hex}.txt",
+        )
+        if not resolve_workspace_write_path(workspace, scratch_path).exists():
+            break
+    else:
+        raise ProfileRouterError(
+            "scratch_smoke_path_unavailable",
+            "could not allocate a unique scratch smoke path",
+        )
+
+    write_result: dict | None = None
+    patched_result: dict | None = None
+    read_initial: dict | None = None
+    read_patched: dict | None = None
+    cleanup_result: dict | None = None
+    created = False
+    try:
+        write_result = write_workspace_file(
+            workspace_id,
+            scratch_path,
+            CHATGPT_SCRATCH_SMOKE_INITIAL,
+            context_token=context_token,
+            registry=selected_registry,
+        )
+        created = True
+        read_initial = read_workspace_file(
+            workspace_id,
+            scratch_path,
+            offset=1,
+            limit=5,
+            registry=selected_registry,
+        )
+        patched_result = patch_workspace_file(
+            workspace_id,
+            scratch_path,
+            CHATGPT_SCRATCH_SMOKE_INITIAL,
+            CHATGPT_SCRATCH_SMOKE_PATCHED,
+            context_token=context_token,
+            registry=selected_registry,
+        )
+        read_patched = read_workspace_file(
+            workspace_id,
+            scratch_path,
+            offset=1,
+            limit=5,
+            registry=selected_registry,
+        )
+        cleanup_result = delete_workspace_file(
+            workspace_id,
+            scratch_path,
+            context_token=context_token,
+            registry=selected_registry,
+        )
+        created = False
+    except Exception:
+        if created:
+            try:
+                delete_workspace_file(
+                    workspace_id,
+                    scratch_path,
+                    context_token=context_token,
+                    registry=selected_registry,
+                )
+            except Exception:
+                pass
+        raise
+
+    initial_content = (read_initial or {}).get("content", "")
+    patched_content = (read_patched or {}).get("content", "")
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "path": scratch_path,
+        "server_chosen_path": True,
+        "arbitrary_path_accepted": False,
+        "arbitrary_content_accepted": False,
+        "write": {
+            "ok": bool(write_result and write_result.get("changed") is True),
+            "bytes_written": (write_result or {}).get("bytes_written"),
+            "root_exposed": False,
+        },
+        "read_initial": {
+            "ok": initial_content == CHATGPT_SCRATCH_SMOKE_INITIAL,
+            "lines_returned": (read_initial or {}).get("lines_returned"),
+            "content_sha256": hashlib.sha256(initial_content.encode("utf-8")).hexdigest(),
+            "root_exposed": False,
+        },
+        "patch": {
+            "ok": bool(patched_result and patched_result.get("changed") is True),
+            "replacements": (patched_result or {}).get("replacements"),
+            "root_exposed": False,
+        },
+        "read_patched": {
+            "ok": patched_content == CHATGPT_SCRATCH_SMOKE_PATCHED,
+            "lines_returned": (read_patched or {}).get("lines_returned"),
+            "content_sha256": hashlib.sha256(patched_content.encode("utf-8")).hexdigest(),
+            "root_exposed": False,
+        },
+        "cleanup": {
+            "ok": bool(cleanup_result and cleanup_result.get("deleted") is True),
+            "deleted": bool(cleanup_result and cleanup_result.get("deleted") is True),
+            "root_exposed": False,
+        },
+        "audit": {
+            "tool": "workspace_scratch_smoke",
+            "llm_calls": 0,
+            "root_exposed": False,
+            "scratch_content_server_generated": True,
         },
     }
 
@@ -8130,6 +8362,48 @@ def file_search(
         )
     except ProfileRouterError as exc:
         return _tool_error("file_search", exc)
+
+
+def workspace_status_probe(
+    workspace_id: str,
+    context_token: str | None = None,
+) -> str:
+    """Direct wrapper: fixed workspace status probe for ChatGPT-safe action smoke."""
+
+    try:
+        return _tool_envelope(
+            "workspace_status_probe",
+            {
+                "ok": True,
+                "status_probe": probe_workspace_status(
+                    workspace_id,
+                    context_token=context_token,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_status_probe", exc)
+
+
+def workspace_scratch_smoke(
+    workspace_id: str,
+    context_token: str | None = None,
+) -> str:
+    """Direct wrapper: fixed scratch write/read/patch/delete smoke."""
+
+    try:
+        return _tool_envelope(
+            "workspace_scratch_smoke",
+            {
+                "ok": True,
+                "scratch_smoke": run_workspace_scratch_smoke(
+                    workspace_id,
+                    context_token=context_token,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_scratch_smoke", exc)
 
 
 def file_patch(

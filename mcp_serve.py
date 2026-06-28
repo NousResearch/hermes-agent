@@ -989,6 +989,8 @@ def create_profile_router_mcp_server(
         workspace_file_read as _workspace_file_read,
         workspace_file_stat as _workspace_file_stat,
         workspace_file_search as _workspace_file_search,
+        workspace_status_probe as _workspace_status_probe,
+        workspace_scratch_smoke as _workspace_scratch_smoke,
         workspace_get as _workspace_get,
         workspace_instructions_get as _workspace_instructions_get,
         workspace_open as _workspace_open,
@@ -1038,7 +1040,7 @@ def create_profile_router_mcp_server(
             "workspace_close, workspace_file_list, workspace_file_read, "
             "workspace_file_stat, workspace_file_search, workspace_diff, and policy-gated local/private OpenViking context "
             "tools viking_search and viking_read. Private HTTP nodes also register "
-            "file_patch, patch_apply, file_write, file_move, file_delete, directory_create, terminal_run, "
+            "file_patch, patch_apply, file_write, workspace_status_probe, workspace_scratch_smoke, file_move, file_delete, directory_create, terminal_run, "
             "tracked-process scaffolds process_start, process_list, process_poll, process_log, process_kill, "
             "read-only Git scaffolds git_status, git_diff, git_log, git_branch, script-only no_agent cron "
             "scaffolds cron_list, cron_pause, cron_resume, cron_run, cron_create_script_only, and no-delivery "
@@ -1653,6 +1655,36 @@ def create_profile_router_mcp_server(
             workspace_id=workspace_id,
             path=path,
             content=content,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def workspace_status_probe(
+        workspace_id: str,
+        context_token: str | None = None,
+    ) -> str:
+        """Private fixed status probe for ChatGPT-safe public action smoke."""
+        return _call_tool(
+            "workspace_status_probe",
+            PROFILE_ROUTER_TERMINAL_SCOPE,
+            _workspace_status_probe,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def workspace_scratch_smoke(
+        workspace_id: str,
+        context_token: str | None = None,
+    ) -> str:
+        """Private fixed scratch write/read/patch/delete smoke for ChatGPT-safe public action smoke."""
+        return _call_tool(
+            "workspace_scratch_smoke",
+            PROFILE_ROUTER_WRITE_SCOPE,
+            _workspace_scratch_smoke,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
             context_token=context_token,
         )
 

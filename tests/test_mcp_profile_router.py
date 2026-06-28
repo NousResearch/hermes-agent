@@ -1,6 +1,7 @@
 import argparse
 import ast
 import asyncio
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -83,6 +84,8 @@ from mcp_profile_router import (
     workspace_file_read,
     workspace_file_stat,
     workspace_file_search,
+    workspace_status_probe,
+    workspace_scratch_smoke,
     workspace_get,
     workspace_instructions_get,
     workspace_open,
@@ -316,6 +319,8 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "file_patch",
         "patch_apply",
         "file_write",
+        "workspace_status_probe",
+        "workspace_scratch_smoke",
         "file_move",
         "file_delete",
         "directory_create",
@@ -356,6 +361,8 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "file_patch",
         "patch_apply",
         "file_write",
+        "workspace_status_probe",
+        "workspace_scratch_smoke",
         "file_move",
         "file_delete",
         "directory_create",
@@ -456,9 +463,9 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         assert tool["mutates_state"] is False
         assert tool["requires_context_policy"] == "profile_router.context.viking.read"
     assert metadata["workspace_diff"]["mutates_state"] is False
-    for name in {"file_patch", "patch_apply", "file_write", "file_move", "file_delete", "directory_create", "terminal_run", "process_kill", "message_send", "telegram_send"}:
+    for name in {"file_patch", "patch_apply", "file_write", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "process_kill", "message_send", "telegram_send"}:
         assert metadata[name]["mutates_state"] is True
-    for name in {"process_list", "process_poll", "process_log", "git_status", "git_diff", "git_log", "git_branch"}:
+    for name in {"workspace_status_probe", "process_list", "process_poll", "process_log", "git_status", "git_diff", "git_log", "git_branch"}:
         assert metadata[name]["mutates_state"] is False
     for name in {"git_status", "git_diff", "git_log", "git_branch"}:
         assert metadata[name]["capability_group"] == "git"
@@ -1667,6 +1674,135 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
     assert not (workspace_root / "SHOULD_NOT_EXIST").exists()
 
 
+def test_workspace_file_missing_error_does_not_expose_host_root(hermes_home, tmp_path):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    missing = json.loads(
+        workspace_file_read(
+            workspace_id,
+            "tmp/chatgpt-hermes-smoke.txt",
+            context_token=token,
+        )
+    )
+    dumped = json.dumps(missing)
+    assert missing["ok"] is False
+    assert missing["error"]["code"] == "path_not_found"
+    assert missing["llm_calls"] == 0
+    assert str(workspace_root) not in dumped
+    assert str(allowed_root) not in dumped
+    assert str(tmp_path) not in dumped
+    assert "/Users/" not in dumped
+    assert "/home/" not in dumped
+
+
+def test_chatgpt_safe_status_and_scratch_smokes_use_fixed_actions(
+    hermes_home,
+    monkeypatch,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    subprocess_calls = []
+
+    def _fake_subprocess_run(argv, **kwargs):
+        subprocess_calls.append((tuple(argv), kwargs))
+        assert argv == ["pwd"]
+        assert kwargs["cwd"] == str(workspace_root)
+        assert kwargs["shell"] is False
+        return subprocess.CompletedProcess(argv, 0, stdout=f"{workspace_root}\n", stderr="")
+
+    monkeypatch.setattr(mcp_profile_router.subprocess, "run", _fake_subprocess_run)
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True, "write": True},
+                "terminal": {
+                    "enabled": True,
+                    "execution": {
+                        "enabled": True,
+                        "allowed_commands": ["pwd"],
+                    },
+                },
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    status = json.loads(workspace_status_probe(workspace_id, context_token=token))
+    assert status["ok"] is True
+    assert status["llm_calls"] == 0
+    assert status["status_probe"]["probe"]["stdout_workspace_marker_seen"] is True
+    assert status["status_probe"]["probe"]["command_exposed"] is False
+    assert status["status_probe"]["audit"] == {
+        "tool": "workspace_status_probe",
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "executes": True,
+        "arbitrary_command_accepted": False,
+    }
+
+    preexisting = workspace_root / "tmp" / "chatgpt-hermes-action-smoke.txt"
+    preexisting.parent.mkdir(parents=True, exist_ok=True)
+    preexisting.write_text("do-not-touch\n", encoding="utf-8")
+
+    scratch = json.loads(workspace_scratch_smoke(workspace_id, context_token=token))
+    smoke = scratch["scratch_smoke"]
+    assert scratch["ok"] is True
+    assert scratch["llm_calls"] == 0
+    assert smoke["path"].startswith("tmp/chatgpt-hermes-action-smoke-")
+    assert smoke["path"].endswith(".txt")
+    assert smoke["server_chosen_path"] is True
+    assert smoke["arbitrary_path_accepted"] is False
+    assert smoke["arbitrary_content_accepted"] is False
+    assert smoke["write"]["ok"] is True
+    assert smoke["read_initial"]["ok"] is True
+    assert smoke["read_initial"]["content_sha256"] == hashlib.sha256(b"alpha\n").hexdigest()
+    assert smoke["patch"]["ok"] is True
+    assert smoke["read_patched"]["ok"] is True
+    assert smoke["read_patched"]["content_sha256"] == hashlib.sha256(b"beta\n").hexdigest()
+    assert smoke["cleanup"]["deleted"] is True
+    assert preexisting.read_text(encoding="utf-8") == "do-not-touch\n"
+    assert not (workspace_root / smoke["path"]).exists()
+
+    dumped = json.dumps({"status": status, "scratch": scratch})
+    assert "pwd" not in dumped
+    assert "alpha" not in dumped
+    assert "beta" not in dumped
+    assert str(workspace_root) not in dumped
+    assert str(allowed_root) not in dumped
+    assert "/Users/" not in dumped
+    assert "/home/" not in dumped
+    assert len(subprocess_calls) == 1
+
+
 def test_terminal_run_preflight_requires_policy_and_workspace_relative_cwd(
     hermes_home,
     tmp_path,
@@ -2048,6 +2184,8 @@ def test_terminal_private_runner_executes_allowlisted_commands_but_not_public(
     assert "file_move" in server._tool_manager._tools
     assert "file_delete" in server._tool_manager._tools
     assert "directory_create" in server._tool_manager._tools
+    assert "workspace_status_probe" in server._tool_manager._tools
+    assert "workspace_scratch_smoke" in server._tool_manager._tools
     assert "workspace_diff" in server._tool_manager._tools
     dumped = json.dumps(direct)
     assert "pwd" not in dumped
@@ -3849,7 +3987,7 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         if tool["enabled_by_default"]
     }
 
-    private_action_tools = {"file_patch", "patch_apply", "file_write", "file_move", "file_delete", "directory_create", "terminal_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send"}
+    private_action_tools = {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send"}
     assert set(tools) == expected_public_tools | private_action_tools
     assert expected_public_tools == metadata_public_tools
     assert not (set(tools) & FORBIDDEN_MODEL_LOOP_TOOL_NAMES)
@@ -3866,6 +4004,8 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
     assert "file_patch" in tools
     assert "patch_apply" in tools
     assert "file_write" in tools
+    assert "workspace_status_probe" in tools
+    assert "workspace_scratch_smoke" in tools
     assert "file_move" in tools
     assert "file_delete" in tools
     assert "directory_create" in tools
@@ -4173,7 +4313,7 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
         name
         for name, tool in get_router_tool_metadata().items()
         if tool["enabled_by_default"]
-    } | {"file_patch", "patch_apply", "file_write", "file_move", "file_delete", "directory_create", "terminal_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send"}
+    } | {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send"}
     server_kwargs = getattr(server, "kwargs")
     assert server_kwargs["host"] == "127.0.0.1"
     assert server_kwargs["port"] == 8765
@@ -4186,6 +4326,8 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
     assert "file_patch" in tools
     assert "patch_apply" in tools
     assert "file_write" in tools
+    assert "workspace_status_probe" in tools
+    assert "workspace_scratch_smoke" in tools
     assert "file_move" in tools
     assert "file_delete" in tools
     assert "directory_create" in tools

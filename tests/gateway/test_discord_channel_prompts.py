@@ -1,5 +1,6 @@
 """Tests for Discord channel_prompts resolution and injection."""
 
+from datetime import datetime, timedelta, timezone
 import sys
 import threading
 import types
@@ -56,6 +57,29 @@ def _install_fake_agent(monkeypatch):
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
 
+def _stub_gateway_runtime(monkeypatch, tmp_path):
+    (tmp_path / "config.yaml").write_text("agent:\n  system_prompt: Global prompt\n", encoding="utf-8")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "***",
+        },
+    )
+
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+
+
 def _make_adapter():
     _ensure_discord_mock()
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -92,9 +116,9 @@ def _make_runner():
     return runner
 
 
-def _make_source() -> SessionSource:
+def _make_source(platform=Platform.DISCORD) -> SessionSource:
     return SessionSource(
-        platform=Platform.DISCORD,
+        platform=platform,
         chat_id="12345",
         chat_type="thread",
         user_id="user-1",
@@ -213,27 +237,7 @@ async def test_retry_preserves_channel_prompt(monkeypatch):
 async def test_run_agent_appends_channel_prompt_to_ephemeral_system_prompt(monkeypatch, tmp_path):
     _install_fake_agent(monkeypatch)
     runner = _make_runner()
-
-    (tmp_path / "config.yaml").write_text("agent:\n  system_prompt: Global prompt\n", encoding="utf-8")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
-    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
-    monkeypatch.setattr(
-        gateway_run,
-        "_resolve_runtime_agent_kwargs",
-        lambda: {
-            "provider": "openrouter",
-            "api_mode": "chat_completions",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key": "***",
-        },
-    )
-
-    import hermes_cli.tools_config as tools_config
-
-    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+    _stub_gateway_runtime(monkeypatch, tmp_path)
 
     _CapturingAgent.last_init = None
     event = MessageEvent(
@@ -241,6 +245,7 @@ async def test_run_agent_appends_channel_prompt_to_ephemeral_system_prompt(monke
         source=_make_source(),
         message_id="m1",
         channel_prompt="Channel prompt",
+        timestamp=datetime(2026, 6, 28, 15, 42, 10, tzinfo=timezone.utc),
     )
     result = await runner._run_agent(
         message="hi",
@@ -250,9 +255,42 @@ async def test_run_agent_appends_channel_prompt_to_ephemeral_system_prompt(monke
         session_id="session-1",
         session_key="agent:main:discord:thread:12345",
         channel_prompt=event.channel_prompt,
+        event=event,
     )
 
     assert result["final_response"] == "ok"
     assert _CapturingAgent.last_init["ephemeral_system_prompt"] == (
         "Context prompt\n\nChannel prompt\n\nGlobal prompt"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_appends_xiaoxing_current_chat_time(monkeypatch, tmp_path):
+    _install_fake_agent(monkeypatch)
+    runner = _make_runner()
+    _stub_gateway_runtime(monkeypatch, tmp_path)
+
+    tz = timezone(timedelta(hours=8), "Asia/Shanghai")
+    source = _make_source(platform=Platform.QQBOT)
+    event = MessageEvent(
+        text="现在几点？",
+        source=source,
+        message_id="m1",
+        timestamp=datetime(2026, 6, 28, 15, 42, 10, tzinfo=tz),
+    )
+
+    _CapturingAgent.last_init = None
+    result = await runner._run_agent(
+        message="现在几点？",
+        context_prompt="Context prompt",
+        history=[],
+        source=source,
+        session_id="session-1",
+        session_key="agent:main:qqbot:c2c:12345",
+        event=event,
+    )
+
+    assert result["final_response"] == "ok"
+    prompt = _CapturingAgent.last_init["ephemeral_system_prompt"]
+    assert "当前聊天时间：2026-06-28 星期日 15:42:10 +0800 (Asia/Shanghai)." in prompt
+    assert "今天、明天、昨天或当前时间" in prompt

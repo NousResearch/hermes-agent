@@ -948,6 +948,56 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+_XIAOXING_CHAT_TIME_PLATFORMS = {
+    "qqbot",
+    "milky",
+    "napcat",
+    "codex-xiaoxing-channel",
+}
+_WEEKDAY_NAMES_ZH = (
+    "星期一",
+    "星期二",
+    "星期三",
+    "星期四",
+    "星期五",
+    "星期六",
+    "星期日",
+)
+
+
+def _format_xiaoxing_current_chat_time_prompt(
+    *,
+    event: Optional[MessageEvent],
+    source: Optional[SessionSource],
+) -> Optional[str]:
+    """Return XiaoXing's per-turn current-time context for chat prompts."""
+    platform_obj = getattr(source, "platform", None)
+    platform_value = str(getattr(platform_obj, "value", platform_obj) or "").strip().lower()
+    if platform_value not in _XIAOXING_CHAT_TIME_PLATFORMS:
+        return None
+
+    event_time = getattr(event, "timestamp", None)
+    if not isinstance(event_time, datetime):
+        event_time = datetime.now()
+
+    try:
+        if event_time.tzinfo is None or event_time.tzinfo.utcoffset(event_time) is None:
+            event_time = event_time.astimezone()
+    except Exception:
+        event_time = datetime.now().astimezone()
+
+    weekday = _WEEKDAY_NAMES_ZH[event_time.weekday()]
+    tz_label = event_time.strftime("%Z") or "local time"
+    offset = event_time.strftime("%z")
+    tz_text = f"{offset} ({tz_label})" if offset else f"({tz_label})"
+
+    return (
+        f"当前聊天时间：{event_time:%Y-%m-%d} {weekday} {event_time:%H:%M:%S} {tz_text}.\n"
+        "如果用户询问今天、明天、昨天或当前时间，以这个时间为准；"
+        "不要凭训练记忆或旧聊天记录猜测当前日期时间。"
+    )
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -15898,6 +15948,9 @@ class GatewayRunner:
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
+            event_time_prompt = _format_xiaoxing_current_chat_time_prompt(event=event, source=source)
+            if event_time_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + event_time_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 

@@ -976,6 +976,8 @@ Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
+
+On Windows, launching GUI .exe programs directly in foreground mode will hang the session because the GUI process inherits the stdout pipe and never exits. Use `powershell -Command "Start-Process 'C:\\path\\to\\program.exe'"` instead — PowerShell exits immediately after launching the GUI program.
 """
 
 # Global state for environment lifecycle management

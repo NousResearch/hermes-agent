@@ -45,6 +45,17 @@ export function ModelPill({
   const fastMode = useStore($currentFastMode)
   const reasoningEffort = useStore($currentReasoningEffort)
   const [open, setOpen] = useState(false)
+  const mobileStandalone =
+    typeof window !== 'undefined' &&
+    Boolean((window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__)
+
+  // On phones the dropdown is desktop-shaped — the panel paints under the
+  // composer + soft keyboard. Hide the picker entirely; model selection
+  // lives in Settings instead. Keep nothing in the composer slot rather
+  // than a non-interactive label that just clutters the row.
+  if (mobileStandalone) {
+    return null
+  }
 
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text

@@ -1527,6 +1527,23 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return False
 
+    def should_hold_streaming_for_rich(self, content: str) -> bool:
+        """Whether to suppress all streaming edits and deliver one clean rich final.
+
+        Called by the stream consumer on each tick while no message has been
+        sent yet (_message_id is None).  When True, all draft frames and edit
+        ticks are skipped until the stream finishes, then the complete content
+        is delivered as a single rich message.
+
+        Disabled: the MarkdownV2 streaming path handles partial tables
+        gracefully (incomplete tables pass through as raw text; complete tables
+        convert to bullet groups via _wrap_markdown_tables), so suppressing
+        streaming for rich content causes worse UX than partial rendering —
+        particularly after tool calls where the response starts with tables and
+        the user would see nothing until the full answer arrives.
+        """
+        return False
+
     def streaming_overflow_limit(self) -> Optional[int]:
         """Allow the stream consumer to accumulate up to the rich-message cap
         before splitting, so a reply that fits one ``sendRichMessage`` /
@@ -4312,14 +4329,43 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not finalize:
-                await self._bot.edit_message_text(
-                    chat_id=normalize_telegram_chat_id(chat_id),
-                    message_id=int(message_id),
-                    text=content,
-                )
-                if _saturated_preview:
-                    self._last_overflow_preview[_preview_key] = content
-                return SendResult(success=True, message_id=message_id)
+                # Streaming tick: try MarkdownV2 so the message stays formatted
+                # while new content arrives.  format_message escapes unmatched
+                # markers (e.g. unclosed **bold), so it virtually never triggers
+                # a BadRequest.  Other errors (flood, network) propagate to the
+                # outer handler so the consumer can back off or enter fallback.
+                # Saturated-preview dedup (above) still applies here: cache the
+                # sent content on every successful exit so the next identical
+                # truncated frame is skipped instead of re-tripping flood control.
+                _streaming_formatted = self.format_message(content)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=normalize_telegram_chat_id(chat_id),
+                        message_id=int(message_id),
+                        text=_streaming_formatted,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                    if _saturated_preview:
+                        self._last_overflow_preview[_preview_key] = content
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as _mdv2_err:
+                    _mdv2_s = str(_mdv2_err).lower()
+                    if "not modified" in _mdv2_s:
+                        if _saturated_preview:
+                            self._last_overflow_preview[_preview_key] = content
+                        return SendResult(success=True, message_id=message_id)
+                    if self._is_bad_request_error(_mdv2_err):
+                        # MarkdownV2 rejected this frame — send plain text for
+                        # this tick; next tick will try MarkdownV2 again.
+                        await self._bot.edit_message_text(
+                            chat_id=normalize_telegram_chat_id(chat_id),
+                            message_id=int(message_id),
+                            text=content,
+                        )
+                        if _saturated_preview:
+                            self._last_overflow_preview[_preview_key] = content
+                        return SendResult(success=True, message_id=message_id)
+                    raise  # flood / network — propagate to outer handler
 
             formatted = self.format_message(content)
             try:

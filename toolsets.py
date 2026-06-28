@@ -288,6 +288,12 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "slack": {
+        "description": "Slack read-only channel history tools (list channels, fetch history, find links)",
+        "tools": ["slack"],
+        "includes": [],
+    },
+
     "yuanbao": {
         "description": "Yuanbao platform tools - group info, member queries, DM, stickers",
         "tools": [
@@ -467,7 +473,9 @@ TOOLSETS = {
     
     "hermes-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + [
+            "slack",
+        ],
         "includes": []
     },
     

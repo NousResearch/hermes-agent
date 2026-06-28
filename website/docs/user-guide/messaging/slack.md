@@ -340,6 +340,22 @@ Understanding how Hermes behaves in different contexts:
 In channels, always @mention the bot to start a conversation. Once the bot is active in a thread, you can reply in that thread without mentioning it. Outside of threads, messages without @mention are ignored to prevent noise in busy channels.
 :::
 
+### Reading channel history
+
+When `channels:history` / `groups:history` are granted and the bot is invited to a channel, Slack agents receive the `slack` tool on the `hermes-slack` platform toolset. It can list visible channels, fetch recent `conversations.history`, and find recent messages or X/Twitter links in channels the bot can see.
+
+This is separate from live event delivery. Event subscriptions let Hermes react to messages as they arrive; the `slack` tool lets the agent look backward in a channel when a task asks for an older link or message.
+
+The history tool uses `SLACK_BOT_TOKEN` or `platforms.slack.token`, but it intentionally requires exactly one bot token. Comma-separated multi-workspace token lists fail closed because the tool does not yet select a token from the active Slack team/session. Run separate single-workspace deployments when you need deterministic history lookup across multiple Slack workspaces.
+
+History responses cap message text per result to keep tool output bounded. URLs are still extracted from the full Slack message text before truncation.
+
+If `slack.allowed_channels` / `SLACK_ALLOWED_CHANNELS` is configured, the history tool honors the same channel allowlist: `list_channels` filters out non-allowed channels, while `fetch_history` and `find_messages` reject non-allowed channel IDs. DMs remain exempt, matching live-message handling.
+
+### Message deletion limits
+
+The built-in `slack` history tool is read-only. Slack's `chat.delete` API does not let a bot token delete arbitrary user-authored messages; a bot token can delete only messages posted by that same bot. If you approve that a user-posted X URL has been processed, Hermes can record that state or reply/react when configured, but it cannot delete the original user message unless you add a separate Slack user/admin-token path with the permissions Slack requires.
+
 ---
 
 ## Configuration Options

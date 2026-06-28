@@ -1,5 +1,7 @@
 """Focused tests for API server session-control endpoints."""
 
+import asyncio
+import threading
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -48,6 +50,7 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    app.router.add_post("/v1/runs/{run_id}/steer", adapter._handle_steer_run)
     return app
 
 
@@ -337,6 +340,69 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: tool.progress" in body
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
+    assert "event: done" in body
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_registers_run_for_steer(adapter, session_db):
+    """Session chat streams expose their active agent via run_id so Browser steer works."""
+    session_id = session_db.create_session("steer-session", "api_server")
+    session_id_value = session_id
+    ready = threading.Event()
+    steered = threading.Event()
+    observed = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+        session_id = session_id_value
+
+        def steer(self, text):
+            observed["steer_text"] = text
+            steered.set()
+            return True
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            ready.set()
+            assert steered.wait(timeout=3.0)
+            return {"final_response": "steered", "session_id": session_id}
+
+    def fake_create_agent(**kwargs):
+        return FakeAgent()
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_create_agent", side_effect=fake_create_agent):
+        async with TestClient(TestServer(app)) as cli:
+            stream_resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "draft answer"},
+            )
+            assert stream_resp.status == 200
+            assert await asyncio.to_thread(ready.wait, 3.0)
+
+            run_ids = []
+            for _ in range(100):
+                run_ids = list(adapter._active_run_agents)
+                if run_ids:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(run_ids) == 1
+            run_id = run_ids[0]
+
+            steer_resp = await cli.post(
+                f"/v1/runs/{run_id}/steer",
+                json={"input": "tighten and finish"},
+            )
+            assert steer_resp.status == 200
+            steer_data = await steer_resp.json()
+            assert steer_data["status"] == "steered"
+            assert observed["steer_text"] == "tighten and finish"
+
+            body = await stream_resp.text()
+
+    assert "event: run.started" in body
+    assert "event: assistant.completed" in body
     assert "event: done" in body
 
 

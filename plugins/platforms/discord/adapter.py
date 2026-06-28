@@ -103,7 +103,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
-from utils import atomic_json_write, env_float
+from utils import atomic_json_write, env_float, env_int
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -781,6 +781,23 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        # REST-level liveness probe.  discord.py's WS reconnect handles clean
+        # drops, but a dead proxy / NAT can wedge the socket without delivering
+        # a RST — sends time out forever and ``client.start()`` never exits, so
+        # the bot-task done callback never fires.  See #26656.  An out-of-band
+        # ``fetch_user`` exercises the same REST path as message delivery and
+        # lets us detect the zombie state, close the wedged client, and trip the
+        # existing retryable-fatal reconnect path.  Knobs are surfaced in
+        # config.yaml as ``discord.liveness_interval_seconds`` /
+        # ``discord.liveness_failure_threshold`` (bridged to these env vars by
+        # ``_apply_yaml_config``); set either to 0 to disable.
+        self._liveness_interval_seconds = env_float(
+            "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", 60.0
+        )
+        self._liveness_failure_threshold = env_int(
+            "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", 3
+        )
+        self._liveness_task: Optional[asyncio.Task] = None
         # True while disconnect() is intentionally closing discord.py. The
         # bot task's done callback uses this to distinguish an operator/service
         # shutdown from a runtime websocket crash.
@@ -1139,6 +1156,7 @@ class DiscordAdapter(BasePlatformAdapter):
             await _wait_for_ready_or_bot_exit(self._ready_event, self._bot_task, timeout=30)
 
             self._running = True
+            self._start_liveness_probe()
             return True
 
         except asyncio.TimeoutError:
@@ -1169,9 +1187,98 @@ class DiscordAdapter(BasePlatformAdapter):
                 pass
         self._bot_task = None
 
+    def _start_liveness_probe(self) -> None:
+        """Start the periodic REST liveness probe if configured.
+
+        Idempotent: if a task is already running we leave it alone so a
+        re-entrant ``connect()`` cannot fork two probes against the same client.
+        """
+        if self._liveness_interval_seconds <= 0 or self._liveness_failure_threshold <= 0:
+            return
+        if self._liveness_task and not self._liveness_task.done():
+            return
+        self._liveness_task = asyncio.create_task(self._liveness_loop())
+
+    async def _liveness_loop(self) -> None:
+        """Probe Discord REST periodically and force a reconnect on persistent failure.
+
+        See #26656.  ``client.start()`` reconnects internally on clean WS drops,
+        but when the underlying socket is wedged behind a dead proxy the WS never
+        sees a RST and the adapter sits in a silent zombie state — process alive,
+        ``client.start()`` spinning, sends timing out forever, and the bot-task
+        done callback never fires because the task never completes.  An
+        out-of-band ``fetch_user`` exercises the same REST path as message
+        delivery and lets us detect the wedge.  After ``threshold`` consecutive
+        failures we close the client, set a retryable fatal error, and hand
+        control back to the gateway's platform reconnect watcher.
+        """
+        interval = self._liveness_interval_seconds
+        threshold = self._liveness_failure_threshold
+        fails = 0
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                return
+            client = self._client
+            if not self._running or client is None or getattr(self, "_disconnecting", False):
+                return
+            if hasattr(client, "is_closed") and client.is_closed():
+                return
+            user = getattr(client, "user", None)
+            if user is None:
+                continue
+            try:
+                await client.fetch_user(user.id)
+                fails = 0
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                fails += 1
+                logger.warning(
+                    "[%s] Discord liveness probe failed (%d/%d): %s",
+                    self.name, fails, threshold, exc,
+                )
+                if fails < threshold:
+                    continue
+                logger.error(
+                    "[%s] Discord client appears dead, forcing reconnect", self.name,
+                )
+                try:
+                    await client.close()
+                except Exception:
+                    logger.debug(
+                        "[%s] Error closing wedged Discord client", self.name, exc_info=True,
+                    )
+                self._set_fatal_error(
+                    "liveness_probe_failed",
+                    f"Discord REST liveness probe failed {fails} times in a row",
+                    retryable=True,
+                )
+                try:
+                    await self._notify_fatal_error()
+                except Exception:
+                    logger.debug(
+                        "[%s] Fatal-error handler raised", self.name, exc_info=True,
+                    )
+                return
+
+    async def _cancel_liveness_task(self) -> None:
+        """Cancel and await the liveness probe task, if running."""
+        if self._liveness_task and not self._liveness_task.done():
+            self._liveness_task.cancel()
+            try:
+                await self._liveness_task
+            except asyncio.CancelledError:
+                pass
+        self._liveness_task = None
+
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
         self._disconnecting = True
+        # Cancel the liveness probe first so it can't fire a spurious fatal
+        # error / reconnect while we're intentionally tearing the adapter down.
+        await self._cancel_liveness_task()
         # Cancel the bot task before closing the client.  If connect() timed out
         # and returned False, the background client.start() task may still be
         # running; calling client.close() alone is not enough to stop it because
@@ -1203,6 +1310,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._client = None
         self._ready_event.clear()
         self._post_connect_task = None
+        self._liveness_task = None
 
         self._release_platform_lock()
 
@@ -7136,6 +7244,16 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
         _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
         os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
+    # liveness probe knobs: detect zombie clients behind dead proxies/NATs and
+    # force a reconnect (#26656).  Bridged to the env vars the adapter reads in
+    # __init__; set either to 0 to disable.  config.yaml is the user-facing
+    # surface — these env vars are an internal mechanism only.
+    lis = discord_cfg.get("liveness_interval_seconds")
+    if lis is not None and not os.getenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS"):
+        os.environ["HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS"] = str(lis)
+    lft = discord_cfg.get("liveness_failure_threshold")
+    if lft is not None and not os.getenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"):
+        os.environ["HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"] = str(lft)
     return None  # all settings flow through env; nothing to merge into extras
 
 

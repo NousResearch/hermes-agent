@@ -1269,7 +1269,15 @@ class SlackAdapter(BasePlatformAdapter):
             is_blocks_mode = "blocks" in payload
             if is_blocks_mode:
                 block_chunks = self._chunk_blocks(
-                    payload["blocks"], self._MARKDOWN_BLOCK_MAX_BLOCKS
+                    payload["blocks"],
+                    self._MARKDOWN_BLOCK_MAX_BLOCKS,
+                    # Slack's per-payload cumulative limit on markdown-block
+                    # text is 12,000 chars across ALL blocks in the message,
+                    # not per block (#53893 item 2, tw0316 review). Without
+                    # this bound, two sub-12k blocks would be packed into one
+                    # over-limit chat_postMessage and Slack would reject it
+                    # with markdown_text_too_long.
+                    max_cumulative_chars=self._MARKDOWN_BLOCK_CHAR_LIMIT,
                 )
                 text_fallback = payload.get("text", "")
                 chunks_iterable = [
@@ -1885,6 +1893,7 @@ class SlackAdapter(BasePlatformAdapter):
         self,
         blocks: list,
         max_per_msg: int,
+        max_cumulative_chars: int | None = None,
     ) -> list:
         """Yield sublists of ``blocks`` each with at most ``max_per_msg`` entries.
 
@@ -1892,10 +1901,38 @@ class SlackAdapter(BasePlatformAdapter):
         that produced more than 50 markdown blocks is delivered across multiple
         back-to-back messages. This is a plain list-slicing helper — it returns
         a list of chunks for easy indexing/``enumerate`` at the call site.
+
+        ``max_cumulative_chars`` — when provided — further bounds each chunk so
+        the *cumulative* text carried by its markdown blocks stays within the
+        per-payload limit Slack enforces (12,000 chars across all markdown
+        blocks in a single ``chat_postMessage``, not per block). Without this,
+        two sub-12k blocks would be packed into one over-limit payload (#53893
+        item 2, tw0316 review).
         """
-        if max_per_msg <= 0:
+        if max_per_msg <= 0 and max_cumulative_chars is None:
             return [list(blocks)] if blocks else []
-        return [blocks[i : i + max_per_msg] for i in range(0, len(blocks), max_per_msg)]
+        if not blocks:
+            return []
+        chunks: list = []
+        current: list = []
+        current_chars = 0
+        for block in blocks:
+            block_chars = len(block.get("text", "")) if isinstance(block, dict) else 0
+            over_count = max_per_msg > 0 and len(current) + 1 > max_per_msg
+            over_chars = (
+                max_cumulative_chars is not None
+                and current
+                and current_chars + block_chars > max_cumulative_chars
+            )
+            if over_count or over_chars:
+                chunks.append(current)
+                current = []
+                current_chars = 0
+            current.append(block)
+            current_chars += block_chars
+        if current:
+            chunks.append(current)
+        return chunks
 
     def _send_payload(
         self,

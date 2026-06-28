@@ -2618,18 +2618,26 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         title_lower = title.lower()
 
         if any(pattern in title_lower for pattern in blocked_patterns):
-            response["bot_detection_warning"] = (
-                f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
-                "Options: 1) Try adding delays between actions, 2) Access different pages first, "
-                "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
-                "4) Some sites have very aggressive bot detection that may be unavoidable."
-            )
+            is_cloud = bool(session_info.get("bb_session_id"))
+            if is_cloud:
+                response["bot_detection_warning"] = (
+                    f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
+                    "Options: 1) Try adding delays between actions, 2) Access different pages first, "
+                    "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
+                    "4) Some sites have very aggressive bot detection that may be unavoidable."
+                )
+            else:
+                response["bot_detection_warning"] = (
+                    f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
+                    "Options: 1) Try adding delays between actions, 2) Access different pages first, "
+                    "3) Some sites have very aggressive bot detection that may be unavoidable."
+                )
 
         # Include feature info on first navigation so model knows what's active
         if is_first_nav and "features" in session_info:
             features = session_info["features"]
             active_features = [k for k, v in features.items() if v]
-            if not features.get("proxies"):
+            if session_info.get("bb_session_id") and not features.get("proxies"):
                 response["stealth_warning"] = (
                     "Running WITHOUT residential proxies. Bot detection may be more aggressive. "
                     "Consider upgrading Browserbase plan for proxy support."

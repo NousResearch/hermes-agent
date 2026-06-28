@@ -719,7 +719,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # dirs_to_scan already resolved above for the signature.
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+            try:
+                skill_parts = skill_md.relative_to(scan_dir).parts
+            except ValueError:
+                skill_parts = skill_md.parts
+            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_parts):
                 continue
 
             skill_dir = skill_md.parent

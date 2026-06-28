@@ -353,13 +353,13 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         _cleanup(mcp_tool, "srv")
 
 
-def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
-    """The run loop must NOT exit when the reconnect budget is exhausted.
+def test_run_loop_keeps_retrying_after_each_recovered_outage(monkeypatch, tmp_path):
+    """Each recovered outage gets a fresh reconnect threshold window.
 
-    It deregisters tools and parks as a dormant listener; a later
-    ``_reconnect_event`` revives it and re-enters the transport. This is the
-    structural fix for #16788 — without a live task, no half-open probe could
-    ever bring a dead stdio server back.
+    Once the reconnect budget is exhausted, stale tools are deregistered but
+    the background task continues retrying. If the server recovers and later
+    drops again, retry/backoff counters reset so stale tools are deregistered
+    again after the next threshold window.
     """
     import asyncio
 
@@ -379,7 +379,7 @@ def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mcp_tool.asyncio, "sleep", _fast_sleep)
 
-    state = {"transport_calls": 0, "deregistered": 0, "revived": False}
+    state = {"transport_calls": 0, "deregistered": 0}
 
     async def _scenario():
         class _Task(MCPServerTask):
@@ -392,57 +392,47 @@ def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
 
             async def _run_stdio(self, config):
                 state["transport_calls"] += 1
-                # First connect succeeds (sets _ready) then immediately
-                # fails, as if the subprocess died — the post-ready failure
-                # path that counts toward the reconnect budget.
-                if state["transport_calls"] == 1:
+                call = state["transport_calls"]
+
+                if call == 1:
+                    # First connect succeeds, then immediately fails as if the
+                    # subprocess died. Marking connected lets the outer loop
+                    # reset any stale retry state for this new outage.
                     self.session = object()
                     self._ready.set()
+                    self._mark_connected()
                     self.session = None
                     raise RuntimeError("subprocess died")
-                # Keep failing until the budget is exhausted and the loop
-                # parks, UNLESS we've been revived after parking.
-                if state["revived"]:
+
+                if call < 5:
+                    raise RuntimeError("still down")
+
+                if call == 5:
+                    # The server recovered after the first threshold window,
+                    # tools were published again, then it dropped a second
+                    # time. The next outage must get its own threshold window.
                     self.session = object()
                     self._ready.set()
-                    await self._wait_for_lifecycle_event()
-                    return
-                raise RuntimeError("still down")
+                    self._registered_tool_names = ["srv__tool"]
+                    self._mark_connected()
+                    self.session = None
+                    raise RuntimeError("second outage")
+
+                if call < 8:
+                    raise RuntimeError("still down again")
+
+                self.session = object()
+                self._ready.set()
+                self._shutdown_event.set()
+                return
 
         task = _Task("srv")
         task._registered_tool_names = ["srv__tool"]
 
         run_task = asyncio.ensure_future(task.run({"command": "x"}))
 
-        # Wait until the loop has parked (it deregisters tools right before
-        # blocking on _wait_for_reconnect_or_shutdown).
-        for _ in range(500):
-            await _real_sleep(0)
-            if state["deregistered"] >= 1:
-                break
-        # Give the loop one more tick to settle into the park wait.
-        await _real_sleep(0)
-        assert not run_task.done(), "run loop exited instead of parking"
-        assert state["deregistered"] >= 1, "tools not deregistered on park"
-
-        # Revive it: a reconnect signal must wake the parked task.
-        state["revived"] = True
-        before = state["transport_calls"]
-        task._reconnect_event.set()
-        for _ in range(500):
-            await _real_sleep(0)
-            if state["transport_calls"] > before:
-                break
-        assert state["transport_calls"] > before, (
-            "parked task did not re-enter transport on reconnect signal"
-        )
-
-        # Clean shutdown.
-        task._shutdown_event.set()
-        task._reconnect_event.set()
-        try:
-            await asyncio.wait_for(run_task, timeout=2)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-            run_task.cancel()
+        await asyncio.wait_for(run_task, timeout=2)
+        assert state["transport_calls"] == 8
+        assert state["deregistered"] == 2
 
     asyncio.run(_scenario())

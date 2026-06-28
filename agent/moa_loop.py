@@ -169,6 +169,17 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     that reject orphan ``tool`` messages or ``tool_calls`` the reference never
     produced. We keep only the user/assistant *text* turns, dropping the
     system prompt, any ``tool``-role messages, and any ``tool_calls`` payloads.
+
+    The trimmed view MUST end with a ``user`` turn. An advisory reference call
+    answers the latest user input; it must never end with an ``assistant``
+    turn, which Anthropic (and OpenRouter→Anthropic) interpret as an assistant
+    *prefill* the model should continue — some models (e.g. Claude Opus 4.8)
+    reject prefill outright with ``400 ... must end with a user message``. This
+    is the common mid-tool-loop case: the last assistant turn carried
+    interleaved reasoning text plus tool calls, so its text survives the trim
+    while the following ``tool`` result is dropped, leaving a trailing
+    assistant turn. We strip any trailing assistant turns so the reference sees
+    a user message last.
     """
     trimmed: list[dict[str, Any]] = []
     for msg in messages:
@@ -186,9 +197,14 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # Assistant turn that was purely tool calls — nothing advisory.
             continue
         trimmed.append({"role": role, "content": text})
+    # Advisory calls must end on a user turn (no assistant prefill). Drop any
+    # trailing assistant turns left by the tool-loop trim above.
+    while trimmed and trimmed[-1].get("role") == "assistant":
+        trimmed.pop()
     if not trimmed:
-        # Degenerate case (e.g. first turn was stripped): fall back to a
-        # minimal user turn so the reference still has something to answer.
+        # Degenerate case (e.g. first turn was stripped, or the view trimmed
+        # down to assistant-only): fall back to the latest user turn so the
+        # reference still has something to answer.
         for msg in reversed(messages):
             if msg.get("role") == "user" and isinstance(msg.get("content"), str):
                 return [{"role": "user", "content": msg["content"]}]

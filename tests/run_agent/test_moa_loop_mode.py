@@ -236,9 +236,49 @@ def test_reference_messages_strips_system_and_tool_history():
     # System prompt, tool-call-only assistant turn, and tool result are gone.
     assert all(m["role"] in ("user", "assistant") for m in trimmed)
     assert all("tool_calls" not in m for m in trimmed)
+    # The advisory view must end on a user turn — a trailing assistant turn is
+    # treated by Anthropic as an assistant prefill (400 on no-prefill models).
+    # The only kept user turn here is the prompt, so the trailing assistant
+    # answer is stripped.
     assert trimmed == [
         {"role": "user", "content": "do the thing"},
-        {"role": "assistant", "content": "here is my answer"},
+    ]
+
+
+def test_reference_messages_ends_with_user_not_assistant_prefill():
+    """Advisory reference views must never end on an assistant turn.
+
+    Mid-tool-loop, the last assistant turn carries interleaved reasoning text
+    plus tool calls; its text survives the trim while the following tool result
+    is dropped, leaving a trailing assistant turn. Anthropic (and
+    OpenRouter→Anthropic) treat that as an assistant prefill the model should
+    continue, and no-prefill models (e.g. Claude Opus 4.8) reject it with
+    ``400 ... must end with a user message``. The trim must drop trailing
+    assistant turns while preserving intervening ones.
+    """
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2 current"},
+        {
+            "role": "assistant",
+            "content": "let me reason then call a tool",
+            "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "tool result"},
+    ]
+
+    trimmed = _reference_messages(messages)
+
+    assert trimmed, "advisory view should not be empty"
+    assert trimmed[-1]["role"] == "user"
+    # Intervening assistant context is preserved; only the trailing one drops.
+    assert trimmed == [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2 current"},
     ]
 
 

@@ -17139,11 +17139,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
+    _cron_cfg = _load_gateway_config().get("cron", {}) or {}
+    try:
+        _tick_interval = max(5, int(_cron_cfg.get("tick_interval_seconds", 60)))
+    except (TypeError, ValueError):
+        _tick_interval = 60
     cron_stop = threading.Event()
     cron_thread = threading.Thread(
         target=_start_cron_ticker,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(), "interval": _tick_interval},
         daemon=True,
         name="cron-ticker",
     )

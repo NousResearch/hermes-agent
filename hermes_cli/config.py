@@ -1464,6 +1464,11 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Seconds between cron scheduler ticks in the gateway process.
+        # Lower values reduce job pickup latency (e.g. 5s = jobs fire
+        # within 5s of their target window). Higher values reduce
+        # background CPU overhead. Default 60. Minimum 5.
+        "tick_interval_seconds": 60,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

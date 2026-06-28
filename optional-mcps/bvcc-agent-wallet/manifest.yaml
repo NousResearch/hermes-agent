@@ -1,0 +1,62 @@
+manifest_version: 1
+
+  name: bvcc-agent-wallet
+  description: Operate a non-custodial BVCC Agent Wallet on-chain — check balances, simulate, send native/tokens, approve, and swap (Uniswap v3/v4) within the agent's authorized on-chain limits.
+  source: https://github.com/blockventurechaincapital-crypto/bvcc-agent-mcp
+
+  transport:
+    type: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@bvcc/agent-mcp"
+
+  auth:
+    type: api_key
+    env:
+      - name: AGENT_PRIVATE_KEY
+        prompt: "Agent EOA private key (0x + 64 hex). Used locally to sign; never transmitted."
+        required: true
+        secret: true
+      - name: WALLET_ADDRESS
+        prompt: "The BVCC Agent Wallet address this agent operates (0x...)."
+        required: true
+        secret: false
+      - name: CHAIN_ID
+        prompt: "Default chain id: 42161 Arbitrum · 56 BNB · 1 Ethereum · 8453 Base · 421614 Arb Sepolia"
+        default: "42161"
+        required: true
+        secret: false
+
+  tools:
+    default_enabled:
+      - getAgentStatus
+      - getCapabilities
+      - getNativeBalance
+      - getTokenBalances
+      - getRemaining
+      - needsApproval
+      - buildSwapPlan
+      - dryRunSendNative
+      - dryRunSendToken
+      - dryRunSwapV3
+      - dryRunSwapV4
+
+  post_install: |
+    This server operates a non-custodial BVCC Agent Wallet. The agent's private key
+    is read from the environment and used locally to sign only — it is never
+    transmitted. Every limit (spend caps, allowed tokens/recipients, expiry) is
+    enforced on-chain by the wallet contract; a blocked action reverts.
+
+    By default only read/simulate tools are enabled above. To let the agent move
+    funds, enable the write tools during the checklist (sendNative, sendToken,
+    approve, swapV3, swapV4), or set env BVCC_MCP_READONLY=true to hard-lock to
+    read-only regardless of selection.
+
+    This server is multi-network: every tool takes an optional `network` arg
+    (chain id or name), so the same agent works across chains without restarting.
+    The wallet address is the same on every chain (CREATE2); the agent must be
+    authorized on each chain it uses.
+
+    Re-run the tool checklist any time with:
+      hermes mcp configure bvcc-agent-wallet

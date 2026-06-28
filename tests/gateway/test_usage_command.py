@@ -21,6 +21,9 @@ def _make_mock_agent(**overrides):
         "session_output_tokens": 10_000,
         "session_cache_read_tokens": 5_000,
         "session_cache_write_tokens": 2_000,
+        "_cached_system_prompt": "system" * 100,
+        "session_id": "sess-usage-1",
+        "messages": [{"role": "user", "content": "hi"}],
     }
     defaults.update(overrides)
     for k, v in defaults.items():
@@ -90,6 +93,9 @@ class TestUsageCachedAgent:
         assert "Cache read" not in result
         assert "Cache write" not in result
         assert "Cost" not in result
+        assert "Session diagnostics" in result
+        assert "Cached system prompt: 600 chars" in result
+        assert "Messages in agent context: 1" in result
 
     @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):

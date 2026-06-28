@@ -1754,7 +1754,14 @@ def get_systemd_unit_path(system: bool = False) -> Path:
     name = get_service_name()
     if system:
         return Path("/etc/systemd/system") / f"{name}.service"
-    return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
+    from hermes_constants import get_real_home
+
+    # Named Hermes profiles may run with HOME={HERMES_HOME}/home so external
+    # CLIs can be isolated. systemd user units, however, live under the OS
+    # user's real home. Looking under profile HOME makes
+    # `hermes -p <name> gateway status` miss an active profile service and
+    # falsely report a manual process.
+    return Path(get_real_home()) / ".config" / "systemd" / "user" / f"{name}.service"
 
 
 class UserSystemdUnavailableError(RuntimeError):
@@ -2027,8 +2034,10 @@ def _legacy_unit_search_paths() -> list[tuple[bool, Path]]:
     Factored out so tests can monkeypatch the search roots without touching
     real filesystem paths.
     """
+    from hermes_constants import get_real_home
+
     return [
-        (False, Path.home() / ".config" / "systemd" / "user"),
+        (False, Path(get_real_home()) / ".config" / "systemd" / "user"),
         (True, Path("/etc/systemd/system")),
     ]
 
@@ -2729,7 +2738,9 @@ WantedBy=multi-user.target
 
     hermes_home = str(get_hermes_home().resolve())
     profile_arg = _profile_arg(hermes_home)
-    path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
+    from hermes_constants import get_real_home
+
+    path_entries.extend(_build_user_local_paths(Path(get_real_home()), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)

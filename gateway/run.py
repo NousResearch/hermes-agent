@@ -55,6 +55,14 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.turn_usage import (
+    agent_usage_snapshot,
+    budget_status,
+    format_compact_usage,
+    should_show_usage_receipt,
+    turn_usage_from_result,
+    usage_delta,
+)
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -646,6 +654,34 @@ def _float_env(name: str, default: float) -> float:
         return float(raw)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _format_long_running_notification(
+    *,
+    elapsed_seconds: float,
+    status_detail: str = "",
+    initial: bool = False,
+) -> str:
+    """Build a concise user-facing notice for long gateway turns.
+
+    Messaging users cannot see the gateway executor thread, so the first notice
+    must explicitly say the turn is still running and that terminal recovery is
+    not needed. Later updates stay shorter and edit the same bubble when the
+    adapter supports it.
+    """
+    elapsed = max(0.0, float(elapsed_seconds or 0.0))
+    elapsed_mins = int(elapsed // 60)
+    elapsed_text = "<1 min" if elapsed_mins < 1 else f"{elapsed_mins} min"
+    detail = str(status_detail or "").strip()
+    detail_text = f" Status: {detail}." if detail else ""
+    if initial:
+        return (
+            "⏳ Long-running task: still working in this chat "
+            f"for {elapsed_text}. Background status updates will stay here; "
+            "no terminal check needed. Send /stop to cancel."
+            f"{detail_text}"
+        )
+    return f"⏳ Still working: {elapsed_text}.{detail_text}"
 
 
 def _is_fresh_gateway_interruption(
@@ -1539,6 +1575,10 @@ if _config_path.exists():
                 os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
             if "gateway_notify_interval" in _agent_cfg:
                 os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
+            if "gateway_background_notice_after" in _agent_cfg:
+                os.environ["HERMES_AGENT_BACKGROUND_NOTICE_AFTER"] = str(
+                    _agent_cfg["gateway_background_notice_after"]
+                )
             if "restart_drain_timeout" in _agent_cfg:
                 os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
             if "gateway_auto_continue_freshness" in _agent_cfg:
@@ -1981,6 +2021,7 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
+_INTERRUPT_REASON_USAGE_BUDGET = "Telegram usage budget reached"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
@@ -1990,6 +2031,7 @@ _CONTROL_INTERRUPT_MESSAGES = frozenset(
         _INTERRUPT_REASON_STOP.lower(),
         _INTERRUPT_REASON_RESET.lower(),
         _INTERRUPT_REASON_TIMEOUT.lower(),
+        _INTERRUPT_REASON_USAGE_BUDGET.lower(),
         _INTERRUPT_REASON_SSE_DISCONNECT.lower(),
         _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(),
         _INTERRUPT_REASON_GATEWAY_RESTART.lower(),
@@ -10406,6 +10448,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _platform_name, source.chat_id or "unknown",
                 _response_time, _api_calls, _resp_len,
             )
+            _usage_receipt_line = ""
+            try:
+                _turn_usage_obj = turn_usage_from_result(agent_result, elapsed_seconds=_response_time)
+                if (
+                    _platform_name == "telegram"
+                    and _usage_receipts_enabled
+                    and should_show_usage_receipt(
+                        _turn_usage_obj,
+                        min_api_calls=_usage_receipt_min_api_calls,
+                        min_tokens=_usage_receipt_min_tokens,
+                        min_seconds=_usage_receipt_min_seconds,
+                    )
+                ):
+                    _usage_receipt_line = format_compact_usage(_turn_usage_obj, prefix="usage")
+                    logger.info(
+                        "turn usage receipt: platform=%s chat=%s %s",
+                        _platform_name, source.chat_id or "unknown", _usage_receipt_line,
+                    )
+            except Exception as _usage_receipt_err:
+                logger.debug("usage receipt build failed: %s", _usage_receipt_err)
 
             # Re-baseline the cached agent's message_count snapshot now that
             # this turn has completed and the agent has flushed its rows to
@@ -10820,6 +10882,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
+            if _usage_receipt_line and response and not _already_sent:
+                response = f"{response}\n\n{_usage_receipt_line}"
+
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
             # sends raw text chunks that include MEDIA: tags — the normal
@@ -10842,17 +10907,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
                 # still surface the runtime metadata on the final reply.
-                if _footer_line:
+                if _footer_line or _usage_receipt_line:
                     try:
                         _foot_adapter = self.adapters.get(source.platform)
                         if _foot_adapter:
+                            _trail = "\n".join(x for x in (_footer_line, _usage_receipt_line) if x)
                             await _foot_adapter.send(
                                 source.chat_id,
-                                _footer_line,
+                                _trail,
                                 metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
                             )
                     except Exception as _e:
-                        logger.debug("trailing footer send failed: %s", _e)
+                        logger.debug("trailing footer/usage send failed: %s", _e)
                 return None
 
             return response
@@ -15322,6 +15388,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        def _agent_cfg_int(key: str, default: int) -> int:
+            """Read an integer agent config value while preserving explicit 0.
+
+            The Telegram usage budget treats 0 as "disabled". Using ``value or
+            default`` here silently re-enabled hard stops after James set them to
+            0, which made Telegram unusable.
+            """
+            value = agent_cfg_local.get(key, default)
+            if value is None or value == "":
+                value = default
+            return int(value)
+
+        def _agent_cfg_float(key: str, default: float) -> float:
+            value = agent_cfg_local.get(key, default)
+            if value is None or value == "":
+                value = default
+            return float(value)
+
+        _usage_receipts_enabled = bool(agent_cfg_local.get("gateway_usage_receipts", True))
+        _usage_receipt_min_api_calls = _agent_cfg_int("gateway_usage_receipt_min_api_calls", 2)
+        _usage_receipt_min_tokens = _agent_cfg_int("gateway_usage_receipt_min_tokens", 25_000)
+        _usage_receipt_min_seconds = _agent_cfg_float("gateway_usage_receipt_min_seconds", 30)
+        _usage_warn_api_calls = _agent_cfg_int("gateway_usage_warn_api_calls", 8)
+        _usage_warn_tokens = _agent_cfg_int("gateway_usage_warn_tokens", 100_000)
+        _usage_hard_api_calls = _agent_cfg_int("gateway_usage_hard_api_calls", 30)
+        _usage_hard_tokens = _agent_cfg_int("gateway_usage_hard_tokens", 350_000)
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
@@ -16019,6 +16111,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
+        turn_usage_baseline_holder = [None]  # Cumulative counters at turn start
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -16925,6 +17018,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     _run_message = message
 
+                turn_usage_baseline_holder[0] = agent_usage_snapshot(agent)
                 _api_run_message = _wrap_current_message_with_observed_context(
                     _run_message,
                     observed_group_context,
@@ -16942,6 +17036,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                try:
+                    _turn_usage = usage_delta(
+                        agent_usage_snapshot(agent),
+                        turn_usage_baseline_holder[0],
+                    )
+                    _turn_usage["api_calls"] = int(result.get("api_calls", 0) or 0)
+                    _turn_usage["elapsed_seconds"] = max(0.0, time.time() - _notify_start)
+                    result["turn_usage"] = _turn_usage
+                except Exception:
+                    pass
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -17066,6 +17170,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "turn_usage": result.get("turn_usage", {}),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -17167,6 +17272,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
+                "turn_usage": result_holder[0].get("turn_usage", {}) if result_holder[0] else {},
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
             }
@@ -17315,13 +17421,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
 
-        # Periodic "still working" notifications for long-running tasks.
-        # Fires every N seconds so the user knows the agent hasn't died.
-        # Config: agent.gateway_notify_interval in config.yaml, or
-        # HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 180s (3 min).
-        # 0 = disable notifications.
+        # Periodic long-turn notifications for messaging users.
+        # First notice is early and explicit so a live Telegram turn does not
+        # look like a dead chat; later notices edit the same bubble when the
+        # adapter supports it. Config:
+        # - agent.gateway_background_notice_after / HERMES_AGENT_BACKGROUND_NOTICE_AFTER
+        #   default 30s; <=0 falls back to the repeat interval.
+        # - agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL
+        #   default 180s; <=0 disables all long-turn notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
+        _NOTIFY_INITIAL_RAW = _float_env("HERMES_AGENT_BACKGROUND_NOTICE_AFTER", 30)
+        _NOTIFY_INITIAL_DELAY = (
+            _NOTIFY_INITIAL_RAW
+            if _NOTIFY_INITIAL_RAW > 0
+            else _NOTIFY_INTERVAL
+        )
+        if _NOTIFY_INTERVAL is None:
+            _NOTIFY_INITIAL_DELAY = None
         if not bool(
             resolve_display_setting(
                 user_config,
@@ -17331,28 +17448,169 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         ):
             _NOTIFY_INTERVAL = None
+            _NOTIFY_INITIAL_DELAY = None
         _notify_start = time.time()
+        try:
+            from gateway.long_run_status import (
+                config_from_gateway_config as _status_enrichment_config_from_gateway_config,
+                enrich_long_run_status as _enrich_long_run_status,
+            )
+            _status_enrichment_config = _status_enrichment_config_from_gateway_config(user_config)
+        except Exception as _status_enrich_cfg_err:
+            logger.debug("Long-running status enrichment config failed: %s", _status_enrich_cfg_err)
+            _status_enrichment_config = None
+            _enrich_long_run_status = None
+        _status_enrichment_tasks: set[asyncio.Task] = set()
+        _usage_budget_warn_sent = False
+        _usage_budget_hard_sent = False
+
+        def _current_turn_usage(elapsed_seconds: float):
+            _agent_ref = agent_holder[0]
+            if not _agent_ref or not turn_usage_baseline_holder[0]:
+                return None
+            try:
+                _live = usage_delta(
+                    agent_usage_snapshot(_agent_ref),
+                    turn_usage_baseline_holder[0],
+                )
+                try:
+                    _act = _agent_ref.get_activity_summary()
+                    _live["api_calls"] = int(_act.get("api_call_count", 0) or 0)
+                except Exception:
+                    pass
+                _live["elapsed_seconds"] = max(0.0, elapsed_seconds)
+                return turn_usage_from_result({"turn_usage": _live, "api_calls": _live.get("api_calls", 0)}, elapsed_seconds=elapsed_seconds)
+            except Exception:
+                return None
+
+        async def _maybe_emit_usage_budget_notice(elapsed_seconds: float) -> bool:
+            nonlocal _usage_budget_warn_sent, _usage_budget_hard_sent
+            if platform_key != "telegram":
+                return False
+            _usage = _current_turn_usage(elapsed_seconds)
+            if _usage is None:
+                return False
+            _state = budget_status(
+                _usage,
+                warn_api_calls=_usage_warn_api_calls,
+                warn_tokens=_usage_warn_tokens,
+                hard_api_calls=_usage_hard_api_calls,
+                hard_tokens=_usage_hard_tokens,
+            )
+            if _state is None:
+                return False
+            _budget_adapter = self.adapters.get(source.platform)
+            if not _budget_adapter:
+                return False
+            _line = format_compact_usage(_usage, prefix="usage")
+            if _state == "warn" and not _usage_budget_warn_sent:
+                _usage_budget_warn_sent = True
+                try:
+                    await _budget_adapter.send(
+                        source.chat_id,
+                        f"⚠️ High-usage Telegram turn: {_line}. Continuing unless you send /stop.",
+                        metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
+                    )
+                except Exception as _usage_warn_err:
+                    logger.debug("Usage-budget warning send failed: %s", _usage_warn_err)
+            if _state == "hard" and not _usage_budget_hard_sent:
+                _usage_budget_hard_sent = True
+                try:
+                    await _budget_adapter.send(
+                        source.chat_id,
+                        f"🛑 Telegram turn budget reached: {_line}. Stopping this turn before it burns more; start a fresh /new if you want to continue.",
+                        metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
+                    )
+                except Exception as _usage_hard_err:
+                    logger.debug("Usage-budget hard-stop notice send failed: %s", _usage_hard_err)
+                _agent_ref = agent_holder[0]
+                if _agent_ref and hasattr(_agent_ref, "interrupt"):
+                    _agent_ref.interrupt(_INTERRUPT_REASON_USAGE_BUDGET)
+                return True
+            return False
 
         async def _notify_long_running():
-            if _NOTIFY_INTERVAL is None:
-                return  # Notifications disabled (gateway_notify_interval: 0)
+            if _NOTIFY_INITIAL_DELAY is None:
+                return  # Notifications disabled
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return
             # Track the heartbeat message id so we can edit-in-place on
             # platforms that support it (Telegram, Discord, Slack, etc.)
-            # instead of spamming a new "Still working" bubble every
-            # interval. Falls back to send-new when edit fails or isn't
-            # supported by the adapter.
+            # instead of spamming a new status bubble every interval. Falls
+            # back to send-new when edit fails or isn't supported by the
+            # adapter.
             _heartbeat_msg_id: Optional[str] = None
+            _first_notice = True
+
+            async def _enrich_and_edit_status(
+                message_id: str,
+                initial_notice: bool,
+                snapshot: dict[str, Any],
+            ) -> None:
+                if not _status_enrichment_config or not _enrich_long_run_status:
+                    return
+                try:
+                    enriched_detail = await _enrich_long_run_status(
+                        snapshot,
+                        _status_enrichment_config,
+                    )
+                    if not enriched_detail:
+                        return
+                    try:
+                        _exec_ref = _executor_task
+                    except NameError:
+                        _exec_ref = None
+                    if not self._should_emit_long_running_notification(
+                        session_key, agent_holder[0], _exec_ref
+                    ):
+                        return
+                    enriched_text = _format_long_running_notification(
+                        elapsed_seconds=float(
+                            snapshot.get("elapsed_seconds", time.time() - _notify_start)
+                        ),
+                        status_detail=enriched_detail,
+                        initial=initial_notice,
+                    )
+                    await _notify_adapter.edit_message(
+                        source.chat_id,
+                        message_id,
+                        enriched_text,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as _enrich_err:
+                    logger.debug("Long-running status enrichment skipped: %s", _enrich_err)
+
+            def _schedule_status_enrichment(
+                message_id: Optional[str],
+                initial_notice: bool,
+                snapshot: dict[str, Any],
+            ) -> None:
+                if (
+                    not message_id
+                    or not _status_enrichment_config
+                    or not getattr(_status_enrichment_config, "enabled", False)
+                ):
+                    return
+                # Do not stack model calls. One tiny enrich attempt per status
+                # interval is plenty; the deterministic heartbeat already landed.
+                if any(not task.done() for task in _status_enrichment_tasks):
+                    return
+                task = asyncio.create_task(
+                    _enrich_and_edit_status(message_id, initial_notice, snapshot)
+                )
+                _status_enrichment_tasks.add(task)
+                task.add_done_callback(_status_enrichment_tasks.discard)
+
             while True:
-                await asyncio.sleep(_NOTIFY_INTERVAL)
+                _sleep_for = _NOTIFY_INITIAL_DELAY if _first_notice else _NOTIFY_INTERVAL
+                if _sleep_for is None:
+                    break
+                await asyncio.sleep(_sleep_for)
                 # Stop heartbeating once this run no longer owns the session
-                # slot or the executor has finished — otherwise a stale
-                # "running: delegate_task" bubble can outlive the run that
-                # spawned it (#12029). _executor_task is a closure var bound
-                # just after this task is scheduled; tolerate the brief window
-                # before then (the first wake is _NOTIFY_INTERVAL away anyway).
+                # slot or the executor has finished; otherwise a stale status
+                # bubble can outlive the run that spawned it (#12029).
                 try:
                     _exec_ref = _executor_task
                 except NameError:
@@ -17361,13 +17619,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key, agent_holder[0], _exec_ref
                 ):
                     break
-                _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available. Default
                 # heartbeat is terse: elapsed + current tool. Verbose
                 # iteration counter is gated on busy_ack_detail so users
                 # who want it can opt in per platform.
                 _agent_ref = agent_holder[0]
                 _status_detail = ""
+                _activity_snapshot: dict[str, Any] = {
+                    "elapsed_seconds": time.time() - _notify_start,
+                    "platform": platform_key,
+                }
                 _want_iteration_detail = bool(
                     resolve_display_setting(
                         user_config,
@@ -17379,6 +17640,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
                         _a = _agent_ref.get_activity_summary()
+                        if isinstance(_a, dict):
+                            for _k in (
+                                "api_call_count",
+                                "max_iterations",
+                                "current_tool",
+                                "last_activity_desc",
+                            ):
+                                if _k in _a:
+                                    _activity_snapshot[_k] = _a.get(_k)
                         _parts = []
                         if _want_iteration_detail:
                             _parts.append(
@@ -17387,11 +17657,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _action = _a.get("current_tool") or _a.get("last_activity_desc")
                         if _action:
                             _parts.append(str(_action))
+                        _usage = _current_turn_usage(time.time() - _notify_start)
+                        if _usage:
+                            _parts.append(format_compact_usage(_usage, prefix="usage"))
                         if _parts:
-                            _status_detail = " — " + ", ".join(_parts)
+                            _status_detail = "; ".join(_parts)
                     except Exception:
                         pass
-                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                _heartbeat_text = _format_long_running_notification(
+                    elapsed_seconds=time.time() - _notify_start,
+                    status_detail=_status_detail,
+                    initial=_first_notice,
+                )
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:
@@ -17402,7 +17679,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _heartbeat_text,
                             )
                         except Exception as _ee:
-                            logger.debug("Heartbeat edit failed: %s", _ee)
+                            logger.debug("Long-running status edit failed: %s", _ee)
                             _notify_res = None
                     if not (_notify_res and getattr(_notify_res, "success", False)):
                         _notify_res = await _notify_adapter.send(
@@ -17416,6 +17693,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _heartbeat_msg_id = str(_notify_res.message_id)
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(_heartbeat_msg_id)
+                    _schedule_status_enrichment(
+                        _heartbeat_msg_id,
+                        _first_notice,
+                        _activity_snapshot,
+                    )
+                    _first_notice = False
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
@@ -17472,6 +17755,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
+                    if await _maybe_emit_usage_budget_notice(time.time() - _notify_start):
+                        continue
             else:
                 # Poll loop: check the agent's built-in activity tracker
                 # (updated by _touch_activity() on every tool call, API
@@ -17532,6 +17817,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
+                    await _maybe_emit_usage_budget_notice(time.time() - _notify_start)
 
             if _inactivity_timeout:
                 # Build a diagnostic summary from the agent's activity tracker.
@@ -17880,6 +18166,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 progress_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
+            for _status_task in list(_status_enrichment_tasks):
+                _status_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -17924,7 +18212,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._update_runtime_status("draining")
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:
+            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task, *list(_status_enrichment_tasks)]:
                 if task:
                     try:
                         await task

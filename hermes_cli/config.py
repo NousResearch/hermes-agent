@@ -1032,6 +1032,17 @@ DEFAULT_CONFIG = {
         # (60+ tool iterations with tiny output) before users assume the
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
+        # Telegram-visible usage telemetry. Receipts are appended after
+        # nontrivial Telegram turns; warning thresholds send a live notice;
+        # hard thresholds interrupt the turn before a hidden loop burns more.
+        "gateway_usage_receipts": True,
+        "gateway_usage_receipt_min_api_calls": 2,
+        "gateway_usage_receipt_min_tokens": 25000,
+        "gateway_usage_receipt_min_seconds": 30,
+        "gateway_usage_warn_api_calls": 8,
+        "gateway_usage_warn_tokens": 100000,
+        "gateway_usage_hard_api_calls": 30,
+        "gateway_usage_hard_tokens": 350000,
         # Freshness window for the gateway auto-continue note (seconds).
         # After a gateway crash/restart/SIGTERM mid-run, the next user
         # message gets a "[System note: your previous turn was

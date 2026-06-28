@@ -885,15 +885,21 @@ def is_container() -> bool:
                 return True
     except OSError:
         pass
-    # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
-    # runtime still shows up in the mount table (overlay rootfs, runtime mount
-    # paths), so scan mountinfo as a last resort.
+    # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. In real
+    # containerd/CRI-O containers the *root mount* often carries overlay/runtime
+    # paths. Do not scan every mountinfo line: Linux hosts that run containers
+    # may expose unrelated container rootfs mounts in the host namespace, which
+    # would falsely classify the host itself as a container.
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
-            mountinfo = f.read()
-            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
-                _container_detected = True
-                return True
+            for line in f:
+                parts = line.split()
+                mount_point = parts[4] if len(parts) > 4 else ""
+                if mount_point == "/" and any(
+                    marker in line for marker in ("kubepods", "containerd", "crio")
+                ):
+                    _container_detected = True
+                    return True
     except OSError:
         pass
     _container_detected = False

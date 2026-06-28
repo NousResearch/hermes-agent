@@ -165,12 +165,15 @@ def show_status(args):
             continue
         value = _resolve_env(env_ref)
         has_key = bool(value)
-        display = redact_key(value) if not show_all else value
+        # ``status --all`` is described as "redacted for sharing" and must
+        # never print raw credential material.  It may show more rows/details,
+        # but API-key values stay masked.
+        display = redact_key(value)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
-    anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
+    anthropic_display = redact_key(anthropic_value)
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
     # =========================================================================
@@ -517,9 +520,16 @@ def show_status(args):
         try:
             with open(jobs_file, encoding="utf-8") as f:
                 data = json.load(f)
+            if isinstance(data, list):
+                jobs = data
+            elif isinstance(data, dict):
                 jobs = data.get("jobs", [])
-                enabled_jobs = [j for j in jobs if j.get("enabled", True)]
-                print(f"  Jobs:         {len(enabled_jobs)} active, {len(jobs)} total")
+            else:
+                jobs = []
+            if not isinstance(jobs, list):
+                jobs = []
+            enabled_jobs = [j for j in jobs if isinstance(j, dict) and j.get("enabled", True)]
+            print(f"  Jobs:         {len(enabled_jobs)} active, {len(jobs)} total")
         except Exception:
             print("  Jobs:         (error reading jobs file)")
     else:

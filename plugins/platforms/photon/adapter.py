@@ -620,6 +620,19 @@ class PhotonAdapter(BasePlatformAdapter):
                 [],
             )
 
+        def _normalize_richlink_payload(payload: Dict[str, Any]) -> str:
+            url = str(payload.get("url") or "").strip()
+            title = str(payload.get("title") or "").strip()
+            summary = str(payload.get("summary") or "").strip()
+            parts: List[str] = []
+            if title and title != url:
+                parts.append(title)
+            if url:
+                parts.append(url)
+            if summary and summary not in parts:
+                parts.append(summary)
+            return "\n".join(parts) or "[Photon richlink received without URL]"
+
         ctype = content.get("type")
         if ctype == "reaction":
             # Route only tapbacks on messages WE sent — those are implicitly
@@ -674,6 +687,9 @@ class PhotonAdapter(BasePlatformAdapter):
             mtype = MessageType.TEXT
         elif ctype in {"attachment", "voice"}:
             text, mtype, media_urls, media_types = _normalize_binary_payload(content)
+        elif ctype == "richlink":
+            text = _normalize_richlink_payload(content)
+            mtype = MessageType.TEXT
         elif ctype == "group":
             text_parts: List[str] = []
             mtype = MessageType.TEXT
@@ -699,6 +715,9 @@ class PhotonAdapter(BasePlatformAdapter):
                     media_types.extend(item_types)
                     if not item_urls:
                         text_parts.append(marker)
+                    continue
+                if item_type == "richlink":
+                    text_parts.append(_normalize_richlink_payload(item_content))
                     continue
                 if item_type:
                     text_parts.append(f"[Photon content type not handled: {item_type}]")

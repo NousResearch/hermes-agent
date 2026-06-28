@@ -590,6 +590,27 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
     assert "loginctl enable-linger" in out
 
 
+def test_profile_systemd_unit_path_uses_real_home_when_home_is_profile_home(monkeypatch, tmp_path):
+    real_home = tmp_path / "real-home"
+    profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+    isolated_home = profile_home / "home"
+    real_local_bin = real_home / ".local" / "bin"
+    isolated_home.mkdir(parents=True)
+    real_local_bin.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setenv("HOME", str(isolated_home))
+    monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+
+    unit_dir = real_home / ".config" / "systemd" / "user"
+    assert gateway.get_service_name() == "hermes-gateway-coder"
+    assert gateway.get_systemd_unit_path() == unit_dir / "hermes-gateway-coder.service"
+    assert gateway._legacy_unit_search_paths()[0] == (False, unit_dir)
+    generated = gateway.generate_systemd_unit()
+    assert str(real_local_bin) in generated
+    assert str(isolated_home / ".local" / "bin") not in generated
+
+
 def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 

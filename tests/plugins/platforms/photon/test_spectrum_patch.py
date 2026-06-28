@@ -17,6 +17,14 @@ def test_sidecar_applies_spectrum_patch_before_importing_sdk() -> None:
     assert index.index("patchSpectrumTs();") < index.index('await import("spectrum-ts")')
 
 
+def test_sidecar_keeps_running_if_optional_spectrum_patch_fails() -> None:
+    """Mixed-attachment preservation is optional; Photon text transport should survive patch drift."""
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    patch_block = index[index.index("try {\n  const patchResult = patchSpectrumTs();"):index.index("let Spectrum,")]
+    assert "continuing without mixed text+attachment preservation" in patch_block
+    assert "process.exit(3)" not in patch_block
+
+
 def test_sidecar_healthz_reports_stream_health() -> None:
     """Local process health must include upstream stream health."""
     index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")

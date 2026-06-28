@@ -89,6 +89,20 @@ def _hermes_version() -> str:
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
+
+CLAUDE_HANDOFF_REQUIRED_SECTIONS = [
+    "Session context",
+    "Key decisions",
+    "Open questions",
+    "Artifacts produced",
+    "Relevant existing memories",
+    "What Hermes should know",
+]
+CLAUDE_HANDOFF_ALLOWED_SURFACES = {"claudeai", "claudecode-linux", "claudecode-macbook"}
+CLAUDE_HANDOFF_NAME_RE = re.compile(
+    r"^handoff-(claudeai|claudecode-linux|claudecode-macbook)-(\d{4}-\d{2}-\d{2})-([A-Za-z0-9_-]+)$"
+)
+CLAUDE_HANDOFF_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
@@ -1210,6 +1224,114 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
+    @staticmethod
+    def _claude_handoff_sections(body: str) -> Optional[str]:
+        """Return a validation error for a Claude handoff body, or None."""
+        headings: List[tuple[str, int, int]] = []
+        for match in re.finditer(r"(?m)^\s{0,3}#{1,6}\s+(.+?)\s*$", body):
+            headings.append((match.group(1).strip(), match.start(), match.end()))
+        if [title for title, _, _ in headings] != CLAUDE_HANDOFF_REQUIRED_SECTIONS:
+            return "body must contain the required section headings in canonical order: " + ", ".join(
+                CLAUDE_HANDOFF_REQUIRED_SECTIONS
+            )
+        for idx, (title, _, content_start) in enumerate(headings):
+            content_end = headings[idx + 1][1] if idx + 1 < len(headings) else len(body)
+            if not body[content_start:content_end].strip():
+                return f"section is empty: {title}"
+        return None
+
+    @staticmethod
+    def _derive_claude_handoff_name(surface: str, session_date: str, description: str, body: str, source_session_id: str) -> str:
+        seed = source_session_id.strip() or f"{description}\n{body}"
+        short_id = hashlib.sha256(seed.encode("utf-8", "replace")).hexdigest()[:10]
+        return f"handoff-{surface}-{session_date}-{short_id}"
+
+    async def _handle_claude_handoff_memory(self, request: "web.Request") -> "web.Response":
+        """POST /v1/claude/handoff-memory — durable Claude handoff receipt.
+
+        Claude.ai remains read-only. This endpoint is the narrow mediated path:
+        Hermes validates the structured packet and writes a pending Clarence
+        memory row for later review/promotion by Hermes-owned tooling.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body_json = await request.json()
+        except Exception:
+            return web.json_response({"accepted": False, "durable": False, "error": "invalid JSON body"}, status=400)
+        if not isinstance(body_json, dict):
+            return web.json_response({"accepted": False, "durable": False, "error": "JSON body must be an object"}, status=400)
+
+        description = str(body_json.get("description") or "").strip()
+        handoff_body = str(body_json.get("body") or "")
+        surface = str(body_json.get("surface") or "claudeai").strip().lower()
+        source_session_id = str(body_json.get("source_session_id") or "").strip()
+        replace_existing = bool(body_json.get("replace_existing"))
+        if not description:
+            return web.json_response({"accepted": False, "durable": False, "error": "description is required"}, status=400)
+        if not handoff_body.strip():
+            return web.json_response({"accepted": False, "durable": False, "error": "body is required"}, status=400)
+        if surface not in CLAUDE_HANDOFF_ALLOWED_SURFACES:
+            return web.json_response({"accepted": False, "durable": False, "error": f"invalid surface: {surface}"}, status=400)
+
+        section_error = self._claude_handoff_sections(handoff_body)
+        if section_error:
+            return web.json_response({"accepted": False, "durable": False, "error": section_error}, status=400)
+
+        session_date = str(body_json.get("session_date") or "").strip()
+        if session_date and not CLAUDE_HANDOFF_DATE_RE.match(session_date):
+            return web.json_response({"accepted": False, "durable": False, "error": "session_date must be YYYY-MM-DD"}, status=400)
+        if not session_date:
+            session_date = time.strftime("%Y-%m-%d")
+
+        name = str(body_json.get("name") or "").strip()
+        if name:
+            match = CLAUDE_HANDOFF_NAME_RE.match(name)
+            if not match:
+                return web.json_response({"accepted": False, "durable": False, "error": "invalid handoff name"}, status=400)
+            if match.group(1) != surface:
+                return web.json_response({"accepted": False, "durable": False, "error": "handoff name surface does not match payload surface"}, status=400)
+            if match.group(2) != session_date:
+                return web.json_response({"accepted": False, "durable": False, "error": "handoff name date does not match session_date"}, status=400)
+        else:
+            name = self._derive_claude_handoff_name(surface, session_date, description, handoff_body, source_session_id)
+
+        workspace_scripts = Path.home() / ".openclaw" / "workspace" / "scripts"
+        try:
+            import sys as _sys
+            if str(workspace_scripts) not in _sys.path:
+                _sys.path.insert(0, str(workspace_scripts))
+            from clarence_db import ClarenceDB  # type: ignore
+
+            with ClarenceDB() as db:
+                result = db.write_memory(
+                    name=name,
+                    type="reference",
+                    description=description,
+                    body=handoff_body,
+                    tags=["handoff-pending", "claude-handoff", surface, session_date],
+                    kind="state",
+                    author_agent="claude-external",
+                    confidence=1.0,
+                    replace_existing=replace_existing,
+                )
+        except Exception as exc:  # noqa: BLE001 - return stable bridge-safe JSON
+            logger.exception("Claude handoff memory write failed")
+            status = 409 if exc.__class__.__name__ in {"ContradictoryWriteError", "StaleWriteError"} else 500
+            return web.json_response({"accepted": False, "durable": False, "error": str(exc)}, status=status)
+
+        memory_id = int(result.get("memory_id"))
+        return web.json_response({
+            "status": result.get("status", "created"),
+            "accepted": True,
+            "durable": True,
+            "memory_id": memory_id,
+            "memory": {"id": memory_id, "name": name, "type": "reference"},
+            "name": name,
+        })
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -1258,6 +1380,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
+                "claude_handoff_memory": True,
                 "skills_api": True,
                 "audio_api": False,
                 "realtime_voice": False,
@@ -1271,6 +1394,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "models": {"method": "GET", "path": "/v1/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
+                "claude_handoff_memory": {"method": "POST", "path": "/v1/claude/handoff-memory"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
@@ -4455,6 +4579,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
+            self._app.router.add_post("/v1/claude/handoff-memory", self._handle_claude_handoff_memory)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
             # Cron jobs management API

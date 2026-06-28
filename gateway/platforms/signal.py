@@ -138,6 +138,45 @@ def _ext_to_mime(ext: str) -> str:
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
 
 
+def _path_to_data_uri(path: str) -> str:
+    """Read a local attachment path and return a Signal-compatible data URI."""
+    data = Path(path).read_bytes()
+    mime = _ext_to_mime(Path(path).suffix)
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _inline_send_attachments(params: dict) -> dict:
+    """Inline local send attachments for signal-cli daemons without shared filesystems.
+
+    ``signal-cli`` accepts attachments either as filesystem paths or as ``data:``
+    URIs. Hermes-generated files live in the Hermes container, so a separate
+    signal-cli container cannot dereference raw paths. Convert existing local
+    files to data URIs at the RPC boundary while preserving already-inlined,
+    remote, or missing attachments unchanged.
+    """
+    attachments = params.get("attachments")
+    if not attachments:
+        return params
+
+    converted = []
+    changed = False
+    for attachment in attachments:
+        if (
+            isinstance(attachment, str)
+            and not attachment.startswith("data:")
+            and Path(attachment).is_file()
+        ):
+            converted.append(_path_to_data_uri(attachment))
+            changed = True
+        else:
+            converted.append(attachment)
+
+    if not changed:
+        return params
+    return dict(params, attachments=converted)
+
+
 def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
     """Losslessly remux raw ADTS AAC bytes into an MP4 (.m4a) container.
 
@@ -946,6 +985,9 @@ class SignalAdapter(BasePlatformAdapter):
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
             return None
+
+        if method == "send" and isinstance(params, dict):
+            params = _inline_send_attachments(params)
 
         if rpc_id is None:
             rpc_id = f"{method}_{int(time.time() * 1000)}"

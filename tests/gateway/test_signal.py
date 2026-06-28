@@ -144,6 +144,32 @@ class TestSignalHelpers:
         assert _parse_comma_list("") == []
         assert _parse_comma_list("  ,  ,  ") == []
 
+    def test_inline_send_attachments_converts_local_paths(self, tmp_path):
+        from gateway.platforms.signal import _inline_send_attachments
+
+        attachment = tmp_path / "voice.ogg"
+        attachment.write_bytes(b"OggS test audio")
+
+        params = {
+            "recipient": ["+155****4567"],
+            "attachments": [str(attachment), "data:image/png;base64,AAAA", "/missing.jpg"],
+        }
+
+        converted = _inline_send_attachments(params)
+
+        expected_data = base64.b64encode(b"OggS test audio").decode("ascii")
+        assert converted is not params
+        assert converted["attachments"][0] == f"data:audio/ogg;base64,{expected_data}"
+        assert converted["attachments"][1:] == ["data:image/png;base64,AAAA", "/missing.jpg"]
+        assert params["attachments"][0] == str(attachment)
+
+    def test_inline_send_attachments_leaves_no_local_files_unchanged(self):
+        from gateway.platforms.signal import _inline_send_attachments
+
+        params = {"recipient": ["+155****4567"], "attachments": ["data:text/plain;base64,SGk="]}
+
+        assert _inline_send_attachments(params) is params
+
     def test_guess_extension_png(self):
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100) == ".png"
@@ -1166,6 +1192,29 @@ class TestSignalSendResultValidation:
         result = await adapter.send(chat_id="+155****4567", content="hello")
         assert result.success is False
         assert result.error == "Some connection error"
+
+    @pytest.mark.asyncio
+    async def test_rpc_inlines_local_send_attachments(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch)
+        attachment = tmp_path / "photo.png"
+        attachment.write_bytes(b"\x89PNG image bytes")
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"jsonrpc": "2.0", "result": {"timestamp": 123}, "id": "1"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter.client = mock_client
+
+        result = await adapter._rpc(
+            "send",
+            {"recipient": ["+155****4567"], "attachments": [str(attachment)]},
+            rpc_id="1",
+        )
+
+        assert result == {"timestamp": 123}
+        payload = mock_client.post.await_args.kwargs["json"]
+        expected_data = base64.b64encode(b"\x89PNG image bytes").decode("ascii")
+        assert payload["params"]["attachments"] == [f"data:image/png;base64,{expected_data}"]
 
     @pytest.mark.asyncio
     async def test_rpc_raises_rate_limit_on_results_failure(self, monkeypatch):

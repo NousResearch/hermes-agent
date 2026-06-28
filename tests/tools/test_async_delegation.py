@@ -307,6 +307,8 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
 
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"
+    fake_child.model = "gpt-5.5"
+    fake_child.reasoning_config = {"enabled": True, "effort": "high"}
 
     gate = threading.Event()
 
@@ -315,7 +317,7 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
         return {
             "task_index": task_index, "status": "completed",
             "summary": f"done: {goal}", "api_calls": 1,
-            "duration_seconds": 0.1, "model": "m", "exit_reason": "completed",
+            "duration_seconds": 0.1, "exit_reason": "completed",
         }
 
     creds = {
@@ -353,6 +355,13 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert evt["type"] == "async_delegation"
     assert evt.get("is_batch") is True
     assert len(evt["results"]) == 3
+    assert evt["child_metadata"] == [
+        {"task_index": 0, "model": "gpt-5.5", "reasoning_effort": "high"},
+        {"task_index": 1, "model": "gpt-5.5", "reasoning_effort": "high"},
+        {"task_index": 2, "model": "gpt-5.5", "reasoning_effort": "high"},
+    ]
+    assert all(r["model"] == "gpt-5.5" for r in evt["results"])
+    assert all(r["reasoning_effort"] == "high" for r in evt["results"])
     summaries = sorted(r["summary"] for r in evt["results"])
     assert summaries == ["done: a", "done: b", "done: c"]
     # The consolidated notification names all three tasks in one block.
@@ -362,6 +371,46 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert "done: a" in text and "done: b" in text and "done: c" in text
     # No more events — it's a single combined completion, not N of them.
     assert _drain_one() is None
+
+
+def test_batch_formatter_renders_per_child_model_and_reasoning_metadata():
+    """Mixed routed async batches must not imply every child used child #1's model."""
+    def runner():
+        return {
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "explored"},
+                {"task_index": 1, "status": "completed", "summary": "applied"},
+                {"task_index": 2, "status": "completed", "summary": "verified"},
+            ],
+            "total_duration_seconds": 1.2,
+        }
+
+    res = ad.dispatch_async_delegation_batch(
+        goals=["explore", "apply", "verify"],
+        context=None,
+        toolsets=["terminal"],
+        role="leaf",
+        model="gpt-5.4-mini",
+        child_metadata=[
+            {"task_index": 0, "model": "gpt-5.4-mini", "reasoning_effort": "low"},
+            {"task_index": 1, "model": "gpt-5.5", "reasoning_effort": "high"},
+            {"task_index": 2, "model": "gpt-5.5", "reasoning_effort": "medium"},
+        ],
+        session_key="",
+        runner=runner,
+        max_async_children=3,
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["child_metadata"][1]["model"] == "gpt-5.5"
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "Models: mixed (gpt-5.4-mini, gpt-5.5)" in text
+    assert "TASK 1/3: explore  (status=completed, model=gpt-5.4-mini, reasoning=low)" in text
+    assert "TASK 2/3: apply  (status=completed, model=gpt-5.5, reasoning=high)" in text
+    assert "TASK 3/3: verify  (status=completed, model=gpt-5.5, reasoning=medium)" in text
 
 
 def test_model_dispatch_forces_background():

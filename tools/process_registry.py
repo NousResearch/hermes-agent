@@ -1917,6 +1917,18 @@ def _format_async_delegation(evt: dict) -> str:
     """
     import time as _time
 
+    def _meta_by_index(items: object) -> dict:
+        if not isinstance(items, list):
+            return {}
+        out = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("task_index")
+            if isinstance(idx, int):
+                out[idx] = item
+        return out
+
     deleg_id = evt.get("delegation_id", "unknown")
     goal = evt.get("goal", "") or ""
     context = evt.get("context")
@@ -1941,6 +1953,23 @@ def _format_async_delegation(evt: dict) -> str:
         goals = evt.get("goals") or []
         n = len(results) if results else len(goals)
         total_dur = evt.get("total_duration_seconds", duration)
+        child_meta = _meta_by_index(evt.get("child_metadata"))
+        for r in results:
+            if isinstance(r, dict) and isinstance(r.get("task_index"), int):
+                meta = child_meta.get(r["task_index"], {})
+                if meta.get("model") and not r.get("model"):
+                    r["model"] = meta["model"]
+                if meta.get("reasoning_effort") and not r.get("reasoning_effort"):
+                    r["reasoning_effort"] = meta["reasoning_effort"]
+        child_models = [
+            r.get("model")
+            for r in sorted(results, key=lambda x: x.get("task_index", 0))
+            if isinstance(r, dict) and r.get("model")
+        ]
+        unique_models = []
+        for m in child_models:
+            if m not in unique_models:
+                unique_models.append(m)
         lines = [
             f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
             f"A background fan-out of {n} subagent(s) you dispatched earlier "
@@ -1957,7 +1986,13 @@ def _format_async_delegation(evt: dict) -> str:
             lines.append(f"Context you provided: {context}")
         if toolsets:
             lines.append(f"Toolsets: {', '.join(toolsets)}")
-        lines.append(f"Role: {role}   Model: {model}   Total duration: {total_dur}s")
+        if len(unique_models) == 1:
+            model_part = f"Model: {unique_models[0]}"
+        elif len(unique_models) > 1:
+            model_part = f"Models: mixed ({', '.join(unique_models)})"
+        else:
+            model_part = f"Model: {model}"
+        lines.append(f"Role: {role}   {model_part}   Total duration: {total_dur}s")
         if error and not results:
             lines.append("--- ERROR ---")
             lines.append(f"The batch did not complete successfully: {error}")
@@ -1978,6 +2013,10 @@ def _format_async_delegation(evt: dict) -> str:
                 header += f", api_calls={r['api_calls']}"
             if r.get("duration_seconds") is not None:
                 header += f", {r['duration_seconds']}s"
+            if r.get("model"):
+                header += f", model={r['model']}"
+            if r.get("reasoning_effort"):
+                header += f", reasoning={r['reasoning_effort']}"
             header += ") ---"
             lines.append(header)
             if r_status in ("completed", "success") and r_summary:

@@ -230,6 +230,38 @@ def list_active_subagents() -> List[Dict[str, Any]]:
         ]
 
 
+
+
+def _reasoning_effort_label(reasoning_config: Any) -> Optional[str]:
+    """Return a non-secret, human-readable reasoning effort label."""
+    if not isinstance(reasoning_config, dict):
+        return None
+    effort = reasoning_config.get("effort")
+    if isinstance(effort, str) and effort.strip():
+        return effort.strip()
+    return None
+
+
+def _child_runtime_metadata(child: Any, task_index: int) -> Dict[str, Any]:
+    """Small dispatch/result metadata block safe to expose to the parent."""
+    meta: Dict[str, Any] = {"task_index": task_index}
+    model = getattr(child, "model", None)
+    if isinstance(model, str) and model.strip():
+        meta["model"] = model.strip()
+    effort = _reasoning_effort_label(getattr(child, "reasoning_config", None))
+    if effort:
+        meta["reasoning_effort"] = effort
+    return meta
+
+
+def _attach_child_runtime_metadata(entry: Dict[str, Any], child: Any, task_index: int) -> Dict[str, Any]:
+    """Annotate one child result with model/reasoning metadata if absent."""
+    meta = _child_runtime_metadata(child, task_index)
+    for key in ("model", "reasoning_effort"):
+        if meta.get(key) and not entry.get(key):
+            entry[key] = meta[key]
+    return entry
+
 def _extract_output_tail(
     result: Dict[str, Any],
     *,
@@ -2544,6 +2576,7 @@ def delegate_task(
             # Single task -- run directly (no thread pool overhead)
             _i, _t, child = children[0]
             result = _run_single_child(_i, _t["goal"], child, parent_agent)
+            _attach_child_runtime_metadata(result, child, _i)
             results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines
@@ -2606,6 +2639,9 @@ def delegate_task(
                                         _child_by_index.get(idx), "_delegate_role", None
                                     ),
                                 }
+                            _attach_child_runtime_metadata(
+                                entry, _child_by_index.get(idx), idx
+                            )
                             results.append(entry)
                             completed_count += 1
                         break
@@ -2631,6 +2667,11 @@ def delegate_task(
                                     _child_by_index.get(idx), "_delegate_role", None
                                 ),
                             }
+                        else:
+                            idx = entry.get("task_index", futures[future])
+                        _attach_child_runtime_metadata(
+                            entry, _child_by_index.get(idx), idx
+                        )
                         results.append(entry)
                         completed_count += 1
 
@@ -2769,6 +2810,9 @@ def delegate_task(
         return {
             "results": results,
             "total_duration_seconds": total_duration,
+            "child_metadata": [
+                _child_runtime_metadata(child, i) for i, _, child in children
+            ],
         }
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
@@ -2842,12 +2886,16 @@ def delegate_task(
                     pass
 
         _goals = [t["goal"] for t in task_list]
+        _child_metadata = [
+            _child_runtime_metadata(_child, _i) for _i, _, _child in children
+        ]
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
             toolsets=toolsets,
             role=top_role,
             model=getattr(_child_agents[0], "model", None) if _child_agents else None,
+            child_metadata=_child_metadata,
             session_key=_session_key,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,

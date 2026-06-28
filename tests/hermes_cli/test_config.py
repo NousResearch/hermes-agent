@@ -655,6 +655,82 @@ class TestSanitizeEnvLines:
             fixes = sanitize_env_file()
             assert fixes == 0
 
+    def test_removes_stale_placeholder_known_key(self):
+        """A known key set to *** is removed."""
+        lines = [
+            "OPENAI_API_KEY=sk-xxx\n",
+            "ANTHROPIC_API_KEY=***\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == ["OPENAI_API_KEY=sk-xxx\n"]
+
+    def test_removes_stale_placeholder_unknown_key(self):
+        """An unknown key set to *** is also removed — *** is never valid."""
+        lines = [
+            "OPENAI_API_KEY=sk-xxx\n",
+            "CUSTOM_SECRET=***\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == ["OPENAI_API_KEY=sk-xxx\n"]
+
+    def test_removes_stale_placeholder_double_quoted(self):
+        """A placeholder wrapped in double quotes is removed."""
+        lines = ['OPENAI_API_KEY="***"\n']
+        result = _sanitize_env_lines(lines)
+        assert result == []
+
+    def test_removes_stale_placeholder_single_quoted(self):
+        """A placeholder wrapped in single quotes is removed."""
+        lines = ["OPENAI_API_KEY='***'\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == []
+
+    def test_removes_stale_placeholder_with_whitespace(self):
+        """A placeholder with surrounding whitespace is removed."""
+        lines = ["OPENAI_API_KEY = *** \n"]
+        result = _sanitize_env_lines(lines)
+        assert result == []
+
+    def test_preserves_real_value_containing_stars(self):
+        """A real value that happens to contain *** is preserved."""
+        lines = ["MY_TOKEN=abc***def\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["MY_TOKEN=abc***def\n"]
+
+    def test_preserves_value_with_multiple_equals(self):
+        """A value with = before *** is preserved (not a placeholder)."""
+        lines = ["MY_TOKEN=key=***\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["MY_TOKEN=key=***\n"]
+
+    def test_preserves_commented_placeholder(self):
+        """A commented-out placeholder line is preserved (not removed)."""
+        lines = ["# ANTHROPIC_API_KEY=***\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["# ANTHROPIC_API_KEY=***\n"]
+
+    def test_removes_placeholder_after_concatenation_split(self):
+        """A placeholder that appears after concatenation splitting is removed."""
+        lines = ["OPENAI_API_KEY=sk-xxxANTHROPIC_API_KEY=***\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["OPENAI_API_KEY=sk-xxx\n"]
+
+    def test_placeholder_removal_count_in_sanitize_env_file(self, tmp_path):
+        """sanitize_env_file counts placeholder removals as fixes."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "OPENAI_API_KEY=sk-real\n"
+            "ANTHROPIC_API_KEY=***\n"
+            "TAVILY_API_KEY=***\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            fixes = sanitize_env_file()
+            assert fixes >= 2  # at least 2 placeholder removals
+            content = env_file.read_text()
+            assert "ANTHROPIC_API_KEY" not in content
+            assert "TAVILY_API_KEY" not in content
+            assert "OPENAI_API_KEY=sk-real" in content
+
 
 class TestOptionalEnvVarsRegistry:
     """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""

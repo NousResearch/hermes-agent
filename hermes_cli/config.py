@@ -6530,10 +6530,14 @@ def _sanitize_env_lines(lines: list) -> list:
     1. Concatenated KEY=VALUE pairs on a single line (missing newline between
        entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
     2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
+       Any key set to exactly ``***`` (with or without surrounding quotes)
+       is discarded — ``***`` is never a valid credential value.
 
-    Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
-    split on real Hermes env var names, avoiding false positives from values
-    that happen to contain uppercase text with ``=``.
+    The concatenation split uses a known-keys set (OPTIONAL_ENV_VARS +
+    _EXTRA_ENV_KEYS) so we only split on real Hermes env var names, avoiding
+    false positives from values that happen to contain uppercase text with
+    ``=``.  The placeholder removal is key-agnostic because ``***`` is
+    unambiguously a placeholder regardless of the key name.
     """
     # Build the known keys set lazily from OPTIONAL_ENV_VARS + extras.
     # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
@@ -6580,7 +6584,26 @@ def _sanitize_env_lines(lines: list) -> list:
         else:
             sanitized.append(stripped + "\n")
 
-    return sanitized
+    # Second pass: remove stale KEY=*** placeholder entries.
+    # ``***`` is never a valid credential value, so any key set to exactly
+    # ``***`` (with or without surrounding quotes) is a leftover from an
+    # incomplete setup run and should be discarded.
+    filtered: list[str] = []
+    for line in sanitized:
+        stripped = line.strip()
+        # Preserve comments — even if they contain a placeholder pattern,
+        # they are inert and should not be removed.
+        if stripped.startswith("#"):
+            filtered.append(line)
+            continue
+        if "=" in stripped:
+            key, _, value = stripped.partition("=")
+            normalised = value.strip().strip("\"'")
+            if normalised == "***":
+                continue
+        filtered.append(line)
+
+    return filtered
 
 
 def sanitize_env_file() -> int:

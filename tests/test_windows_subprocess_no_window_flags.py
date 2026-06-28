@@ -309,7 +309,6 @@ def test_checkpoint_manager_git_hides_windows(monkeypatch):
         captured.append((cmd, kwargs))
         return _Completed(stdout="clean\n")
 
-    monkeypatch.setattr(checkpoint_manager, "IS_WINDOWS", True)
     monkeypatch.setattr(checkpoint_manager, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
     monkeypatch.setattr(checkpoint_manager.subprocess, "run", fake_run)
 
@@ -328,7 +327,6 @@ def test_skills_hub_gh_token_hides_windows(monkeypatch):
         captured.append((cmd, kwargs))
         return _Completed(stdout="gho_from_cli\n")
 
-    monkeypatch.setattr(skills_hub, "IS_WINDOWS", True)
     monkeypatch.setattr(skills_hub, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
     monkeypatch.setattr(skills_hub.subprocess, "run", fake_run)
 

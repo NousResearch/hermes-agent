@@ -1,8 +1,8 @@
 """Regression for #36908: the repeated-compression warning must reach the
 TUI / gateway, not just CLI stdout.
 
-When a session is compressed >= 2 times, ``compress_context`` warns that
-accuracy may degrade. That warning used to go through ``_vprint`` (stdout
+When a session is compressed >= warn_after_compressions times, ``compress_context``
+warns that accuracy may degrade. That warning used to go through ``_vprint`` (stdout
 only), so the Ink TUI / Telegram / Discord never saw it — unlike the two
 other compression warnings in the same module, which route through
 ``_emit_status`` (and store ``_compression_warning`` for late-bound
@@ -18,7 +18,13 @@ from unittest.mock import MagicMock, patch
 from hermes_state import SessionDB
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str, compression_count: int):
+def _build_agent_with_db(
+    db: SessionDB,
+    session_id: str,
+    compression_count: int,
+    *,
+    warn_after_compressions: int = 2,
+):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -46,7 +52,20 @@ def _build_agent_with_db(db: SessionDB, session_id: str, compression_count: int)
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
+    agent.compression_warn_after_compressions = warn_after_compressions
     return agent
+
+
+def _run_compress(agent) -> list[str]:
+    emitted: list[str] = []
+    agent._emit_status = lambda message: emitted.append(message)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+    return emitted
+
+
+def _has_repeated_compression_warning(emitted: list[str]) -> bool:
+    return any("compressed" in m.lower() and "times" in m.lower() for m in emitted)
 
 
 def test_repeated_compression_warning_routed_through_emit_status(tmp_path: Path) -> None:
@@ -56,12 +75,7 @@ def test_repeated_compression_warning_routed_through_emit_status(tmp_path: Path)
 
     # compression_count == 2 → the "compressed N times" warning should fire.
     agent = _build_agent_with_db(db, sid, compression_count=2)
-
-    emitted: list[str] = []
-    agent._emit_status = lambda message: emitted.append(message)
-
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-    agent._compress_context(messages, "sys", approx_tokens=120_000)
+    emitted = _run_compress(agent)
 
     # The warning reached the gateway-aware channel...
     assert any("compressed 2 times" in m.lower() for m in emitted), (
@@ -78,10 +92,45 @@ def test_no_warning_below_threshold(tmp_path: Path) -> None:
 
     # compression_count == 1 → no repeated-compression warning.
     agent = _build_agent_with_db(db, sid, compression_count=1)
-    emitted: list[str] = []
-    agent._emit_status = lambda message: emitted.append(message)
+    emitted = _run_compress(agent)
 
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-    agent._compress_context(messages, "sys", approx_tokens=120_000)
+    assert not _has_repeated_compression_warning(emitted)
 
-    assert not any("compressed" in m.lower() and "times" in m.lower() for m in emitted)
+
+def test_custom_warn_after_compressions_defers_warning(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "PARENT_53876_DEFER"
+    db.create_session(sid, source="cli")
+
+    agent = _build_agent_with_db(
+        db, sid, compression_count=4, warn_after_compressions=5
+    )
+    emitted = _run_compress(agent)
+
+    assert not _has_repeated_compression_warning(emitted)
+
+
+def test_custom_warn_after_compressions_fires_at_threshold(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "PARENT_53876_FIRE"
+    db.create_session(sid, source="cli")
+
+    agent = _build_agent_with_db(
+        db, sid, compression_count=5, warn_after_compressions=5
+    )
+    emitted = _run_compress(agent)
+
+    assert any("compressed 5 times" in m.lower() for m in emitted)
+
+
+def test_warn_after_compressions_zero_disables_warning(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "PARENT_53876_OFF"
+    db.create_session(sid, source="cli")
+
+    agent = _build_agent_with_db(
+        db, sid, compression_count=99, warn_after_compressions=0
+    )
+    emitted = _run_compress(agent)
+
+    assert not _has_repeated_compression_warning(emitted)

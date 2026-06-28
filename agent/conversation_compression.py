@@ -904,7 +904,8 @@ def compress_context(
         # storing it on _compression_warning lets replay_compression_warning
         # re-deliver it once a late-bound gateway status_callback is wired (#36908).
         _cc = agent.context_compressor.compression_count
-        if _cc >= 2:
+        _warn_after = int(getattr(agent, "compression_warn_after_compressions", 2) or 0)
+        if _warn_after > 0 and _cc >= _warn_after:
             _cc_msg = (
                 f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
                 f"accuracy may degrade. Consider /new to start fresh."

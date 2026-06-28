@@ -1463,6 +1463,9 @@ def init_agent(
     compression_in_place = is_truthy_value(
         _compression_cfg.get("in_place"), default=False
     )
+    compression_warn_after_compressions = max(
+        0, int(_compression_cfg.get("warn_after_compressions", 2))
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1711,6 +1714,7 @@ def init_agent(
             pass
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
+    agent.compression_warn_after_compressions = compression_warn_after_compressions
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

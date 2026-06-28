@@ -1128,14 +1128,21 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
+        # Initial-prompt: config.yaml (stt.local.initial_prompt) — biases faster-whisper
+        # vocabulary toward domain-specific terms (product names, technical jargon, etc.).
+        # See: https://github.com/SYSTRAN/faster-whisper#initial_prompt
+        stt_local_cfg = _load_stt_config().get("local", {})
         _forced_lang = (
-            _load_stt_config().get("local", {}).get("language")
+            stt_local_cfg.get("language")
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
             or None
         )
+        _initial_prompt = stt_local_cfg.get("initial_prompt") or None
         transcribe_kwargs = {"beam_size": 5}
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
+        if _initial_prompt:
+            transcribe_kwargs["initial_prompt"] = _initial_prompt
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)

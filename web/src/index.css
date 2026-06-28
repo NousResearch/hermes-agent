@@ -559,3 +559,184 @@ a[role="button"],
 .inline-flex {
   background-image: linear-gradient(135deg, rgba(143, 134, 184, 0.08), rgba(63, 124, 255, 0.04)) !important;
 }
+
+
+/* ------------------------------------------------------------------ */
+/* Amiana signature underglow: shared cinematic border-bloom layer.    */
+/* A pure lighting layer: thin bottom streak, blurred upward bloom,    */
+/* and glass reflection. Does not move layout, data, or controls.      */
+/* ------------------------------------------------------------------ */
+
+@keyframes amiana-underglow-sweep {
+  0% {
+    background-position: -72% 100%, -82% 100%, 0 0;
+    opacity: 0;
+  }
+  8% {
+    opacity: 0.72;
+  }
+  52% {
+    opacity: 0.95;
+  }
+  86% {
+    opacity: 0.62;
+  }
+  100% {
+    background-position: 172% 100%, 182% 100%, 0 0;
+    opacity: 0;
+  }
+}
+
+@keyframes amiana-glass-refraction {
+  0%, 100% {
+    box-shadow:
+      0 22px 70px rgba(0, 0, 0, 0.44),
+      0 0 38px rgba(63, 124, 255, 0.07),
+      inset 0 1px 0 rgba(247, 245, 255, 0.09),
+      inset 0 -1px 0 rgba(126, 220, 255, 0.06),
+      inset -1px -1px 0 rgba(9, 11, 24, 0.52);
+  }
+  50% {
+    box-shadow:
+      0 24px 74px rgba(0, 0, 0, 0.48),
+      0 0 46px rgba(63, 124, 255, 0.11),
+      inset 0 1px 0 rgba(247, 245, 255, 0.11),
+      inset 0 -1px 0 rgba(126, 220, 255, 0.12),
+      inset -1px -1px 0 rgba(9, 11, 24, 0.52);
+  }
+}
+
+.amiana-underglow,
+.bg-card,
+.bg-popover,
+.bg-secondary,
+.bg-muted,
+.bg-background-base\/80,
+.bg-background-base\/90,
+.bg-background-base\/95,
+.border-midground\/15,
+[role="dialog"] {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.amiana-underglow::before,
+.bg-card::before,
+.bg-popover::before,
+.bg-secondary::before,
+.bg-muted::before,
+.bg-background-base\/80::before,
+.bg-background-base\/90::before,
+.bg-background-base\/95::before,
+.border-midground\/15::before,
+[role="dialog"]::before {
+  content: "";
+  position: absolute;
+  inset: auto -18% -22% -18%;
+  height: 46%;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    linear-gradient(90deg,
+      transparent 0%,
+      rgba(63, 124, 255, 0.04) 18%,
+      rgba(63, 124, 255, 0.5) 38%,
+      rgba(126, 220, 255, 0.88) 48%,
+      rgba(208, 92, 255, 0.58) 58%,
+      rgba(155, 92, 255, 0.14) 72%,
+      transparent 100%) bottom / 44% 3px no-repeat,
+    radial-gradient(ellipse at center bottom,
+      rgba(126, 220, 255, 0.24) 0%,
+      rgba(63, 124, 255, 0.18) 24%,
+      rgba(155, 92, 255, 0.14) 46%,
+      rgba(208, 92, 255, 0.08) 60%,
+      transparent 74%) bottom / 52% 100% no-repeat,
+    linear-gradient(180deg,
+      transparent 0%,
+      rgba(126, 220, 255, 0.035) 48%,
+      rgba(155, 92, 255, 0.055) 100%);
+  filter: blur(10px) saturate(130%);
+  mix-blend-mode: screen;
+  opacity: 0.78;
+  animation: amiana-underglow-sweep 14s cubic-bezier(0.42, 0, 0.18, 1) infinite;
+}
+
+.amiana-underglow > *,
+.bg-card > *,
+.bg-popover > *,
+.bg-secondary > *,
+.bg-muted > *,
+.bg-background-base\/80 > *,
+.bg-background-base\/90 > *,
+.bg-background-base\/95 > *,
+.border-midground\/15 > *,
+[role="dialog"] > * {
+  position: relative;
+  z-index: 1;
+}
+
+.bg-background-base\/80,
+.bg-background-base\/90,
+.bg-background-base\/95,
+.border-midground\/15 {
+  animation: amiana-glass-refraction 14s ease-in-out infinite;
+}
+
+.amiana-underglow[data-underglow="aurora-cyan"]::before {
+  background:
+    linear-gradient(90deg, transparent, rgba(63, 124, 255, 0.42), rgba(126, 220, 255, 0.9), rgba(184, 177, 214, 0.34), transparent) bottom / 44% 3px no-repeat,
+    radial-gradient(ellipse at center bottom, rgba(126, 220, 255, 0.28), rgba(63, 124, 255, 0.16), transparent 72%) bottom / 52% 100% no-repeat;
+}
+
+.amiana-underglow[data-underglow="plasma-violet"]::before {
+  background:
+    linear-gradient(90deg, transparent, rgba(63, 124, 255, 0.24), rgba(155, 92, 255, 0.86), rgba(208, 92, 255, 0.58), transparent) bottom / 44% 3px no-repeat,
+    radial-gradient(ellipse at center bottom, rgba(208, 92, 255, 0.22), rgba(155, 92, 255, 0.18), transparent 72%) bottom / 52% 100% no-repeat;
+}
+
+.amiana-underglow[data-underglow="liquid-neon"]::before {
+  filter: blur(14px) saturate(145%);
+  animation-duration: 18s;
+  background:
+    linear-gradient(90deg, transparent, rgba(155, 92, 255, 0.22), rgba(126, 220, 255, 0.72), rgba(63, 124, 255, 0.38), rgba(208, 92, 255, 0.24), transparent) bottom / 52% 4px no-repeat,
+    radial-gradient(ellipse at center bottom, rgba(126, 220, 255, 0.2), rgba(155, 92, 255, 0.16), transparent 76%) bottom / 58% 100% no-repeat;
+}
+
+.amiana-underglow[data-underglow="holographic-scan"]::before {
+  filter: blur(5px) saturate(125%);
+  animation-duration: 12s;
+  background:
+    linear-gradient(90deg, transparent, rgba(63, 124, 255, 0.18), rgba(126, 220, 255, 0.95), rgba(247, 245, 255, 0.42), transparent) bottom / 34% 2px no-repeat,
+    radial-gradient(ellipse at center bottom, rgba(63, 124, 255, 0.14), rgba(126, 220, 255, 0.08), transparent 70%) bottom / 42% 72% no-repeat;
+}
+
+.amiana-underglow[data-underglow="ember-signal"]::before {
+  background:
+    linear-gradient(90deg, transparent, rgba(155, 92, 255, 0.18), rgba(63, 124, 255, 0.42), rgba(244, 122, 53, 0.72), rgba(255, 77, 94, 0.26), transparent) bottom / 44% 3px no-repeat,
+    radial-gradient(ellipse at center bottom, rgba(244, 122, 53, 0.2), rgba(155, 92, 255, 0.14), transparent 72%) bottom / 52% 100% no-repeat;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .amiana-underglow::before,
+  .bg-card::before,
+  .bg-popover::before,
+  .bg-secondary::before,
+  .bg-muted::before,
+  .bg-background-base\/80::before,
+  .bg-background-base\/90::before,
+  .bg-background-base\/95::before,
+  .border-midground\/15::before,
+  [role="dialog"]::before {
+    animation: none;
+    background-position: 50% 100%, 50% 100%, 0 0;
+    opacity: 0.42;
+  }
+
+  .bg-background-base\/80,
+  .bg-background-base\/90,
+  .bg-background-base\/95,
+  .border-midground\/15 {
+    animation: none;
+  }
+}

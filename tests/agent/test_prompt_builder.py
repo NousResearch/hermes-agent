@@ -1018,6 +1018,19 @@ class TestPromptBuilderConstants:
         hint = PLATFORM_HINTS["whatsapp_cloud"]
         assert "MEDIA:" in hint
 
+    def test_markdown_converting_platform_hints_do_not_forbid_markdown(self):
+        """#12224 — WhatsApp (Baileys) and Signal adapters actively convert
+        markdown to native formatting (gateway/platforms/whatsapp_common.py
+        format_message + signal_format.markdown_to_signal: bold, italic,
+        strikethrough, headers, bullets). Their hints previously told the
+        agent "do not use markdown", which made it strip bullets/bold the
+        adapter would have rendered. The hint must affirm markdown, not
+        forbid it."""
+        for key in ("whatsapp", "signal"):
+            hint = PLATFORM_HINTS[key]
+            assert "do not use markdown" not in hint.lower()
+            assert "markdown" in hint.lower()
+
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
         # gateway platforms. On the CLI they render as literal text and
@@ -1205,6 +1218,46 @@ class TestEnvironmentHints:
         assert "Terminal backend: modal" in result
         assert "Linux 6.8.0" in result
         assert "/workspace" in result
+
+    def test_probe_remote_backend_imports_real_factory(self, monkeypatch):
+        """Regression for #53667: the probe imported a nonexistent
+        ``get_environment`` from ``tools.environments`` and always died with
+        ``ImportError: cannot import name 'get_environment'`` (cosmetic — it
+        only dropped the live backend description to a static fallback). The
+        real factory is ``_create_environment`` in ``tools.terminal_tool``;
+        the probe must import and call THAT, returning a parsed line instead
+        of None."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/root\n"
+                        "cwd=/workspace\nuser=root\n"
+                    ),
+                }
+
+        created = {}
+
+        def _fake_create_environment(*, env_type, **kwargs):
+            created["env_type"] = env_type
+            return _FakeEnv()
+
+        # Patch the REAL factory in tools.terminal_tool — the probe imports it
+        # locally, so the import itself must succeed (the bug was here).
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
+
+        line = _pb._probe_remote_backend("docker")
+        assert created.get("env_type") == "docker"
+        assert line is not None
+        assert "Linux 6.8.0" in line
+        assert "root" in line
 
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""

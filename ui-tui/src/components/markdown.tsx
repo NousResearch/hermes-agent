@@ -213,7 +213,9 @@ const TABLE_PADDING_LEFT = 2 // paddingLeft={2} on the outer <Box>
 
 const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   // Guard: empty table
-  if (rows.length === 0 || rows[0]!.length === 0) {return null}
+  if (rows.length === 0 || rows[0]!.length === 0) {
+    return null
+  }
 
   const cellDisplayWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
 
@@ -222,7 +224,9 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     const text = stripInlineMarkup(raw)
     const words = text.split(/\s+/).filter(w => w.length > 0)
 
-    if (words.length === 0) {return MIN_COL_WIDTH}
+    if (words.length === 0) {
+      return MIN_COL_WIDTH
+    }
 
     return Math.max(...words.map(w => stringWidth(w)), MIN_COL_WIDTH)
   }
@@ -231,7 +235,9 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
 
   // Normalize ragged rows: ensure every row has exactly numCols cells
   const normalizedRows = rows.map(row => {
-    if (row.length >= numCols) {return row.slice(0, numCols)}
+    if (row.length >= numCols) {
+      return row.slice(0, numCols)
+    }
 
     return [...row, ...Array<string>(numCols - row.length).fill('')]
   })
@@ -274,19 +280,19 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     if (totalOverflow === 0) {
       columnWidths = [...minWidths]
     } else {
-      const rawAlloc = minWidths.map((min, i) =>
-        min + (overflows[i]! / totalOverflow) * extraSpace
-      )
+      const rawAlloc = minWidths.map((min, i) => min + (overflows[i]! / totalOverflow) * extraSpace)
 
       columnWidths = rawAlloc.map(v => Math.floor(v))
       // Distribute rounding remainders to columns with largest fractional part
       let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
 
-      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
-        .sort((a, b) => b.frac - a.frac)
+      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac)
 
       for (const { i } of fracs) {
-        if (remainder <= 0) {break}
+        if (remainder <= 0) {
+          break
+        }
+
         columnWidths[i]!++
         remainder--
       }
@@ -301,34 +307,39 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     columnWidths = rawAlloc.map(v => Math.max(Math.floor(v), MIN_COL_WIDTH))
     let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
 
-    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
-      .sort((a, b) => b.frac - a.frac)
+    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac)
 
     for (const { i } of fracs) {
-      if (remainder <= 0) {break}
+      if (remainder <= 0) {
+        break
+      }
+
       columnWidths[i]!++
       remainder--
     }
   }
 
   // Grapheme-safe hard-break: prefer Intl.Segmenter, fall back to code-point split
-  const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl
-    ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
-    : null
+  const segmenter =
+    typeof Intl !== 'undefined' && 'Segmenter' in Intl
+      ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
+      : null
 
   const graphemes = (s: string): string[] =>
-    segmenter
-      ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment)
-      : [...s]
+    segmenter ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment) : [...s]
 
   // Word-wrap plain text to fit within `width` display columns.
   // Operates on stripped text for correct width measurement.
   const wrapCell = (raw: string, width: number, hard: boolean): string[] => {
     const text = stripInlineMarkup(raw)
 
-    if (width <= 0) {return [text]}
+    if (width <= 0) {
+      return [text]
+    }
 
-    if (stringWidth(text) <= width) {return [text]}
+    if (stringWidth(text) <= width) {
+      return [text]
+    }
 
     const words = text.split(/\s+/).filter(w => w.length > 0)
     const lines: string[] = []
@@ -366,7 +377,9 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
       }
     }
 
-    if (current) {lines.push(current)}
+    if (current) {
+      lines.push(current)
+    }
 
     return lines.length > 0 ? lines : ['']
   }
@@ -380,27 +393,27 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   // See free-code/src/components/MarkdownTable.tsx L44-L62 for approach.
   if (!needsWrap) {
     const buildRowString = (row: string[]): string =>
-      row.map((cell, ci) => {
-        const text = stripInlineMarkup(cell)
-        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
-        const gap = ci < numCols - 1 ? '  ' : ''
+      row
+        .map((cell, ci) => {
+          const text = stripInlineMarkup(cell)
+          const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
+          const gap = ci < numCols - 1 ? '  ' : ''
 
-        return text + pad + gap
-      }).join('')
+          return text + pad + gap
+        })
+        .join('')
 
     return (
       <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
         {normalizedRows.map((row, ri) => (
           <Fragment key={ri}>
-            <Text
-              bold={ri === 0}
-              color={ri === 0 ? t.color.accent : undefined}
-              wrap="truncate-end"
-            >
+            <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} wrap="truncate-end">
               {buildRowString(row)}
             </Text>
             {ri === 0 && normalizedRows.length > 1 ? (
-              <Text color={t.color.muted} dimColor wrap="truncate-end">{sep}</Text>
+              <Text color={t.color.muted} dimColor wrap="truncate-end">
+                {sep}
+              </Text>
             ) : null}
           </Fragment>
         ))}
@@ -412,9 +425,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   type LineEntry = { text: string; kind: 'header' | 'separator' | 'body' }
 
   const buildRowLines = (row: string[]): string[] => {
-    const cellLines = row.map((cell, ci) =>
-      wrapCell(cell, columnWidths[ci]!, isHard)
-    )
+    const cellLines = row.map((cell, ci) => wrapCell(cell, columnWidths[ci]!, isHard))
 
     const maxLines = Math.max(...cellLines.map(l => l.length), 1)
 
@@ -429,7 +440,9 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
         const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(cellText)))
         line += cellText + pad
 
-        if (ci < numCols - 1) {line += '  '}
+        if (ci < numCols - 1) {
+          line += '  '
+        }
       }
 
       result.push(line)
@@ -442,11 +455,13 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   const allEntries: LineEntry[] = []
   let tallestBodyRow = 0
   normalizedRows.forEach((row, ri) => {
-    const kind = ri === 0 ? 'header' as const : 'body' as const
+    const kind = ri === 0 ? ('header' as const) : ('body' as const)
     const rowLines = buildRowLines(row)
     rowLines.forEach(text => allEntries.push({ text, kind }))
 
-    if (ri > 0) {tallestBodyRow = Math.max(tallestBodyRow, rowLines.length)}
+    if (ri > 0) {
+      tallestBodyRow = Math.max(tallestBodyRow, rowLines.length)
+    }
 
     if (ri === 0 && normalizedRows.length > 1) {
       allEntries.push({ text: sep, kind: 'separator' })
@@ -483,7 +498,9 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
         {dataRows.map((row, ri) => (
           <Fragment key={ri}>
             {ri > 0 ? (
-              <Text color={t.color.muted} dimColor>{'─'.repeat(sepWidth)}</Text>
+              <Text color={t.color.muted} dimColor>
+                {'─'.repeat(sepWidth)}
+              </Text>
             ) : null}
             {headers.map((header, ci) => {
               const cell = row[ci] ?? ''
@@ -491,8 +508,10 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
 
               return (
                 <Text key={ci} wrap="wrap-trim">
-                  <Text bold color={t.color.accent}>{label}:</Text>
-                  {' '}{stripInlineMarkup(cell)}
+                  <Text bold color={t.color.accent}>
+                    {label}:
+                  </Text>{' '}
+                  {stripInlineMarkup(cell)}
                 </Text>
               )
             })}

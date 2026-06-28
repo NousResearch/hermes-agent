@@ -390,6 +390,57 @@ class SkillSource(ABC):
 # GitHub source adapter
 # ---------------------------------------------------------------------------
 
+# Map a GitHub tap repo (owner/repo) to the human-facing provider label used
+# in the docs-site catalog (website/scripts/extract-skills.py::GITHUB_TAP_LABELS).
+# The runtime index collapses every GitHub tap into source="github"; stamping
+# this provider label onto each skill's ``extra`` keeps the per-tap identity
+# (NVIDIA / OpenAI / Anthropic / HuggingFace / gstack / ...) searchable and
+# filterable at the CLI without disturbing the source="github" dedup / floor /
+# index-skip logic that keys off the bare source id.
+GITHUB_TAP_PROVIDERS = {
+    "openai/skills": "OpenAI",
+    "anthropics/skills": "Anthropic",
+    "huggingface/skills": "HuggingFace",
+    "nvidia/skills": "NVIDIA",
+    "voltagent/awesome-agent-skills": "VoltAgent",
+    "garrytan/gstack": "gstack",
+    "minimax-ai/cli": "MiniMax",
+}
+
+
+def github_provider_for(repo: str) -> Optional[str]:
+    """Return the provider label for a GitHub tap repo, or None.
+
+    ``repo`` is ``owner/repo``; matched case-insensitively so ``NVIDIA/skills``
+    and ``nvidia/skills`` both resolve to ``"NVIDIA"``.
+    """
+    if not repo:
+        return None
+    return GITHUB_TAP_PROVIDERS.get(repo.strip().lower())
+
+
+# Lowercased set of accepted ``--source`` provider filters. These are not real
+# source ids — they narrow the merged results to GitHub-tap skills carrying the
+# matching ``extra.provider`` label (see ``_filter_results_by_provider``).
+_PROVIDER_FILTER_VALUES = frozenset(v.lower() for v in GITHUB_TAP_PROVIDERS.values())
+
+
+def _filter_results_by_provider(
+    results: List["SkillMeta"], provider: str
+) -> List["SkillMeta"]:
+    """Keep only results whose ``extra.provider`` matches ``provider``.
+
+    An explicit provider filter (e.g. ``--source nvidia``) means "show me that
+    provider's skills" — so it narrows to exactly those, without injecting the
+    official catalog the unfiltered browse/search would lead with.
+    """
+    want = provider.strip().lower()
+    return [
+        r for r in results
+        if str((r.extra or {}).get("provider", "")).lower() == want
+    ]
+
+
 class GitHubSource(SkillSource):
     """Fetch skills from GitHub repos via the Contents API."""
 
@@ -530,6 +581,11 @@ class GitHubSource(SkillSource):
             raw_tags = fm.get("tags", [])
             tags = raw_tags if isinstance(raw_tags, list) else []
 
+        provider = github_provider_for(repo)
+        extra: Dict[str, Any] = {}
+        if provider:
+            extra["provider"] = provider
+
         return SkillMeta(
             name=skill_name,
             description=str(description),
@@ -539,6 +595,7 @@ class GitHubSource(SkillSource):
             repo=repo,
             path=skill_path,
             tags=[str(t) for t in tags],
+            extra=extra,
         )
 
     # -- Internal helpers --
@@ -3626,25 +3683,58 @@ class HermesIndexSource(SkillSource):
         return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
-        """Search the cached index.  Zero API calls."""
+        """Search the cached index.  Zero API calls.
+
+        Matches against name, description, tags, identifier, and the per-tap
+        ``extra.provider`` label (so a query like ``nvidia`` surfaces the
+        ``NVIDIA/skills/...`` entries even though their ``source`` is the bare
+        ``github``).  Results are scored and ranked (exact name > name prefix >
+        whole-word > substring) rather than returned in raw index order and
+        truncated at the first ``limit`` hits — that earlier break-at-limit
+        behaviour returned an arbitrary file-order slice and buried the most
+        relevant skills.
+        """
         index = self._ensure_loaded()
         skills = index.get("skills", [])
         if not skills:
             return []
 
         if not query.strip():
-            # No query — return featured/popular
+            # No query — return featured/popular (index order)
             return [self._to_meta(s) for s in skills[:limit]]
 
         query_lower = query.lower()
-        results: List[SkillMeta] = []
-        for s in skills:
-            searchable = f"{s.get('name', '')} {s.get('description', '')} {' '.join(s.get('tags', []))}".lower()
-            if query_lower in searchable:
-                results.append(self._to_meta(s))
-                if len(results) >= limit:
-                    break
-        return results
+        scored: List[Tuple[int, int, dict]] = []
+        for i, s in enumerate(skills):
+            name = str(s.get("name", "")).lower()
+            provider = str((s.get("extra") or {}).get("provider", "")).lower()
+            haystack = " ".join([
+                name,
+                str(s.get("description", "")).lower(),
+                " ".join(str(t).lower() for t in s.get("tags", [])),
+                str(s.get("identifier", "")).lower(),
+                provider,
+            ])
+            if query_lower not in haystack:
+                continue
+            # Lower score sorts first.
+            if name == query_lower:
+                score = 0
+            elif name.startswith(query_lower):
+                score = 1
+            elif provider == query_lower:
+                score = 2
+            elif query_lower in name.split() or query_lower in provider.split():
+                score = 3
+            elif query_lower in name:
+                score = 4
+            else:
+                score = 5
+            # i (original index order) is the stable tiebreaker.
+            scored.append((score, i, s))
+
+        scored.sort(key=lambda x: (x[0], x[1]))
+        return [self._to_meta(s) for _, _, s in scored[:limit]]
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         """Fetch a skill using the resolved path from the index.
@@ -3791,6 +3881,15 @@ def parallel_search_sources(
 
     per_source_limits = per_source_limits or {}
 
+    # A provider filter (e.g. "nvidia", "openai") targets GitHub-tap skills
+    # that the runtime index stores under source="github" with an
+    # ``extra.provider`` label. It is NOT a real source id, so source-level
+    # selection must treat it like "all" (the index / github source carries
+    # the data); the per-provider narrowing happens downstream on the merged
+    # results (see ``_filter_results_by_provider``).
+    _provider_filter = source_filter.strip().lower() in _PROVIDER_FILTER_VALUES
+    _effective_filter = "all" if _provider_filter else source_filter
+
     active: List[SkillSource] = []
     # When the centralized index is available and the user hasn't filtered
     # to a specific source, skip external API sources (github, skills-sh,
@@ -3799,7 +3898,7 @@ def parallel_search_sources(
     _index_available = False
     _api_source_ids = frozenset({"github", "skills-sh", "clawhub",
                                   "claude-marketplace", "lobehub", "well-known"})
-    if source_filter == "all":
+    if _effective_filter == "all":
         for src in sources:
             if (src.source_id() == "hermes-index"
                     and getattr(src, "is_available", False)):
@@ -3808,7 +3907,7 @@ def parallel_search_sources(
 
     for src in sources:
         sid = src.source_id()
-        if source_filter != "all" and sid != source_filter and sid != "official":
+        if _effective_filter != "all" and sid != _effective_filter and sid != "official":
             continue
         # Skip external API sources when the index covers them
         if _index_available and sid in _api_source_ids:
@@ -3872,6 +3971,12 @@ def unified_search(query: str, sources: List[SkillSource],
         source_filter=source_filter,
         overall_timeout=30,
     )
+
+    # A provider filter (nvidia/openai/...) is applied here, on the merged set,
+    # because it targets the per-tap ``extra.provider`` label rather than a real
+    # source id (the runtime index stores every GitHub tap as source="github").
+    if source_filter.strip().lower() in _PROVIDER_FILTER_VALUES:
+        all_results = _filter_results_by_provider(all_results, source_filter)
 
     # Deduplicate by identifier, preferring higher trust levels.
     # identifier is always unique per skill (e.g. "browse-sh/airbnb.com/search-listings-ddgioa").

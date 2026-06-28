@@ -1,5 +1,6 @@
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
+import { summarizeShellCommand } from '@/lib/summarize-command'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
@@ -123,6 +124,63 @@ function fileEditBasename(path: string): string {
   const normalized = path.replace(/\\/g, '/').trim()
 
   return normalized.split('/').filter(Boolean).pop() || normalized
+}
+
+function numericField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key]
+
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function readFileLineLabel(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  if (numericField(args, 'offset') === undefined && numericField(args, 'limit') === undefined) {
+    return ''
+  }
+
+  const content = firstStringField(result, ['content'])
+  const offset = numericField(args, 'offset')
+  const limit = numericField(args, 'limit')
+
+  if (offset !== undefined && offset > 0) {
+    if (limit === undefined || limit <= 1) {
+      return `L${offset}`
+    }
+
+    return `L${offset}-${offset + limit - 1}`
+  }
+
+  const lines = content
+    .split('\n')
+    .map(line => /^(\d+)\|/.exec(line)?.[1])
+    .filter((line): line is string => !!line)
+    .map(Number)
+
+  if (lines.length === 0) {
+    return ''
+  }
+
+  const start = lines[0]!
+  const end = lines[lines.length - 1]!
+
+  return start === end ? `L${start}` : `L${start}-${end}`
+}
+
+function readFileDisplayTarget(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  const inherited = firstStringField(args, ['context', 'preview'])
+
+  if (inherited) {
+    return inherited
+  }
+
+  const path = firstStringField(args, ['path', 'file', 'filepath'])
+
+  if (!path) {
+    return ''
+  }
+
+  const lineLabel = readFileLineLabel(args, result)
+
+  return [fileEditBasename(path), lineLabel].filter(Boolean).join(' ')
 }
 
 const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
@@ -1180,9 +1238,9 @@ function toolSubtitle(
       }
     }
 
-    const command = firstStringField(argsRecord, ['command', 'code']) || contextValue(argsRecord)
+    const command = firstStringField(argsRecord, ['context', 'preview', 'command', 'code']) || contextValue(argsRecord)
 
-    return command ? compactPreview(command, 120) : 'Executed command'
+    return command ? '' : 'Executed command'
   }
 
   if (toolName === 'read_file' || isFileEditTool(toolName)) {
@@ -1231,10 +1289,6 @@ function toolDetailLabel(toolName: string): string {
 
   if (toolName === 'browser_snapshot') {
     return 'Snapshot summary'
-  }
-
-  if (toolName === 'terminal' || toolName === 'execute_code') {
-    return 'Command output'
   }
 
   return ''
@@ -1290,7 +1344,7 @@ function toolDetailText(
     }
   }
 
-  if (part.toolName === 'read_file') {
+  if (part.toolName === 'read_file' && part.result !== undefined) {
     const content = firstStringField(resultRecord, ['content', 'text', 'data', 'body'])
 
     if (content) {
@@ -1401,7 +1455,7 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     }
   }
 
-  if (part.toolName === 'read_file') {
+  if (part.toolName === 'read_file' && part.result !== undefined) {
     if (hasSubstantialOutput) {
       return { label: copy.file, text: detail }
     }
@@ -1503,8 +1557,20 @@ function dynamicTitle(
       : fallback
   }
 
+  if (part.toolName === 'read_file') {
+    const target = readFileDisplayTarget(args, result)
+    const action = verb(translateNow('assistant.tool.actions.reading'), translateNow('assistant.tool.actions.read'))
+
+    return target
+      ? titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, target))
+      : fallback
+  }
+
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
-    const command = firstStringField(args, ['command', 'code']) || contextValue(args)
+    const command =
+      firstStringField(args, ['context', 'preview']) ||
+      firstStringField(args, ['command', 'code']) ||
+      contextValue(args)
 
     if (command) {
       const action =
@@ -1514,7 +1580,11 @@ function dynamicTitle(
 
       return titledAction(
         action,
-        translateNow('assistant.tool.titleTemplates.actionCommand', action, compactPreview(command, 160))
+        translateNow(
+          'assistant.tool.titleTemplates.actionCommand',
+          action,
+          compactPreview(summarizeShellCommand(command), 160)
+        )
       )
     }
   }

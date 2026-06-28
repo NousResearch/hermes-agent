@@ -68,7 +68,9 @@ class FakeWebSocket {
   }
 
   private emit(type: string, ev: unknown) {
-    for (const fn of this.listeners[type] ?? []) {fn(ev)}
+    for (const fn of this.listeners[type] ?? []) {
+      fn(ev)
+    }
   }
 }
 

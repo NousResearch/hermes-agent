@@ -230,6 +230,54 @@ class TestForceEnvOptIn:
         assert result_env["OPENAI_BASE_URL"] == "http://intended/v1"
 
 
+class TestActiveVenvMarkerStripping:
+    """Active-virtualenv markers must not leak into terminal subprocesses (#23473).
+
+    The gateway runs inside its own venv, so its process environment carries
+    VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
+    agent runs against ANOTHER Python project, ``uv``/``poetry`` treat the
+    inherited value as the active environment and build that project's deps
+    into the Hermes venv path instead of the project's own ``.venv`` —
+    silently clobbering the Hermes environment (and, when the other project
+    pins a different Python, breaking the gateway outright). The Hermes venv
+    stays reachable via PATH, so stripping the markers is safe.
+    """
+
+    def test_virtualenv_marker_stripped_end_to_end(self):
+        result_env = _run_with_env(extra_os_env={
+            "VIRTUAL_ENV": "/home/user/.hermes/hermes-agent/venv",
+        })
+        assert "VIRTUAL_ENV" not in result_env
+
+    def test_conda_prefix_marker_stripped_end_to_end(self):
+        result_env = _run_with_env(extra_os_env={
+            "CONDA_PREFIX": "/opt/conda/envs/hermes",
+        })
+        assert "CONDA_PREFIX" not in result_env
+
+    def test_make_run_env_strips_markers(self):
+        from tools.environments.local import _make_run_env
+        poison = {"VIRTUAL_ENV": "/venv", "CONDA_PREFIX": "/conda", "PATH": "/usr/bin"}
+        with patch.dict(os.environ, poison, clear=True):
+            result = _make_run_env({})
+        assert "VIRTUAL_ENV" not in result
+        assert "CONDA_PREFIX" not in result
+
+    def test_sanitize_subprocess_env_strips_markers(self):
+        from tools.environments.local import _sanitize_subprocess_env
+        base = {"VIRTUAL_ENV": "/venv", "CONDA_PREFIX": "/conda", "HOME": "/home/user"}
+        # Even an explicitly-passed extra marker is stripped.
+        result = _sanitize_subprocess_env(base, {"VIRTUAL_ENV": "/also/venv"})
+        assert "VIRTUAL_ENV" not in result
+        assert "CONDA_PREFIX" not in result
+        assert result.get("HOME") == "/home/user"
+
+    def test_markers_constant_contents(self):
+        from tools.environments.local import _ACTIVE_VENV_MARKER_VARS
+        assert "VIRTUAL_ENV" in _ACTIVE_VENV_MARKER_VARS
+        assert "CONDA_PREFIX" in _ACTIVE_VENV_MARKER_VARS
+
+
 class TestBlocklistCoverage:
     """Sanity checks that the blocklist covers all known providers."""
 

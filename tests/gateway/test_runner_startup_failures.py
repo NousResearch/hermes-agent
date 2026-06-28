@@ -12,7 +12,7 @@ class _RetryableFailureAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._set_fatal_error(
             "telegram_connect_error",
             "Telegram startup failed: temporary DNS resolution failure.",
@@ -34,7 +34,7 @@ class _DisabledAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=False, token="***"), Platform.TELEGRAM)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         raise AssertionError("connect should not be called for disabled platforms")
 
     async def disconnect(self) -> None:
@@ -51,7 +51,7 @@ class _SuccessfulAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -508,7 +508,7 @@ class _NonRetryableFailureAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._set_fatal_error(
             "discord-bot-token_lock",
             "Discord bot token already in use (PID 999). Stop the other gateway first.",

@@ -263,6 +263,50 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_gateway_drain_begin_writes_marker(self):
+        from gateway import drain_control
+
+        resp = self.client.post("/api/gateway/drain", json={"action": "drain"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True and data["action"] == "drain"
+        assert data["draining"] is True
+        assert drain_control.drain_requested() is True
+        # cleanup
+        drain_control.clear_drain_request()
+
+    def test_gateway_drain_defaults_to_begin(self):
+        from gateway import drain_control
+
+        resp = self.client.post("/api/gateway/drain", json={})
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "drain"
+        assert drain_control.drain_requested() is True
+        drain_control.clear_drain_request()
+
+    def test_gateway_drain_cancel_removes_marker(self):
+        from gateway import drain_control
+
+        drain_control.write_drain_request()
+        resp = self.client.post("/api/gateway/drain", json={"action": "cancel"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True and data["action"] == "cancel"
+        assert data["was_draining"] is True
+        assert drain_control.drain_requested() is False
+
+    def test_gateway_drain_cancel_idempotent(self):
+        from gateway import drain_control
+
+        resp = self.client.post("/api/gateway/drain", json={"action": "cancel"})
+        assert resp.status_code == 200
+        assert resp.json()["was_draining"] is False
+        assert drain_control.drain_requested() is False
+
+    def test_gateway_drain_bad_action_400(self):
+        resp = self.client.post("/api/gateway/drain", json={"action": "explode"})
+        assert resp.status_code == 400
+
     def test_get_status_hides_update_capability_in_managed_runtime(self, monkeypatch):
         import hermes_cli.web_server as web_server
 
@@ -406,6 +450,36 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["is_set"] is True
         assert fields["api_key"]["value"] == ""
         assert "secret-value" not in json.dumps(data)
+
+    def test_get_moa_models_returns_provider_model_slots(self):
+        resp = self.client.get("/api/model/moa")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["reference_models"]
+        assert all(set(slot) == {"provider", "model"} for slot in data["reference_models"])
+        assert set(data["aggregator"]) == {"provider", "model"}
+
+    def test_put_moa_models_persists_provider_model_slots(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "reference_models": [
+                {"provider": "openai-codex", "model": "gpt-5.5"},
+                {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+            ],
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+            "reference_temperature": 0.6,
+            "aggregator_temperature": 0.4,
+            "max_tokens": 4096,
+            "enabled": True,
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        cfg = load_config()
+        assert cfg["moa"]["reference_models"] == payload["reference_models"]
+        assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
     # ── GET /api/media (remote image display) ───────────────────────────
 
@@ -1790,6 +1864,31 @@ class TestWebServerEndpoints:
             assert "QR login" in fields[key]["description"]
             assert "Official Account" not in fields[key]["description"]
 
+    def test_teams_messaging_metadata_links_setup_guide(self):
+        # Teams is a platform plugin, so the catalog entry is built from the
+        # plugin registry. The override must still supply a docs link so the
+        # Channels page renders a working "Open setup guide" button instead of
+        # an empty href (which resolves to the packaged app's own index.html).
+        from hermes_cli.web_server import _build_catalog_entry
+
+        teams = _build_catalog_entry("teams")
+        assert teams["docs_url"] == (
+            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams"
+        )
+
+    def test_google_chat_messaging_metadata_links_setup_guide(self):
+        # Google Chat is a platform plugin, so the catalog entry is built from
+        # the plugin registry. The override must supply a docs link so the
+        # Channels page renders a working "Open setup guide" button instead of
+        # an empty href (which resolves to the packaged app's own index.html).
+        from hermes_cli.web_server import _build_catalog_entry
+
+        google_chat = _build_catalog_entry("google_chat")
+        assert google_chat["name"] == "Google Chat"
+        assert google_chat["docs_url"] == (
+            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat"
+        )
+
     def test_messaging_catalog_covers_gateway_platforms(self):
         """Catalog is derived from the Platform enum, so every built-in shows up."""
         from gateway.config import Platform
@@ -3011,6 +3110,74 @@ class TestConfigRoundTrip:
         web_config["agent"]["max_turns"] = original_turns
         self.client.put("/api/config", json={"config": web_config})
 
+    def test_round_trip_preserves_custom_providers(self):
+        """``custom_providers`` is not in the dashboard schema, so the
+        frontend never sends it in PUT bodies. Saving must still preserve
+        it on disk — otherwise every dashboard click that saves silently
+        wipes the user's custom endpoints."""
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {"default": "test/model", "provider": "custom:myprov"},
+            "custom_providers": [
+                {
+                    "name": "myprov",
+                    "base_url": "https://example.invalid/v1",
+                    "key_env": "MYPROV_API_KEY",
+                    "api_mode": "chat_completions",
+                    "model": "test/model",
+                },
+            ],
+        })
+
+        # Frontend behaviour: GET full config, then PUT without keys the
+        # schema doesn't know about (custom_providers is the prime example).
+        web_config = self.client.get("/api/config").json()
+        web_config.pop("custom_providers", None)
+        resp = self.client.put("/api/config", json={"config": web_config})
+        assert resp.status_code == 200
+
+        after = load_config()
+        cps = after.get("custom_providers")
+        assert isinstance(cps, list) and len(cps) == 1, \
+            f"custom_providers wiped by lossy PUT: {cps!r}"
+        assert cps[0].get("name") == "myprov"
+        assert cps[0].get("base_url") == "https://example.invalid/v1"
+
+    def test_round_trip_preserves_schema_invisible_nested_keys(self):
+        """Nested keys that aren't in CONFIG_SCHEMA must also survive a
+        round-trip. Deep-merge is required — a shallow merge would drop
+        ``agent.<custom_key>`` when the frontend sends a partial ``agent``
+        dict containing only schema-known sub-fields."""
+        from hermes_cli.config import load_config, read_raw_config, save_config
+
+        # Seed config with a key under `agent` that isn't in the schema.
+        # Use a sentinel name to avoid colliding with future schema fields.
+        save_config({
+            "agent": {
+                "max_turns": 50,
+                "x_dashboard_invisible_test_key": {"nested": "value"},
+            },
+        })
+
+        # PUT only schema-known agent fields, exactly like the dashboard.
+        web_config = self.client.get("/api/config").json()
+        web_config.setdefault("agent", {})
+        web_config["agent"]["max_turns"] = 75
+        # Strip our sentinel so we're sending what the schema-driven form
+        # would send.
+        web_config["agent"].pop("x_dashboard_invisible_test_key", None)
+
+        resp = self.client.put("/api/config", json={"config": web_config})
+        assert resp.status_code == 200
+
+        on_disk = read_raw_config()
+        assert on_disk.get("agent", {}).get("max_turns") == 75
+        assert on_disk.get("agent", {}).get("x_dashboard_invisible_test_key") \
+            == {"nested": "value"}, \
+            "Shallow-merge regression: agent.x_dashboard_invisible_test_key " \
+            "was wiped when the frontend sent a partial agent dict."
+
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""
         config = self.client.get("/api/config").json()
@@ -4228,6 +4395,102 @@ class TestModelContextLength:
         })
         assert isinstance(result["model"], dict)
         assert result["model"]["context_length"] == 32000
+
+
+class TestDenormalizeProviderSwitch:
+    """The flat Config-page Model field carries no provider info. When the
+    model string changes to one served by a different provider, the saved
+    provider must follow it (issue #14058)."""
+
+    def test_vendor_slug_switches_off_non_aggregator_provider(self):
+        """ollama-local + a vendor/model slug → switch to openrouter and drop
+        the stale local base_url (the issue's exact repro)."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "llama3.2",
+                "provider": "ollama-local",
+                "base_url": "http://localhost:11434/v1",
+                "api_mode": "chat_completions",
+            }
+        })
+
+        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
+        model = result["model"]
+        assert model["provider"] == "openrouter"
+        assert model["default"] == "google/gemini-2.5-flash"
+        # The old ollama-local endpoint must not carry over to openrouter.
+        assert not model.get("base_url")
+
+    def test_unchanged_model_preserves_provider_and_base_url(self):
+        """Saving with the model unchanged must never re-detect/overwrite the
+        provider — protects unrelated config saves and custom endpoints."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "llama3.2",
+                "provider": "ollama-local",
+                "base_url": "http://localhost:11434/v1",
+            }
+        })
+
+        result = _denormalize_config_from_web({"model": "llama3.2"})
+        model = result["model"]
+        assert model["provider"] == "ollama-local"
+        assert model["base_url"] == "http://localhost:11434/v1"
+
+    def test_bare_model_name_change_keeps_local_provider(self):
+        """A bare (non-slug) model name gives no provider signal — leave the
+        existing provider alone rather than guessing."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "llama3.2",
+                "provider": "ollama-local",
+                "base_url": "http://localhost:11434/v1",
+            }
+        })
+
+        result = _denormalize_config_from_web({"model": "qwen2.5"})
+        model = result["model"]
+        assert model["provider"] == "ollama-local"
+        assert model["default"] == "qwen2.5"
+
+    def test_same_aggregator_model_swap_keeps_provider(self):
+        """Swapping models within an aggregator must not change the provider."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
+        })
+
+        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
+        model = result["model"]
+        assert model["provider"] == "openrouter"
+        assert model["default"] == "google/gemini-2.5-flash"
+
+    def test_context_length_override_survives_provider_switch(self):
+        """An explicit context-length override must persist alongside a
+        provider switch."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({"model": {"default": "llama3.2", "provider": "ollama-local"}})
+
+        result = _denormalize_config_from_web({
+            "model": "google/gemini-2.5-flash",
+            "model_context_length": 128000,
+        })
+        model = result["model"]
+        assert model["provider"] == "openrouter"
+        assert model["context_length"] == 128000
 
 
 class TestModelContextLengthSchema:
@@ -5746,6 +6009,7 @@ class TestPtyWebSocket:
         # its own fake argv via ``ws._resolve_chat_argv``.
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        ws.app.state.pty_active_session_files = {}
         self.token = ws._SESSION_TOKEN
         self.client = TestClient(ws.app)
 
@@ -6090,8 +6354,9 @@ class TestPtyWebSocket:
         same channel — which is how tool events reach the dashboard sidebar."""
         captured: dict = {}
 
-        def fake_resolve(resume=None, sidecar_url=None, profile=None):
+        def fake_resolve(resume=None, sidecar_url=None, profile=None, active_session_file=None):
             captured["sidecar_url"] = sidecar_url
+            captured["active_session_file"] = active_session_file
             return (["/bin/sh", "-c", "printf sidecar-ok"], None, None)
 
         monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
@@ -6113,6 +6378,7 @@ class TestPtyWebSocket:
         assert url.startswith("ws://127.0.0.1:9119/api/pub?")
         assert "channel=abc-123" in url
         assert "token=" in url
+        assert captured["active_session_file"]
 
     def test_pub_broadcasts_to_events_subscribers(self):
         """A frame handed to _broadcast_event is sent verbatim to every

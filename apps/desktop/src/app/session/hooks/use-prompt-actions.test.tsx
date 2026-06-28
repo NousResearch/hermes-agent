@@ -44,12 +44,9 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 
 interface HarnessHandle {
   cancelRun: () => Promise<void>
-  restoreToMessage: (messageId: string) => Promise<void>
+  restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   steerPrompt: (text: string) => Promise<boolean>
-  submitText: (
-    text: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
-  ) => Promise<boolean>
+  submitText: (text: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean>
 }
 
 function Harness({
@@ -134,8 +131,8 @@ describe('usePromptActions /title', () => {
   it('renames via the session.title RPC (with the runtime id), updates the sidebar store, and refreshes', async () => {
     const refreshSessions = vi.fn(async () => undefined)
 
-    const requestGateway = vi.fn(async (method: string) =>
-      (method === 'session.title' ? { pending: false, title: 'New title' } : {}) as never
+    const requestGateway = vi.fn(
+      async (method: string) => (method === 'session.title' ? { pending: false, title: 'New title' } : {}) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -158,8 +155,8 @@ describe('usePromptActions /title', () => {
   it('reports the queued state when the session row is not persisted yet', async () => {
     const refreshSessions = vi.fn(async () => undefined)
 
-    const requestGateway = vi.fn(async (method: string) =>
-      (method === 'session.title' ? { pending: true, title: 'Fresh chat' } : {}) as never
+    const requestGateway = vi.fn(
+      async (method: string) => (method === 'session.title' ? { pending: true, title: 'Fresh chat' } : {}) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -205,7 +202,10 @@ describe('usePromptActions /title', () => {
 
     await handle!.submitText('/title way too long title')
 
-    expect(requestGateway).toHaveBeenCalledWith('session.title', expect.objectContaining({ title: 'way too long title' }))
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.title',
+      expect.objectContaining({ title: 'way too long title' })
+    )
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
   })
@@ -221,6 +221,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
   it('submits /goal send directives returned directly by slash.exec instead of rendering no output', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     const states: Record<string, unknown>[] = []
+
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
 
@@ -318,7 +319,9 @@ describe('usePromptActions desktop slash pickers', () => {
     })
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     const result = handle!.submitText('/handoff telegram')
     await vi.advanceTimersByTimeAsync(61_000)
@@ -501,7 +504,9 @@ describe('usePromptActions steerPrompt', () => {
     const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     const accepted = await handle!.steerPrompt('  nudge the run  ')
 
@@ -518,7 +523,9 @@ describe('usePromptActions steerPrompt', () => {
     const requestGateway = vi.fn(async () => ({ status: 'rejected' }) as never)
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     expect(await handle!.steerPrompt('too late')).toBe(false)
   })
@@ -529,7 +536,9 @@ describe('usePromptActions steerPrompt', () => {
     })
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     expect(await handle!.steerPrompt('boom')).toBe(false)
   })
@@ -538,7 +547,9 @@ describe('usePromptActions steerPrompt', () => {
     const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     expect(await handle!.steerPrompt('   ')).toBe(false)
     expect(requestGateway).not.toHaveBeenCalled()
@@ -652,16 +663,46 @@ describe('usePromptActions restoreToMessage', () => {
     })
   })
 
-  it('ignores non-user targets and unknown ids without touching the gateway', async () => {
+  it('rejects non-user targets and unknown ids without touching the gateway', async () => {
     const requestGateway = vi.fn(async () => ({}) as never)
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
-    await handle!.restoreToMessage('a1')
-    await handle!.restoreToMessage('missing')
+    await expect(handle!.restoreToMessage('a1')).rejects.toThrow('Could not find the message to restore.')
+    await expect(handle!.restoreToMessage('missing')).rejects.toThrow('Could not find the message to restore.')
 
     expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('uses the clicked runtime user ordinal when the rendered message id is stale', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let lastState: Record<string, unknown> = {}
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => (lastState = state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={$messages.get()}
+      />
+    )
+
+    await handle!.restoreToMessage('runtime-user-id-not-in-store', {
+      text: 'first prompt',
+      userOrdinal: 0
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'first prompt',
+      truncate_before_user_ordinal: 0
+    })
+    expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
   })
 })
 
@@ -711,7 +752,9 @@ describe('usePromptActions file attachment sync', () => {
     })
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     const ok = await handle!.submitText('convert this to epub', { attachments: [fileAttachment()] })
 
@@ -763,7 +806,9 @@ describe('usePromptActions file attachment sync', () => {
     })
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     const ok = await handle!.submitText('read this file', { attachments: [pathlessRef] })
 
@@ -790,7 +835,9 @@ describe('usePromptActions file attachment sync', () => {
     })
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     const ok = await handle!.submitText('summarize', { attachments: [fileAttachment()] })
 
@@ -848,7 +895,9 @@ describe('usePromptActions eager-upload races', () => {
     })
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
     await waitFor(() => expect(handle).not.toBeNull())
 
     // Drop a file → the eager effect fires file.attach and blocks on it.
@@ -1049,7 +1098,11 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
       calls.push(method)
 
       if (method === 'file.attach') {
-        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/DEVIS_signed.pdf', uploaded: true } as never
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/DEVIS_signed.pdf',
+          uploaded: true
+        } as never
       }
 
       return {} as never
@@ -1059,7 +1112,9 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
       { id: 'file:devis', kind: 'file', label: 'DEVIS_signed.pdf', path: '/Users/mahmoud/Downloads/DEVIS_signed.pdf' }
     ])
 
-    render(<Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     await waitFor(() => expect(calls).toContain('file.attach'))
     await waitFor(() => expect($composerAttachments.get()[0]?.attachedSessionId).toBe(RUNTIME_SESSION_ID))
@@ -1087,7 +1142,9 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
 
     $composerAttachments.set([{ id: 'file:x', kind: 'file', label: 'x.pdf', path: '/abs/x.pdf' }])
 
-    render(<Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     await waitFor(() => expect($composerAttachments.get()[0]?.uploadState).toBe('error'))
     expect($composerAttachments.get()[0]?.attachedSessionId).toBeUndefined()
@@ -1109,7 +1166,9 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
       }
     ])
 
-    render(<Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
 
     await Promise.resolve()
     expect(requestGateway).not.toHaveBeenCalledWith('file.attach', expect.anything())

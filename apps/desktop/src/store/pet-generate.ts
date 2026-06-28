@@ -1,13 +1,11 @@
 import { atom } from 'nanostores'
 
-import { persistString, storedString } from '@/lib/storage'
+import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { type PetInfo } from '@/store/pet'
 import { applyAdoptedPet, type GatewayRequest } from '@/store/pet-gallery'
-import { $activeSessionId } from '@/store/session'
-
 /**
  * Feature store for the "generate a pet" flow (Cmd-K → Pets → Generate).
  *
@@ -24,11 +22,15 @@ import { $activeSessionId } from '@/store/session'
  */
 
 // Generation is many grounded image calls — far longer than the default 30s RPC
-// timeout. Drafts fan out 4 base looks; hatch fans out ~8 animation rows. Even
-// parallelized, a cold provider call is slow, so we give these calls real
-// headroom (the bug was "request timed out: pet.generate" on the 30s default).
-const GENERATE_TIMEOUT_MS = 240_000
-const HATCH_TIMEOUT_MS = 420_000
+// timeout. Drafts fan out 4 base looks; hatch fans out ~8 animation rows. The
+// quality-first default (OpenAI image via OpenRouter) is slow, and each hatch
+// row can retry up to 3x (300s/call) across 2 parallel waves, so the absolute
+// backend worst case is ~30 min. The hatch ceiling sits above that (1h) so the
+// frontend never throws "request timed out" before the backend has actually
+// exhausted its own retries — the background-resumable notify path is the real
+// UX safety net (the user can close the modal and get pinged on completion).
+const GENERATE_TIMEOUT_MS = 420_000
+const HATCH_TIMEOUT_MS = 3_600_000
 
 // Filler words to drop when deriving a default name from a free-text prompt.
 const NAME_STOPWORDS = new Set([
@@ -80,15 +82,7 @@ export interface PetDraft {
   dataUri: string
 }
 
-export type PetGenStatus =
-  | 'idle'
-  | 'generating'
-  | 'ready'
-  | 'hatching'
-  | 'preview'
-  | 'adopting'
-  | 'error'
-  | 'stale'
+export type PetGenStatus = 'idle' | 'generating' | 'ready' | 'hatching' | 'preview' | 'adopting' | 'error' | 'stale'
 
 /** Live hatch step for the egg screen — which row is being drawn, then compose/save. */
 export interface PetHatchStage {
@@ -111,13 +105,12 @@ export const $petGenAvailable = atom<boolean | null>(null)
 export interface PetGenProvider {
   name: string
   label: string
-  /** One-line speed/quality tradeoff note. */
-  note: string
   /** Whether this is the backend's default pick (no override needed). */
   default: boolean
 }
 
 const PROVIDER_KEY = 'hermes.desktop.petgen.provider'
+const REMIX_CONFIRMED_KEY = 'hermes.desktop.petgen.remixConfirmed'
 
 /** Reference-capable providers available to pick (from `pet.generate.status`). */
 export const $petGenProviders = atom<PetGenProvider[]>([])
@@ -128,6 +121,15 @@ export const $petGenProvider = atom(storedString(PROVIDER_KEY) ?? '')
 export function setPetGenProvider(name: string): void {
   $petGenProvider.set(name)
   persistString(PROVIDER_KEY, name || null)
+}
+
+/** Whether the user has acknowledged the one-time "remix regenerates" notice. */
+export const $petGenRemixConfirmed = atom(storedBoolean(REMIX_CONFIRMED_KEY, false))
+
+/** Remember that the remix notice has been shown so we don't ask again. */
+export function markRemixConfirmed(): void {
+  $petGenRemixConfirmed.set(true)
+  persistBoolean(REMIX_CONFIRMED_KEY, true)
 }
 
 /** Probe whether generation is possible (a reference-capable backend exists). */
@@ -227,7 +229,10 @@ function notifyPetGenDone(title: string, message: string, kind: 'error' | 'succe
   }
 
   notify({ kind, title, message, action: { label: 'View', onClick: openPetGenerate } })
-  dispatchNativeNotification({ kind: 'backgroundDone', title, body: message, sessionId: $activeSessionId.get() })
+  // Pet generation isn't tied to a chat session — mark it global so the OS
+  // notification fires whenever the user is away, even with no active session
+  // (the common case: generating from the command center with no conversation).
+  dispatchNativeNotification({ kind: 'backgroundDone', title, body: message, global: true })
 }
 
 interface GenerateOptions {
@@ -397,9 +402,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
         return
       }
 
-      $petGenDrafts.set(
-        [...current, { index: draft.index, dataUri: draft.dataUri }].sort((a, b) => a.index - b.index)
-      )
+      $petGenDrafts.set([...current, { index: draft.index, dataUri: draft.dataUri }].sort((a, b) => a.index - b.index))
     }) ?? (() => {})
 
   try {

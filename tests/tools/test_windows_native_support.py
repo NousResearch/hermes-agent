@@ -15,6 +15,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -945,9 +946,9 @@ class TestGatewayDetachedWatcherWindowsFlags:
         breaks away from any job-object the watcher itself inherits.
 
         Static check — the watcher source is built at import time and embedded
-        verbatim in the module text.  Parsing it for an exact AST node would be
-        brittle; the textual presence of the hex flag plus the symbolic name is
-        a sufficient regression guard.
+        verbatim in the module text.  The literal Win32 bits live in
+        hermes_cli._subprocess_compat; the watcher must call that helper from
+        inside the inlined payload so runtime behavior keeps the breakaway bit.
 
         The bit was added to the inlined payload by PR #40909.  This test
         ensures a future refactor of the dedent block doesn't silently drop it.
@@ -960,14 +961,16 @@ class TestGatewayDetachedWatcherWindowsFlags:
         end = text.find(").strip()", idx)
         assert end != -1, "watcher block end not found"
         block = text[idx:end]
-        assert "0x01000000" in block, (
-            "Inlined respawn watcher must set CREATE_BREAKAWAY_FROM_JOB "
-            "(0x01000000) on the respawned gateway — without it, the new "
-            "gateway is reaped when the parent job is torn down."
+        assert "from hermes_cli._subprocess_compat import" in block
+        assert "windows_detach_flags" in block
+        assert "windows_detach_flags()" in block, (
+            "Inlined respawn watcher must call windows_detach_flags() for the "
+            "respawned gateway; that helper carries CREATE_BREAKAWAY_FROM_JOB "
+            "so the new gateway is not reaped when the parent job tears down."
         )
-        assert "_CREATE_BREAKAWAY_FROM_JOB" in block, (
-            "Inlined respawn watcher must name CREATE_BREAKAWAY_FROM_JOB "
-            "symbolically so the intent is greppable."
+        assert "See _subprocess_compat.windows_detach_flags()" in block, (
+            "Inlined respawn watcher should keep the breakaway intent greppable "
+            "near the helper call."
         )
 
     def test_launch_detached_profile_gateway_restart_outer_popen_has_access_denied_fallback(
@@ -1005,10 +1008,122 @@ class TestGatewayDetachedWatcherWindowsFlags:
         idx = text.find(marker)
         end = text.find(").strip()", idx)
         block = text[idx:end]
-        # The inlined script catches OSError on the respawn and retries
-        # with breakaway cleared via ``& ~_CREATE_BREAKAWAY_FROM_JOB``.
-        assert "~_CREATE_BREAKAWAY_FROM_JOB" in block, (
+        assert "except OSError" in block
+        assert "windows_detach_flags_without_breakaway()" in block, (
             "Inlined respawn must catch OSError on the breakaway-denied "
-            "CreateProcess and retry without the breakaway bit, matching "
-            "gateway_windows._spawn_detached's fallback pattern."
+            "CreateProcess and retry with windows_detach_flags_without_breakaway(), "
+            "matching gateway_windows._spawn_detached's fallback pattern."
         )
+
+    def test_watcher_rewrites_console_python_to_windowless(self):
+        """The post-update respawn must NOT relaunch the gateway with the
+        venv's console ``python.exe``.
+
+        Regression for the "terminal window stays open permanently after a
+        GUI update" report: ``_gateway_run_args_for_profile`` builds the
+        respawn argv from ``get_python_path()`` (console ``python.exe``).
+        On Windows, launching that interpreter — even under
+        CREATE_NO_WINDOW — leaves a persistent console window because uv's
+        venv launcher re-execs the base console interpreter. The watcher
+        must route the argv through
+        ``gateway_windows.windowless_gateway_restart_spec`` so it becomes
+        ``pythonw.exe`` with the cwd + PYTHONPATH overlay the base
+        interpreter needs.
+
+        Static check: the watcher build (in ``_spawn_gateway_restart_watcher``)
+        must invoke the rewrite helper and thread the cwd / env overlay into
+        the inlined respawn ``Popen``.
+        """
+        root = Path(__file__).resolve().parents[2]
+        text = (root / "hermes_cli" / "gateway.py").read_text(encoding="utf-8")
+        assert "windowless_gateway_restart_spec" in text, (
+            "_spawn_gateway_restart_watcher must rewrite the respawn argv via "
+            "gateway_windows.windowless_gateway_restart_spec so the gateway "
+            "comes back as windowless pythonw.exe, not console python.exe."
+        )
+        marker = "watcher = textwrap.dedent("
+        idx = text.find(marker)
+        end = text.find(".strip()", idx)
+        block = text[idx:end]
+        # The inlined respawn must apply the cwd + env overlay the base
+        # interpreter needs — without them the windowless pythonw can't
+        # import hermes_cli.
+        assert '_popen_kwargs["cwd"]' in block, (
+            "Inlined respawn must set cwd from the windowless spec so the "
+            "base interpreter starts in the stable gateway working dir."
+        )
+        assert '_popen_kwargs["env"]' in block, (
+            "Inlined respawn must overlay env (VIRTUAL_ENV / PYTHONPATH / "
+            "HERMES_HOME) so the windowless base pythonw resolves hermes_cli."
+        )
+
+
+class TestWindowlessGatewayRestartSpec:
+    """gateway_windows.windowless_gateway_restart_spec — the helper that
+    converts a console-python gateway argv into a windowless pythonw one."""
+
+    def test_noop_on_non_windows(self):
+        import hermes_cli.gateway_windows as gw
+
+        argv = ["/path/venv/bin/python", "-m", "hermes_cli.main", "gateway", "run"]
+        with mock.patch.object(gw.sys, "platform", "linux"):
+            new_argv, cwd, env = gw.windowless_gateway_restart_spec(list(argv))
+        assert new_argv == argv
+        assert cwd == ""
+        assert env == {}
+
+    def test_empty_argv_is_safe(self):
+        import hermes_cli.gateway_windows as gw
+
+        new_argv, cwd, env = gw.windowless_gateway_restart_spec([])
+        assert new_argv == []
+        assert cwd == ""
+        assert env == {}
+
+    def test_windows_rewrites_to_pythonw_and_preserves_tail(self):
+        """On Windows the interpreter is swapped for its windowless sibling
+        while every subsequent argument is preserved verbatim."""
+        import hermes_cli.gateway_windows as gw
+
+        # Pre-import on the (Linux) host so the function's lazy
+        # ``from hermes_cli.gateway import PROJECT_ROOT`` resolves from
+        # sys.modules instead of re-importing under the win32 platform
+        # patch below — a fresh import would run gateway/status.py's
+        # ``if sys.platform == "win32": import msvcrt`` branch and crash on
+        # Linux CI with ModuleNotFoundError.
+        import hermes_cli.config  # noqa: F401
+        import hermes_cli.gateway  # noqa: F401
+
+        argv = [
+            "C:/venv/Scripts/python.exe",
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "work",
+            "gateway",
+            "run",
+            "--replace",
+        ]
+
+        def fake_resolve(python_exe):
+            return ("C:/base/pythonw.exe", Path("C:/venv"), ["C:/venv/Lib/site-packages"])
+
+        # Mock get_hermes_home too: the real one calls Path.resolve(), which
+        # consults sysconfig and raises ModuleNotFoundError under the win32
+        # platform patch on a Linux host.
+        with mock.patch.object(gw.sys, "platform", "win32"), mock.patch.object(
+            gw, "_resolve_detached_python", side_effect=fake_resolve
+        ), mock.patch.object(
+            gw, "_stable_gateway_working_dir", return_value="C:/hermes"
+        ), mock.patch(
+            "hermes_cli.config.get_hermes_home", return_value="C:/hermes"
+        ):
+            new_argv, cwd, env = gw.windowless_gateway_restart_spec(list(argv))
+
+        assert new_argv[0] == "C:/base/pythonw.exe"
+        # Everything after the interpreter is byte-for-byte preserved.
+        assert new_argv[1:] == argv[1:]
+        assert cwd == "C:/hermes"
+        assert env["VIRTUAL_ENV"] == str(Path("C:/venv"))
+        assert "PYTHONPATH" in env
+        assert "site-packages" in env["PYTHONPATH"]

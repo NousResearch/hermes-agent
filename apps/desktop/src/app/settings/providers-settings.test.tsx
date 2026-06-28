@@ -102,7 +102,7 @@ describe('ProvidersSettings', () => {
       providers: [
         provider('qwen-oauth', true, {
           cli_command: 'hermes auth add qwen-oauth',
-          disconnect_hint: 'Use `hermes auth add qwen-oauth` or that provider\'s CLI to remove it.',
+          disconnect_hint: "Use `hermes auth add qwen-oauth` or that provider's CLI to remove it.",
           disconnectable: false,
           flow: 'external',
           name: 'Qwen (via Qwen CLI)'

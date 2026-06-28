@@ -181,13 +181,9 @@ def finalize_turn(
         # here instead. On an interrupt ``final_response`` is typically
         # empty, so fall back to an explicit placeholder rather than
         # persisting an empty-content assistant turn.
-        if interrupted and messages and messages[-1].get("role") == "tool":
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": (final_response or "").strip() or "Operation interrupted.",
-                }
-            )
+        if interrupted:
+            from agent.message_sanitization import close_interrupted_tool_sequence
+            close_interrupted_tool_sequence(messages, final_response)
 
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:
@@ -293,7 +289,14 @@ def finalize_turn(
                     and len(_stripped) <= 24
                     and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
                 )
-                if _is_empty_terminal or _is_partial_fragment:
+                _is_partial_stream_recovery = (
+                    str(_turn_exit_reason) == "partial_stream_recovery"
+                )
+                if (
+                    _is_empty_terminal
+                    or _is_partial_fragment
+                    or _is_partial_stream_recovery
+                ):
                     _explanation = agent._format_turn_completion_explanation(
                         _turn_exit_reason
                     )

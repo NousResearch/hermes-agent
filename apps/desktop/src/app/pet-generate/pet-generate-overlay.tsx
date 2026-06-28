@@ -62,10 +62,18 @@ export function PetGenerateOverlay() {
 
   // The footer banner narrates the dialog's async state: the failure reason on a
   // dead-end error, else the "you can close this, we'll notify you" reassurance
-  // while a generate/hatch runs in the background.
+  // while a generate/hatch runs in the background. On step 1, show a neutral ETA.
   const working = status === 'generating' || status === 'hatching'
   const errored = status === 'error' && drafts.length === 0
-  const banner = errored ? error || copy.genericError : working ? copy.backgroundHint : undefined
+  const stepOne = status === 'idle' || status === 'ready'
+
+  const banner = errored
+    ? error || copy.genericError
+    : working
+      ? copy.backgroundHint
+      : stepOne
+        ? copy.slowProviderHint
+        : undefined
 
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>

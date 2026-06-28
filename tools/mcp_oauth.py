@@ -33,6 +33,7 @@ Configuration in config.yaml::
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -93,7 +94,15 @@ class OAuthNonInteractiveError(RuntimeError):
 # Port used by the most recent build_oauth_auth() call.  Exposed so that
 # tests can verify the callback server and the redirect_uri share a port.
 _oauth_port: int | None = None
-_oauth_interactivity = threading.local()
+# Interactivity gate for OAuth stdin prompts. A ContextVar (NOT threading.local)
+# is required: background MCP discovery sets this on the discovery thread, but
+# the actual connect+OAuth runs on the dedicated `mcp-event-loop` thread via
+# run_coroutine_threadsafe. asyncio copies the *calling context* into the
+# scheduled coroutine, so a ContextVar propagates across that boundary while a
+# threading.local would not — see #35927. Default True (interactive allowed).
+_oauth_interactive_enabled: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "_oauth_interactive_enabled", default=True
+)
 
 
 # Skip tokens accepted at the paste prompt — exit OAuth without auth.
@@ -155,7 +164,7 @@ def _redirect_port_from_client_info(storage: "HermesTokenStorage") -> int | None
 
 def _is_interactive() -> bool:
     """Return True if we can reasonably expect to interact with a user."""
-    if not getattr(_oauth_interactivity, "enabled", True):
+    if not _oauth_interactive_enabled.get():
         return False
     try:
         return sys.stdin.isatty()
@@ -165,13 +174,18 @@ def _is_interactive() -> bool:
 
 @contextmanager
 def suppress_interactive_oauth():
-    """Temporarily disable stdin-based OAuth prompts on the current thread."""
-    previous = getattr(_oauth_interactivity, "enabled", True)
-    _oauth_interactivity.enabled = False
+    """Disable stdin-based OAuth prompts for the current execution context.
+
+    Uses a ContextVar so the suppression propagates from a background-discovery
+    thread onto the coroutine scheduled (via run_coroutine_threadsafe) on the
+    dedicated MCP event-loop thread — where the OAuth callback actually runs
+    (#35927). A threading.local would not cross that thread boundary.
+    """
+    token = _oauth_interactive_enabled.set(False)
     try:
         yield
     finally:
-        _oauth_interactivity.enabled = previous
+        _oauth_interactive_enabled.reset(token)
 
 
 def _can_open_browser() -> bool:
@@ -373,6 +387,41 @@ class HermesTokenStorage:
         """Delete all stored OAuth state for this server."""
         for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
             p.unlink(missing_ok=True)
+
+    def poison_client_registration(self) -> bool:
+        """Discard a dead dynamically-registered client so it gets re-created.
+
+        Called when the IdP rejects our cached ``client_id`` with
+        ``invalid_client`` on the token endpoint — proof the server-side
+        registration is gone (IdP redeploy / DB wipe / rebrand). Deleting
+        ``client.json`` makes the MCP SDK's ``async_auth_flow`` take the
+        ``if not client_info`` branch and re-run RFC 7591 dynamic client
+        registration on the next flow. The stale ``meta.json`` is dropped
+        too so discovery re-runs against a freshly fetched document.
+
+        Tokens are intentionally left in place — the subsequent
+        re-authorization overwrites them, and keeping them avoids losing a
+        still-valid refresh token if the re-registration never completes.
+
+        A single ``.bak`` copy of the client file is kept for recovery.
+        Returns True if a client file was present and removed.
+        """
+        client_path = self._client_info_path()
+        if not client_path.exists():
+            return False
+        backup = client_path.with_name(client_path.name + ".bak")
+        try:
+            backup.write_bytes(client_path.read_bytes())
+        except OSError as exc:  # non-fatal — proceed with the removal anyway
+            logger.warning("Could not back up client info at %s: %s", client_path, exc)
+        client_path.unlink(missing_ok=True)
+        self._meta_path().unlink(missing_ok=True)
+        logger.warning(
+            "MCP OAuth '%s': cached client registration rejected as invalid_client; "
+            "removed client.json + meta.json (backup at %s) to force re-registration",
+            self._server_name, backup.name,
+        )
+        return True
 
     def has_cached_tokens(self) -> bool:
         """Return True if we have tokens on disk (may be expired)."""

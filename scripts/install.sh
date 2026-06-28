@@ -258,6 +258,58 @@ restore_dirty_lockfiles() {
     done
 }
 
+# npm rewrites tracked package-lock.json files non-deterministically during
+# local builds. On a managed install those diffs are usually runtime churn, not
+# intentional user edits, so discard them before the repository-stage stash.
+# If package.json in the same directory is also dirty we keep both changes.
+discard_update_lockfile_churn() {
+    local repo="${1:-$INSTALL_DIR}"
+    [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
+    command -v git >/dev/null 2>&1 || return 0
+
+    local dirty_diff
+    dirty_diff=$(git -C "$repo" diff --name-only 2>/dev/null) || return 0
+    [ -n "$dirty_diff" ] || return 0
+
+    local dirty_package_dirs=""
+    while IFS= read -r path; do
+        case "$path" in
+            *package.json)
+                dirty_package_dirs="${dirty_package_dirs}$(dirname "$path")"$'\n'
+                ;;
+        esac
+    done <<EOF
+$dirty_diff
+EOF
+
+    local dirty_locks=""
+    local dirty_count=0
+    while IFS= read -r path; do
+        case "$path" in
+            *package-lock.json)
+                local lock_dir
+                lock_dir=$(dirname "$path")
+                case $'\n'"$dirty_package_dirs" in
+                    *$'\n'"$lock_dir"$'\n'*) continue ;;
+                esac
+                dirty_locks="${dirty_locks}${path}"$'\n'
+                dirty_count=$((dirty_count + 1))
+                ;;
+        esac
+    done <<EOF
+$dirty_diff
+EOF
+
+    [ "$dirty_count" -gt 0 ] || return 0
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        git -C "$repo" checkout -- "$path" 2>/dev/null || true
+    done <<EOF
+$dirty_locks
+EOF
+    log_info "Discarded npm lockfile churn (${dirty_count} file(s))"
+}
+
 emit_manifest() {
     # Stage-Desktop is included only with --include-desktop, mirroring
     # install.ps1: the signed bootstrap installer (Hermes-Setup) passes it so
@@ -457,8 +509,13 @@ detect_os() {
                 if [ -f /etc/os-release ]; then
                     . /etc/os-release
                     DISTRO="$ID"
+                    # VERSION_ID (e.g. "26.04", "14") lets us tell whether the
+                    # apt release is newer than the newest one Playwright's
+                    # platform resolver recognizes — the #35166 hang condition.
+                    DISTRO_VERSION="${VERSION_ID:-}"
                 else
                     DISTRO="unknown"
+                    DISTRO_VERSION=""
                 fi
             fi
             ;;
@@ -1136,6 +1193,7 @@ clone_repo() {
             cd "$INSTALL_DIR"
 
             local autostash_ref=""
+            discard_update_lockfile_churn "$INSTALL_DIR"
             if [ -n "$(git status --porcelain)" ]; then
                 # A previously interrupted update can leave the index with
                 # unmerged entries. In that state `git stash` aborts with
@@ -1828,14 +1886,192 @@ strip_snap_browser_override() {
 }
 
 run_browser_install_with_timeout() {
+    run_with_timeout "$@"
+}
+
+# Run a command with a hard wall-clock timeout, returning non-zero if it is
+# killed. Prefers GNU coreutils `timeout` (Linux) or `gtimeout` (macOS via
+# Homebrew) for an external-command target; otherwise (and always for a shell
+# function target, which the `timeout` binary cannot exec) it uses a pure-shell
+# watchdog: launch the command in its own process group, poll until it finishes,
+# and SIGTERM (then SIGKILL) the whole group on timeout. The pure-shell path is
+# what protects the bug-#39219 case — a stalled Electron download on macOS,
+# where `timeout` is usually absent — turning an indefinite hang into a non-zero
+# exit so callers (install_desktop) can self-heal via the mirror fallback.
+#
+# $1 (timeout) must be a bare integer number of seconds — the pure-shell loop
+# compares it arithmetically (the `timeout` binary would also accept suffixes
+# like 15m, but we normalize so both paths share one contract). On timeout the
+# return code is 124, matching GNU `timeout`.
+run_with_timeout() {
     local timeout_seconds="$1"
     shift
 
-    if command -v timeout >/dev/null 2>&1; then
-        timeout "$timeout_seconds" "$@"
-    else
-        "$@"
+    # Normalize to a bare integer; fall back to the desktop default if a caller
+    # ever passes a suffixed/empty value (the pure-shell loop needs an int).
+    case "$timeout_seconds" in
+        ''|*[!0-9]*) timeout_seconds=900 ;;
+    esac
+
+    # The `timeout` binary can only exec an external command, not a shell
+    # function. Use it only when the target is NOT a function; functions always
+    # go through the pure-shell watchdog (which runs them in a subshell of the
+    # current shell and sees them directly — no fragile env export needed).
+    if [ "$(type -t "$1" 2>/dev/null)" != "function" ]; then
+        local timeout_bin=""
+        if command -v timeout >/dev/null 2>&1; then
+            timeout_bin="timeout"
+        elif command -v gtimeout >/dev/null 2>&1; then
+            timeout_bin="gtimeout"
+        fi
+        if [ -n "$timeout_bin" ]; then
+            # GNU `timeout` runs the command in its own process group, so a
+            # terminal Ctrl+C is delivered to `timeout` but never reaches the
+            # child — the download looks frozen and ignores Ctrl+C (#35166).
+            # `--foreground` keeps the command in the shell's foreground group
+            # so Ctrl+C reaches it; `-k 10` sends SIGKILL 10s after the deadline
+            # so a wedged download can't outlive the timeout. Both flags are
+            # GNU-only — probe once and fall back to plain `timeout` on BusyBox
+            # (Alpine). When neither binary exists (stock macOS) we drop to the
+            # pure-shell watchdog below.
+            if "$timeout_bin" --foreground -k 10 1 true >/dev/null 2>&1; then
+                "$timeout_bin" --foreground -k 10 "$timeout_seconds" "$@"
+            else
+                "$timeout_bin" "$timeout_seconds" "$@"
+            fi
+            return $?
+        fi
     fi
+
+    # Pure-shell fallback: run in a new process group so we can kill the whole
+    # subtree (npm spawns node + the Electron downloader as children).
+    set -m
+    ( "$@" ) &
+    local cmd_pid=$!
+    set +m
+
+    local waited=0
+    local rc
+    while [ "$waited" -lt "$timeout_seconds" ]; do
+        if ! kill -0 "$cmd_pid" 2>/dev/null; then
+            # `|| rc=$?` keeps the non-zero child status without letting `set -e`
+            # abort the caller here (this would fire if run_with_timeout were
+            # ever called outside an if/|| context).
+            rc=0; wait "$cmd_pid" 2>/dev/null || rc=$?
+            return "$rc"
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    # Final boundary recheck: the command may have finished during the last
+    # poll interval — don't kill (and mislabel as 124) a process that already
+    # exited cleanly in the last second of the budget.
+    if ! kill -0 "$cmd_pid" 2>/dev/null; then
+        rc=0; wait "$cmd_pid" 2>/dev/null || rc=$?
+        return "$rc"
+    fi
+
+    # Timed out: kill the process group (negative PID), escalate to KILL.
+    kill -TERM "-$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null || true
+    sleep 2
+    kill -KILL "-$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null || true
+    wait "$cmd_pid" 2>/dev/null || true
+    return 124
+}
+
+# Return success only when the host is an apt release NEWER than the newest one
+# Playwright's platform resolver recognizes — the exact condition that makes
+# `playwright install` hang uninterruptibly (#35166). We scope the override
+# retry to this case rather than retrying on *any* failure, so a genuine
+# network/disk/permission failure doesn't get a mismatched-glibc build forced
+# onto it. Newest Playwright-known apt releases as of this writing: Ubuntu
+# 24.04, Debian 13. Anything above triggers the fallback; everything Playwright
+# already handles (and every non-apt distro) does not.
+playwright_host_unrecognized() {
+    # Compare dotted versions: returns 0 if $1 > $2.
+    _ver_gt() {
+        [ "$1" = "$2" ] && return 1
+        [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+    }
+    case "$DISTRO" in
+        ubuntu) _ver_gt "${DISTRO_VERSION:-0}" "24.04" ;;
+        debian) _ver_gt "${DISTRO_VERSION:-0}" "13" ;;
+        *) return 1 ;;  # Non-apt or unknown — not the #35166 hang condition.
+    esac
+}
+
+# Compute the PLAYWRIGHT_HOST_PLATFORM_OVERRIDE value to retry an install with
+# when Playwright's platform resolver rejects the host. ubuntu24.04 is the
+# newest Linux build Playwright has shipped across recent releases and runs on
+# newer apt releases (its binaries are dynamically linked); we point too-new /
+# unrecognized hosts at it. Only x64/arm64 Linux have Playwright builds — emit
+# nothing for anything else so the caller skips the retry. Echoes the value
+# (e.g. "ubuntu24.04-x64") or nothing.
+playwright_fallback_platform() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo "ubuntu24.04-x64" ;;
+        aarch64|arm64) echo "ubuntu24.04-arm64" ;;
+        *) : ;;  # No Playwright Linux build for this arch.
+    esac
+}
+
+# Run a `playwright install ...` command, and if it fails or hangs (the
+# uninterruptible "Installing Playwright Chromium with system dependencies"
+# stall on apt releases Playwright doesn't recognize yet — Ubuntu 26.04,
+# Debian 14, future distros — see #35166), retry it ONCE with
+# PLAYWRIGHT_HOST_PLATFORM_OVERRIDE pinned to the newest known build.
+#
+# The override retry is scoped to the actual hang condition: it fires only when
+# the host is an apt release NEWER than Playwright recognizes
+# (playwright_host_unrecognized). On every release Playwright already supports
+# (Ubuntu <=24.04, Debian <=13) and every non-apt distro, the first attempt is
+# authoritative and a failure is reported as-is — we never force a
+# mismatched-glibc build (microsoft/playwright#35114) onto a host Playwright
+# handles correctly. This is deliberately narrower than a retry-on-any-failure:
+# a network/disk/permission error on a supported host should surface, not get
+# papered over with a platform override. Playwright's maintainers bless this
+# env var as the supported escape hatch for unrecognized platforms
+# (microsoft/playwright#33434); a hardcoded full distro/version table was
+# rejected upstream (microsoft/playwright#33432), so we only need the
+# newest-known floor here.
+#
+# An operator-provided PLAYWRIGHT_HOST_PLATFORM_OVERRIDE is always respected:
+# it is inherited by the first attempt, and the retry is skipped.
+#
+# Usage: run_playwright_install <timeout_seconds> npx playwright install [args...]
+run_playwright_install() {
+    local timeout_seconds="$1"
+    shift
+
+    # First attempt: native platform resolution (inherits any operator override).
+    if run_browser_install_with_timeout "$timeout_seconds" "$@" 2>/dev/null; then
+        return 0
+    fi
+
+    # Operator already pinned the platform — their choice already applied to the
+    # attempt above; a second identical run won't help.
+    if [ -n "${PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-}" ]; then
+        return 1
+    fi
+
+    # Only retry with an override on the apt releases too new for Playwright to
+    # recognize (the #35166 hang). Any other failure is a real failure and is
+    # surfaced unchanged.
+    if ! playwright_host_unrecognized; then
+        return 1
+    fi
+
+    local fallback
+    fallback="$(playwright_fallback_platform)"
+    if [ -z "$fallback" ]; then
+        return 1  # No usable fallback build for this arch.
+    fi
+
+    log_warn "Playwright doesn't recognize ${DISTRO} ${DISTRO_VERSION} yet — retrying with PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$fallback"
+    log_info "(apt releases newer than Playwright knows hang at this step; see #35166)"
+    PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$fallback" \
+        run_browser_install_with_timeout "$timeout_seconds" "$@"
 }
 
 configure_browser_env_from_system_browser() {
@@ -1884,8 +2120,10 @@ install_node_deps() {
     if [ -f "$INSTALL_DIR/package.json" ]; then
         log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"
-        npm install --silent 2>/dev/null || {
-            log_warn "npm install failed (browser tools may not work)"
+        # Time-boxed: a stalled registry fetch would otherwise hang here with no
+        # progress (same #39219 stall class as the desktop build below).
+        run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent || {
+            log_warn "npm install failed or timed out (browser tools may not work)"
         }
         log_success "Node.js dependencies installed"
 
@@ -1918,7 +2156,7 @@ install_node_deps() {
                     # exact command the admin needs to run separately.
                     if [ "$(id -u)" -eq 0 ] || (command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null); then
                         log_info "Installing Playwright Chromium with system dependencies..."
-                        cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install --with-deps chromium 2>/dev/null || {
+                        cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install --with-deps chromium || {
                             log_warn "Playwright browser installation failed — browser tools will not work."
                             log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
                         }
@@ -1928,7 +2166,7 @@ install_node_deps() {
                         log_info "  sudo npx playwright install-deps chromium"
                         log_info "  (from $INSTALL_DIR, after Node.js deps are installed)"
                         log_info "Installing Chromium binary into this user's Playwright cache..."
-                        cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                        cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
                             log_warn "Playwright browser installation failed — browser tools will not work."
                             log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install chromium"
                         }
@@ -1948,7 +2186,7 @@ install_node_deps() {
                             log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
                         fi
                     fi
-                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
                         log_warn "Playwright browser installation failed — browser tools will not work."
                     }
                     ;;
@@ -1956,7 +2194,7 @@ install_node_deps() {
                     log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
                     log_info "Install Chromium system dependencies manually before using browser tools:"
                     log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
-                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
                         log_warn "Playwright browser installation failed — install dependencies above and retry."
                     }
                     ;;
@@ -1964,7 +2202,7 @@ install_node_deps() {
                     log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
                     log_info "Install Chromium system dependencies manually before using browser tools:"
                     log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
-                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
                         log_warn "Playwright browser installation failed — install dependencies above and retry."
                     }
                     ;;
@@ -1973,7 +2211,7 @@ install_node_deps() {
                     log_info "Install Chromium/browser system dependencies for your distribution, then run:"
                     log_info "  cd $INSTALL_DIR && npx playwright install chromium"
                     log_info "Browser tools will not work until dependencies are installed."
-                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || true
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || true
                     ;;
             esac
         fi
@@ -1985,8 +2223,9 @@ install_node_deps() {
     if [ -f "$INSTALL_DIR/ui-tui/package.json" ]; then
         log_info "Installing TUI dependencies..."
         cd "$INSTALL_DIR/ui-tui"
-        npm install --silent 2>/dev/null || {
-            log_warn "TUI npm install failed (hermes --tui may not work)"
+        # Time-boxed: a stalled registry fetch would otherwise hang here (#39219).
+        run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent || {
+            log_warn "TUI npm install failed or timed out (hermes --tui may not work)"
         }
         log_success "TUI dependencies installed"
     fi
@@ -2228,11 +2467,13 @@ ensure_browser() {
     log_info "Installing agent-browser..."
     local log_file
     log_file="$(mktemp)"
-    if ! "$npm_bin" install -g --prefix "$HERMES_HOME/node" --silent --ignore-scripts \
+    # Time-boxed (#39219): a stalled npm registry fetch here would otherwise
+    # hang the installer with no progress, same class as the desktop build.
+    if ! run_with_timeout "$NODE_DEPS_TIMEOUT" "$npm_bin" install -g --prefix "$HERMES_HOME/node" --silent --ignore-scripts \
         "agent-browser@^0.26.0" \
         "@askjo/camofox-browser@^1.5.2" \
         >"$log_file" 2>&1; then
-        log_error "npm install failed:"
+        log_error "npm install failed or timed out:"
         cat "$log_file" >&2
         rm -f "$log_file"
         return 1
@@ -2417,6 +2658,18 @@ _desktop_pack() {
 # Last-resort Electron mirror after GitHub download fails (#47266).
 DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
 
+# Per-attempt wall-clock cap for the desktop npm install / electron-builder pack
+# (#39219). A stalled (not failed) Electron download on a throttled/blocked link
+# never returns, so without this the installer hangs forever on "Build desktop
+# app". 900s is generous enough for a slow-but-progressing ~150MB fetch + build;
+# override with DESKTOP_BUILD_TIMEOUT for very slow links.
+DESKTOP_BUILD_TIMEOUT="${DESKTOP_BUILD_TIMEOUT:-900}"
+
+# Wall-clock cap for the plain registry `npm install`s (browser-tools + TUI
+# deps). Same #39219 stall class but no ~150MB Electron binary, so a shorter
+# default; override with NODE_DEPS_TIMEOUT for very slow links.
+NODE_DEPS_TIMEOUT="${NODE_DEPS_TIMEOUT:-600}"
+
 # Electron package dir — workspace-local nest first, then root hoist.
 _electron_dir() {
     local install_dir="$1"
@@ -2514,8 +2767,28 @@ install_desktop() {
     #    flake) — leaving tsc/typescript unresolved and `npm run pack`'s
     #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
     #    only if `npm ci` is unavailable or the lockfile is out of sync.
+    #
+    #    Both the install and the build below are wrapped in a hard wall-clock
+    #    timeout (#39219): the Electron binary (~150MB) is fetched from GitHub,
+    #    and on a throttled/blocked connection that download can *stall* — npm
+    #    neither errors nor exits, so the installer sits on "Build desktop app"
+    #    forever with only `npm warn deprecated` lines visible. A stall now
+    #    converts to a non-zero exit, which feeds the existing self-heal /
+    #    mirror-fallback escalation instead of hanging the whole install.
+    #
+    #    The `npm ci` and its `npm install` fallback SHARE one budget: a stalled
+    #    link wedges both identically, so giving each a full DESKTOP_BUILD_TIMEOUT
+    #    would double the worst-case hang. We compute a single deadline and pass
+    #    the remaining seconds to the fallback (min 30s so it still gets a real
+    #    attempt if `npm ci` failed fast rather than stalling).
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    if ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ); then
+    local _deps_start _deps_remaining
+    _deps_start=$(date +%s)
+    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" bash -c 'cd "$1" && npm ci' _ "$INSTALL_DIR"; then
+        log_success "Desktop workspace dependencies installed"
+    elif _deps_remaining=$(( DESKTOP_BUILD_TIMEOUT - ($(date +%s) - _deps_start) )); \
+         [ "$_deps_remaining" -lt 30 ] && _deps_remaining=30; \
+         run_with_timeout "$_deps_remaining" bash -c 'cd "$1" && npm install' _ "$INSTALL_DIR"; then
         log_success "Desktop workspace dependencies installed"
     elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
         log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
@@ -2544,7 +2817,7 @@ install_desktop() {
     #         the GitHub-blocked/throttled case (the repeating "retrying" log).
     log_info "Building desktop app (this takes 1-3 minutes)..."
     local pack_ok=false
-    if _desktop_pack "$desktop_dir"; then
+    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" _desktop_pack "$desktop_dir"; then
         pack_ok=true
     else
         local purged=""
@@ -2555,7 +2828,7 @@ install_desktop() {
         fi
         if [ "$restored" = true ]; then
             log_warn "Desktop build failed; refreshed the Electron download and retrying once..."
-            if _desktop_pack "$desktop_dir"; then
+            if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" _desktop_pack "$desktop_dir"; then
                 pack_ok=true
             fi
         fi
@@ -2567,7 +2840,7 @@ install_desktop() {
         log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
         log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
         _electron_dist_ok "$INSTALL_DIR" || _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR" || true
-        if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
+        if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
             pack_ok=true
         fi
     fi

@@ -1408,6 +1408,16 @@ def resolve_runtime_provider(
     """
     requested_provider = resolve_requested_provider(requested)
 
+    if requested_provider == "moa":
+        return {
+            "provider": "moa",
+            "api_mode": "chat_completions",
+            "base_url": "moa://local",
+            "api_key": "moa-virtual-provider",
+            "source": "moa-virtual-provider",
+            "requested_provider": requested_provider,
+        }
+
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
     # return provider="custom" with chat_completions api_mode and no valid key).

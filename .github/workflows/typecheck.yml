@@ -6,6 +6,7 @@ on:
 
 jobs:
   typecheck:
+    name: Check TypeScript
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -22,8 +23,7 @@ jobs:
       # native builds. Skipping install scripts drops node-pty's node-gyp
       # header fetch — the transient flake that killed this job pre-`tsc` — and
       # is faster. retry covers the remaining registry blips.
-      -
-        uses: ./.github/actions/retry
+      - uses: ./.github/actions/retry
         with:
           command: npm ci --ignore-scripts
       - run: npm run --prefix ${{ matrix.package }} typecheck
@@ -35,6 +35,7 @@ jobs:
   # users build apps/desktop from source on install/update. Run the real
   # `vite build` here so that class of break fails in CI instead.
   desktop-build:
+    name: Build desktop app
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -44,8 +45,7 @@ jobs:
           cache: npm
       # Keep install scripts here: the production build may need node-pty's
       # native binary. retry handles the transient install-time fetch flakes.
-      -
-        uses: ./.github/actions/retry
+      - uses: ./.github/actions/retry
         with:
           command: npm ci
       - run: npm run --prefix apps/desktop build

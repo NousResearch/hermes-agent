@@ -2,6 +2,11 @@ name: Tests
 
 on:
   workflow_call:
+    inputs:
+      slice_count:
+        description: Number of parallel test slices
+        type: number
+        default: 8
 
 permissions:
   contents: read
@@ -12,13 +17,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  generate:
+    name: "Generate slices"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        slice: [1, 2, 3, 4, 5, 6]
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -29,12 +32,25 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: test_durations.json
-          # main always writes a new suffix, but jobs pick the latest one with the same prefix
-          # quote from https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#cache-hits-and-misses
-          # If you provide restore-keys, the cache action sequentially searches for any caches that match the list of restore-keys.
-          # If there are no exact matches, the action searches for partial matches of the restore keys.
-          # When the action finds a partial match, the most recent cache is restored to the path directory.
           key: test-durations
+
+      - name: Generate test slices
+        id: matrix
+        run: |
+          MATRIX=$(python3 scripts/run_tests_parallel.py --generate-slices ${{ inputs.slice_count }})
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Run tests slice ${{ matrix.slice.index }}/${{ inputs.slice_count }}
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.generate.outputs.matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -51,7 +67,7 @@ jobs:
           rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until
@@ -80,33 +96,19 @@ jobs:
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
-      - name: Run tests (slice ${{ matrix.slice }}/6)
-        # Per-file isolation via scripts/run_tests_parallel.py: discovers
-        # every test_*.py file under tests/ (excluding integration/ + e2e/),
-        # then runs `python -m pytest <file>` in a freshly-spawned subprocess
+      - name: Run tests (slice ${{ matrix.slice.index }}/${{ inputs.slice_count }})
+        # Per-file isolation via scripts/run_tests.sh: each test file runs
+        # in its own freshly-spawned `python -m pytest <file>` subprocess
         # with bounded parallelism. No xdist, no shared workers, no
         # module-level state leakage between files.
         #
-        # Why per-file (not per-test): per-test spawn cost (~250ms × 17k
-        # tests = 70min CPU minimum) blew the wall-clock budget. Per-file
-        # spawn (~250ms × ~850 files = ~3.5min) fits while still giving
-        # every file a fresh interpreter — the only isolation boundary
-        # that matters in practice (cross-file leakage was the original
-        # flake source; intra-file is the test author's responsibility).
-        #
-        # Why drop xdist entirely: xdist's persistent workers accumulate
-        # state across files, which is exactly the leakage we wanted to
-        # fix. ThreadPoolExecutor + subprocess.run is ~60 lines and does
-        # the job with cleaner semantics.
-        #
-        # Matrix slicing (--slice I/N): files are distributed across 6
-        # jobs by cached duration (LPT algorithm) so each job gets
-        # roughly equal wall time. Without a cache, files default to 2s
-        # estimate and get split roughly evenly by count — still correct,
-        # just not perfectly balanced.
+        # File list is pre-computed by the generate job (--generate-slices)
+        # which runs LPT distribution once and passes the file list to each
+        # matrix job via --files. Previously each job re-discovered files and
+        # re-ran LPT independently — redundant N times.
         run: |
           source .venv/bin/activate
-          python scripts/run_tests_parallel.py --slice ${{ matrix.slice }}/6
+          scripts/run_tests.sh --files '${{ matrix.slice.files }}'
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
@@ -116,7 +118,7 @@ jobs:
       - name: Upload per-slice durations
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-durations-slice-${{ matrix.slice }}
+          name: test-durations-slice-${{ matrix.slice.index }}
           path: test_durations.json
           retention-days: 1
 
@@ -178,7 +180,7 @@ jobs:
           rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until

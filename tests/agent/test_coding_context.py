@@ -23,9 +23,14 @@ def _git_init(path):
         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
         "HOME": str(path),
     }
+    # Commit a source file so the fixture is a real *code* workspace: a bare git
+    # repo with no code no longer flips into the coding posture (see
+    # _detect_profile_name / _has_code_files), so "a code repo" needs code.
+    (Path(path) / "main.py").write_text("print('hi')\n")
     for args in (
         ["init", "-q", "-b", "main"],
-        ["commit", "-q", "--allow-empty", "-m", "init commit"],
+        ["add", "-A"],
+        ["commit", "-q", "-m", "init commit"],
     ):
         subprocess.run([shutil.which("git"), "-C", str(path), *args], check=True, env=env)
 
@@ -46,6 +51,23 @@ class TestIsCodingContext:
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
         _git_init(tmp_path)
+        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
+
+    def test_auto_bare_git_repo_without_code_stays_general(self, tmp_path):
+        # A git repo of only prose (notes/writing/research — a big non-coding use
+        # case) is NOT a code workspace: .git alone must not flip the posture.
+        cfg = {"agent": {"coding_context": "auto"}}
+        env = {
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "HOME": str(tmp_path),
+        }
+        (tmp_path / "notes.md").write_text("# my novel\n")
+        for args in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "notes"]):
+            subprocess.run([shutil.which("git"), "-C", str(tmp_path), *args], check=True, env=env)
+
+        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+        # …but adding a manifest or source file makes it a code workspace.
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
 
     def test_auto_skips_messaging_surfaces(self, tmp_path):

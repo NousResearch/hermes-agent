@@ -55,6 +55,7 @@ export type PetOverlayControl =
   | { type: 'bounds'; bounds: PetOverlayBounds }
   | { type: 'open-app' }
   | { type: 'toggle-app' }
+  | { type: 'scale'; scale: number }
 
 // Persisted across restarts: was the pet popped out, and where on the desktop
 // did the user leave it. Keyed v1; bump if the bounds shape ever changes.
@@ -103,10 +104,24 @@ const OVERLAY_PAD_Y = 200
 const OVERLAY_MIN_W = 240
 const OVERLAY_MIN_H = 300
 
+/**
+ * Window bounds (width/height) that fully contain the pet at a given scale, plus
+ * the padding for its bubble/composer/drag margins. The single source of truth
+ * for both the initial pop-out size and the live wheel-to-scale resize, so the
+ * sprite is never cropped by the window edge no matter how big it's scaled.
+ */
+export function overlayWindowSize(frameW: number, frameH: number, scale: number): { width: number; height: number } {
+  return {
+    width: Math.max(OVERLAY_MIN_W, Math.round(frameW * scale + OVERLAY_PAD_X)),
+    height: Math.max(OVERLAY_MIN_H, Math.round(frameH * scale + OVERLAY_PAD_Y))
+  }
+}
+
 let stateUnsubs: Array<() => void> = []
 let controlUnsub: (() => void) | null = null
 let submitHandler: ((text: string) => void) | null = null
 let openAppHandler: (() => void) | null = null
+let scaleHandler: ((scale: number) => void) | null = null
 
 function currentPayload(): PetOverlayStatePayload {
   return {
@@ -173,8 +188,10 @@ export function popOutPet(petRect: PetOverlayBounds): void {
     return
   }
 
-  const width = Math.max(OVERLAY_MIN_W, Math.round(petRect.width + OVERLAY_PAD_X))
-  const height = Math.max(OVERLAY_MIN_H, Math.round(petRect.height + OVERLAY_PAD_Y))
+  // Size the window off the pet's scale (not the measured rect, which includes
+  // the shadow) so it matches the live resize math exactly — no jump on open.
+  const pet = $petInfo.get()
+  const { width, height } = overlayWindowSize(pet.frameW ?? 192, pet.frameH ?? 208, pet.scale ?? 0.33)
   const x = Math.round(petRect.x - (width - petRect.width) / 2)
   const y = Math.round(petRect.y - (height - petRect.height) / 2)
 
@@ -223,6 +240,11 @@ export function setPetOverlayOpenAppHandler(fn: (() => void) | null): void {
   openAppHandler = fn
 }
 
+/** Register the handler that persists a scale resized via the overlay's Alt+wheel gesture. */
+export function setPetOverlayScaleHandler(fn: ((scale: number) => void) | null): void {
+  scaleHandler = fn
+}
+
 /**
  * Wire the overlay→renderer control channel once. Returns a disposer. Idempotent
  * — a second call while already wired is a no-op.
@@ -245,6 +267,11 @@ export function initPetOverlayBridge(): () => void {
     } else if (payload?.type === 'bounds' && payload.bounds) {
       // The user dragged the overlay to a new desktop spot — remember it.
       saveBounds(payload.bounds)
+    } else if (payload?.type === 'scale' && typeof payload.scale === 'number') {
+      // The user resized the popped-out pet (Alt+wheel) — persist it through
+      // the main renderer's gateway; the new scale rides $petInfo back to the
+      // overlay on the next push, keeping both surfaces in sync.
+      scaleHandler?.(payload.scale)
     } else if (payload?.type === 'open-app') {
       // Mail icon: surface the app on the most recent thread (main.cjs already
       // focused the window before forwarding this) and mark it read.

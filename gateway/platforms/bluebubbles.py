@@ -271,7 +271,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not self.server_url or not self.password:
             logger.error(
                 "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"

@@ -16,9 +16,14 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
-import { getGlobalModelOptions } from '@/hermes'
+import { getGlobalModelOptions, getMoaModels } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { currentPickerSelection, displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import {
+  currentPickerSelection,
+  displayModelName,
+  modelDisplayParts,
+  reasoningEffortLabel
+} from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
@@ -37,7 +42,7 @@ import {
   $currentProvider,
   $currentReasoningEffort
 } from '@/store/session'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+import type { MoaConfigResponse, ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
@@ -64,6 +69,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const [search, setSearch] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const queryClient = useQueryClient()
+  const [activeMoaPreset, setActiveMoaPreset] = useState('')
   // Reactive session state is read from the stores here (not drilled in), so
   // toggling effort/fast/model re-renders this panel in place without forcing
   // the parent to rebuild the menu content (which would close the dropdown).
@@ -84,6 +90,11 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
       return getGlobalModelOptions()
     }
+  })
+
+  const moaOptions = useQuery({
+    queryKey: ['moa-presets'],
+    queryFn: (): Promise<MoaConfigResponse> => getMoaModels()
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
@@ -169,19 +180,24 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     )
   }
 
+  const toggleMoaPreset = async (preset: string) => {
+    if (!activeSessionId) {
+      return
+    }
+
+    await requestGateway('command.dispatch', { name: 'moa', arg: preset, session_id: activeSessionId })
+    setActiveMoaPreset(current => (current === preset ? '' : preset))
+  }
+
   const groups = useMemo(
-    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
+    () =>
+      groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
     [providers, search, optionsModel, optionsProvider, effectiveVisibleModels]
   )
 
   return (
     <>
-      <DropdownMenuSearch
-        aria-label={copy.search}
-        onValueChange={setSearch}
-        placeholder={copy.search}
-        value={search}
-      />
+      <DropdownMenuSearch aria-label={copy.search} onValueChange={setSearch} placeholder={copy.search} value={search} />
 
       <DropdownMenuSeparator className="mx-0" />
 
@@ -231,8 +247,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // defaults when unset). Row label AND submenu read from these so
                 // they never disagree.
                 const preset = modelPresets[modelPresetKey(group.provider.slug, family.id)] ?? {}
-                const effEffort = isCurrent ? currentReasoningEffort : preset.effort ?? ''
-                const effFast = isCurrent ? currentFastMode : preset.fast ?? false
+                const effEffort = isCurrent ? currentReasoningEffort : (preset.effort ?? '')
+                const effFast = isCurrent ? currentFastMode : (preset.fast ?? false)
 
                 const fastControl = resolveFastControl(
                   activeId ?? family.id,
@@ -301,6 +317,29 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
       )}
 
       <DropdownMenuSeparator className="mx-0" />
+
+      {moaOptions.data && Object.keys(moaOptions.data.presets ?? {}).length > 0 ? (
+        <>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
+          {Object.keys(moaOptions.data.presets).map(preset => (
+            <DropdownMenuItem
+              className={dropdownMenuRow}
+              disabled={!activeSessionId}
+              key={`moa:${preset}`}
+              onSelect={event => {
+                event.preventDefault()
+                void toggleMoaPreset(preset)
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
+              {activeMoaPreset === preset ? (
+                <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
+              ) : null}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator className="mx-0" />
+        </>
+      ) : null}
 
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}

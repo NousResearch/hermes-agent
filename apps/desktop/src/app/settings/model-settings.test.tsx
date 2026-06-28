@@ -47,7 +47,14 @@ beforeEach(() => {
         capabilities: { 'hermes-4': { reasoning: true, fast: true } }
       },
       // An unconfigured api_key provider — surfaced by the full-universe payload.
-      { name: 'DeepSeek', slug: 'deepseek', models: [], authenticated: false, auth_type: 'api_key', key_env: 'DEEPSEEK_API_KEY' }
+      {
+        name: 'DeepSeek',
+        slug: 'deepseek',
+        models: [],
+        authenticated: false,
+        auth_type: 'api_key',
+        key_env: 'DEEPSEEK_API_KEY'
+      }
     ]
   })
   getAuxiliaryModels.mockResolvedValue({
@@ -100,7 +107,15 @@ describe('ModelSettings', () => {
 
   it('hides the reasoning/speed defaults when the main model reports no capabilities', async () => {
     getGlobalModelOptions.mockResolvedValueOnce({
-      providers: [{ name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true, capabilities: { 'hermes-4': { reasoning: false, fast: false } } }]
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: ['hermes-4'],
+          authenticated: true,
+          capabilities: { 'hermes-4': { reasoning: false, fast: false } }
+        }
+      ]
     })
 
     await renderModelSettings()

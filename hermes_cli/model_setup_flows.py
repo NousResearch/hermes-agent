@@ -132,6 +132,102 @@ def _model_flow_openrouter(config, current_model=""):
     else:
         print("No change.")
 
+
+def _print_moa_preset(name: str, preset: dict) -> None:
+    """Print the full reference-models + aggregator breakdown for a preset."""
+    print(f"  Preset: {name}")
+    print("  Reference models:")
+    for idx, slot in enumerate(preset.get("reference_models") or [], start=1):
+        print(f"    {idx}. {slot.get('provider')}:{slot.get('model')}")
+    agg = preset.get("aggregator") or {}
+    print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+
+
+def _model_flow_moa(config, current_model=""):
+    """Mixture of Agents virtual provider: pick a preset, then persist it.
+
+    Unlike the other provider flows there is no credential step — MoA is a
+    virtual provider whose presets reference already-configured providers. We
+    always show the preset list (even when there is only one) so the user sees
+    what they are selecting, then print the full preset breakdown on selection.
+    """
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.moa_config import normalize_moa_config
+
+    moa = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
+    presets = moa.get("presets") or {}
+    if not presets:
+        print("No MoA presets configured. Run `hermes moa configure <name>` first.")
+        return
+
+    names = list(presets.keys())
+    default_name = moa.get("default_preset") or names[0]
+
+    # Build labelled rows showing the aggregator so the picker is informative
+    # even before drilling into the full breakdown.
+    rows = []
+    for n in names:
+        agg = (presets[n].get("aggregator") or {})
+        agg_label = f"{agg.get('provider')}:{agg.get('model')}" if agg else ""
+        ref_count = len(presets[n].get("reference_models") or [])
+        suffix = "  ← default" if n == default_name else ""
+        rows.append(f"{n}  (agg {agg_label}, {ref_count} refs){suffix}")
+
+    default_idx = names.index(default_name) if default_name in names else 0
+
+    try:
+        from hermes_cli.setup import _curses_prompt_choice
+
+        idx = _curses_prompt_choice("Select a Mixture of Agents preset:", rows, default_idx)
+    except Exception:
+        print("Select a Mixture of Agents preset:")
+        for i, row in enumerate(rows, 1):
+            marker = "→" if (i - 1) == default_idx else " "
+            print(f"  {marker} {i}. {row}")
+        try:
+            raw = input(f"  Choice [1-{len(rows)}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("No change.")
+            return
+        if not raw:
+            idx = default_idx
+        else:
+            try:
+                idx = max(0, min(len(rows) - 1, int(raw) - 1))
+            except ValueError:
+                print("No change.")
+                return
+
+    if idx is None or idx < 0:
+        print("No change.")
+        return
+
+    selected_name = names[idx]
+    preset = presets[selected_name]
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["default"] = selected_name
+    model["provider"] = "moa"
+    # MoA is a virtual local provider — drop any stale endpoint credentials and
+    # base_url so auto-resolution doesn't keep pointing at the previous real
+    # provider. (clear_model_endpoint_credentials handles api_key/api_mode but
+    # intentionally leaves base_url, so pop it here.)
+    clear_model_endpoint_credentials(model, clear_api_mode=True)
+    model.pop("base_url", None)
+    save_config(cfg)
+    _save_model_choice(selected_name)
+    deactivate_provider()
+
+    print()
+    print(f"Default model set to: {selected_name} (via Mixture of Agents)")
+    _print_moa_preset(selected_name, preset)
+
+
 def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
@@ -2220,6 +2316,64 @@ def _model_flow_bedrock(config, current_model=""):
     else:
         print("  No change.")
 
+def _select_zai_endpoint(current_base: str) -> str:
+    """Present a picker for Z.AI endpoint selection during setup.
+
+    Offers the four official Z.AI endpoints (Global, China, Coding Plan
+    Global, Coding Plan China) plus a custom-proxy option.  The list is
+    sourced from ``ZAI_ENDPOINTS`` in ``hermes_cli.auth`` so it stays in
+    sync with the probe list.
+
+    Returns the selected base URL.  Falls back to *current_base* on cancel
+    or error.
+    """
+    from hermes_cli.main import _prompt_provider_choice
+    from hermes_cli.auth import ZAI_ENDPOINTS
+
+    # Build label + URL pairs from the shared endpoint list.
+    options = [(label, url) for _, url, _, label in ZAI_ENDPOINTS]
+    normalized_current = (current_base or "").strip().rstrip("/")
+
+    # Default to the currently-active option if it matches one of the
+    # known endpoints; otherwise default to the first (Global).
+    default_idx = 0
+    for idx, (_, url) in enumerate(options):
+        if normalized_current == url.rstrip("/"):
+            default_idx = idx
+            break
+    else:
+        if normalized_current:
+            # A custom URL is active — offer "Custom proxy" as the default.
+            default_idx = len(options)
+
+    choices = [f"{label} ({url})" for label, url in options]
+    choices.append("Custom proxy URL")
+
+    selected = _prompt_provider_choice(
+        choices,
+        default=default_idx,
+        title="Select Z.AI / GLM endpoint:",
+    )
+    if selected is None:
+        return current_base
+
+    if selected == len(options):
+        # Custom proxy URL
+        try:
+            override = input(f"Custom base URL [{current_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return current_base
+        if not override:
+            return current_base
+        if not override.startswith(("http://", "https://")):
+            print("  Invalid URL — must start with http:// or https://. Keeping current value.")
+            return current_base
+        return override.rstrip("/")
+
+    return options[selected][1].rstrip("/")
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.main import _prompt_api_key
@@ -2334,19 +2488,29 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             pass
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        override = ""
-    if override and base_url_env:
-        if not override.startswith(("http://", "https://")):
-            print(
-                "  Invalid URL — must start with http:// or https://. Keeping current value."
-            )
-        else:
-            save_env_value(base_url_env, override)
-            effective_base = override
+    if provider_id == "zai":
+        # Z.AI has four official endpoints (Global, China, Coding Plan
+        # Global, Coding Plan China) with separate billing paths.  Present
+        # a picker instead of a plain text input so users can explicitly
+        # choose the endpoint that matches their key type.
+        chosen_base = _select_zai_endpoint(effective_base)
+        if chosen_base and chosen_base != effective_base and base_url_env:
+            save_env_value(base_url_env, chosen_base)
+        effective_base = chosen_base
+    else:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
+        if override and base_url_env:
+            if not override.startswith(("http://", "https://")):
+                print(
+                    "  Invalid URL — must start with http:// or https://. Keeping current value."
+                )
+            else:
+                save_env_value(base_url_env, override)
+                effective_base = override
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)

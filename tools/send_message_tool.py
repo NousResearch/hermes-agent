@@ -478,6 +478,13 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+        from plugins.platforms.telegram.telegram_ids import (
+            parse_telegram_username_target,
+        )
+
+        username = parse_telegram_username_target(target_ref)
+        if username:
+            return username, None, True
     if platform_name == "feishu":
         match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -896,11 +903,38 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- WhatsApp: native media attachment support via the registry's
+    # standalone_sender_fn (plugins/platforms/whatsapp/adapter.py::_standalone_send).
+    # The plugin uploads each file through the local Baileys bridge /send-media
+    # endpoint so images/videos/audio arrive as native bubbles, not documents. #41112
+    if platform == Platform.WHATSAPP and media_files:
+        from gateway.platform_registry import platform_registry as _pr_wa
+        from hermes_cli.plugins import discover_plugins as _dp_wa
+        _dp_wa()
+        _wa_entry = _pr_wa.get("whatsapp")
+        if _wa_entry is None or _wa_entry.standalone_sender_fn is None:
+            return {"error": "WhatsApp plugin not registered or missing standalone_sender_fn"}
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _wa_entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+                thread_id=thread_id,
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -908,7 +942,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp"
         )
 
     last_result = None
@@ -1034,7 +1068,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 bot = Bot(token=token)
         else:
             bot = Bot(token=token)
-        int_chat_id = int(chat_id)
+        from plugins.platforms.telegram.telegram_ids import (
+            normalize_telegram_chat_id,
+        )
+
+        # Telegram accepts a numeric chat_id OR an @username string; normalize
+        # rather than force-int so username home channels don't crash (#13206).
+        int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = {}
         if thread_id is not None:
@@ -1437,56 +1477,70 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
 
 async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
-    """Send via the Matrix adapter so native Matrix media uploads are preserved."""
+    """Send via the Matrix adapter so native Matrix media uploads are preserved.
+
+    When a live gateway adapter is available (i.e. the tool runs inside a
+    running gateway), the persistent connection is reused — one olm/megolm
+    session for all sends.  This avoids per-message E2EE re-init storms
+    that exhaust recipient OTKs and silently drop messages (issue #46310).
+
+    Falls back to an ephemeral connect/disconnect cycle only when no gateway
+    is running (standalone cron, ``hermes send`` CLI).
+    """
+    media_files = media_files or []
+    metadata = {"thread_id": thread_id} if thread_id else None
+
+    # --- Try the live gateway adapter first (persistent E2EE session) ---
+    # Reusing the running gateway's already-connected adapter is the whole
+    # point of #46310: it avoids a per-send login + olm/megolm re-init + OTK
+    # claim that, under burst sends, exhausts recipient one-time keys and
+    # silently drops messages. The import is guarded narrowly (gateway code may
+    # be absent in some standalone contexts); a runner that *exists* but whose
+    # adapter lookup fails is logged rather than silently swallowed, because a
+    # silent fall-through here would re-introduce the exact reconnect storm
+    # this fix prevents.
+    live_adapter = None
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    if runner is not None:
+        try:
+            from gateway.config import Platform
+            live_adapter = runner.adapters.get(Platform.MATRIX)
+        except Exception:
+            logger.warning(
+                "Matrix: live gateway adapter lookup failed; falling back to an "
+                "ephemeral connect (may re-init E2EE per send, see #46310)",
+                exc_info=True,
+            )
+            live_adapter = None
+
+    if live_adapter is not None:
+        # NOTE: the live adapter is owned by the gateway — we must NOT
+        # disconnect it. Correctness here depends on this branch returning
+        # before the ephemeral ``adapter`` is constructed below, so the
+        # ephemeral ``finally`` disconnect never touches the live session.
+        return await _matrix_send_core(
+            live_adapter, chat_id, message, media_files, metadata
+        )
+
+    # --- Fallback: ephemeral adapter (standalone / cron context) ---
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
         return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
 
-    media_files = media_files or []
-
+    adapter = MatrixAdapter(pconfig)
     try:
-        adapter = MatrixAdapter(pconfig)
         connected = await adapter.connect()
         if not connected:
             return _error("Matrix connect failed")
-
-        metadata = {"thread_id": thread_id} if thread_id else None
-        last_result = None
-
-        if message.strip():
-            last_result = await adapter.send(chat_id, message, metadata=metadata)
-            if not last_result.success:
-                return _error(f"Matrix send failed: {last_result.error}")
-
-        for media_path, is_voice in media_files:
-            if not os.path.exists(media_path):
-                return _error(f"Media file not found: {media_path}")
-
-            ext = os.path.splitext(media_path)[1].lower()
-            if ext in _IMAGE_EXTS:
-                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
-            elif ext in _VIDEO_EXTS:
-                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
-            elif ext in _VOICE_EXTS and is_voice:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            elif ext in _AUDIO_EXTS:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            else:
-                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
-
-            if not last_result.success:
-                return _error(f"Matrix media send failed: {last_result.error}")
-
-        if last_result is None:
-            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
-
-        return {
-            "success": True,
-            "platform": "matrix",
-            "chat_id": chat_id,
-            "message_id": last_result.message_id,
-        }
+        return await _matrix_send_core(
+            adapter, chat_id, message, media_files, metadata
+        )
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
     finally:
@@ -1494,6 +1548,45 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             await adapter.disconnect()
         except Exception:
             pass
+
+
+async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
+    """Core send logic shared by live and ephemeral Matrix adapters."""
+    last_result = None
+
+    if message.strip():
+        last_result = await adapter.send(chat_id, message, metadata=metadata)
+        if not last_result.success:
+            return _error(f"Matrix send failed: {last_result.error}")
+
+    for media_path, is_voice in media_files:
+        if not os.path.exists(media_path):
+            return _error(f"Media file not found: {media_path}")
+
+        ext = os.path.splitext(media_path)[1].lower()
+        if ext in _IMAGE_EXTS:
+            last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+        elif ext in _VIDEO_EXTS:
+            last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+        elif ext in _VOICE_EXTS and is_voice:
+            last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+        elif ext in _AUDIO_EXTS:
+            last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+        else:
+            last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+
+        if not last_result.success:
+            return _error(f"Matrix media send failed: {last_result.error}")
+
+    if last_result is None:
+        return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+
+    return {
+        "success": True,
+        "platform": "matrix",
+        "chat_id": chat_id,
+        "message_id": last_result.message_id,
+    }
 
 
 # _send_dingtalk moved to plugins/platforms/dingtalk/adapter.py::_standalone_send,

@@ -82,6 +82,11 @@
       "note": "Keep official CI and security workflow changes."
     },
     {
+      "pattern": "tests/tools/test_stage2_hook_*.py",
+      "action": "upstream",
+      "note": "Upstream c918d07b5 moved stage2 hook contracts to tests/docker/ runtime tests."
+    },
+    {
       "pattern": "brain/*",
       "action": "preserve_custom",
       "note": "Hakua / sovereign identity and brain context files."

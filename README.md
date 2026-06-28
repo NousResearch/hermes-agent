@@ -22,6 +22,8 @@ fallback, controlled social publishing, NotebookLM source packaging, LINE bot
 conversation policy, Galaxy-friendly AITuber sessions, VRChat tooling, and
 provider routing for cost-conscious AI operations.
 
+Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
+
 The aim is not to outgrow upstream Hermes. The aim is to keep the official
 agent current whilst proving that a long-lived personal fork can remain
 disciplined: official security and bug fixes come in promptly, equivalent

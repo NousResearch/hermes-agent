@@ -1,10 +1,8 @@
-import { IconLayoutDashboard } from '@tabler/icons-react'
-
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { Activity, AlertCircle } from '@/lib/icons'
+import { Activity, AlertCircle, LayoutDashboard } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
 import type { StatusResponse } from '@/types/hermes'
@@ -88,7 +86,7 @@ export function GatewayMenuPanel({
               size="icon-sm"
               variant="ghost"
             >
-              <IconLayoutDashboard />
+              <LayoutDashboard />
             </Button>
           </Tip>
         </div>

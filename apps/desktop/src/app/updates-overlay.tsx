@@ -60,6 +60,7 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
+  const updateAvailable = status?.updateAvailable || behind > 0
 
   const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'
@@ -81,10 +82,7 @@ export function UpdatesOverlay() {
 
     if (
       !next &&
-      (apply.stage === 'error' ||
-        apply.stage === 'restart' ||
-        apply.stage === 'manual' ||
-        apply.stage === 'guiSkew')
+      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
     ) {
       resetUpdateApplyState()
     }
@@ -106,9 +104,7 @@ export function UpdatesOverlay() {
           <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
         )}
 
-        {phase === 'guiSkew' && (
-          <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />
-        )}
+        {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
 
         {phase === 'error' && (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
@@ -124,6 +120,7 @@ export function UpdatesOverlay() {
             onRetryCheck={() => void check()}
             status={status}
             target={target}
+            updateAvailable={updateAvailable}
           />
         )}
       </DialogContent>
@@ -139,7 +136,8 @@ function IdleView({
   onLater,
   onRetryCheck,
   status,
-  target
+  target,
+  updateAvailable
 }: {
   behind: number
   checking: boolean
@@ -149,13 +147,17 @@ function IdleView({
   onRetryCheck: () => void
   status: DesktopUpdateStatus | null
   target: UpdateTarget
+  updateAvailable: boolean
 }) {
   const { t } = useI18n()
   const u = t.updates
 
   if (!status && checking) {
     return (
-      <CenteredStatus icon={<Loader className="size-12" label={u.checking} type="lemniscate-bloom" />} title={u.checking} />
+      <CenteredStatus
+        icon={<Loader className="size-12" label={u.checking} type="lemniscate-bloom" />}
+        title={u.checking}
+      />
     )
   }
 
@@ -198,7 +200,7 @@ function IdleView({
     )
   }
 
-  if (behind === 0) {
+  if (!updateAvailable) {
     return (
       <CenteredStatus
         body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
@@ -224,9 +226,7 @@ function IdleView({
         <BrandMark className="size-16" />
 
         <DialogTitle className="text-center text-xl">{title}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {body}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
 
       <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
@@ -254,30 +254,21 @@ function IdleView({
         </Button>
       </div>
 
-      {remaining > 0 && (
-        <p className="text-center text-xs text-muted-foreground">
-          {u.moreChanges(remaining)}
-        </p>
-      )}
+      {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{u.moreChanges(remaining)}</p>}
     </div>
   )
 }
 
-function ManualView({
-  command,
-  message,
-  onDone
-}: {
-  command: string | null
-  message?: string
-  onDone: () => void
-}) {
+function ManualView({ command, message, onDone }: { command: string | null; message?: string; onDone: () => void }) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
 
   const handleCopy = () => {
-    if (!command) return
+    if (!command) {
+      return
+    }
+
     void writeClipboardText(command).then(() => {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1800)
@@ -293,9 +284,7 @@ function ManualView({
           <Terminal className="size-8 text-primary" />
 
           <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
-          <DialogDescription className="text-center text-sm">
-            {message || u.manualPickedUp}
-          </DialogDescription>
+          <DialogDescription className="text-center text-sm">{message || u.manualPickedUp}</DialogDescription>
         </div>
 
         <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
@@ -311,9 +300,7 @@ function ManualView({
         <Terminal className="size-8 text-primary" />
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {u.manualBody}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{u.manualBody}</DialogDescription>
       </div>
 
       <button
@@ -340,9 +327,7 @@ function ManualView({
         </span>
       </button>
 
-      <p className="text-center text-xs text-muted-foreground">
-        {u.manualPickedUp}
-      </p>
+      <p className="text-center text-xs text-muted-foreground">{u.manualPickedUp}</p>
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}
@@ -396,14 +381,10 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
         <Loader className="size-16" label={label} type="lemniscate-bloom" />
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {body}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
 
         {currentMessage ? (
-          <p className="max-w-lg break-words text-center text-xs leading-5 text-muted-foreground">
-            {currentMessage}
-          </p>
+          <p className="max-w-lg break-words text-center text-xs leading-5 text-muted-foreground">{currentMessage}</p>
         ) : null}
       </div>
 
@@ -444,9 +425,7 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
           {message || u.errorBody}
         </DialogDescription>
       }
-      title={
-        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>
-      }
+      title={<DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>}
     >
       <Button className="font-semibold" onClick={onRetry} size="lg">
         {u.tryAgain}

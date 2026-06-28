@@ -63,12 +63,14 @@ _STYLE_HINTS: dict[str, str] = {
 }
 
 _BACKGROUND = (
-    "Center one full-body character on a flat, uniform, high-contrast chroma-key "
-    "background (prefer pure hot magenta #FF00FF unless that color appears on "
-    "the character). The background must completely surround the character: one "
-    "even color with NO gradient, vignette, texture, pattern, scenery, shadow, "
-    "ground line, frame, or border, so it keys out cleanly. The background color "
-    "must not appear anywhere on the character itself. No text, no labels."
+    "Center the character on a SINGLE flat, uniform, high-contrast chroma-key "
+    "background — pure hot magenta #FF00FF (only if magenta appears on the "
+    "character, use pure green #00FF00 instead). The background is ONE continuous "
+    "even color that completely surrounds the character with NO gradient, "
+    "vignette, texture, pattern, scenery, shadow, ground line, frame, border, "
+    "panel, comic cell, gutter line, grid, or divider of any kind, so it keys out "
+    "cleanly. The background color must not appear anywhere on the character. "
+    "No text, no labels, no speech bubbles, no UI."
 )
 
 
@@ -149,8 +151,12 @@ def build_row_prompt(state: str, frame_count: int, concept: str, *, style: str |
         f"(same species, face, colors, markings, proportions, and props), "
         "preserving the same emotional tone/mood (e.g., scary stays scary, cute stays cute), "
         f"draw a single WIDE horizontal strip of {frame_count} animation frames showing {action}. "
-        f"LAYOUT: split the wide strip into {frame_count} equal vertical cells, one "
-        "pose centered in each cell. "
+        f"LAYOUT: arrange {frame_count} poses in ONE horizontal row at equal spacing, "
+        "each pose centered in its own imaginary equal region. Draw NO panel borders, "
+        "NO comic cells, NO boxes, NO vertical divider/gutter lines, NO grid, NO frame "
+        "outlines between poses — the backdrop is one unbroken flat field behind all of them. "
+        "Fill the WHOLE strip with the SAME single flat chroma-key color as the attached "
+        "reference image's background (identical hue in every frame, no per-pose color shifts). "
         f"SPACING (critical): draw each pose at a consistent, healthy, clearly "
         f"visible size (roughly {pose_px}px wide on a {_ASSUMED_STRIP_WIDTH}px "
         f"strip) — do NOT shrink it tiny — but keep its ENTIRE silhouette "
@@ -166,8 +172,9 @@ def build_row_prompt(state: str, frame_count: int, concept: str, *, style: str |
         # so only the action moves — this is what stops the loop sliding/pulsing.
         "REGISTRATION (critical): the character is the SAME height and SAME width "
         "in every frame, drawn at the SAME scale, centered over the SAME point, "
-        "with all feet resting on ONE shared horizontal ground line across the "
-        "whole strip. Keep the body's center, size, and stance fixed frame to "
+        "with all feet aligned to the SAME invisible horizontal baseline across the "
+        "whole strip — this baseline is conceptual ONLY: draw NO ground line, floor, "
+        "platform, horizon, or contact shadow beneath the feet. Keep the body's center, size, and stance fixed frame to "
         "frame — ONLY the limbs/features the action needs may move. Capes, cloaks, "
         "bags, and scarves stay in the SAME place and shape every frame (no "
         "swinging, flowing, or drifting) unless the action itself requires it. No "

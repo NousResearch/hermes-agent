@@ -69,10 +69,7 @@ const PAINTS_TRAILING_GAP: ReadonlySet<BlockGroup> = new Set(['diff', 'user'])
  * assistant block therefore computes the same gap while it streams as the
  * settled segment does once it flushes, so the live area never jumps.
  */
-export const hasLeadGap = (
-  prev: Pick<Msg, 'kind' | 'role'> | undefined,
-  cur: Pick<Msg, 'kind' | 'role'>
-): boolean => {
+export const hasLeadGap = (prev: Pick<Msg, 'kind' | 'role'> | undefined, cur: Pick<Msg, 'kind' | 'role'>): boolean => {
   const group = messageGroup(cur)
 
   if (SELF_SPACED.has(group)) {

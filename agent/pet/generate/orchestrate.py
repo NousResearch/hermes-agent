@@ -38,7 +38,7 @@ _MAX_PARALLEL_GENERATIONS = 4
 # How many times to (re)generate a single row before accepting a best-effort
 # slice. Early attempts demand clean per-pose gutters; the last is lenient so a
 # stubborn row still yields frames instead of dropping out entirely.
-_ROW_GEN_ATTEMPTS = 2
+_ROW_GEN_ATTEMPTS = 3
 _MIN_FILLED_STATES = 6
 _REQUIRED_STATES = frozenset({"idle", "running-right", "waving"})
 

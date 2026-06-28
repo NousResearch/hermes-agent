@@ -71,7 +71,7 @@ const TOOL_HEADER_GLYPH_WRAP_CLASS = 'grid size-3.5 shrink-0 place-items-center 
 
 // Glass-style section label that sits above any pre/JSON/output block.
 // Lowercase tracking + tiny size so it reads as a quiet field label rather
-// than a chrome heading. Used for "COMMAND OUTPUT", "INPUT", "OUTPUT", etc.
+// than a chrome heading. Used for "stdout", "stderr", "Search results", etc.
 const TOOL_SECTION_LABEL_CLASS = 'mb-1 text-[0.65rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)'
 
 // Inset scroll surface for any detail body. The expanded tool row owns the
@@ -423,7 +423,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   return (
     <div
       className={cn(
-        'min-w-0 max-w-full overflow-hidden text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)',
+        'group/tool-block min-w-0 max-w-full overflow-hidden text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)',
         open && TOOL_EXPANDED_SHELL_CLASS
       )}
       data-file-edit={isFileEdit && open ? '' : undefined}
@@ -472,7 +472,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           {copyAction.text && (
             <CopyButton
               appearance="inline"
-              className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/80 px-1 opacity-100 backdrop-blur-sm transition-opacity hover:opacity-100 focus-visible:opacity-100"
+              className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
               iconClassName="size-3"
               label={copyAction.label}
               showLabel={false}
@@ -491,7 +491,9 @@ function ToolEntry({ part }: ToolEntryProps) {
               <SearchResultsList hits={view.searchHits} />
             </div>
           )}
-          {view.inlineDiff && <FileDiffPanel diff={view.inlineDiff} path={isFileEdit ? view.subtitle : undefined} />}
+          {view.inlineDiff && (
+            <FileDiffPanel className="-mt-1.5" diff={view.inlineDiff} path={isFileEdit ? view.subtitle : undefined} />
+          )}
           {showDetail &&
             toolViewMode !== 'technical' &&
             (view.status === 'error' ? (
@@ -522,7 +524,11 @@ function ToolEntry({ part }: ToolEntryProps) {
                   <div className="space-y-0.5">
                     {view.stderr && <p className={TOOL_SECTION_LABEL_CLASS}>stdout</p>}
                     <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-                      {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.stdout)} /> : clampForDisplay(view.stdout)}
+                      {view.rendersAnsi ? (
+                        <AnsiText text={clampForDisplay(view.stdout)} />
+                      ) : (
+                        clampForDisplay(view.stdout)
+                      )}
                     </pre>
                   </div>
                 )}
@@ -535,7 +541,11 @@ function ToolEntry({ part }: ToolEntryProps) {
                         'whitespace-pre-wrap wrap-anywhere text-(--ui-text-tertiary)'
                       )}
                     >
-                      {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.stderr)} /> : clampForDisplay(view.stderr)}
+                      {view.rendersAnsi ? (
+                        <AnsiText text={clampForDisplay(view.stderr)} />
+                      ) : (
+                        clampForDisplay(view.stderr)
+                      )}
                     </pre>
                   </div>
                 )}
@@ -548,7 +558,10 @@ function ToolEntry({ part }: ToolEntryProps) {
                     {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.detail)} /> : clampForDisplay(view.detail)}
                   </pre>
                 ) : (
-                  <CompactMarkdown className={cn(TOOL_SECTION_SURFACE_CLASS, 'wrap-anywhere')} text={clampForDisplay(view.detail)} />
+                  <CompactMarkdown
+                    className={cn(TOOL_SECTION_SURFACE_CLASS, 'wrap-anywhere')}
+                    text={clampForDisplay(view.detail)}
+                  />
                 )}
               </div>
             ))}

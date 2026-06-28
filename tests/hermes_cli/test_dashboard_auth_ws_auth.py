@@ -17,12 +17,6 @@ from types import SimpleNamespace
 
 import pytest
 
-# Phase 5 / Phase 6: these tests mutate ``web_server.app.state.auth_required``
-# at module level. Run them in the same xdist worker so they don't race
-# against each other (and against any other file that also touches
-# ``app.state``) — the marker name is shared across all dashboard-auth test
-# files that gate the app.
-pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server

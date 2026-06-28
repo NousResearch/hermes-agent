@@ -227,7 +227,10 @@ async function statForIpc(fsImpl, resolvedPath, purpose, typeLabel) {
     if (code === 'ENOENT' || code === 'ENOTDIR') {
       throw ipcPathError(code || 'ENOENT', `${purpose} failed: ${typeLabel} does not exist.`)
     }
-    throw ipcPathError(code || 'read-error', `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`)
+    throw ipcPathError(
+      code || 'read-error',
+      `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`
+    )
   }
 }
 
@@ -242,7 +245,10 @@ async function realpathForIpc(fsImpl, resolvedPath, purpose) {
     return realPath
   } catch (error) {
     const code = error && typeof error === 'object' ? error.code : ''
-    throw ipcPathError(code || 'read-error', `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`)
+    throw ipcPathError(
+      code || 'read-error',
+      `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`
+    )
   }
 }
 

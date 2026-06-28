@@ -1,16 +1,5 @@
-import {
-  Brain,
-  type IconComponent,
-  Lock,
-  MessageCircle,
-  Mic,
-  Monitor,
-  Moon,
-  Palette,
-  Sparkles,
-  Sun,
-  Wrench
-} from '@/lib/icons'
+import { codiconIcon } from '@/components/ui/codicon'
+import { Brain, type IconComponent, Lock, MessageCircle, Mic, Monitor, Moon, Palette, Sun, Wrench } from '@/lib/icons'
 import type { ThemeMode } from '@/themes/context'
 
 import { defineFieldCopy } from './field-copy'
@@ -501,7 +490,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   {
     id: 'model',
     label: 'Model',
-    icon: Sparkles,
+    icon: codiconIcon('hubot'),
     keys: ['model_context_length', 'fallback_providers']
   },
   {

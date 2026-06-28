@@ -212,7 +212,14 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     const onDrain = vi.fn()
 
     const { getByTestId } = render(
-      <Harness disabled onCancel={vi.fn()} onDrain={onDrain} onQueue={vi.fn()} onSubmit={onSubmit} queued={['queued-1']} />
+      <Harness
+        disabled
+        onCancel={vi.fn()}
+        onDrain={onDrain}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        queued={['queued-1']}
+      />
     )
 
     const editor = getByTestId('editor')

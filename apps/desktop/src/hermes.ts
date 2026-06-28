@@ -23,6 +23,7 @@ import type {
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
+  MoaConfigResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
@@ -85,6 +86,8 @@ export type {
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
+  MoaConfigResponse,
+  MoaModelSlot,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
@@ -96,6 +99,9 @@ export type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  ProjectFolder,
+  ProjectInfo,
+  ProjectsPayload,
   RpcEvent,
   SessionCreateResponse,
   SessionInfo,
@@ -147,7 +153,9 @@ export async function listSessions(
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
+    path:
+      `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+      `&archived=${archived}&order=${order}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 
@@ -354,10 +362,7 @@ export function getMemoryProviderConfig(provider: string): Promise<MemoryProvide
   })
 }
 
-export function saveMemoryProviderConfig(
-  provider: string,
-  values: Record<string, string>
-): Promise<{ ok: boolean }> {
+export function saveMemoryProviderConfig(provider: string, values: Record<string, string>): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
     method: 'PUT',
@@ -743,6 +748,22 @@ export function getAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
   return window.hermesDesktop.api<AuxiliaryModelsResponse>({
     ...profileScoped(),
     path: '/api/model/auxiliary'
+  })
+}
+
+export function getMoaModels(): Promise<MoaConfigResponse> {
+  return window.hermesDesktop.api<MoaConfigResponse>({
+    ...profileScoped(),
+    path: '/api/model/moa'
+  })
+}
+
+export function saveMoaModels(body: MoaConfigResponse): Promise<MoaConfigResponse & { ok: boolean }> {
+  return window.hermesDesktop.api<MoaConfigResponse & { ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/model/moa',
+    method: 'PUT',
+    body
   })
 }
 

@@ -99,11 +99,22 @@ class TestProviderClass:
 
         with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value={}):
             assert _openrouter().default_model() == DEFAULT_MODEL
-            assert DEFAULT_MODEL == "google/gemini-2.5-flash-image"
+            # Default must be an image-output model id (provider/model form).
+            assert "/" in DEFAULT_MODEL and "image" in DEFAULT_MODEL
+
+    def test_default_chain_prefers_quality_then_fallback(self):
+        from plugins.image_gen.openrouter import _FALLBACK_MODEL, _DEFAULT_MODEL_CHAIN
+
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value={}):
+            chain = _openrouter()._resolve_model_chain()
+        assert chain == list(_DEFAULT_MODEL_CHAIN)
+        assert chain[0].startswith("openai/")
+        assert chain[-1] == _FALLBACK_MODEL
 
     def test_model_env_override(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_IMAGE_MODEL", "black-forest-labs/flux.2-pro")
         assert _openrouter()._resolve_model() == "black-forest-labs/flux.2-pro"
+        assert _openrouter()._resolve_model_chain() == ["black-forest-labs/flux.2-pro"]
 
     def test_model_config_override(self):
         cfg = {"openrouter": {"model": "google/gemini-3.1-flash-image-preview"}}
@@ -152,6 +163,30 @@ class TestHelpers:
         from plugins.image_gen.openrouter import _extract_images
 
         assert _extract_images({"choices": [{"message": {"content": "no image"}}]}) == []
+
+    def test_access_error_hint_for_gated_openai_model(self):
+        from plugins.image_gen.openrouter import _FALLBACK_MODEL, _access_error_hint
+
+        hint = _access_error_hint(
+            "OpenRouter", "openai/gpt-5.4-image-2", "OPENROUTER_IMAGE_MODEL", 404, "No endpoints found"
+        )
+        assert hint is not None
+        assert "openai/gpt-5.4-image-2" in hint
+        assert "OPENROUTER_IMAGE_MODEL" in hint
+        assert _FALLBACK_MODEL in hint
+        # Stays a single line under the humanizer's 200-char truncation.
+        assert "\n" not in hint and len(hint) <= 200
+
+    def test_access_error_hint_ignores_non_openai_models(self):
+        from plugins.image_gen.openrouter import _access_error_hint
+
+        assert _access_error_hint("OpenRouter", "google/gemini-3-pro-image", "X", 404, "boom") is None
+
+    def test_access_error_hint_ignores_unrelated_errors(self):
+        from plugins.image_gen.openrouter import _access_error_hint
+
+        # A 200-class transient with an openai model but no access signal → no hint.
+        assert _access_error_hint("OpenRouter", "openai/gpt-5.4-image-2", "X", 500, "server error") is None
 
 
 # ---------------------------------------------------------------------------
@@ -260,10 +295,11 @@ class TestGenerate:
         resp.raise_for_status.side_effect = req_lib.HTTPError(response=resp)
 
         with patch(_RUNTIME, return_value=_runtime_ok()), \
-             patch("requests.post", return_value=resp):
+             patch("requests.post", return_value=resp) as mock_post:
             result = _openrouter().generate(prompt="a pet")
         assert result["success"] is False
         assert result["error_type"] == "api_error"
+        assert mock_post.call_count == 1
 
     def test_timeout(self):
         import requests as req_lib
@@ -273,6 +309,55 @@ class TestGenerate:
             result = _openrouter().generate(prompt="a pet")
         assert result["success"] is False
         assert result["error_type"] == "timeout"
+
+    def test_access_gated_model_surfaces_hint(self, monkeypatch):
+        """A 404 on an OpenAI image model yields the actionable access hint (not
+        the misleading generic 'check your key' message)."""
+        import requests as req_lib
+
+        monkeypatch.setenv("OPENROUTER_IMAGE_MODEL", "openai/gpt-5.4-image-2")
+        resp = MagicMock()
+        resp.status_code = 404
+        resp.text = "No endpoints found for openai/gpt-5.4-image-2"
+        resp.json.return_value = {"error": {"message": "No endpoints found"}}
+        resp.raise_for_status.side_effect = req_lib.HTTPError(response=resp)
+
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=resp) as mock_post:
+            result = _openrouter().generate(prompt="a pet")
+
+        assert result["success"] is False
+        assert result["error_type"] == "model_access"
+        assert "OpenAI image access" in result["error"]
+        assert mock_post.call_count == 1  # explicit override: no auto-fallback chain
+
+    def test_access_gated_default_model_falls_back_to_gemini(self):
+        import requests as req_lib
+
+        from plugins.image_gen.openrouter import DEFAULT_MODEL, _FALLBACK_MODEL
+
+        gated = MagicMock()
+        gated.status_code = 404
+        gated.text = f"No endpoints found for {DEFAULT_MODEL}"
+        gated.json.return_value = {"error": {"message": "No endpoints found"}}
+        gated.raise_for_status.side_effect = req_lib.HTTPError(response=gated)
+
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", side_effect=[gated, _mock_chat_response([_PNG_DATA_URI])]) as mock_post, \
+             patch(
+                 "plugins.image_gen.openrouter.save_b64_image",
+                 return_value=Path("/tmp/openrouter_gen_fallback.png"),
+             ):
+            result = _openrouter().generate(prompt="a pet")
+
+        assert result["success"] is True
+        assert result["model"] == _FALLBACK_MODEL
+        assert result["image"] == "/tmp/openrouter_gen_fallback.png"
+        assert mock_post.call_count == 2
+        first_model = mock_post.call_args_list[0].kwargs["json"]["model"]
+        second_model = mock_post.call_args_list[1].kwargs["json"]["model"]
+        assert first_model == DEFAULT_MODEL
+        assert second_model == _FALLBACK_MODEL
 
 
 # ---------------------------------------------------------------------------

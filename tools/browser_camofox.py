@@ -562,13 +562,28 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/type",
             {"userId": session["user_id"], "ref": clean_ref, "text": text},
         )
-        return json.dumps({
+        from agent.display import (
+            redact_browser_typed_text_for_display,
+            redact_tool_args_for_display,
+        )
+
+        display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {})["text"]
+
+        response = {
             "success": True,
-            "typed": text,
+            # Match browser_tool.browser_type: run typed text through the
+            # secret-pattern redactor so API keys / tokens don't leak into
+            # tool progress or chat history.  The raw text is still typed into
+            # the page; only the returned display value is redacted.
+            "typed": display_text,
             "element": clean_ref,
-        })
+        }
+        response = redact_browser_typed_text_for_display(response, text)
+        return json.dumps(response)
     except Exception as e:
-        return tool_error(str(e), success=False)
+        from agent.display import redact_browser_typed_text_for_display
+
+        return tool_error(redact_browser_typed_text_for_display(str(e), text), success=False)
 
 
 def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:

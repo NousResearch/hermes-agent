@@ -137,18 +137,11 @@ export function UninstallSection() {
               This removes {pendingOption.consequence}. This can&apos;t be undone.
             </p>
             {summary?.running_app_path && (
-              <p className="mt-1 font-mono text-[0.68rem] text-muted-foreground/60">
-                App: {summary.running_app_path}
-              </p>
+              <p className="mt-1 font-mono text-[0.68rem] text-muted-foreground/60">App: {summary.running_app_path}</p>
             )}
             {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-3">
-              <Button
-                disabled={running}
-                onClick={() => void handleConfirm()}
-                size="sm"
-                variant="destructive"
-              >
+              <Button disabled={running} onClick={() => void handleConfirm()} size="sm" variant="destructive">
                 {running && <Loader2 className="size-3 animate-spin" />}
                 {running ? 'Uninstalling…' : 'Yes, uninstall'}
               </Button>

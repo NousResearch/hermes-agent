@@ -72,7 +72,7 @@ describe.skipIf(onWindows)('execFileNoThrow with daemon-style children', () => {
   // verify by hand: remove `it.skip` and watch the test timeout. This
   // test is here so a reviewer reading the resolveOnExit option knows
   // *why* every clipboard-tool spawn in osc.ts wires it on.
-  it.skip("(documented hang) without resolveOnExit, await never resolves when daemon inherits stdio", async () => {
+  it.skip('(documented hang) without resolveOnExit, await never resolves when daemon inherits stdio', async () => {
     const pidFile = join(scriptDir, 'sleeper-skip.pid')
     const result = await execFileNoThrow(daemonScript, [pidFile], { timeout: 300 })
     trackSleeperPid(pidFile)

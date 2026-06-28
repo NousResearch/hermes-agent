@@ -128,21 +128,14 @@ def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_
     )
 
     assert "\x1b" not in result["output"]
+    # Terminal output now passes code_file=True: ENV-assignment redaction is
+    # skipped (so code constants like MAX_TOKENS=100 aren't corrupted), but a
+    # real sk-/ghp_/JWT-shaped value is STILL masked by _PREFIX_RE. The full
+    # secret never survives; only the leading prefix marker remains. (#33801)
     assert secret not in result["output"]
     assert "OPENAI_API_KEY=" in result["output"]
-    assert "sk-pro..." in result["output"]
-
-
-def test_terminal_output_redaction_preserves_code_like_env_names(monkeypatch, tmp_path):
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
-
-    result, _mock_env = _run_terminal(
-        monkeypatch,
-        tmp_path,
-        output="MAX_TOKENS=100\n",
-    )
-
-    assert result["output"] == "MAX_TOKENS=100"
+    assert "sk-pro" in result["output"]  # prefix marker from _mask_token
+    assert "abc123def456" not in result["output"]  # secret body is gone
 
 
 def test_terminal_output_transform_hook_exception_falls_back(monkeypatch, tmp_path):

@@ -189,11 +189,7 @@ interface RuntimeKeyEvent {
 /** Match an ink ``key`` event against a parsed named key. The ink runtime
  * sets one boolean per named key; ``space`` is a printable char so it
  * arrives as ``ch === ' '`` rather than a dedicated ``key.space`` flag. */
-const _matchesNamedKey = (
-  named: VoiceRecordKeyNamed,
-  key: RuntimeKeyEvent,
-  ch: string
-): boolean => {
+const _matchesNamedKey = (named: VoiceRecordKeyNamed, key: RuntimeKeyEvent, ch: string): boolean => {
   switch (named) {
     case 'backspace':
       return key.backspace === true
@@ -241,7 +237,10 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
     return DEFAULT_VOICE_RECORD_KEY
   }
 
-  const parts = lower.split('+').map(p => p.trim()).filter(Boolean)
+  const parts = lower
+    .split('+')
+    .map(p => p.trim())
+    .filter(Boolean)
 
   if (!parts.length) {
     return DEFAULT_VOICE_RECORD_KEY
@@ -333,9 +332,7 @@ export const formatVoiceRecordKey = (parsed: ParsedVoiceRecordKey): string => {
 
   // Named tokens render in title case (Ctrl+Space, Ctrl+Enter); single
   // chars render upper-case to match the existing Ctrl+B convention.
-  const keyLabel = parsed.named
-    ? parsed.named[0].toUpperCase() + parsed.named.slice(1)
-    : parsed.ch.toUpperCase()
+  const keyLabel = parsed.named ? parsed.named[0].toUpperCase() + parsed.named.slice(1) : parsed.ch.toUpperCase()
 
   return `${modLabel}+${keyLabel}`
 }

@@ -848,7 +848,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Non-fatal — the user saw the initial ack already.
         return SendResult(success=True, message_id=None)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Slack via Socket Mode."""
         if not SLACK_AVAILABLE:
             logger.error(

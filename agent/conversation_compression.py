@@ -90,6 +90,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
     try:
         from agent.auxiliary_client import (
             _resolve_task_provider_model,
+            _try_configured_fallback_for_unavailable_client,
             get_text_auxiliary_client,
         )
         from agent.model_metadata import (
@@ -97,10 +98,6 @@ def check_compression_model_feasibility(agent: Any) -> None:
             get_model_context_length,
         )
 
-        client, aux_model = get_text_auxiliary_client(
-            "compression",
-            main_runtime=agent._current_main_runtime(),
-        )
         # Best-effort aux provider label for the warning message. The
         # configured provider may be "auto", in which case we fall back
         # to the client's base_url hostname so the user can still tell
@@ -109,6 +106,19 @@ def check_compression_model_feasibility(agent: Any) -> None:
             _aux_cfg_provider, _, _, _, _ = _resolve_task_provider_model("compression")
         except Exception:
             _aux_cfg_provider = ""
+        client, aux_model = get_text_auxiliary_client(
+            "compression",
+            main_runtime=agent._current_main_runtime(),
+        )
+        if client is None or not aux_model:
+            fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
+                "compression",
+                _aux_cfg_provider,
+            )
+            if fb_client is not None and fb_model:
+                client, aux_model = fb_client, fb_model
+                if "(" in fb_label and fb_label.endswith(")"):
+                    _aux_cfg_provider = fb_label.rsplit("(", 1)[1][:-1]
         if client is None or not aux_model:
             if _aux_cfg_provider and _aux_cfg_provider != "auto":
                 msg = (
@@ -276,6 +286,29 @@ def replay_compression_warning(agent: Any) -> None:
             agent.status_callback("lifecycle", msg)
         except Exception:
             pass
+
+
+def conversation_history_after_compression(agent: Any, messages: list) -> Optional[list]:
+    """Return the correct flush baseline after a compression boundary.
+
+    Legacy compression rotates to a fresh child session. That child has not
+    seen the compacted transcript through the normal same-turn flush path yet,
+    so callers must clear ``conversation_history`` to ``None`` and let the next
+    persistence call write the whole compacted list.
+
+    In-place compaction is different: ``archive_and_compact()`` has already
+    soft-archived the previous active rows and inserted ``messages`` as the new
+    active live transcript under the same session id. If the same agent turn
+    continues with ``conversation_history=None``, the identity-based flush path
+    treats those already-persisted compacted dicts as new and appends them a
+    second time, doubling the active context and retriggering compression.
+
+    A shallow copy is intentional: it captures the current compacted dict
+    identities as history while allowing later same-turn appends to remain new.
+    """
+    if bool(getattr(agent, "_last_compaction_in_place", False)):
+        return list(messages)
+    return None
 
 
 def compress_context(

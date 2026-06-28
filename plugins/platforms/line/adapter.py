@@ -752,7 +752,7 @@ class LineAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not self.channel_access_token or not self.channel_secret:
             self._set_fatal_error(
                 "config_missing",

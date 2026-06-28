@@ -397,12 +397,96 @@ def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
     # BMP: "BM"
     if raw.startswith(b"BM"):
         return "image/bmp"
-    # HEIC/HEIF: ftypheic / ftypheix / ftypmif1 / ftypmsf1 etc.
-    if len(raw) >= 12 and raw[4:8] == b"ftyp" and raw[8:12] in {
-        b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1", b"heim", b"heis",
-    }:
-        return "image/heic"
+    # ISO-BMFF family (HEIC/HEIF/AVIF): bytes 4..8 == 'ftyp', major brand at 8..12
+    if len(raw) >= 12 and raw[4:8] == b"ftyp":
+        brand = raw[8:12]
+        if brand in {b"avif", b"avis"}:
+            return "image/avif"
+        if brand in {
+            b"heic", b"heix", b"hevc", b"hevx",
+            b"mif1", b"msf1", b"heim", b"heis",
+        }:
+            return "image/heic"
+    # TIFF: II*\0 (little-endian) or MM\0* (big-endian)
+    if raw[:4] in {b"II*\x00", b"MM\x00*"}:
+        return "image/tiff"
+    # ICO: 00 00 01 00 (reserved=0, type=1=icon)
+    if raw[:4] == b"\x00\x00\x01\x00":
+        return "image/x-icon"
+    # SVG: text-based, look for an <svg tag near the start (skip BOM/whitespace)
+    head = raw[:512].lstrip().lower()
+    if head.startswith(b"<?xml") or head.startswith(b"<svg"):
+        if b"<svg" in head:
+            return "image/svg+xml"
     return None
+
+
+# Formats every major vision provider (Anthropic, OpenAI, Gemini, Bedrock)
+# accepts natively. Anything outside this set has to be transcoded to PNG
+# before we declare media_type, otherwise the provider returns HTTP 400
+# ("Could not process image" / "Unsupported image media type") and the
+# whole turn fails with no salvage path.
+#
+# Discord (and a few other chat platforms) freely accept attachments in
+# formats outside this set -- AVIF screenshots from Chromium, HEIC from
+# iPhones, TIFF from scanners, BMP from old Windows tools, ICO -- so users
+# do hit this in practice. SVG is vector and Pillow cannot rasterize it;
+# it is skipped (logged) rather than transcoded.
+_UNIVERSALLY_SUPPORTED_MIMES = frozenset({
+    "image/png", "image/jpeg", "image/gif", "image/webp",
+})
+
+
+def _transcode_to_png(raw: bytes) -> Optional[bytes]:
+    """Decode arbitrary image bytes with Pillow and re-encode as PNG.
+
+    Returns None if Pillow isn't installed or can't decode the input
+    (rare formats, corrupted bytes, missing optional decoder plugin for
+    HEIC/AVIF, or vector formats like SVG). Caller falls back to skipping
+    the image so the rest of the turn still works.
+
+    HEIC/HEIF and AVIF need optional Pillow plugins; we try to register
+    them on demand and swallow ImportError so a missing plugin just
+    looks like 'Pillow can't decode this' rather than crashing.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        logger.info(
+            "image_routing: Pillow not installed; cannot transcode "
+            "non-standard image format to PNG. Install with `pip install Pillow` "
+            "(and `pillow-heif` / `pillow-avif-plugin` for those formats)."
+        )
+        return None
+    # Optional plugin registration. Silent on failure: an unsupported
+    # format will just fall through to Image.open raising below.
+    try:
+        import pillow_heif  # type: ignore
+
+        pillow_heif.register_heif_opener()
+    except Exception:
+        pass
+    try:
+        import pillow_avif  # type: ignore  # noqa: F401  -- registers AVIF on import
+    except Exception:
+        pass
+    try:
+        from io import BytesIO
+
+        with Image.open(BytesIO(raw)) as im:
+            # Pick an output mode PNG can serialise. Anything other than
+            # the standard set gets normalised to RGBA so transparency is
+            # preserved where the source had it.
+            if im.mode not in {"RGB", "RGBA", "L", "LA", "P"}:
+                im = im.convert("RGBA")
+            buf = BytesIO()
+            im.save(buf, format="PNG", optimize=False)
+            return buf.getvalue()
+    except Exception as exc:
+        logger.info(
+            "image_routing: Pillow could not transcode image to PNG -- %s", exc
+        )
+        return None
 
 
 def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
@@ -440,8 +524,18 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
     quality tax just because one other provider is stricter.
 
-    Returns None only if the file can't be read (missing, permission
-    denied, etc.); the caller reports those paths in ``skipped``.
+    Format compatibility IS handled here: if the sniffed MIME isn't one
+    of ``_UNIVERSALLY_SUPPORTED_MIMES`` (i.e. it's something like AVIF,
+    HEIC, BMP, TIFF, or ICO that some providers reject outright), we
+    transcode to PNG with Pillow before declaring media_type. This fixes
+    the user-visible "Could not process image" HTTP 400 from Anthropic on
+    Discord-attached AVIF/HEIC/BMP files.
+
+    Returns None if the file can't be read OR if the format isn't
+    universally supported AND Pillow can't transcode it (Pillow missing,
+    HEIC/AVIF plugin missing, vector format like SVG, corrupt bytes). The
+    caller reports those paths in ``skipped`` and the rest of the turn
+    proceeds.
     """
     try:
         raw = path.read_bytes()
@@ -449,6 +543,22 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
     mime = _guess_mime(path, raw=raw)
+    if mime not in _UNIVERSALLY_SUPPORTED_MIMES:
+        transcoded = _transcode_to_png(raw)
+        if transcoded is None:
+            logger.warning(
+                "image_routing: %s is %s which is not accepted by all major "
+                "vision providers and could not be transcoded to PNG; "
+                "skipping this attachment.",
+                path, mime,
+            )
+            return None
+        logger.info(
+            "image_routing: transcoded %s (%s) -> image/png for provider compatibility",
+            path.name, mime,
+        )
+        raw = transcoded
+        mime = "image/png"
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

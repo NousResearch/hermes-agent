@@ -38,7 +38,7 @@
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
 // exiting. Logs go to stderr; Python supervises restart.
 //
-// Requires spectrum-ts 3.x — pinned exactly in package.json because the SDK
+// Requires spectrum-ts 8.x — pinned exactly in package.json because the SDK
 // ships breaking majors; see README "Upgrading spectrum-ts".
 //
 // Env vars (required):
@@ -405,6 +405,35 @@ async function normalizeBinaryContent(content) {
   return meta;
 }
 
+// Best-effort text preview of a reaction's resolved target Message, so the
+// Python adapter can populate the gateway's `reply_to_text` (context: WHAT was
+// tapped back). The SDK only emits a reaction once it has resolved the full
+// target Message (toReactionMessages bails otherwise), so `target.content` is
+// hydrated here — no extra round trip. Handles plain text and our patched mixed
+// text+attachment groups (first text child); null for attachment/voice-only
+// targets. Capped so one long bubble can't balloon the NDJSON line.
+const REACTION_TARGET_TEXT_CAP = 2000;
+function reactionTargetText(target) {
+  const c = target && typeof target === "object" ? target.content : null;
+  if (!c || typeof c !== "object") return null;
+  let text = null;
+  if (c.type === "text") {
+    text = c.text;
+  } else if (c.type === "group") {
+    for (const item of Array.isArray(c.items) ? c.items : []) {
+      const ic = item && typeof item === "object" ? item.content : null;
+      if (ic && ic.type === "text" && ic.text) {
+        text = ic.text;
+        break;
+      }
+    }
+  }
+  if (typeof text !== "string" || !text) return null;
+  return text.length > REACTION_TARGET_TEXT_CAP
+    ? text.slice(0, REACTION_TARGET_TEXT_CAP)
+    : text;
+}
+
 async function normalizeContent(content) {
   if (!content || typeof content !== "object") {
     return { type: "unknown" };
@@ -426,14 +455,18 @@ async function normalizeContent(content) {
     return { type: "group", items };
   }
   if (content.type === "reaction") {
+    const target = content.target;
     return {
       type: "reaction",
       emoji: content.emoji || "",
-      targetMessageId: content.target?.id ?? null,
+      targetMessageId: target?.id ?? null,
       // Lets Python gate "is this a reaction to one of MY messages" without
       // tracking every outbound id. May be null if the provider doesn't
       // hydrate the target — Python falls back to its own sent-id cache.
-      targetDirection: content.target?.direction ?? null,
+      targetDirection: target?.direction ?? null,
+      // Text of the reacted-to message, so Python can correlate the tapback to
+      // the gateway's reply_to_text. Null for attachment/voice-only targets.
+      targetText: reactionTargetText(target),
     };
   }
   return { type: content.type || "unknown" };

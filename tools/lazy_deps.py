@@ -625,7 +625,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
 
     try:
         venv_root = Path(sys.executable).parent.parent
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
+        from tools.environments.local import hermes_subprocess_env
+        uv_env = hermes_subprocess_env(inherit_credentials=False)
+        uv_env["VIRTUAL_ENV"] = str(venv_root)
 
         # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
         uv_bin = shutil.which("uv")

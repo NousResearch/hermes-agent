@@ -444,13 +444,14 @@ def test_gateway_install_in_container_with_operational_systemd_uses_systemd(monk
     monkeypatch.setattr(gateway, "is_wsl", lambda: False)
     monkeypatch.setattr(gateway, "is_macos", lambda: False)
     monkeypatch.setattr(gateway, "is_managed", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
 
     calls = []
     monkeypatch.setattr(gateway, "prompt_yes_no", lambda question, default=True: calls.append(("prompt", question, default)) or True)
     monkeypatch.setattr(
         gateway,
         "systemd_install",
-        lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append(("install", force, system, run_as_user, enable_on_startup)),
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, **kw: calls.append(("install", force, system, run_as_user, enable_on_startup)),
     )
     monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(("start", system)))
 
@@ -722,7 +723,30 @@ def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):
     assert "--system" in out
 
 
-def test_install_linux_gateway_from_setup_system_choice_without_root_prints_followup(monkeypatch, capsys):
+def test_install_linux_gateway_from_setup_non_root_never_offers_system(monkeypatch, capsys):
+    # Non-root sessions must not be offered system scope, and must never be
+    # handed a `sudo hermes …` self-elevation recipe.
+    captured = {}
+
+    def fake_prompt_choice(_msg, options, default=0):
+        captured["options"] = options
+        return 0  # pick "user"
+
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(gateway, "prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr(gateway, "systemd_install", lambda *a, **k: None)
+
+    scope = gateway.prompt_linux_gateway_install_scope()
+    out = capsys.readouterr().out
+
+    assert scope == "user"
+    assert not any("System service" in opt for opt in captured["options"])
+    assert "sudo hermes" not in out
+
+
+def test_install_linux_gateway_from_setup_system_choice_without_root_no_sudo_recipe(monkeypatch, capsys):
+    # Defensive guard: if "system" is forced non-root (not reachable via wizard),
+    # we refuse and do NOT print a self-elevation recipe.
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
     monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000, raising=False)
     monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
@@ -732,8 +756,8 @@ def test_install_linux_gateway_from_setup_system_choice_without_root_prints_foll
 
     out = capsys.readouterr().out
     assert (scope, did_install) == ("system", False)
-    assert "sudo hermes gateway install --system --run-as-user alice" in out
-    assert "sudo hermes gateway start --system" in out
+    assert "sudo hermes" not in out
+    assert "requires root" in out
 
 
 def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):
@@ -745,7 +769,7 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
     monkeypatch.setattr(
         gateway,
         "systemd_install",
-        lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append((force, system, run_as_user, enable_on_startup)),
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, **kw: calls.append((force, system, run_as_user, enable_on_startup)),
     )
 
     scope, did_install = gateway.install_linux_gateway_from_setup(force=True)
@@ -761,7 +785,7 @@ def test_install_linux_gateway_from_setup_passes_startup_choice(monkeypatch):
     monkeypatch.setattr(
         gateway,
         "systemd_install",
-        lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append((force, system, run_as_user, enable_on_startup)),
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, **kw: calls.append((force, system, run_as_user, enable_on_startup)),
     )
 
     scope, did_install = gateway.install_linux_gateway_from_setup(force=False, enable_on_startup=False)
@@ -775,6 +799,7 @@ def test_gateway_install_can_decline_start_now_and_startup(monkeypatch):
     monkeypatch.setattr(gateway, "is_wsl", lambda: False)
     monkeypatch.setattr(gateway, "is_macos", lambda: False)
     monkeypatch.setattr(gateway, "is_managed", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
 
     answers = iter([False, False])
     calls = []
@@ -782,7 +807,7 @@ def test_gateway_install_can_decline_start_now_and_startup(monkeypatch):
     monkeypatch.setattr(
         gateway,
         "systemd_install",
-        lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append(("install", force, system, run_as_user, enable_on_startup)),
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, **kw: calls.append(("install", force, system, run_as_user, enable_on_startup)),
     )
     monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(("start", system)))
 
@@ -794,6 +819,119 @@ def test_gateway_install_can_decline_start_now_and_startup(monkeypatch):
         ("prompt", "Start the gateway automatically on login/boot with systemd?", True),
         ("install", True, False, None, False),
     ]
+
+
+def test_gateway_install_systemd_honors_start_now_flag(monkeypatch):
+    """--start-now / --no-start-now should bypass the interactive prompt."""
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_managed", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda question, default=True: calls.append(("prompt", question)))
+    monkeypatch.setattr(
+        gateway,
+        "systemd_install",
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, **kw: calls.append(("install", enable_on_startup)),
+    )
+    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(("start",)))
+
+    args = SimpleNamespace(
+        gateway_command="install", force=False, system=False,
+        run_as_user=None, start_now=True, start_on_login=False,
+    )
+    gateway.gateway_command(args)
+
+    assert ("prompt", "Start the gateway now after installing the service?") not in calls
+    assert ("start",) in calls
+    assert ("install", False) in calls
+
+
+def test_gateway_install_systemd_non_tty_uses_defaults(monkeypatch):
+    """Non-TTY stdin (headless/CI) should use True defaults without prompting."""
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_managed", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda question, default=True: calls.append(("prompt", question)))
+    monkeypatch.setattr(
+        gateway,
+        "systemd_install",
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, **kw: calls.append(("install", enable_on_startup)),
+    )
+    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(("start",)))
+
+    args = SimpleNamespace(gateway_command="install", force=False, system=False, run_as_user=None)
+    gateway.gateway_command(args)
+
+    # No prompts — defaults used (start_now=True, start_on_login=True)
+    assert all(c[0] != "prompt" for c in calls)
+    assert ("install", True) in calls
+    assert ("start",) in calls
+
+
+def test_gateway_install_systemd_no_start_now_flag_non_tty(monkeypatch):
+    """--no-start-now in non-TTY should skip starting the service."""
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_managed", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda question, default=True: calls.append(("prompt", question)))
+    monkeypatch.setattr(
+        gateway,
+        "systemd_install",
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, **kw: calls.append(("install", enable_on_startup)),
+    )
+    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(("start",)))
+
+    args = SimpleNamespace(
+        gateway_command="install", force=False, system=False,
+        run_as_user=None, start_now=False, start_on_login=True,
+    )
+    gateway.gateway_command(args)
+
+    assert all(c[0] != "prompt" for c in calls)
+    assert ("install", True) in calls
+    assert ("start",) not in calls
+
+
+def test_gateway_install_noninteractive_skips_legacy_unit_prompt(monkeypatch, tmp_path):
+    """In non-TTY, the legacy-unit removal prompt in systemd_install is skipped.
+
+    Covers the second hidden prompt that --start-now/--start-on-login do not
+    guard. Originally contributed via PR #42124 (kyssta-exe).
+    """
+    monkeypatch.setattr(gateway, "has_legacy_hermes_units", lambda: True)
+
+    calls = []
+    monkeypatch.setattr(
+        gateway,
+        "prompt_yes_no",
+        lambda question, default=True: calls.append(("prompt", question)) or True,
+    )
+    monkeypatch.setattr(gateway, "remove_legacy_hermes_units", lambda interactive=False: calls.append(("remove_legacy",)))
+    monkeypatch.setattr(gateway, "print_legacy_unit_warning", lambda: None)
+
+    fake_path = tmp_path / "hermes-gateway.service"
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: fake_path)
+    monkeypatch.setattr(gateway, "generate_systemd_unit", lambda system=False, run_as_user=None: "[Service]")
+    monkeypatch.setattr(gateway, "_run_systemctl", lambda *a, **kw: None)
+    monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda: None)
+    monkeypatch.setattr(gateway, "print_systemd_scope_conflict_warning", lambda: None)
+    monkeypatch.setattr(gateway, "_service_scope_label", lambda system=False: "user")
+
+    gateway.systemd_install(non_interactive=True)
+
+    # Legacy units removed without prompting.
+    assert ("remove_legacy",) in calls
+    assert all(c[0] != "prompt" for c in calls)
 
 
 def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):

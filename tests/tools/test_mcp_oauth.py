@@ -483,6 +483,51 @@ class TestIsInteractive:
             assert _is_interactive() is False
         assert _is_interactive() is True
 
+    def test_suppression_propagates_across_run_coroutine_threadsafe(self, monkeypatch):
+        """#35927 core: suppression set on the discovery thread MUST reach the
+        coroutine asyncio runs on a *different* (event-loop) thread — that is
+        where the OAuth callback / _is_interactive() actually executes via
+        run_coroutine_threadsafe. A threading.local would NOT propagate here
+        (the original fix's defect); a ContextVar does."""
+        import asyncio
+        import threading
+        import tools.mcp_oauth as mod
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+
+        loop = asyncio.new_event_loop()
+        loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+        loop_thread.start()
+        result = {}
+        try:
+            async def _probe_on_loop_thread():
+                # runs on the loop thread, NOT the one that set suppression
+                return (threading.current_thread() is not discovery_thread,
+                        _is_interactive())
+
+            discovery_thread = None
+
+            def _discovery():
+                nonlocal discovery_thread
+                discovery_thread = threading.current_thread()
+                with mod.suppress_interactive_oauth():
+                    fut = asyncio.run_coroutine_threadsafe(
+                        _probe_on_loop_thread(), loop
+                    )
+                    result["cross_thread"], result["interactive"] = fut.result(timeout=5)
+
+            dt = threading.Thread(target=_discovery)
+            dt.start()
+            dt.join()
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+
+        assert result["cross_thread"] is True, "probe must run on the loop thread"
+        # The whole point: suppression must hold on the loop thread.
+        assert result["interactive"] is False
+
 
 class TestWaitForCallbackNoBlocking:
     """_wait_for_callback() must never call input() — it raises instead."""
@@ -863,3 +908,34 @@ class TestWaitForCallbackSkipIntegration:
                 asyncio.run(_wait_for_callback())
         err = capsys.readouterr().err
         assert "skip" in err.lower()
+
+
+# ---------------------------------------------------------------------------
+# poison_client_registration (GH#36767)
+# ---------------------------------------------------------------------------
+
+class TestPoisonClientRegistration:
+    def test_poison_backs_up_and_removes_client_and_meta(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "srv.json").write_text('{"access_token": "keep-me"}')
+        (d / "srv.client.json").write_text('{"client_id": "dead"}')
+        (d / "srv.meta.json").write_text('{"token_endpoint": "https://idp/token"}')
+
+        removed = storage.poison_client_registration()
+
+        assert removed is True
+        # Client + metadata gone, forcing re-registration on the next flow.
+        assert not (d / "srv.client.json").exists()
+        assert not (d / "srv.meta.json").exists()
+        # Backup of the client file kept for recovery.
+        assert (d / "srv.client.json.bak").read_text() == '{"client_id": "dead"}'
+        # Tokens are intentionally preserved.
+        assert (d / "srv.json").read_text() == '{"access_token": "keep-me"}'
+
+    def test_poison_noop_when_no_client_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        assert storage.poison_client_registration() is False

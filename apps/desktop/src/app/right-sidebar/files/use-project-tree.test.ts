@@ -115,7 +115,9 @@ describe('useProjectTree', () => {
     const readFileDataUrl = vi.fn(async () => `data:text/plain;base64,${btoa('ignored.log\n')}`)
     const gitRoot = vi.fn(async () => '/repo')
     readDir.mockImplementation(async path => {
-      if (path === '/repo') {return ok([{ name: '.gitignore', path: '/repo/.gitignore', isDirectory: false }])}
+      if (path === '/repo') {
+        return ok([{ name: '.gitignore', path: '/repo/.gitignore', isDirectory: false }])
+      }
 
       if (path === '/repo/src') {
         return ok([
@@ -226,9 +228,14 @@ describe('useProjectTree', () => {
   it('falls back to the sanitized workspace dir when the session cwd is gone', async () => {
     const sanitizeWorkspaceCwd = vi.fn(async () => ({ cwd: '/home/me/projects', sanitized: true }))
     readDir.mockImplementation(async path => {
-      if (path === '/deleted/worktree') {return { entries: [], error: 'ENOENT' }}
+      if (path === '/deleted/worktree') {
+        return { entries: [], error: 'ENOENT' }
+      }
 
-      if (path === '/home/me/projects') {return ok([{ name: 'repo', path: '/home/me/projects/repo', isDirectory: true }])}
+      if (path === '/home/me/projects') {
+        return ok([{ name: 'repo', path: '/home/me/projects/repo', isDirectory: true }])
+      }
+
       throw new Error(`unexpected path ${path}`)
     })
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { readDir, sanitizeWorkspaceCwd }

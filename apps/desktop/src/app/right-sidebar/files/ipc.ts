@@ -2,6 +2,7 @@ import ignore from 'ignore'
 
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
 import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { ALWAYS_EXCLUDED } from '@/lib/excluded-paths'
 
 export type ProjectTreeEntry = HermesReadDirEntry
 
@@ -136,7 +137,7 @@ export async function readProjectDir(dirPath: string, rootPath = dirPath): Promi
   }
 
   const result = await readDesktopDir(dirPath)
-  const entries = result?.entries ?? []
+  const entries = (result?.entries ?? []).filter(entry => !ALWAYS_EXCLUDED.has(entry.name))
 
   return { ...result, entries: await filterIgnored(entries, rootPath, dirPath) }
 }

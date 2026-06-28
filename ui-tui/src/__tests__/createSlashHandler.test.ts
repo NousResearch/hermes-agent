@@ -4,6 +4,7 @@ import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
@@ -11,7 +12,7 @@ import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 // export (everything else stays real) and flip the holder per test.
 const envState = { dashboardTuiMode: false }
 vi.mock('../config/env.js', async importActual => {
-  const actual = await importActual<typeof import('../config/env.js')>()
+  const actual = await importActual<typeof EnvModule>()
 
   return {
     ...actual,
@@ -287,10 +288,7 @@ describe('createSlashHandler', () => {
     resetOverlayState()
     expect(createSlashHandler(ctx)('/pet')).toBe(true)
     expect(getOverlayState().petPicker).toBe(false)
-    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
-      'slash.exec',
-      expect.objectContaining({ command: 'pet' })
-    )
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'pet' }))
 
     resetOverlayState()
     expect(createSlashHandler(ctx)('/pet toggle')).toBe(true)
@@ -306,10 +304,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/pet boba')).toBe(true)
     expect(getOverlayState().petPicker).toBe(false)
-    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
-      'slash.exec',
-      expect.objectContaining({ command: 'pet boba' })
-    )
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'pet boba' }))
   })
 
   it('routes /skills inspect <name> to skills.manage', () => {
@@ -556,7 +551,9 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     expect(createSlashHandler(ctx)('/browser connect')).toBe(true)
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chromium-family browser remote debugging at http://127.0.0.1:9222...')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(
+      'checking Chromium-family browser remote debugging at http://127.0.0.1:9222...'
+    )
 
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(

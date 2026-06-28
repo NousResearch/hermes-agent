@@ -569,6 +569,8 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_TELEGRAM_DISABLE_FALLBACK_IPS` | Disable the hard-coded Cloudflare fallback IPs used when DNS fails (`true`/`false`). |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | Grace window before flushing a queued Discord text chunk (default: `0.6`). |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Delay between split chunks when a Discord message exceeds the length limit (default: `2.0`). |
+| `HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS` | Internal bridge for `discord.liveness_interval_seconds` (config.yaml). Interval for the Discord REST liveness probe that detects zombie clients behind dead proxies/NATs (default: `60`; set to `0` to disable). Prefer setting `discord.liveness_interval_seconds` in `config.yaml`. |
+| `HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD` | Internal bridge for `discord.liveness_failure_threshold` (config.yaml). Consecutive probe failures before forcing a Discord reconnect (default: `3`). Prefer setting `discord.liveness_failure_threshold` in `config.yaml`. |
 | `HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS` / `_SPLIT_DELAY_SECONDS` | Matrix equivalents of the Telegram batch knobs. |
 | `HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS` / `_SPLIT_DELAY_SECONDS` / `_MAX_CHARS` / `_MAX_MESSAGES` | Feishu batcher tuning — delay, split delay, max chars per message, max messages per batch. |
 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | Feishu media flush delay. |
@@ -632,7 +634,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_PREFILL_MESSAGES_FILE` | Path to a JSON file of ephemeral prefill messages injected at API-call time. |
 | `HERMES_ALLOW_PRIVATE_URLS` | `true`/`false` — allow tools to fetch localhost/private-network URLs. Off by default in gateway mode. |
 | `HERMES_REDACT_SECRETS` | `true`/`false` — control secret redaction in tool output, logs, and chat responses (default: `true`). |
-| `HERMES_WRITE_SAFE_ROOT` | Optional directory prefix that restricts `write_file`/`patch` writes; paths outside require approval. |
+| `HERMES_WRITE_SAFE_ROOT` | Optional directory prefix that restricts `write_file`/`patch` writes; paths outside require approval. Supports multiple directories separated by `os.pathsep` (`:` on Unix, `;` on Windows). |
 | `HERMES_DISABLE_LAZY_INSTALLS` | Internal bridge var set automatically in the official Docker image to prevent runtime dependency installs into the immutable `/opt/hermes` tree. The user-facing equivalent is `security.allow_lazy_installs: false` in `config.yaml`; do not set this in `.env`. |
 | `HERMES_DISABLE_FILE_STATE_GUARD` | Set to `1` to turn off the "file changed since you read it" guard on `patch`/`write_file`. |
 | `HERMES_CORE_TOOLS` | Comma-separated override for the canonical core tool list (advanced; rarely needed). |

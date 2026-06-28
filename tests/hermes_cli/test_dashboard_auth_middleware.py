@@ -16,12 +16,6 @@ from __future__ import annotations
 
 import pytest
 
-# Phase 5 / Phase 6: these tests mutate ``web_server.app.state.auth_required``
-# at module level. Run them in the same xdist worker so they don't race
-# against each other (and against any other file that also touches
-# ``app.state``) — the marker name is shared across all dashboard-auth test
-# files that gate the app.
-pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
 from fastapi.testclient import TestClient
 from fastapi.responses import Response
 
@@ -396,6 +390,33 @@ def test_gated_require_token_routes_accept_cookie_session(
 def test_login_unknown_provider_returns_404(gated_app):
     r = gated_app.get("/auth/login?provider=nonexistent", follow_redirects=False)
     assert r.status_code == 404
+
+
+def test_login_non_interactive_provider_returns_404_not_500(gated_app):
+    """Regression: a token-only provider (drain) has no login flow, so
+    /auth/login?provider=drain-secret must 404 (not 500 on start_login) and it
+    must not appear in the /api/auth/providers bootstrap.
+    """
+    import secrets
+
+    import plugins.dashboard_auth.drain as drain_plugin
+
+    register_provider(
+        drain_plugin.DrainSecretProvider(secret=secrets.token_urlsafe(48))
+    )
+
+    r = gated_app.get(
+        "/auth/login?provider=drain-secret&next=%2F", follow_redirects=False
+    )
+    assert r.status_code == 404, (
+        f"drain-secret login should 404, not 500: {r.status_code} {r.text}"
+    )
+
+    bootstrap = gated_app.get("/api/auth/providers")
+    assert bootstrap.status_code == 200
+    names = {p["name"] for p in bootstrap.json()["providers"]}
+    assert "drain-secret" not in names
+    assert "stub" in names
 
 
 def test_callback_without_pkce_cookie_returns_400(gated_app):

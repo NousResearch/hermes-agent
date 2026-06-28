@@ -107,7 +107,12 @@ def _custom_provider_extra_body_for_agent(
     base_url: str,
     custom_providers: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    if (provider or "").strip().lower() != "custom":
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm == "custom":
+        provider_key_filter = ""
+    elif provider_norm.startswith("custom:"):
+        provider_key_filter = provider_norm.split(":", 1)[1].strip()
+    else:
         return None
 
     target_url = _normalized_custom_base_url(base_url)
@@ -118,6 +123,13 @@ def _custom_provider_extra_body_for_agent(
     for entry in custom_providers or []:
         if not isinstance(entry, dict):
             continue
+        if provider_key_filter:
+            entry_keys = {
+                str(entry.get("provider_key", "") or "").strip().lower(),
+                str(entry.get("name", "") or "").strip().lower(),
+            }
+            if provider_key_filter not in entry_keys:
+                continue
         if _normalized_custom_base_url(entry.get("base_url")) != target_url:
             continue
         extra_body = entry.get("extra_body")
@@ -757,6 +769,55 @@ def init_agent(
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+    elif agent.provider == "moa":
+        from agent.moa_loop import MoAClient
+        agent.api_mode = "chat_completions"
+
+        # Route reference-model outputs to the agent's tool_progress_callback so
+        # every surface that already consumes it (CLI spinner/scrollback, TUI,
+        # desktop, gateway) can show each reference's answer as a labelled block
+        # before the aggregator acts. The facade emits "moa.reference" and
+        # "moa.aggregating" events; we forward them through the same callback
+        # the tool lifecycle uses. Best-effort and cache-safe — these are
+        # display-only events, they never touch the message history.
+        def _moa_reference_relay(event: str, **kwargs: Any) -> None:
+            cb = getattr(agent, "tool_progress_callback", None)
+            if cb is None:
+                return
+            try:
+                if event == "moa.reference":
+                    label = str(kwargs.get("label") or "")
+                    text = str(kwargs.get("text") or "")
+                    idx = kwargs.get("index")
+                    count = kwargs.get("count")
+                    cb(
+                        "moa.reference",
+                        label,
+                        text,
+                        None,
+                        moa_index=idx,
+                        moa_count=count,
+                    )
+                elif event == "moa.aggregating":
+                    cb(
+                        "moa.aggregating",
+                        str(kwargs.get("aggregator") or ""),
+                        None,
+                        None,
+                        moa_ref_count=kwargs.get("ref_count"),
+                    )
+            except Exception:
+                pass
+
+        agent.client = MoAClient(
+            agent.model or "default",
+            reference_callback=_moa_reference_relay,
+        )
+        agent._client_kwargs = {}
+        agent.api_key = api_key or "moa-virtual-provider"
+        agent.base_url = "moa://local"
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.
@@ -1388,6 +1449,12 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Intent-ack continuation config: "auto" (default — codex_responses only,
+    # the historical gate), true (all api_modes), false (never), or a list of
+    # model-name substrings.  Resolved against the active api_mode/model in the
+    # conversation loop's intent-ack block.
+    agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
+
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance
     # applies to ALL models, not just the model families enforcement
@@ -1762,8 +1829,10 @@ def init_agent(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
             f"by Hermes Agent.  Choose a model with at least "
-            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
-            f"model.context_length in config.yaml to override."
+            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context.  If your server "
+            f"reports a window smaller than the model's true window, set "
+            f"model.context_length in config.yaml to the real value "
+            f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
 
     # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).

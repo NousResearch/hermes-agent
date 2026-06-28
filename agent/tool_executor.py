@@ -26,6 +26,7 @@ from agent.display import (
     build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
+    redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
@@ -505,22 +506,12 @@ def execute_tool_calls_concurrent(
     tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
-        for i, (
-            tc,
-            name,
-            args,
-            middleware_trace,
-            block_result,
-            blocked_by_guardrail,
-        ) in enumerate(parsed_calls, 1):
-            args_str = json.dumps(args, ensure_ascii=False)
+        for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls, 1):
+            display_args = _redact_tool_args_for_display(name, args) or args
+            args_str = json.dumps(display_args, ensure_ascii=False)
             if agent.verbose_logging:
-                print(f"  📞 Tool {i}: {name}({list(args.keys())})")
-                print(
-                    agent._wrap_verbose(
-                        "Args: ", json.dumps(args, indent=2, ensure_ascii=False)
-                    )
-                )
+                print(f"  📞 Tool {i}: {name}({list(display_args.keys())})")
+                print(agent._wrap_verbose("Args: ", json.dumps(display_args, indent=2, ensure_ascii=False)))
             else:
                 args_preview = (
                     args_str[: agent.log_prefix_chars] + "..."
@@ -541,8 +532,9 @@ def execute_tool_calls_concurrent(
             continue
         if agent.tool_progress_callback:
             try:
-                preview = _build_tool_preview(name, args)
-                agent.tool_progress_callback("tool.started", name, preview, args)
+                display_args = _redact_tool_args_for_display(name, args) or args
+                preview = _build_tool_preview(name, display_args)
+                agent.tool_progress_callback("tool.started", name, preview, display_args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -558,7 +550,8 @@ def execute_tool_calls_concurrent(
             continue
         if agent.tool_start_callback:
             try:
-                agent.tool_start_callback(tc.id, name, args)
+                display_args = _redact_tool_args_for_display(name, args) or args
+                agent.tool_start_callback(tc.id, name, display_args)
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -947,7 +940,8 @@ def execute_tool_calls_concurrent(
 
         if not blocked and agent.tool_complete_callback:
             try:
-                agent.tool_complete_callback(tc.id, name, args, function_result)
+                display_args = _redact_tool_args_for_display(name, args) or args
+                agent.tool_complete_callback(tc.id, name, display_args, function_result)
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
@@ -1127,15 +1121,11 @@ def execute_tool_calls_sequential(
             agent._iters_since_skill = 0
 
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
-            args_str = json.dumps(function_args, ensure_ascii=False)
+            display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+            args_str = json.dumps(display_args, ensure_ascii=False)
             if agent.verbose_logging:
-                print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
-                print(
-                    agent._wrap_verbose(
-                        "Args: ",
-                        json.dumps(function_args, indent=2, ensure_ascii=False),
-                    )
-                )
+                print(f"  📞 Tool {i}: {function_name}({list(display_args.keys())})")
+                print(agent._wrap_verbose("Args: ", json.dumps(display_args, indent=2, ensure_ascii=False)))
             else:
                 args_preview = (
                     args_str[: agent.log_prefix_chars] + "..."
@@ -1163,16 +1153,16 @@ def execute_tool_calls_sequential(
 
         if not _execution_blocked and agent.tool_progress_callback:
             try:
-                preview = _build_tool_preview(function_name, function_args)
-                agent.tool_progress_callback(
-                    "tool.started", function_name, preview, function_args
-                )
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                preview = _build_tool_preview(function_name, display_args)
+                agent.tool_progress_callback("tool.started", function_name, preview, display_args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
         if not _execution_blocked and agent.tool_start_callback:
             try:
-                agent.tool_start_callback(tool_call.id, function_name, function_args)
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                agent.tool_start_callback(tool_call.id, function_name, display_args)
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -1461,14 +1451,9 @@ def execute_tool_calls_sequential(
             if agent._should_emit_quiet_tool_messages():
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
-                preview = (
-                    _build_tool_preview(function_name, function_args) or function_name
-                )
-                spinner = KawaiiSpinner(
-                    f"{face} {emoji} {preview}",
-                    spinner_type="dots",
-                    print_fn=agent._print_fn,
-                )
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                preview = _build_tool_preview(function_name, display_args) or function_name
+                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _ce_result = None
             try:
@@ -1516,14 +1501,9 @@ def execute_tool_calls_sequential(
             ):
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
-                preview = (
-                    _build_tool_preview(function_name, function_args) or function_name
-                )
-                spinner = KawaiiSpinner(
-                    f"{face} {emoji} {preview}",
-                    spinner_type="dots",
-                    print_fn=agent._print_fn,
-                )
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                preview = _build_tool_preview(function_name, display_args) or function_name
+                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _mem_result = None
             try:
@@ -1569,14 +1549,9 @@ def execute_tool_calls_sequential(
             ):
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
-                preview = (
-                    _build_tool_preview(function_name, function_args) or function_name
-                )
-                spinner = KawaiiSpinner(
-                    f"{face} {emoji} {preview}",
-                    spinner_type="dots",
-                    print_fn=agent._print_fn,
-                )
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                preview = _build_tool_preview(function_name, display_args) or function_name
+                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _spinner_result = None
             try:
@@ -1791,9 +1766,8 @@ def execute_tool_calls_sequential(
 
         if not _execution_blocked and agent.tool_complete_callback:
             try:
-                agent.tool_complete_callback(
-                    tool_call.id, function_name, function_args, function_result
-                )
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                agent.tool_complete_callback(tool_call.id, function_name, display_args, function_result)
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 

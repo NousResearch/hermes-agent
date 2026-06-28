@@ -258,4 +258,29 @@ describe('resumeSession failure recovery', () => {
 
     expect($resumeFailedSessionId.get()).toBeNull()
   })
+
+  it('resumes via the gateway default (deferred build) — not lazy, no eager opt-out', async () => {
+    // The switch-latency fix lives backend-side: a normal cold resume gets the
+    // gateway's default DEFERRED build (transcript returns immediately, agent
+    // pre-warms in the background). The client must NOT force the synchronous
+    // path (eager_build) and is only `lazy` for subagent watch windows.
+    let resumeParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        resumeParams = params
+
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    await runResume(requestGateway)
+
+    expect(resumeParams).not.toHaveProperty('lazy')
+    expect(resumeParams).not.toHaveProperty('eager_build')
+  })
 })

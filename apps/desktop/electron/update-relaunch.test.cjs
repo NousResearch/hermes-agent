@@ -62,7 +62,10 @@ test('resolveUnpackedRelease is null for AppImage / .deb / .rpm / dev / unresolv
   assert.equal(resolveUnpackedRelease('/usr/lib/hermes/hermes', ROOT, 'linux'), null)
   assert.equal(resolveUnpackedRelease('/opt/Hermes/hermes', ROOT, 'linux'), null)
   // dev electron
-  assert.equal(resolveUnpackedRelease('/home/u/.hermes/hermes-agent/node_modules/electron/dist/electron', ROOT, 'linux'), null)
+  assert.equal(
+    resolveUnpackedRelease('/home/u/.hermes/hermes-agent/node_modules/electron/dist/electron', ROOT, 'linux'),
+    null
+  )
   // empty / missing
   assert.equal(resolveUnpackedRelease('', ROOT, 'linux'), null)
   assert.equal(resolveUnpackedRelease(path.posix.join(UNPACKED, 'hermes'), '', 'linux'), null)

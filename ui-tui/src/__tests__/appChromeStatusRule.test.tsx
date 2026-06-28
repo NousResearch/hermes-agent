@@ -96,7 +96,6 @@ const baseProps = {
   liveSessionCount: 0,
   model: 'opus-4.8',
   sessionStartedAt: null,
-  showCost: false,
   status: 'ready',
   statusColor: DEFAULT_THEME.color.ok,
   t: DEFAULT_THEME,
@@ -130,6 +129,41 @@ describe('StatusRule background-subagent indicator', () => {
     expect(textContent(element)).not.toContain('⛓')
   })
 
+  it('spells out the auto-resume hint when idle with subagents in flight', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 1 }
+    })
+
+    expect(textContent(element)).toContain('resumes when subagent finishes')
+  })
+
+  it('pluralizes the resume hint for multiple in-flight subagents', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 3 }
+    })
+
+    expect(textContent(element)).toContain('resumes when 3 subagents finish')
+  })
+
+  it('hides the resume hint mid-turn (a busy turn owns the indicator)', () => {
+    const element = StatusRule({
+      ...baseProps,
+      busy: true,
+      turnStartedAt: Date.now(),
+      usage: { ...baseProps.usage, active_subagents: 2 }
+    })
+
+    expect(textContent(element)).not.toContain('resumes when')
+  })
+
+  it('omits the resume hint when no subagents are running', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).not.toContain('resumes when')
+  })
+
   it('drops the subagent segment before the bg segment on a narrow terminal', () => {
     // cols=44 is below the subagents breakpoint (92) but the bg breakpoint
     // (88) too — both gone. Assert the lower-priority subagent indicator is
@@ -158,7 +192,6 @@ describe('StatusRule session count click target', () => {
       model: 'kimi-k2.6',
       onSessionCountClick: openSwitcher,
       sessionStartedAt: null,
-      showCost: false,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
@@ -184,12 +217,19 @@ describe('StatusRule session count click target', () => {
       model: 'opus-4.8',
       onSessionCountClick: vi.fn(),
       sessionStartedAt: Date.now() - 60_000,
-      showCost: true,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
       turnStartedAt: null,
-      usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, cost_usd: 0.5, total: 50_000 },
+      usage: {
+        calls: 0,
+        context_max: 200_000,
+        context_percent: 25,
+        context_used: 50_000,
+        input: 0,
+        output: 0,
+        total: 50_000
+      },
       voiceLabel: 'voice off'
     })
 
@@ -198,9 +238,8 @@ describe('StatusRule session count click target', () => {
     // Must-keep essentials survive intact …
     expect(rendered).toContain('ready')
     expect(rendered).toContain('opus 4.8')
-    // … while the low-value tail (session count, cost) is dropped, not truncated.
+    // … while the low-value tail (session count) is dropped, not truncated.
     expect(rendered).not.toContain('3 sessions')
-    expect(rendered).not.toContain('$0.5000')
   })
 })
 
@@ -287,7 +326,9 @@ describe('StatusRule credits notice render priority', () => {
           for (const c of node) {
             const f = findShrinkBoxContaining(c)
 
-            if (f) {return f}
+            if (f) {
+              return f
+            }
           }
         }
 

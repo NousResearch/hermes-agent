@@ -63,7 +63,7 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
     fake_adapter.send.assert_called_once()
     call_msg = fake_adapter.send.call_args[0][1]
-    assert "completed" in call_msg
+    assert "完了しました" in call_msg
 
     conn = kb.connect()
     try:
@@ -121,9 +121,15 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
             timeout=10.0,
         )
 
+    expected_labels = {
+        "gave_up": "再試行後に停止しました",
+        "crashed": "作業プロセスが停止しました",
+        "timed_out": "時間切れになりました",
+    }
+
     # The user is notified about the abnormal event...
     fake_adapter.send.assert_called_once()
-    assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
+    assert expected_labels[kind] in fake_adapter.send.call_args[0][1]
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside
@@ -182,7 +188,7 @@ async def test_notifier_second_blocked_delivers(kanban_home):
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
 
         # Cycle 1: blocked
-        kb.block_task(conn, tid, reason="first block")
+        kb.block_task(conn, tid, reason="最初の停止")
     finally:
         conn.close()
 
@@ -199,7 +205,7 @@ async def test_notifier_second_blocked_delivers(kanban_home):
     conn = kb.connect()
     try:
         kb.unblock_task(conn, tid)
-        kb.block_task(conn, tid, reason="second block")
+        kb.block_task(conn, tid, reason="二回目の停止")
     finally:
         conn.close()
 
@@ -209,9 +215,11 @@ async def test_notifier_second_blocked_delivers(kanban_home):
             timeout=10.0,
         )
 
-    blocked_deliveries = [m for m in delivered_msgs if "blocked" in m]
-    assert "second block" not in blocked_deliveries[0]
-    assert "second block" in blocked_deliveries[1]
+    blocked_deliveries = [m for m in delivered_msgs if "停止しました" in m]
+    assert "二回目の停止" not in blocked_deliveries[0]
+    assert "二回目の停止" in blocked_deliveries[1]
+    assert all("Kanban" not in msg for msg in blocked_deliveries)
+    assert all("blocked" not in msg for msg in blocked_deliveries)
     assert len(blocked_deliveries) == 2, (
         f"Should receive 2 blocked notification, but only get {len(blocked_deliveries)} count\n"
         f"Message {delivered_msgs}"

@@ -58,10 +58,17 @@ class FakeDMChannel:
 
 
 class FakeTextChannel:
-    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "general",
+        guild_name: str = "Hermes Server",
+        category_id: int | None = None,
+    ):
         self.id = channel_id
         self.name = name
         self.guild = SimpleNamespace(name=guild_name)
+        self.category_id = category_id
         self.topic = None
 
     def history(self, *, limit, before, after=None, oldest_first=None):
@@ -280,6 +287,90 @@ async def test_discord_free_response_channel_overrides_mention_requirement(adapt
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "allowed without mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_category_allows_channel(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "555")
+
+    channel = FakeTextChannel(channel_id=789, category_id=555)
+    message = make_message(channel=channel, content="allowed from category")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "allowed from category"
+
+
+def test_discord_channel_keys_preserve_existing_forms_and_add_category_id(adapter):
+    channel = FakeTextChannel(channel_id=789, name="general", category_id=555)
+    message = make_message(channel=channel, content="policy keys")
+
+    assert adapter._discord_channel_keys(message) == {
+        "789",
+        "general",
+        "#general",
+        "555",
+    }
+
+
+def test_discord_thread_channel_keys_include_parent_forms_and_category_id(adapter):
+    parent = FakeTextChannel(channel_id=789, name="general", category_id=555)
+    thread = FakeThread(channel_id=321, name="topic", parent=parent)
+    message = make_message(channel=thread, content="thread policy keys")
+
+    assert adapter._discord_channel_keys(message) == {
+        "321",
+        "topic",
+        "#topic",
+        "789",
+        "general",
+        "#general",
+        "555",
+    }
+
+
+def test_discord_uncached_thread_category_property_does_not_break_policy_keys(
+    adapter, monkeypatch,
+):
+    class ClientException(Exception):
+        pass
+
+    monkeypatch.setattr(discord_platform.discord, "ClientException", ClientException)
+
+    class UncachedThread(FakeThread):
+        @property
+        def category_id(self):
+            raise ClientException("Parent channel not found")
+
+    thread = UncachedThread(channel_id=321, name="topic")
+    thread.parent_id = 789
+    message = make_message(channel=thread, content="uncached thread policy keys")
+
+    assert adapter._discord_channel_keys(message) == {
+        "321",
+        "topic",
+        "#topic",
+        "789",
+    }
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_under_category_is_free_response(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "555")
+
+    parent = FakeTextChannel(channel_id=789, name="general", category_id=555)
+    thread = FakeThread(channel_id=321, name="topic", parent=parent)
+    message = make_message(channel=thread, content="allowed thread from category")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "allowed thread from category"
 
 
 @pytest.mark.asyncio
@@ -1485,4 +1576,3 @@ async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatc
     await adapter._handle_message(message)
 
     adapter._fetch_channel_context.assert_not_awaited()
-

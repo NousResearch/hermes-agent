@@ -130,7 +130,7 @@ _SENTINEL = object()
 
 def _make_interaction(
     user_id, *, channel_id=12345, guild_id=42, in_dm=False, in_thread=False,
-    parent_channel_id=None, user=_SENTINEL, channel_name=None,
+    parent_channel_id=None, category_id=None, user=_SENTINEL, channel_name=None,
 ):
     """Build a mock Discord Interaction with a still-unresponded response.
 
@@ -150,12 +150,17 @@ def _make_interaction(
         channel = discord.Thread()
         channel.id = channel_id
         channel.parent_id = parent_channel_id
+        channel.parent = SimpleNamespace(
+            id=parent_channel_id,
+            name="parent",
+            category_id=category_id,
+        )
         if channel_name is not None:
             channel.name = channel_name
     elif channel_id is None:
         channel = None
     else:
-        channel = SimpleNamespace(id=channel_id)
+        channel = SimpleNamespace(id=channel_id, category_id=category_id)
         if channel_name is not None:
             channel.name = channel_name
 
@@ -344,6 +349,30 @@ async def test_channel_allowlist_matches_by_hash_name(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_channel_category_in_allowlist_passes(adapter, monkeypatch):
+    """Slash auth accepts a text channel whose category ID is allowed."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "5555")
+    interaction = _make_interaction(
+        "100200300", channel_id=9999, category_id=5555,
+    )
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+@pytest.mark.asyncio
+async def test_thread_category_in_allowlist_passes(adapter, monkeypatch):
+    """A thread inherits category scope through its parent text channel."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "5555")
+    interaction = _make_interaction(
+        "100200300",
+        channel_id=9999,
+        in_thread=True,
+        parent_channel_id=7777,
+        category_id=5555,
+    )
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+@pytest.mark.asyncio
 async def test_channel_allowlist_does_not_apply_to_dms(adapter, monkeypatch):
     """DMs ignore channel allowlists and still require user allowlist or opt-in."""
     monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "1111")
@@ -378,6 +407,19 @@ async def test_ignored_channel_matches_by_name(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "cypher")
     interaction = _make_interaction("100200300", channel_id=9999, channel_name="cypher")
     assert await adapter._check_slash_authorization(interaction, "/help") is False
+
+
+@pytest.mark.asyncio
+async def test_channel_category_in_ignorelist_rejects(adapter, monkeypatch, caplog):
+    """Slash auth rejects a channel whose category ID is ignored."""
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "5555")
+    interaction = _make_interaction(
+        "100200300", channel_id=9999, category_id=5555,
+    )
+    with caplog.at_level(logging.WARNING):
+        assert await adapter._check_slash_authorization(interaction, "/help") is False
+    assert any("DISCORD_IGNORED_CHANNELS" in record.message for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------

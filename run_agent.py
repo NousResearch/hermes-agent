@@ -1364,17 +1364,77 @@ class AIAgent:
         # Emoji ranges (Misc Symbols, Dingbats, Emoticons, Supplemental, etc.)
         if ord(last) >= 0x1F300:
             return True
+
+        # MiniMax-M3 truncation heuristic:
+        # When MiniMax-M3 cuts off mid-stream, the truncated content commonly
+        # ends with a backtick that was the start of an inline code span the
+        # model never got to finish (e.g. "...routes inline `" with no closing
+        # pair and no further prose). The literal fingerprint is `` ` ``
+        # followed by a newline somewhere in the trailing ~150 chars.
+        # A legitimately closed inline code span ends with `` ` `` followed by
+        # prose/punctuation OR is a tight pair (a few chars between backticks),
+        # not an unclosed span followed by nothing.
+        if last == '`':
+            tail = stripped[-150:]
+            # Unclosed code span: backtick followed by a newline (the bug's
+            # literal byte signature). The model emitted an opening backtick,
+            # wrote some content including a newline, and got cut off before
+            # the closing backtick or any prose after it.
+            if "`\n" in tail or "`\r\n" in tail:
+                return False
+            # Odd backtick count anywhere in the visible text means an
+            # unclosed inline code span overall.
+            if stripped.count("`") % 2 == 1:
+                return False
         return False
 
     def _is_ollama_glm_backend(self) -> bool:
-        """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
+        """Detect Ollama-hosted GLM models affected by stop misreports.
+
+        Ollama can misreport truncated output as finish_reason='stop'.
+        Detection relies on explicit Ollama signatures:
+        - Port 11434 (Ollama default)
+        - "ollama" in the base URL (e.g. ollama.local, /ollama/ path)
+        - provider explicitly set to "ollama"
+
+        Crucially it does NOT match arbitrary local/private endpoints
+        (LiteLLM/sglang/vLLM/LM Studio proxies, Tailscale boxes), which
+        report finish_reason correctly and were the source of #13971's
+        false-positive truncation continuations.
+        """
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
         if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
             return True
-        return bool(self.base_url and is_local_endpoint(self.base_url))
+        return provider_lower == "ollama"
+
+    def _is_minimax_m3_backend(self) -> bool:
+        """Detect the MiniMax backend affected by stop misreports.
+
+        The MiniMax chat-completions endpoint (served via ``minimax-oauth``
+        or any provider whose id contains ``minimax``) can return
+        ``finish_reason='stop'`` for content that is actually mid-sentence
+        and unterminated. The bug was first observed on MiniMax-M3 but is
+        server-side and applies to any model served by that endpoint.
+
+        Detection also accepts the OpenRouter-style ``MiniMax/...`` model
+        namespace on other providers (e.g. ``MiniMax/MiniMax-M3`` routed via
+        openrouter).
+
+        Detection rejects near-misses like a model named ``my-minimax-m3``
+        served via anthropic, where the bug does not manifest because the
+        request is hitting Anthropic's API, not MiniMax's.
+        """
+        model_lower = (self.model or "").lower()
+        provider_lower = (self.provider or "").lower()
+        if "minimax" in provider_lower:
+            return True
+        # OpenRouter-style namespacing: "MiniMax/MiniMax-M3" etc.
+        if "/" in model_lower and model_lower.split("/", 1)[0] == "minimax":
+            return True
+        return False
 
     def _should_treat_stop_as_truncated(
         self,
@@ -1382,16 +1442,36 @@ class AIAgent:
         assistant_message,
         messages: Optional[list] = None,
     ) -> bool:
-        """Detect conservative stop->length misreports for Ollama-hosted GLM models."""
+        """Detect conservative stop->length misreports.
+
+        Two known-affected backends:
+        1. Ollama-hosted GLM models (existing path, requires prior tool calls).
+        2. MiniMax-M3 (new path, no tool-call requirement) — emits
+           mid-sentence `` ` `` content with finish_reason=stop. Fingerprint
+           is caught in _has_natural_response_ending.
+
+        Both paths return True to flag the message as truncated so the
+        downstream conversation loop can rewrite finish_reason to "length"
+        and trigger the existing continuation-retry path (up to 3 retries).
+        """
         if finish_reason != "stop" or self.api_mode != "chat_completions":
             return False
-        if not self._is_ollama_glm_backend():
+
+        is_ollama_glm = self._is_ollama_glm_backend()
+        is_minimax_m3 = self._is_minimax_m3_backend()
+        if not is_ollama_glm and not is_minimax_m3:
             return False
-        if not any(
-            isinstance(msg, dict) and msg.get("role") == "tool"
-            for msg in (messages or [])
-        ):
-            return False
+
+        if is_ollama_glm:
+            # Ollama-GLM only misreports after tool calls; otherwise it's a
+            # normal stop.
+            if not any(
+                isinstance(msg, dict) and msg.get("role") == "tool"
+                for msg in (messages or [])
+            ):
+                return False
+        # MiniMax-M3 misreports regardless of tool history.
+
         if assistant_message is None or getattr(assistant_message, "tool_calls", None):
             return False
 
@@ -1402,6 +1482,8 @@ class AIAgent:
         visible_text = self._strip_think_blocks(content).strip()
         if not visible_text:
             return False
+        # MiniMax-M3 heuristic needs enough surface area to backtick-pair
+        # check; Ollama-GLM path uses the same min-length guard.
         if len(visible_text) < 20 or not re.search(r"\s", visible_text):
             return False
 

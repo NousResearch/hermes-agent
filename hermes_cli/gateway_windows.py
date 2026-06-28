@@ -809,6 +809,77 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     return argv, working_dir, env_overlay
 
 
+def windowless_gateway_restart_spec(
+    run_argv: list[str],
+) -> tuple[list[str], str, dict[str, str]]:
+    """Rewrite a console-``python.exe`` gateway argv into a windowless one.
+
+    The post-update restart paths build their respawn command from
+    ``get_python_path()`` which returns the venv's console ``python.exe``.
+    On Windows — especially with uv-created venvs — launching that
+    interpreter (even with ``CREATE_NO_WINDOW``) leaves a persistent
+    console window: ``venv\\Scripts\\python.exe`` is a launcher shim that
+    re-execs the *base* console interpreter, which allocates its own
+    conhost.  ``CREATE_NO_WINDOW`` cannot suppress that second window.
+    See ``_resolve_detached_python`` for the gory details.
+
+    This mirrors what ``_build_gateway_argv`` / ``_spawn_detached`` do for
+    a clean start: swap the interpreter for the windowless ``pythonw.exe``
+    (base interpreter for uv venvs) and return the cwd + env overlay
+    (VIRTUAL_ENV, PYTHONPATH) the base interpreter needs to resolve the
+    ``hermes_cli`` package without the venv launcher's site config.
+
+    Returns ``(new_argv, working_dir, env_overlay)``.  ``new_argv``
+    preserves every argument after the interpreter (``-m hermes_cli.main
+    [--profile X] gateway run [--replace]``) verbatim.  On non-Windows, or
+    if ``run_argv`` doesn't start with a resolvable python, the argv is
+    returned unchanged with an empty overlay.
+    """
+    if not run_argv:
+        return run_argv, "", {}
+    if sys.platform != "win32":
+        return run_argv, "", {}
+
+    from hermes_cli.config import get_hermes_home
+    from hermes_cli.gateway import PROJECT_ROOT
+
+    python_exe = run_argv[0]
+    rest = run_argv[1:]
+
+    # Only rewrite when the leading token actually looks like a python
+    # interpreter we can find a windowless sibling for.  If a caller passed
+    # something else (a captured argv whose argv[0] is already pythonw, or a
+    # non-python launcher), leave it alone.
+    try:
+        windowless_python, venv_dir, extra_pythonpath = _resolve_detached_python(
+            python_exe
+        )
+    except Exception:
+        return run_argv, "", {}
+
+    new_argv = [windowless_python, *rest]
+
+    working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
+    project_root = str(PROJECT_ROOT)
+    try:
+        hermes_home = str(Path(get_hermes_home()).resolve())
+    except Exception:
+        hermes_home = ""
+
+    env_overlay: dict[str, str] = {
+        "PYTHONIOENCODING": "utf-8",
+        "HERMES_GATEWAY_DETACHED": "1",
+        "VIRTUAL_ENV": str(venv_dir),
+    }
+    if hermes_home:
+        env_overlay["HERMES_HOME"] = hermes_home
+    _prepend_pythonpath(
+        env_overlay,
+        [project_root, *extra_pythonpath] if extra_pythonpath else [project_root],
+    )
+    return new_argv, working_dir, env_overlay
+
+
 def _spawn_detached(script_path: Path | None = None) -> int:
     """Launch the gateway as a fully detached background process.
 

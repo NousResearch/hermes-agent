@@ -147,6 +147,134 @@ export function buildScheduleString(state: ScheduleBuilderState): string {
   }
 }
 
+/** Parse schedules emitted by buildScheduleString; unknown strings stay custom. */
+export function parseScheduleString(
+  schedule: string,
+): ScheduleBuilderState {
+  const trimmed = schedule.trim();
+  if (!trimmed) return { ...DEFAULT_SCHEDULE_STATE };
+
+  // ISO timestamp (one-shot).
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(trimmed)) {
+    return {
+      ...DEFAULT_SCHEDULE_STATE,
+      mode: "once",
+      onceAt: trimmed.slice(0, 16),
+    };
+  }
+
+  // Recurring interval.
+  const intervalMatch = /^every\s+(\d+)\s*([mhd])$/i.exec(trimmed);
+  if (intervalMatch) {
+    const value = Number.parseInt(intervalMatch[1], 10);
+    const suffix = intervalMatch[2].toLowerCase();
+    const unit: IntervalUnit =
+      suffix === "d" ? "days" : suffix === "h" ? "hours" : "minutes";
+    return {
+      ...DEFAULT_SCHEDULE_STATE,
+      mode: "interval",
+      intervalValue: Number.isFinite(value) && value > 0 ? value : 1,
+      intervalUnit: unit,
+    };
+  }
+
+  // 5-field cron expression.
+  const parsedCron = parseSimpleCronExpression(trimmed);
+  if (parsedCron) {
+    if (parsedCron.mode === "daily") {
+      return { ...DEFAULT_SCHEDULE_STATE, mode: "daily", timeOfDay: parsedCron.time };
+    }
+    if (parsedCron.mode === "weekly") {
+      return {
+        ...DEFAULT_SCHEDULE_STATE,
+        mode: "weekly",
+        timeOfDay: parsedCron.time,
+        weekdays: parsedCron.weekdays ?? [],
+      };
+    }
+    return {
+      ...DEFAULT_SCHEDULE_STATE,
+      mode: "monthly",
+      timeOfDay: parsedCron.time,
+      dayOfMonth: parsedCron.dayOfMonth ?? 1,
+    };
+  }
+
+  // Fallback: preserve the raw string in custom mode.
+  return { ...DEFAULT_SCHEDULE_STATE, mode: "custom", custom: trimmed };
+}
+
+/**
+ * Shared helper: recognise the simple, well-shaped 5-field cron patterns
+ * that both the human-readable describer and the schedule builder care
+ * about. Returns a structured result or ``null`` when the expression has
+ * ranges, steps, per-month rules, or other complexity.
+ */
+function parseSimpleCronExpression(
+  expr: string,
+): { mode: "daily" | "weekly" | "monthly"; time: string; weekdays?: Weekday[]; dayOfMonth?: number } | null {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const [minField, hourField, domField, monField, dowField] = parts;
+
+  if (monField !== "*") return null;
+
+  const isLiteralOrList = (f: string) => /^\d+(,\d+)*$|^\*$/.test(f);
+  if (
+    !isLiteralOrList(minField) ||
+    !isLiteralOrList(hourField) ||
+    !isLiteralOrList(domField) ||
+    !isLiteralOrList(dowField)
+  ) {
+    return null;
+  }
+
+  if (minField === "*" || hourField === "*") return null;
+
+  const minutes = minField.split(",").map((n) => parseInt(n, 10));
+  const hours = hourField.split(",").map((n) => parseInt(n, 10));
+  if (minutes.length !== 1 || hours.length !== 1) return null;
+  if (
+    !Number.isFinite(minutes[0]) ||
+    !Number.isFinite(hours[0]) ||
+    hours[0] < 0 ||
+    hours[0] > 23 ||
+    minutes[0] < 0 ||
+    minutes[0] > 59
+  ) {
+    return null;
+  }
+  const time = `${pad2(hours[0])}:${pad2(minutes[0])}`;
+
+  const domAll = domField === "*";
+  const dowAll = dowField === "*";
+
+  if (domAll && dowAll) {
+    return { mode: "daily", time };
+  }
+
+  if (domAll && !dowAll) {
+    const weekdays: Weekday[] = [];
+    for (const part of dowField.split(",")) {
+      const day = parseInt(part, 10);
+      if (!Number.isFinite(day) || day < 0 || day > 7) return null;
+      const normalized = (day === 7 ? 0 : day) as Weekday;
+      if (!weekdays.includes(normalized)) weekdays.push(normalized);
+    }
+    if (weekdays.length === 0) return null;
+    return { mode: "weekly", time, weekdays };
+  }
+
+  if (!domAll && dowAll) {
+    if (!/^\d+$/.test(domField)) return null;
+    const dom = parseInt(domField, 10);
+    if (!Number.isFinite(dom) || dom < 1 || dom > 31) return null;
+    return { mode: "monthly", time, dayOfMonth: dom };
+  }
+
+  return null;
+}
+
 function parseTimeOfDay(value: string): { hour: number; minute: number } | null {
   if (!value || !/^\d{1,2}:\d{2}$/.test(value)) return null;
   const [hh, mm] = value.split(":");
@@ -273,71 +401,26 @@ function describeCronExpression(
   expr: string,
   strings: ScheduleDescribeStrings,
 ): string | null {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return null;
-  const [minField, hourField, domField, monField, dowField] = parts;
+  const parsed = parseSimpleCronExpression(expr);
+  if (!parsed) return null;
 
-  const month = monField === "*";
-  if (!month) return null; // we don't try to humanize per-month rules
-
-  const isLiteralOrList = (f: string) =>
-    /^\d+(,\d+)*$/.test(f) || /^\*$/.test(f);
-  if (!isLiteralOrList(minField) || !isLiteralOrList(hourField)) return null;
-  if (!isLiteralOrList(domField) || !isLiteralOrList(dowField)) return null;
-
-  // Star minutes/hours would mean "every minute" / "every hour" — we'd
-  // need a step-value handler ("*/15") to describe that cleanly, and
-  // that path is power-user territory. Bail to raw display.
-  if (minField === "*" || hourField === "*") return null;
-
-  const minutes = minField.split(",").map((n) => parseInt(n, 10));
-  const hours = hourField.split(",").map((n) => parseInt(n, 10));
-  if (minutes.length !== 1 || hours.length !== 1) return null;
-  if (
-    !Number.isFinite(minutes[0]) ||
-    !Number.isFinite(hours[0]) ||
-    hours[0] < 0 ||
-    hours[0] > 23 ||
-    minutes[0] < 0 ||
-    minutes[0] > 59
-  ) {
-    return null;
-  }
-  const time = `${pad2(hours[0])}:${pad2(minutes[0])}`;
-
-  const domAll = domField === "*";
-  const dowAll = dowField === "*";
-
-  if (domAll && dowAll) {
-    return strings.dailyAt.replace("{time}", time);
+  if (parsed.mode === "daily") {
+    return strings.dailyAt.replace("{time}", parsed.time);
   }
 
-  if (domAll && !dowAll) {
-    const days = dowField
-      .split(",")
-      .map((n) => parseInt(n, 10))
-      .filter((n) => Number.isFinite(n) && n >= 0 && n <= 6) as Weekday[];
-    if (days.length === 0) return null;
-    const labels = days
+  if (parsed.mode === "weekly") {
+    const labels = (parsed.weekdays ?? [])
       .map((d) => strings.weekdaysShort[d])
       .filter(Boolean)
       .join(", ");
     return strings.weeklyAt
       .replace("{days}", labels)
-      .replace("{time}", time);
+      .replace("{time}", parsed.time);
   }
 
-  if (!domAll && dowAll) {
-    const dom = parseInt(domField, 10);
-    if (!Number.isFinite(dom) || dom < 1 || dom > 31) return null;
-    return strings.monthlyAt
-      .replace("{day}", strings.ordinal(dom))
-      .replace("{time}", time);
-  }
-
-  // Both day-of-month AND day-of-week set is unusual and cron's
-  // OR-semantics for that combo are confusing — fall back to raw.
-  return null;
+  return strings.monthlyAt
+    .replace("{day}", strings.ordinal(parsed.dayOfMonth ?? 1))
+    .replace("{time}", parsed.time);
 }
 
 function pad2(n: number): string {

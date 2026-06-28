@@ -24,7 +24,7 @@ from typing import Any
 from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
 from hermes_cli._subprocess_compat import windows_hide_flags
-
+from tools.environments.local import hermes_subprocess_env
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
@@ -43,8 +43,6 @@ _DEPRECATION_MARKERS = (
     "has been deprecated",
     "no commands will be executed",
 )
-
-
 def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
     """True iff stderr looks like the deprecated gh-copilot extension's banner."""
 
@@ -52,23 +50,17 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
     if not any(req in lower for req in _DEPRECATION_REQUIRED):
         return False
     return any(marker in lower for marker in _DEPRECATION_MARKERS)
-
-
 def _resolve_command() -> str:
     return (
         os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
         or os.getenv("COPILOT_CLI_PATH", "").strip()
         or "copilot"
     )
-
-
 def _resolve_args() -> list[str]:
     raw = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
     if not raw:
         return ["--acp", "--stdio"]
     return shlex.split(raw)
-
-
 def _resolve_home_dir() -> str:
     """Return a stable HOME for child ACP processes."""
     home = os.environ.get("HOME", "").strip()
@@ -92,17 +84,16 @@ def _resolve_home_dir() -> str:
     # subprocess with no HOME; callers can set HERMES_HOME explicitly if they
     # need a different writable dir.
     return "/tmp"
-
-
 def _build_subprocess_env() -> dict[str, str]:
-    env = os.environ.copy()
+    # Copilot ACP is a model-driving CLI executor: it legitimately needs LLM
+    # provider credentials. Route through the central helper so Tier-1 secrets
+    # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
+    env = hermes_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
     env["HOME"] = home
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
     return env
-
-
 def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
@@ -112,8 +103,6 @@ def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
             "message": message,
         },
     }
-
-
 def _permission_denied(message_id: Any) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
@@ -124,8 +113,6 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
             }
         },
     }
-
-
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -199,8 +186,6 @@ def _format_messages_as_prompt(
 
     sections.append("Continue the conversation from the latest user request.")
     return "\n\n".join(section.strip() for section in sections if section and section.strip())
-
-
 def _render_message_content(content: Any) -> str:
     if content is None:
         return ""
@@ -223,8 +208,6 @@ def _render_message_content(content: Any) -> str:
                     parts.append(text.strip())
         return "\n".join(parts).strip()
     return str(content).strip()
-
-
 def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
     if not isinstance(text, str) or not text.strip():
         return [], ""
@@ -297,8 +280,6 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
     cleaned = "\n".join(p.strip() for p in parts if p and p.strip()).strip()
     return extracted, cleaned
 
-
-
 def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
     candidate = Path(path_text)
     if not candidate.is_absolute():
@@ -310,21 +291,15 @@ def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
     except ValueError as exc:
         raise PermissionError(f"Path '{resolved}' is outside the session cwd '{root}'.") from exc
     return resolved
-
-
 class _ACPChatCompletions:
     def __init__(self, client: "CopilotACPClient"):
         self._client = client
 
     def create(self, **kwargs: Any) -> Any:
         return self._client._create_chat_completion(**kwargs)
-
-
 class _ACPChatNamespace:
     def __init__(self, client: "CopilotACPClient"):
         self.completions = _ACPChatCompletions(client)
-
-
 class CopilotACPClient:
     """Minimal OpenAI-client-compatible facade for Copilot ACP."""
 

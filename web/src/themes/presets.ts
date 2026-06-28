@@ -299,6 +299,71 @@ export const defaultLargeTheme: DashboardTheme = {
   },
 };
 
+/**
+ * Código Sin Siesta — port of the @codigosinsiesta/theme v0.7.0 "dark
+ * blueprint" tokens onto the dashboard palette triplet.
+ *
+ * Source of truth: https://github.com/CodigoSinSiesta/theme
+ *   --color-fondo    → background (slate-900 canvas)
+ *   --color-tinta    → midground (slate-100 primary text)
+ *   --color-cielo    → warm-glow tint (sky-400)
+ *   --font-display   → Space Grotesk (themed chrome)
+ *   --font-body      → Inter (body)
+ *   --font-mono      → JetBrains Mono (technical)
+ *   --radius-md      → 1rem corner radius
+ *
+ * We do NOT touch index.css or any component — this is a pure preset
+ * addition so users can pick the CSS look from the ThemeSwitcher. The
+ * existing shadcn-compat cascade in index.css already derives every
+ * card / muted / border token from background+midground via color-mix(),
+ * so injecting the CSS palette triplet propagates automatically.
+ */
+export const codigoSinSiestaTheme: DashboardTheme = {
+  name: "codigo-sin-siesta",
+  label: "Código Sin Siesta",
+  description:
+    "Dark blueprint — cobalto sobre slate-900 con tipografía Space Grotesk · Inter · JetBrains Mono",
+  palette: {
+    background: { hex: "#0f172a", alpha: 1 }, // --color-fondo (slate-900)
+    midground: { hex: "#f1f5f9", alpha: 1 }, // --color-tinta (slate-100)
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(96, 165, 250, 0.28)", // --color-cielo (sky-400) @ 0.28
+    noiseOpacity: 0.85,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontDisplay: `"Space Grotesk", "Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+    baseSize: "15px",
+    lineHeight: "1.6",
+    letterSpacing: "0",
+  },
+  layout: {
+    radius: "1rem", // --radius-md
+    density: "comfortable",
+  },
+  // Pin a few semantic tokens to the CSS-theme equivalents so chart /
+  // badge / destructive reads match the deck palette instead of falling
+  // back to the LENS_0 defaults.
+  colorOverrides: {
+    success: "#34d399", // --color-ok (emerald-400)
+    warning: "#fbbf24", // --color-warn (amber-400)
+    destructive: "#f87171", // --color-err (red-400)
+  },
+  // Data-series accents for Analytics/Models — input reads as slate-300,
+  // output as electric-blue (sky-500 in the V4 palette, the most
+  // recognizable CSS-theme accent).
+  seriesColors: {
+    inputTokenAccent: "#cbd5e1", // --color-tinta2 (slate-300)
+    outputTokenAccent: "#3b82f6", // --color-electrico (blue-500)
+  },
+  swatchColors: ["#0f172a", "#3b82f6", "#60a5fa"], // bg / electric / sky
+  terminalBackground: "#0c1e4f", // --color-marino (navy canvas)
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
@@ -308,4 +373,5 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  "codigo-sin-siesta": codigoSinSiestaTheme,
 };

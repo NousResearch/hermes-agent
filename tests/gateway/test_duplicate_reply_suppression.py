@@ -23,6 +23,7 @@ from gateway.platforms.base import (
     MessageEvent,
     SendResult,
 )
+from gateway.run import _normalize_whitespace, _stream_visible_matches_final
 from gateway.session import SessionSource, build_session_key
 
 
@@ -173,11 +174,15 @@ class TestOnlyFinalStreamDeliverySuppressesFinalSend:
     the fallback final send must still happen so Telegram users don't lose
     the real answer."""
 
-    def _make_mock_stream_consumer(self, already_sent=False, final_response_sent=False):
+    def _make_mock_stream_consumer(self, already_sent=False, final_response_sent=False, visible_prefix="", adapter_requires_finalize=False):
         sc = SimpleNamespace(
             already_sent=already_sent,
             final_response_sent=final_response_sent,
+            _message_id="msg1",
         )
+        sc._visible_prefix = lambda: visible_prefix
+        sc._clean_for_display = lambda t: t
+        sc._adapter_requires_finalize = adapter_requires_finalize
         return sc
 
     def test_partial_stream_output_does_not_set_already_sent(self):
@@ -190,7 +195,10 @@ class TestOnlyFinalStreamDeliverySuppressesFinalSend:
             _is_empty_sentinel = not _final or _final == "(empty)"
             _streamed = bool(sc and getattr(sc, "final_response_sent", False))
             _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
+            _requires_finalize = bool(sc and getattr(sc, "_adapter_requires_finalize", False))
+            _visible_match = _stream_visible_matches_final(sc, _final) and not _requires_finalize
+            _transformed = bool(response.get("response_transformed"))
+            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _visible_match):
                 response["already_sent"] = True
 
         assert "already_sent" not in response
@@ -206,7 +214,10 @@ class TestOnlyFinalStreamDeliverySuppressesFinalSend:
             _is_empty_sentinel = not _final or _final == "(empty)"
             _streamed = bool(sc and getattr(sc, "final_response_sent", False))
             _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
+            _requires_finalize = bool(sc and getattr(sc, "_adapter_requires_finalize", False))
+            _visible_match = _stream_visible_matches_final(sc, _final) and not _requires_finalize
+            _transformed = bool(response.get("response_transformed"))
+            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _visible_match):
                 response["already_sent"] = True
 
         assert "already_sent" not in response
@@ -221,7 +232,10 @@ class TestOnlyFinalStreamDeliverySuppressesFinalSend:
             _is_empty_sentinel = not _final or _final == "(empty)"
             _streamed = bool(sc and getattr(sc, "final_response_sent", False))
             _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
+            _requires_finalize = bool(sc and getattr(sc, "_adapter_requires_finalize", False))
+            _visible_match = _stream_visible_matches_final(sc, _final) and not _requires_finalize
+            _transformed = bool(response.get("response_transformed"))
+            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _visible_match):
                 response["already_sent"] = True
 
         assert response.get("already_sent") is True
@@ -237,7 +251,72 @@ class TestOnlyFinalStreamDeliverySuppressesFinalSend:
             _is_empty_sentinel = not _final or _final == "(empty)"
             _streamed = bool(sc and getattr(sc, "final_response_sent", False))
             _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
+            _requires_finalize = bool(sc and getattr(sc, "_adapter_requires_finalize", False))
+            _visible_match = _stream_visible_matches_final(sc, _final) and not _requires_finalize
+            _transformed = bool(response.get("response_transformed"))
+            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _visible_match):
+                response["already_sent"] = True
+
+        assert "already_sent" not in response
+
+    def test_visible_covers_final_suppresses(self):
+        """When stream consumer visible text already contains the full final
+        answer (e.g. visible ends with cursor/residue), the gateway should
+        suppress the duplicate."""
+        sc = self._make_mock_stream_consumer(visible_prefix="Hello world \u2589")
+        response = {"final_response": "Hello world", "response_previewed": False}
+
+        if sc and isinstance(response, dict) and not response.get("failed"):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            _streamed = bool(sc and getattr(sc, "final_response_sent", False))
+            _previewed = bool(response.get("response_previewed"))
+            _requires_finalize = bool(sc and getattr(sc, "_adapter_requires_finalize", False))
+            _visible_match = _stream_visible_matches_final(sc, _final) and not _requires_finalize
+            _transformed = bool(response.get("response_transformed"))
+            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _visible_match):
+                response["already_sent"] = True
+
+        assert response.get("already_sent") is True
+
+    def test_visible_prefix_of_final_does_not_suppress(self):
+        """When visible text is only a prefix of the final answer (tail not
+        yet delivered), the gateway must send the full response."""
+        sc = self._make_mock_stream_consumer(visible_prefix="Hello")
+        response = {"final_response": "Hello world, here is the answer", "response_previewed": False}
+
+        if sc and isinstance(response, dict) and not response.get("failed"):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            _streamed = bool(sc and getattr(sc, "final_response_sent", False))
+            _previewed = bool(response.get("response_previewed"))
+            _requires_finalize = bool(sc and getattr(sc, "_adapter_requires_finalize", False))
+            _visible_match = _stream_visible_matches_final(sc, _final) and not _requires_finalize
+            _transformed = bool(response.get("response_transformed"))
+            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _visible_match):
+                response["already_sent"] = True
+
+        assert "already_sent" not in response
+
+    def test_visible_covers_final_but_adapter_requires_finalize_does_not_suppress(self):
+        """When the adapter requires explicit finalize, visible-text match
+        alone must not suppress — the gateway must still deliver so the
+        stream consumer can fire a finalize=True edit."""
+        sc = self._make_mock_stream_consumer(
+            visible_prefix="Hello world \u2589",
+            adapter_requires_finalize=True,
+        )
+        response = {"final_response": "Hello world", "response_previewed": False}
+
+        if sc and isinstance(response, dict) and not response.get("failed"):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            _streamed = bool(sc and getattr(sc, "final_response_sent", False))
+            _previewed = bool(response.get("response_previewed"))
+            _requires_finalize = bool(sc and getattr(sc, "_adapter_requires_finalize", False))
+            _visible_match = _stream_visible_matches_final(sc, _final) and not _requires_finalize
+            _transformed = bool(response.get("response_transformed"))
+            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _visible_match):
                 response["already_sent"] = True
 
         assert "already_sent" not in response
@@ -257,10 +336,14 @@ class TestEmptyResponseNotSuppressed:
     already_sent=True."""
 
     def _make_mock_stream_consumer(self, already_sent=False, final_response_sent=False):
-        return SimpleNamespace(
+        sc = SimpleNamespace(
             already_sent=already_sent,
             final_response_sent=final_response_sent,
         )
+        sc._visible_prefix = lambda: ""
+        sc._clean_for_display = lambda t: t
+        sc._adapter_requires_finalize = False
+        return sc
 
     def _apply_suppression_logic(self, response, sc):
         """Reproduce the fixed logic from gateway/run.py return path."""
@@ -269,7 +352,10 @@ class TestEmptyResponseNotSuppressed:
             _is_empty_sentinel = not _final or _final == "(empty)"
             _streamed = bool(sc and getattr(sc, "final_response_sent", False))
             _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
+            _requires_finalize = bool(sc and getattr(sc, "_adapter_requires_finalize", False))
+            _visible_match = _stream_visible_matches_final(sc, _final) and not _requires_finalize
+            _transformed = bool(response.get("response_transformed"))
+            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _visible_match):
                 response["already_sent"] = True
 
     def test_empty_sentinel_not_suppressed_with_already_sent(self):
@@ -313,19 +399,33 @@ class TestQueuedMessageAlreadyStreamed:
     """The queued-message path should skip the first response only when the
     final response was actually streamed."""
 
-    def _make_mock_sc(self, already_sent=False, final_response_sent=False):
-        return SimpleNamespace(
+    def _make_mock_sc(self, already_sent=False, final_response_sent=False, visible_prefix="", adapter_requires_finalize=False):
+        sc = SimpleNamespace(
             already_sent=already_sent,
             final_response_sent=final_response_sent,
+            _message_id="msg1",
         )
+        sc._visible_prefix = lambda: visible_prefix
+        sc._clean_for_display = lambda t: t
+        sc._adapter_requires_finalize = adapter_requires_finalize
+        return sc
 
     def test_queued_path_only_skips_send_when_final_response_was_streamed(self):
         """Partial streamed output alone must not suppress the first response
         before the queued follow-up is processed."""
         _sc = self._make_mock_sc(already_sent=True, final_response_sent=False)
+        result = {"final_response": "hello", "response_previewed": False}
 
+        _previewed = bool(result.get("response_previewed"))
+        _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
         _already_streamed = bool(
-            _sc and getattr(_sc, "final_response_sent", False)
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or _previewed
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+            or (
+                _stream_visible_matches_final(_sc, result.get("final_response", ""))
+                and not _requires_finalize
+            )
         )
 
         assert _already_streamed is False
@@ -333,11 +433,18 @@ class TestQueuedMessageAlreadyStreamed:
     def test_queued_path_detects_confirmed_final_stream_delivery(self):
         """Confirmed final streamed delivery should skip the resend."""
         _sc = self._make_mock_sc(already_sent=True, final_response_sent=True)
-        response = {"response_previewed": False}
+        result = {"final_response": "hello", "response_previewed": False}
 
+        _previewed = bool(result.get("response_previewed"))
+        _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
         _already_streamed = bool(
             (_sc and getattr(_sc, "final_response_sent", False))
-            or bool(response.get("response_previewed"))
+            or _previewed
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+            or (
+                _stream_visible_matches_final(_sc, result.get("final_response", ""))
+                and not _requires_finalize
+            )
         )
 
         assert _already_streamed is True
@@ -346,22 +453,60 @@ class TestQueuedMessageAlreadyStreamed:
         """A response already previewed via the adapter should not be resent
         before processing the queued follow-up."""
         _sc = self._make_mock_sc(already_sent=False, final_response_sent=False)
-        response = {"response_previewed": True}
+        result = {"final_response": "hello", "response_previewed": True}
 
+        _previewed = bool(result.get("response_previewed"))
+        _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
         _already_streamed = bool(
             (_sc and getattr(_sc, "final_response_sent", False))
-            or bool(response.get("response_previewed"))
+            or _previewed
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+            or (
+                _stream_visible_matches_final(_sc, result.get("final_response", ""))
+                and not _requires_finalize
+            )
         )
 
         assert _already_streamed is True
+
+    def test_queued_path_previewed_response_does_not_trigger_media_redelivery(self):
+        """Previewed responses already used the adapter delivery path, so the
+        queued MEDIA backfill must not run for pure preview suppression."""
+        _sc = self._make_mock_sc(already_sent=False, final_response_sent=False)
+        result = {"final_response": "hello MEDIA:/tmp/img.png", "response_previewed": True}
+
+        _previewed = bool(result.get("response_previewed"))
+        _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
+        _stream_confirmed = bool(
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+        )
+        _visible_confirmed = bool(
+            _stream_visible_matches_final(_sc, result.get("final_response", ""))
+            and not _requires_finalize
+        )
+        _already_streamed = bool(_stream_confirmed or _visible_confirmed or _previewed)
+        should_redeliver_media = _stream_confirmed or _visible_confirmed
+
+        assert _already_streamed is True
+        assert should_redeliver_media is False
 
     def test_queued_path_sends_when_not_streamed(self):
         """Nothing was streamed — first response should be sent before
         processing the queued message."""
         _sc = self._make_mock_sc(already_sent=False, final_response_sent=False)
+        result = {"final_response": "hello", "response_previewed": False}
 
+        _previewed = bool(result.get("response_previewed"))
+        _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
         _already_streamed = bool(
-            _sc and getattr(_sc, "final_response_sent", False)
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or _previewed
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+            or (
+                _stream_visible_matches_final(_sc, result.get("final_response", ""))
+                and not _requires_finalize
+            )
         )
 
         assert _already_streamed is False
@@ -369,9 +514,104 @@ class TestQueuedMessageAlreadyStreamed:
     def test_queued_path_with_no_stream_consumer(self):
         """No stream consumer at all (streaming disabled) — not streamed."""
         _sc = None
+        result = {"final_response": "hello", "response_previewed": False}
 
+        _previewed = bool(result.get("response_previewed"))
+        _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
         _already_streamed = bool(
-            _sc and getattr(_sc, "final_response_sent", False)
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or _previewed
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+            or (
+                _stream_visible_matches_final(_sc, result.get("final_response", ""))
+                and not _requires_finalize
+            )
+        )
+
+        assert _already_streamed is False
+
+    def test_queued_path_visible_covers_final_skips_resend(self):
+        """When visible text already contains the full final answer, the
+        queued-message path should skip resending."""
+        _sc = self._make_mock_sc(visible_prefix="Hello world \u2589")
+        result = {"final_response": "Hello world", "response_previewed": False}
+
+        _previewed = bool(result.get("response_previewed"))
+        _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
+        _already_streamed = bool(
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or _previewed
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+            or (
+                _stream_visible_matches_final(_sc, result.get("final_response", ""))
+                and not _requires_finalize
+            )
+        )
+
+        assert _already_streamed is True
+
+    def test_queued_path_visible_confirmed_triggers_media_redelivery(self):
+        """When visible text suppresses the first response, MEDIA tags still
+        need the queued-path backfill because text streaming handled only text."""
+        _sc = self._make_mock_sc(visible_prefix="Hello world")
+        result = {"final_response": "Hello world", "response_previewed": False}
+
+        _previewed = bool(result.get("response_previewed"))
+        _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
+        _stream_confirmed = bool(
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+        )
+        _visible_confirmed = bool(
+            _stream_visible_matches_final(_sc, result.get("final_response", ""))
+            and not _requires_finalize
+        )
+        _already_streamed = bool(_stream_confirmed or _visible_confirmed or _previewed)
+        should_redeliver_media = _stream_confirmed or _visible_confirmed
+
+        assert _already_streamed is True
+        assert _visible_confirmed is True
+        assert should_redeliver_media is True
+
+    def test_queued_path_visible_prefix_of_final_still_sends(self):
+        """When visible text is only a prefix, the queued-message path must
+        still send the first response."""
+        _sc = self._make_mock_sc(visible_prefix="Hello")
+        result = {"final_response": "Hello world, here is the answer", "response_previewed": False}
+
+        _previewed = bool(result.get("response_previewed"))
+        _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
+        _already_streamed = bool(
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or _previewed
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+            or (
+                _stream_visible_matches_final(_sc, result.get("final_response", ""))
+                and not _requires_finalize
+            )
+        )
+
+        assert _already_streamed is False
+
+    def test_queued_path_visible_covers_final_but_requires_finalize_still_sends(self):
+        """When the adapter requires explicit finalize, visible-text match
+        alone must not skip the queued-message first-response delivery."""
+        _sc = self._make_mock_sc(
+            visible_prefix="Hello world \u2589",
+            adapter_requires_finalize=True,
+        )
+        result = {"final_response": "Hello world", "response_previewed": False}
+
+        _previewed = bool(result.get("response_previewed"))
+        _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
+        _already_streamed = bool(
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or _previewed
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+            or (
+                _stream_visible_matches_final(_sc, result.get("final_response", ""))
+                and not _requires_finalize
+            )
         )
 
         assert _already_streamed is False
@@ -485,16 +725,24 @@ class TestFinalContentDeliveredSuppression:
             final_response_sent=False,
             final_content_delivered=True,
         )
+        sc._visible_prefix = lambda: ""
+        sc._clean_for_display = lambda t: t
+        sc._adapter_requires_finalize = False
         response = {"final_response": "Hello!", "response_previewed": False}
 
         _streamed = bool(getattr(sc, "final_response_sent", False))
         _previewed = bool(response.get("response_previewed"))
         _content_delivered = bool(getattr(sc, "final_content_delivered", False))
+        _requires_finalize = bool(getattr(sc, "_adapter_requires_finalize", False))
+        _visible_match = _stream_visible_matches_final(sc, response.get("final_response", "")) and not _requires_finalize
         _is_empty_sentinel = (
             not response.get("final_response")
             or response.get("final_response") == "(empty)"
         )
-        if not _is_empty_sentinel and (_streamed or _previewed or _content_delivered):
+        _transformed = bool(response.get("response_transformed"))
+        if not _is_empty_sentinel and not _transformed and (
+            _streamed or _previewed or _content_delivered or _visible_match
+        ):
             response["already_sent"] = True
 
         assert response.get("already_sent") is True
@@ -507,16 +755,160 @@ class TestFinalContentDeliveredSuppression:
             final_response_sent=False,
             final_content_delivered=False,
         )
+        sc._visible_prefix = lambda: ""
+        sc._clean_for_display = lambda t: t
+        sc._adapter_requires_finalize = False
         response = {"final_response": "Real answer", "response_previewed": False}
 
         _streamed = bool(getattr(sc, "final_response_sent", False))
         _previewed = bool(response.get("response_previewed"))
         _content_delivered = bool(getattr(sc, "final_content_delivered", False))
+        _requires_finalize = bool(getattr(sc, "_adapter_requires_finalize", False))
+        _visible_match = _stream_visible_matches_final(sc, response.get("final_response", "")) and not _requires_finalize
         _is_empty_sentinel = (
             not response.get("final_response")
             or response.get("final_response") == "(empty)"
         )
-        if not _is_empty_sentinel and (_streamed or _previewed or _content_delivered):
+        _transformed = bool(response.get("response_transformed"))
+        if not _is_empty_sentinel and not _transformed and (
+            _streamed or _previewed or _content_delivered or _visible_match
+        ):
             response["already_sent"] = True
 
         assert "already_sent" not in response
+
+
+# ===================================================================
+# Test 6: run.py — _stream_visible_matches_final helper
+# ===================================================================
+
+
+class TestNormalizeWhitespace:
+    """Unit tests for _normalize_whitespace — the normalization step used by
+    _stream_visible_matches_final to compare visible and final text."""
+
+    def test_collapse_multiple_spaces(self):
+        assert _normalize_whitespace("hello   world") == "hello world"
+
+    def test_collapse_newlines(self):
+        assert _normalize_whitespace("line1\n\nline2\n") == "line1 line2"
+
+    def test_collapse_tabs(self):
+        assert _normalize_whitespace("\thello\t\tworld") == "hello world"
+
+    def test_strip_edges(self):
+        assert _normalize_whitespace("  foo  ") == "foo"
+
+    def test_mixed_whitespace(self):
+        assert _normalize_whitespace("a  \n\t\n  b") == "a b"
+
+    def test_no_whitespace(self):
+        assert _normalize_whitespace("hello") == "hello"
+
+    def test_only_whitespace(self):
+        assert _normalize_whitespace("   \n\t  ") == ""
+
+    def test_empty_string(self):
+        assert _normalize_whitespace("") == ""
+
+    def test_none_input(self):
+        assert _normalize_whitespace(None) == ""
+
+
+class TestStreamVisibleMatchesFinal:
+    """Unit tests for _stream_visible_matches_final — the tolerant comparison
+    used when stream consumer flags are lost but visible text already shows
+    the final answer."""
+
+    @staticmethod
+    def _make_sc(visible_prefix="", clean_fn=None):
+        sc = SimpleNamespace()
+        sc._message_id = "msg1"
+        sc._visible_prefix = lambda: visible_prefix
+        if clean_fn is None:
+            clean_fn = lambda t: t
+        sc._clean_for_display = clean_fn
+        return sc
+
+    def test_returns_false_when_sc_is_none(self):
+        assert _stream_visible_matches_final(None, "hello") is False
+
+    def test_returns_false_when_final_is_empty(self):
+        sc = self._make_sc(visible_prefix="hello")
+        assert _stream_visible_matches_final(sc, "") is False
+
+    def test_returns_false_when_visible_is_empty(self):
+        sc = self._make_sc(visible_prefix="")
+        assert _stream_visible_matches_final(sc, "hello") is False
+
+    def test_exact_match_normalised(self):
+        sc = self._make_sc(visible_prefix="hello world")
+        assert _stream_visible_matches_final(sc, "hello  world") is True
+
+    def test_visible_starts_with_final(self):
+        # visible shows full answer plus trailing cursor/residue
+        sc = self._make_sc(visible_prefix="hello world \u2589")
+        assert _stream_visible_matches_final(sc, "hello world") is True
+
+    def test_final_starts_with_visible_not_matched(self):
+        # visible is only a prefix of final — must NOT suppress
+        # (the tail still needs to be delivered)
+        sc = self._make_sc(visible_prefix="hello wor")
+        assert _stream_visible_matches_final(sc, "hello world") is False
+
+    def test_final_starts_with_visible_low_coverage(self):
+        # visible shows too little — should NOT match
+        sc = self._make_sc(visible_prefix="he")
+        assert _stream_visible_matches_final(sc, "hello world and more text") is False
+
+    def test_clean_for_display_applied_to_final(self):
+        clean_fn = lambda t: t.replace("MEDIA:/tmp/img.png", "").strip()
+        sc = self._make_sc(
+            visible_prefix="Here is your result",
+            clean_fn=clean_fn,
+        )
+        # final has a MEDIA tag that the clean function removes
+        assert _stream_visible_matches_final(
+            sc, "Here is your result MEDIA:/tmp/img.png"
+        ) is True
+
+    def test_mismatched_text_returns_false(self):
+        sc = self._make_sc(visible_prefix="hello world")
+        assert _stream_visible_matches_final(sc, "completely different") is False
+
+    def test_issue_53449_scenario(self):
+        """Exact scenario from issue #53449: visible_len=476, final_len=474,
+        all flags default. Visible text differs from final by trailing cursor
+        artifacts. Should match."""
+        sc = self._make_sc(visible_prefix="Hello! Here is the answer \u2589")
+        assert _stream_visible_matches_final(sc, "Hello! Here is the answer") is True
+
+    def test_draft_streaming_disables_visible_match(self):
+        """Draft frames write to _last_sent_text but do NOT constitute real
+        message delivery.  _stream_visible_matches_final must return False
+        when draft transport is active so the final answer still reaches the
+        user through the regular send path."""
+        sc = self._make_sc(visible_prefix="Hello world \u2589")
+        sc._use_draft_streaming = True
+        # Even though visible text covers the full final answer, draft
+        # delivery means the user hasn't received a real message yet.
+        assert _stream_visible_matches_final(sc, "Hello world") is False
+
+    def test_missing_message_id_disables_visible_match(self):
+        sc = self._make_sc(visible_prefix="Hello world \u2589")
+        sc._message_id = None
+        assert _stream_visible_matches_final(sc, "Hello world") is False
+
+    def test_polling_only_consumer_rejects_visible_match(self):
+        """When the stream consumer's polling task never found a consumer
+        (_sc is a polling-only sentinel with no real state), visible text
+        must not be trusted."""
+        sc = self._make_sc(visible_prefix="Hello")
+        # Simulate a sentinel that only polls — no real stream delivery state.
+        sc._use_draft_streaming = False
+        sc._visible_prefix = lambda: "Hello"
+        sc._message_id = None
+        assert _stream_visible_matches_final(sc, "Hello") is False
+        # But when draft transport is active, even the same content is rejected
+        sc._use_draft_streaming = True
+        assert _stream_visible_matches_final(sc, "Hello") is False

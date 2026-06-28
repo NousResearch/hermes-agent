@@ -1007,6 +1007,64 @@ def _strip_auto_continue_noise(content: Any) -> Any:
         text = text[end + 1 :].lstrip()
     return text
 
+# ---- tolerant stream-visible-vs-final comparison ---------------------------
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse runs of whitespace into a single space and strip edges."""
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _stream_visible_matches_final(_sc, final_text: str) -> bool:
+    """Return True when the streamed visible text already contains the full final answer.
+
+    Compares ``_sc._visible_prefix()`` against the cleaned final text with
+    whitespace normalization so that trailing cursor characters, markdown
+    formatting, or blank-line artifacts do not prevent recognition.  Accepts:
+
+    * exact match after normalization
+    * visible starts with final (visible already shows the full answer + residue)
+
+    Used in the final-send suppress and queued-follow-up branches to avoid
+    duplicate delivery when the stream consumer flags are lost (cancel race,
+    cache-invalidation rebuild).
+
+    Does NOT match when the visible text is only a prefix of the final answer —
+    the remaining tail must still be delivered.
+
+    Also refuses to match without a real message id.  Draft frames write
+    visible text to ``_last_sent_text`` but do NOT constitute real message
+    delivery — draft frames have no message_id and the final answer must still
+    be sent through the regular send path.
+    """
+    if _sc is None or not final_text:
+        return False
+    # Draft streaming writes visible text via _visible_prefix() but never
+    # constitutes real message delivery — draft frames have no message_id and
+    # the final answer must still go through the regular send path.
+    if getattr(_sc, "_use_draft_streaming", False):
+        return False
+    if getattr(_sc, "_message_id", None) is None:
+        return False
+    visible = (
+        _sc._visible_prefix() if hasattr(_sc, "_visible_prefix") else ""
+    ) or ""
+    clean_final = (
+        _sc._clean_for_display(str(final_text))
+        if hasattr(_sc, "_clean_for_display")
+        else str(final_text)
+    )
+    if not visible or not clean_final:
+        return False
+    vis_norm = _normalize_whitespace(visible)
+    fin_norm = _normalize_whitespace(clean_final)
+    if not vis_norm or not fin_norm:
+        return False
+    if vis_norm == fin_norm:
+        return True
+    if vis_norm.startswith(fin_norm):
+        return True
+    return False
+
 # Tools in this set return their deliverable artifact as a JSON payload with a
 # local-file path field rather than a literal ``MEDIA:`` tag (e.g. image_generate
 # returns ``{"success": true, "image": "/abs/path.png"}``). The auto-append path
@@ -17752,10 +17810,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
                     _previewed = bool(result.get("response_previewed"))
-                    _already_streamed = bool(
+                    _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
+                    _stream_confirmed = bool(
                         (_sc and getattr(_sc, "final_response_sent", False))
-                        or _previewed
                         or (_sc and getattr(_sc, "final_content_delivered", False))
+                    )
+                    _visible_confirmed = bool(
+                        _stream_visible_matches_final(_sc, result.get("final_response", ""))
+                        and not _requires_finalize
+                    )
+                    _already_streamed = bool(
+                        _stream_confirmed or _visible_confirmed or _previewed
                     )
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
@@ -17776,6 +17841,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",
                             session_key or "?",
                         )
+                        # Deliver any MEDIA: attachments from the suppressed
+                        # first response.  The normal already_sent return path
+                        # in _process_message_background calls
+                        # _deliver_media_from_response, but the queued-message
+                        # path skips that return path entirely — media files
+                        # would be silently dropped without this.
+                        _media_adapter = self.adapters.get(source.platform)
+                        if _media_adapter and (_stream_confirmed or _visible_confirmed):
+                            try:
+                                from types import SimpleNamespace
+                                _media_event = SimpleNamespace(
+                                    source=source, message_id=None,
+                                )
+                                await self._deliver_media_from_response(
+                                    first_response, _media_event, _media_adapter,
+                                )
+                            except Exception as _me:
+                                logger.debug(
+                                    "Queued-path media delivery failed: %s",
+                                    _me,
+                                )
                     # Release deferred bg-review notifications now that the
                     # first response has been delivered.  Pop from the
                     # adapter's callback dict (prevents double-fire in
@@ -17937,17 +18023,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _content_delivered = bool(
                 _sc and getattr(_sc, "final_content_delivered", False)
             )
+            # Visible-content match is only a reliable delivery signal when the
+            # adapter does NOT require an explicit finalize call to close the
+            # streaming/loading UI state (e.g. DingTalk AI Cards).  Adapters
+            # with REQUIRES_EDIT_FINALIZE=True still need the gateway to route
+            # the final send so the consumer can fire a finalize=True edit.
+            _requires_finalize = bool(_sc and getattr(_sc, "_adapter_requires_finalize", False))
+            _visible_match = (
+                _stream_visible_matches_final(_sc, _final)
+                and not _requires_finalize
+            )
             # Plugin hooks (e.g. transform_llm_output) may have appended content
             # after streaming finished — when the response was transformed, always
             # send the final version so the appended content reaches the client.
             _transformed = bool(response.get("response_transformed"))
-            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _content_delivered):
+            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _content_delivered or _visible_match):
                 logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
+                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s visible_match=%s requires_finalize=%s).",
                     session_key or "?",
                     _streamed,
                     _previewed,
                     _content_delivered,
+                    _visible_match,
+                    _requires_finalize,
                 )
                 response["already_sent"] = True
             elif not _is_empty_sentinel and _transformed and _sc is not None:

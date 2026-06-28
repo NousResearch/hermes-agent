@@ -3031,12 +3031,101 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     return json.dumps(response, ensure_ascii=False)
 
 
+def _eval_ssrf_guard_active(effective_task_id: str) -> bool:
+    """Return True when eval-driven private-network access must be guarded.
+
+    Matches the gating used by ``browser_navigate`` / ``browser_snapshot`` /
+    ``browser_vision``: the SSRF guard is only meaningful for non-local
+    backends (cloud browser, or a containerized terminal whose browser-on-host
+    can reach internal networks the terminal can't), and is skipped for local
+    sidecar sessions and when ``allow_private_urls`` is set.
+    """
+    return (
+        not _is_local_backend()
+        and not _is_local_sidecar_key(effective_task_id)
+        and not _allow_private_urls()
+    )
+
+
+# URL-shaped literals embedded in a JS expression (http/https only).  Used to
+# pre-screen ``browser_console(expression=...)`` calls that fetch/XHR/navigate
+# to a private host directly — that path never updates ``location.href`` so the
+# post-eval page-URL recheck below can't see it.
+_JS_URL_LITERAL_RE = re.compile(r"""https?://[^\s'"`)\]<>]+""", re.IGNORECASE)
+
+
+def _expression_targets_private_url(expression: str) -> Optional[str]:
+    """Return the first private/always-blocked URL literal in a JS expression.
+
+    Best-effort: scans for ``http(s)://...`` literals (fetch/XHR/navigation
+    targets the agent may have embedded) and returns the first one that targets
+    a private/internal address or the always-blocked cloud-metadata floor.
+    Returns ``None`` when no such literal is found.
+    """
+    if not isinstance(expression, str):
+        return None
+    for match in _JS_URL_LITERAL_RE.findall(expression):
+        candidate = match.rstrip(".,;")
+        if _is_always_blocked_url(candidate) or not _is_safe_url(candidate):
+            return candidate
+    return None
+
+
+def _current_page_private_url(effective_task_id: str) -> Optional[str]:
+    """Return the current page URL when it targets a private/internal address.
+
+    Reads ``window.location.href`` via a low-cost eval and returns it when the
+    page has been navigated (e.g. via ``location.href = '...'`` in a prior
+    eval) to an address the SSRF guard would reject.  Returns ``None`` when the
+    page is public, the URL can't be determined, or the check errors (fail-open
+    on probe failure, matching the snapshot/vision guards).
+    """
+    try:
+        url_result = _run_browser_command(
+            effective_task_id, "eval", ["window.location.href"],
+            timeout=5, _engine_override="auto",
+        )
+        if url_result.get("success"):
+            current_url = (
+                url_result.get("data", {}).get("result", "")
+                .strip().strip('"').strip("'")
+            )
+            if current_url and (
+                _is_always_blocked_url(current_url) or not _is_safe_url(current_url)
+            ):
+                return current_url
+    except Exception as exc:
+        logger.debug("_current_page_private_url: probe failed (%s)", exc)
+    return None
+
+
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+
+    # ── Private-network guard (eval return-value path) ──────────────────────
+    # browser_snapshot / browser_vision re-check the page URL before returning
+    # content, but eval returns arbitrary JS results directly — an attacker can
+    # read a private page via `fetch('http://127.0.0.1/secret')` or by reading
+    # the DOM after `location.href = 'http://127.0.0.1/'`, never touching
+    # snapshot/vision.  Close both sub-paths on the same gating condition:
+    #   1. Pre-scan the expression for private-host URL literals (direct fetch).
+    #   2. After eval, re-check the page URL (navigate-then-read).
+    if _eval_ssrf_guard_active(effective_task_id):
+        blocked_literal = _expression_targets_private_url(expression)
+        if blocked_literal:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: JavaScript expression targets a private or "
+                    f"internal address ({blocked_literal}). Reading internal "
+                    "endpoints via browser_console is not permitted in this "
+                    "browser mode."
+                ),
+            }, ensure_ascii=False)
 
     # --- Fast path: route through the supervisor's persistent CDP WS ---------
     # When a CDPSupervisor is alive for this task_id, ``Runtime.evaluate`` runs
@@ -3059,6 +3148,20 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                         parsed = json.loads(raw_result)
                     except (json.JSONDecodeError, ValueError):
                         pass  # keep as string
+                # Post-eval page-URL recheck: if this (or a prior) eval
+                # navigated the page to a private address, withhold the result.
+                if _eval_ssrf_guard_active(effective_task_id):
+                    _blocked_url = _current_page_private_url(effective_task_id)
+                    if _blocked_url:
+                        return json.dumps({
+                            "success": False,
+                            "error": (
+                                "Blocked: page URL targets a private or internal "
+                                f"address ({_blocked_url}). This may have been "
+                                "caused by a JavaScript navigation via "
+                                "browser_console."
+                            ),
+                        }, ensure_ascii=False)
                 response = {
                     "success": True,
                     "result": parsed,
@@ -3134,6 +3237,19 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         "result": parsed,
         "result_type": type(parsed).__name__,
     }
+    # Post-eval page-URL recheck: if this (or a prior) eval navigated the page
+    # to a private address, withhold the result (mirrors the supervisor path).
+    if _eval_ssrf_guard_active(effective_task_id):
+        _blocked_url = _current_page_private_url(effective_task_id)
+        if _blocked_url:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: page URL targets a private or internal address "
+                    f"({_blocked_url}). This may have been caused by a "
+                    "JavaScript navigation via browser_console."
+                ),
+            }, ensure_ascii=False)
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False, default=str)
 
 

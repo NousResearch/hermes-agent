@@ -24,6 +24,7 @@ import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { pushToast, type ToastTone } from './toastStore.js'
 
 const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
@@ -539,6 +540,10 @@ class TurnController {
 
       return { ...state, turnTrail: next }
     })
+  }
+
+  pushToast(label: string, message: string, tone?: ToastTone, durationMs?: number) {
+    return pushToast(label, message, tone, durationMs)
   }
 
   recordError() {

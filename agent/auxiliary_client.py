@@ -200,6 +200,9 @@ _PROVIDER_ALIASES = {
     "gmicloud": "gmi",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "minimax-oai": "minimax-oauth-openai",
+    "minimax-openai": "minimax-oauth-openai",
+    "minimax_oauth_openai": "minimax-oauth-openai",
     "claude": "anthropic",
     "claude-code": "anthropic",
     "github": "copilot",
@@ -2123,6 +2126,86 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(api_key=api_key, base_url=base_url)
     return CodexAuxiliaryClient(real_client, model), model
+
+
+def _resolve_minimax_oauth_for_aux() -> Optional[Tuple[str, str]]:
+    """Resolve a fresh MiniMax OAuth (api_key, base_url) for auxiliary clients.
+
+    Reuses the same auth-store singleton as the main runtime path
+    (``resolve_minimax_oauth_runtime_credentials``) so the 15-minute access-
+    token refresh is shared. Returns ``None`` if the user has not
+    authenticated with MiniMax OAuth.
+
+    The base URL returned is the *Anthropic-compatible* endpoint stored in
+    auth state. The OpenAI-compat helper that calls this function discards
+    that URL and substitutes the ``/v1`` URL from the
+    ``minimax-oauth-openai`` ProviderConfig — see
+    :func:`_build_minimax_oauth_openai_aux_client`.
+    """
+    try:
+        from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+        creds = resolve_minimax_oauth_runtime_credentials()
+        api_key = creds.get("api_key", "")
+        base_url = creds.get("base_url", "")
+        if not api_key or not base_url:
+            return None
+        return api_key, base_url
+    except Exception:
+        return None
+
+
+def _build_minimax_oauth_openai_aux_client(
+    model: str,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Build a plain ``OpenAI`` client for the MiniMax OAuth OpenAI-compat
+    auxiliary provider.
+
+    The ``minimax-oauth-openai`` provider routes through
+    ``https://api.minimax.io/v1`` (the OpenAI-compatible endpoint) rather
+    than ``https://api.minimax.io/anthropic``. That endpoint honors prompt
+    caching for ``MiniMax-M3`` — the Anthropic-compatible endpoint does not.
+
+    The MiniMax OAuth credential state is keyed by provider
+    ``minimax-oauth`` in ``auth.json`` (the two providers share the same
+    OAuth client_id/scope). We resolve through that key, then *substitute*
+    the OpenAI-compat base URL from the ``minimax-oauth-openai``
+    ProviderConfig — never the Anthropic-compat URL stored in auth state.
+    That distinction is what enables cache_read discounting.
+
+    Returns ``(None, None)`` when no MiniMax OAuth credentials are present;
+    the auxiliary router then falls through to its Step-2 fallback chain.
+    """
+    if not model:
+        logger.warning(
+            "Auxiliary client: minimax-oauth-openai requested without a "
+            "model; pass model explicitly (auxiliary.<task>.model in config.yaml)."
+        )
+        return None, None
+    resolved = _resolve_minimax_oauth_for_aux()
+    if resolved is None:
+        return None, None
+    api_key, _anthropic_base_url = resolved
+
+    # Resolve the OpenAI-compat base URL from the ProviderConfig overlay.
+    # Fall back to the hardcoded constant if the registry entry is missing
+    # (e.g. running against a stripped install).
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, MINIMAX_OAUTH_GLOBAL_INFERENCE_OPENAI
+        pconfig = PROVIDER_REGISTRY.get("minimax-oauth-openai")
+        base_url = (
+            getattr(pconfig, "inference_base_url", None)
+            if pconfig is not None
+            else None
+        ) or MINIMAX_OAUTH_GLOBAL_INFERENCE_OPENAI
+    except Exception:
+        base_url = "https://api.minimax.io/v1"
+
+    logger.debug(
+        "Auxiliary client: MiniMax OAuth OpenAI-compat (%s via %s)",
+        model, base_url,
+    )
+    real_client = _create_openai_client(api_key=api_key, base_url=base_url)
+    return real_client, model
 
 
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -4064,6 +4147,26 @@ def resolve_provider_client(
             logger.warning(
                 "resolve_provider_client: xai-oauth requested but no xAI "
                 "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── MiniMax OAuth OpenAI-compat (/v1 · prompt caching enabled) ────
+    # Without this branch, a minimax-oauth-openai main provider falls
+    # through to the generic ``oauth_external`` arm below and returns
+    # (None, None), silently re-routing every auxiliary task (compression,
+    # title generation, summarization) to whatever Step-2 fallback the user
+    # has configured. Users on MiniMax OAuth would then see surprise
+    # OpenRouter / Nous bills for side tasks they thought were running on
+    # their MiniMax subscription.
+    if provider == "minimax-oauth-openai":
+        client, default = _build_minimax_oauth_openai_aux_client(model)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth-openai requested "
+                "but no MiniMax OAuth token found (run: hermes model)"
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)

@@ -86,6 +86,7 @@ MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:user_code"
 MINIMAX_OAUTH_GLOBAL_BASE = "https://api.minimax.io"
 MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
 MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
+MINIMAX_OAUTH_GLOBAL_INFERENCE_OPENAI = "https://api.minimax.io/v1"
 MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
 MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
@@ -293,7 +294,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "minimax-oauth": ProviderConfig(
         id="minimax-oauth",
-        name="MiniMax (OAuth \u00b7 minimax.io)",
+        name="MiniMax (OAuth · minimax.io)",
         auth_type="oauth_minimax",
         portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE,
         inference_base_url=MINIMAX_OAUTH_GLOBAL_INFERENCE,
@@ -301,6 +302,20 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         scope=MINIMAX_OAUTH_SCOPE,
         extra={"region": "global", "cn_portal_base_url": MINIMAX_OAUTH_CN_BASE,
                "cn_inference_base_url": MINIMAX_OAUTH_CN_INFERENCE},
+    ),
+    # MiniMax OAuth routed through the OpenAI-compatible endpoint at /v1.
+    # Same OAuth client/scope as ``minimax-oauth`` — tokens issued for either
+    # provider name work on both endpoints. Useful for prompt caching on
+    # MiniMax-M3, which the Anthropic-compatible endpoint does not honor.
+    "minimax-oauth-openai": ProviderConfig(
+        id="minimax-oauth-openai",
+        name="MiniMax (OAuth · minimax.io · OpenAI-compatible)",
+        auth_type="oauth_minimax",
+        portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE,
+        inference_base_url=MINIMAX_OAUTH_GLOBAL_INFERENCE_OPENAI,
+        client_id=MINIMAX_OAUTH_CLIENT_ID,
+        scope=MINIMAX_OAUTH_SCOPE,
+        extra={"region": "global", "shares_auth_with": "minimax-oauth"},
     ),
     "anthropic": ProviderConfig(
         id="anthropic",

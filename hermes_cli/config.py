@@ -2554,6 +2554,10 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+        # Minimum available system memory (MB) required for spawning workers.
+        # Prevents OOM cascade where the Linux OOM killer kills the gateway,
+        # taking all workers with it.  0 or None disables the check.
+        "dispatch_memory_min_mb": 4096,
         # Stale detection: running tasks that have exceeded this many
         # seconds without a heartbeat (since ``last_heartbeat_at``) are
         # auto-reclaimed to ``ready`` on the next dispatcher tick. The

@@ -95,6 +95,40 @@ logger = logging.getLogger(__name__)
 # ``upscale`` controls whether to chain Clarity Upscaler after generation.
 
 FAL_MODELS: Dict[str, Dict[str, Any]] = {
+    "fal-ai/gemini-3.1-flash-image-preview": {
+        "display": "Gemini 3.1 Flash Image Preview",
+        "speed": "~1s",
+        "strengths": "Fast Gemini image gen + edit",
+        "price": "$0.08/image (1K)",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+            "safety_tolerance": "4",
+            "resolution": "1K",
+            "limit_generations": True,
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "num_images", "output_format",
+            "safety_tolerance", "seed", "sync_mode", "resolution",
+            "limit_generations", "enable_web_search", "system_prompt",
+            "thinking_level",
+        },
+        "upscale": False,
+        "edit_endpoint": "fal-ai/gemini-3.1-flash-image-preview/edit",
+        "edit_supports": {
+            "prompt", "image_urls", "aspect_ratio", "num_images",
+            "output_format", "safety_tolerance", "seed", "sync_mode",
+            "resolution", "limit_generations", "enable_web_search",
+            "system_prompt", "thinking_level", "video_url", "audio_url", "pdf_url",
+        },
+        "max_reference_images": 9,
+    },
     "fal-ai/flux-2/klein/9b": {
         "display": "FLUX 2 Klein 9B",
         "speed": "<1s",
@@ -420,7 +454,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
 }
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.
-DEFAULT_MODEL = "fal-ai/flux-2/klein/9b"
+DEFAULT_MODEL = "fal-ai/gemini-3.1-flash-image-preview"
 
 DEFAULT_ASPECT_RATIO = "landscape"
 VALID_ASPECT_RATIOS = ("landscape", "square", "portrait")
@@ -1006,6 +1040,8 @@ def image_generate_tool(
         response_data = {
             "success": True,
             "image": formatted_images[0]["url"] if formatted_images else None,
+            "output_url": formatted_images[0]["url"] if formatted_images else None,
+            "media_type": "image",
             "modality": modality,
         }
 

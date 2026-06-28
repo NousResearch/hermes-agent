@@ -182,6 +182,31 @@ def test_fal_text_plus_image_routes_to_image_endpoint(matrix_env, family_id):
     )
 
 
+def test_fal_happy_horse_v11_reference_images_route_to_reference_endpoint(matrix_env):
+    home, fal_calls, _ = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "fal", "model": "happy-horse-v1.1"}},
+        {
+            "prompt": "character1 and character2 dance",
+            "reference_image_urls": [
+                "https://example.com/a.png",
+                "https://example.com/b.png",
+            ],
+        },
+    )
+
+    assert result["success"] is True, result.get("error")
+    assert result["modality"] == "reference"
+    assert len(fal_calls) == 1
+    assert fal_calls[0]["endpoint"] == "alibaba/happy-horse/v1.1/reference-to-video"
+    assert fal_calls[0]["arguments"]["image_urls"] == [
+        "https://example.com/a.png",
+        "https://example.com/b.png",
+    ]
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # xAI: text-only / text+image both go to /videos/generations
 # (xAI uses one endpoint with an optional 'image' field, not separate URLs)

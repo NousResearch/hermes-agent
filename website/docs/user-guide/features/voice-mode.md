@@ -95,6 +95,7 @@ Add to `~/.hermes/.env`:
 # pip install faster-whisper          # Free, runs locally, recommended
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
+INWORLD_API_KEY=your-key              # Inworld STT/TTS/Realtime — paid (cloud)
 
 # Text-to-Speech (optional — Edge TTS and NeuTTS work without any key)
 ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
@@ -104,6 +105,31 @@ ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
 :::tip
 If `faster-whisper` is installed, voice mode works with **zero API keys** for STT. The model (~150 MB for `base`) downloads automatically on first use.
 :::
+
+### Inworld STT and TTS
+
+Inworld can provide both speech-to-text and text-to-speech. Store only the secret in `~/.hermes/.env`:
+
+```bash
+INWORLD_API_KEY=your-base64-api-key
+```
+
+Then select it in `~/.hermes/config.yaml`:
+
+```yaml
+stt:
+  provider: inworld
+  inworld:
+    model: inworld/inworld-stt-1
+    audio_encoding: AUTO_DETECT
+
+tts:
+  provider: inworld
+  inworld:
+    model: inworld-tts-2
+    voice: Dennis
+    output_format: ogg
+```
 
 ---
 

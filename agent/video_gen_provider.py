@@ -264,6 +264,8 @@ def success_response(
     payload: Dict[str, Any] = {
         "success": True,
         "video": video,
+        "output_url": video,
+        "media_type": "video",
         "model": model,
         "prompt": prompt,
         "modality": modality,

@@ -67,7 +67,12 @@ Or in-session:
 | `computer_use` | `computer_use` | Background desktop control via cua-driver — does not steal cursor/focus. Works with any tool-capable model. macOS, Windows, and Linux; requires `cua-driver` on `$PATH`. |
 | `context_engine` | (varies) | Runtime tools exposed by the active context-engine plugin (empty until a plugin populates it). |
 | `image_gen` | `image_generate` | Text-to-image generation via FAL.ai (with opt-in OpenAI / xAI backends). |
-| `video_gen` | `video_generate` | Text-to-video and image-to-video via plugin-registered backends (xAI Grok-Imagine, FAL.ai Veo 3.1 / Pixverse v6 / Kling O3). Pass `image_url` to animate an image; omit it for text-to-video. |
+| `image_edit` | `image_edit` | Edit or transform existing images via FAL.ai Gemini image edit. Opt-in; uses `FAL_KEY` or the managed Nous FAL gateway. |
+| `image_background_removal` | `remove_background` | Remove image backgrounds via FAL.ai Ideogram Remove Background by default, with BiRefNet V2 variants still selectable. Opt-in; uses `FAL_KEY` or the managed Nous FAL gateway. |
+| `image_upscale` | `upscale_image` | Upscale images via FAL.ai SeedVR2. Opt-in; uses `FAL_KEY` or the managed Nous FAL gateway. |
+| `video_gen` | `video_generate` | Text-to-video and image-to-video via plugin-registered backends (xAI Grok-Imagine, FAL.ai Veo 3.1 / Pixverse v6 / Seedance 2.0 / Kling 4K / Happy Horse 1.1). Pass `image_url` to animate an image; pass `reference_image_urls` when the active backend supports references. |
+| `video_background_removal` | `remove_video_background` | Remove video backgrounds via FAL.ai BiRefNet V2 Video. Opt-in; uses `FAL_KEY` or the managed Nous FAL gateway. |
+| `video_upscale` | `upscale_video` | Upscale videos via FAL.ai SeedVR2 Video. Opt-in; uses `FAL_KEY` or the managed Nous FAL gateway. |
 | `kanban` | `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_list`, `kanban_show`, `kanban_unblock` | Multi-agent coordination tools. Registered for dispatcher-spawned task workers (`HERMES_KANBAN_TASK`) and for profiles that explicitly list the `kanban` toolset by name (the `all`/`*` wildcard does **not** enable it). Workers mark tasks done, block, heartbeat, comment, and create/link follow-up tasks; orchestrator profiles additionally get board-routing tools like list/unblock. |
 | `memory` | `memory` | Persistent cross-session memory management. |
 | `messaging` | `send_message` | Send messages to other platforms (Telegram, Discord, etc.) from within a session. |

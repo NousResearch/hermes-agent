@@ -1321,7 +1321,7 @@ agent:
 
 ```yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "inworld" | "minimax" | "mistral" | "gemini" | "xai" | "neutts"
   speed: 1.0                    # Global speed multiplier (fallback for all providers)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -1334,6 +1334,12 @@ tts:
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     speed: 1.0                  # Speed multiplier (clamped to 0.25–4.0 by the API)
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
+  inworld:
+    model: "inworld-tts-2"
+    voice: "Dennis"
+    output_format: "ogg"
+    sample_rate: 48000
+    delivery_mode: "BALANCED"
   minimax:
     speed: 1.0                  # Speech speed multiplier
     # base_url: ""              # Optional: override for OpenAI-compatible TTS endpoints
@@ -1496,11 +1502,15 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 
 ```yaml
 stt:
-  provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  provider: "local"            # "local" | "groq" | "openai" | "inworld" | "mistral"
   local:
     model: "base"              # tiny, base, small, medium, large-v3
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  inworld:
+    model: "inworld/inworld-stt-1"
+    audio_encoding: "AUTO_DETECT"
+    language: ""
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
@@ -1509,8 +1519,40 @@ Provider behavior:
 - `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`.
 - `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
+- `inworld` uses Inworld Speech-to-Text and reads `INWORLD_API_KEY`.
 
 If the requested provider is unavailable, Hermes falls back automatically in this order: `local` → `groq` → `openai`.
+
+## Realtime Voice Providers
+
+Google Meet realtime mode uses the `realtime` config block. Secrets still live in `~/.hermes/.env`:
+
+```bash
+OPENAI_API_KEY=sk-...           # for realtime.provider: openai
+INWORLD_API_KEY=...             # for realtime.provider: inworld
+```
+
+```yaml
+realtime:
+  provider: "openai"            # "openai" | "inworld"
+  openai:
+    model: "gpt-realtime"
+    voice: "alloy"
+    instructions: ""
+  inworld:
+    model: "openai/gpt-4o-mini"
+    tts_model: "inworld-tts-1.5-mini"
+    stt_model: "inworld/inworld-stt-1"
+    voice: "Dennis"
+    language: ""
+    instructions: ""
+    turn_detection:
+      type: "semantic_vad"
+      eagerness: "medium"
+      create_response: true
+      interrupt_response: true
+    provider_data: {}
+```
 
 Groq and OpenAI model overrides are environment-driven:
 

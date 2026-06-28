@@ -1,6 +1,6 @@
 name: fal
 version: 1.0.0
-description: "FAL.ai video generation backend. Multi-model — Veo 3.1, Kling, Pixverse — covering text-to-video and image-to-video via fal_client's queue API."
+description: "FAL.ai video generation backend. Multi-model — Veo 3.1, Kling, Pixverse, Seedance, Happy Horse — covering text-to-video, image-to-video, and supported reference-to-video via fal_client's queue API."
 author: NousResearch
 kind: backend
 requires_env:

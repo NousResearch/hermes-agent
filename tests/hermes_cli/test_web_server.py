@@ -1094,6 +1094,30 @@ class TestWebServerEndpoints:
         # The handler streams the bytes back and removes the temp file.
         assert not audio_file.exists()
 
+    def test_speak_text_returns_ogg_data_url_for_inworld_style_output(self, monkeypatch, tmp_path):
+        import tools.tts_tool as tts_tool
+
+        audio_file = tmp_path / "speech.ogg"
+        audio_file.write_bytes(b"OggSfake-audio-bytes")
+
+        def fake_tts(text):
+            return json.dumps({
+                "success": True,
+                "file_path": str(audio_file),
+                "provider": "inworld",
+            })
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+
+        resp = self.client.post("/api/audio/speak", json={"text": "hello there"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["mime_type"] == "audio/ogg"
+        assert body["data_url"].startswith("data:audio/ogg;base64,")
+        assert body["provider"] == "inworld"
+        assert not audio_file.exists()
+
     def test_speak_text_requires_nonempty_text(self):
         resp = self.client.post("/api/audio/speak", json={"text": "   "})
         assert resp.status_code == 400
@@ -1385,6 +1409,12 @@ class TestWebServerEndpoints:
         data = resp.json()
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
+
+    def test_get_env_vars_surfaces_inworld_api_key(self):
+        data = self.client.get("/api/env").json()
+        assert "INWORLD_API_KEY" in data
+        assert data["INWORLD_API_KEY"]["category"] in {"provider", "tool"}
+        assert data["INWORLD_API_KEY"]["provider_label"] in {"Inworld", ""}
 
     def test_get_env_vars_marks_channel_managed_keys(self):
         from hermes_cli.web_server import _channel_managed_env_keys

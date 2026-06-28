@@ -66,7 +66,12 @@ CONFIGURABLE_TOOLSETS = [
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("image_edit",      "🖌️  Image Editing",            "image_edit (FAL Gemini image edit)"),
+    ("image_background_removal", "🧵 Image Background Removal", "remove_background (FAL Ideogram + BiRefNet)"),
+    ("image_upscale",   "💎 Image Upscaling",           "upscale_image (FAL SeedVR2)"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
+    ("video_background_removal", "🎥 Video Background Removal", "remove_video_background (FAL BiRefNet)"),
+    ("video_upscale",   "📼 Video Upscaling",           "upscale_video (FAL SeedVR2)"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -116,6 +121,39 @@ def gui_toolset_label(label: str) -> str:
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
 _DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+
+
+_FAL_MEDIA_UTILITY_TOOLSETS = {
+    "image_edit",
+    "image_background_removal",
+    "image_upscale",
+    "video_background_removal",
+    "video_upscale",
+}
+
+
+def _fal_media_backend_available() -> bool:
+    """Return True when direct or managed FAL access is available.
+
+    These utility tools are implemented as in-tree FAL model calls, so they
+    must not be marked configured merely because a non-FAL image_gen plugin is
+    available.
+    """
+    try:
+        from tools.image_generation_tool import check_fal_api_key
+
+        return bool(check_fal_api_key())
+    except Exception:
+        return bool(fal_key_is_configured())
+
+
+def _toolset_has_configuration_surface(ts_key: str) -> bool:
+    """Return True if enabling this toolset should be allowed to open setup."""
+    return (
+        ts_key in TOOL_CATEGORIES
+        or ts_key in TOOLSET_ENV_REQUIREMENTS
+        or ts_key in _FAL_MEDIA_UTILITY_TOOLSETS
+    )
 
 
 def _xai_credentials_present() -> bool:
@@ -1758,6 +1796,9 @@ def _toolset_has_keys(
         except Exception:
             return False
 
+    if ts_key in _FAL_MEDIA_UTILITY_TOOLSETS:
+        return _fal_media_backend_available()
+
     if ts_key in {"web", "image_gen", "video_gen", "tts", "browser"}:
         features = get_nous_subscription_features(config, force_fresh=force_fresh)
         feature = features.features.get(ts_key)
@@ -1864,7 +1905,7 @@ def _prompt_toolset_checklist(
         suffix = ""
         if (
             not _toolset_has_keys(ts_key, force_fresh=force_fresh)
-            and (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
+            and _toolset_has_configuration_surface(ts_key)
         ):
             suffix = "  [no API key]"
         labels.append(f"{ts_label}  ({ts_desc}){suffix}")
@@ -1912,6 +1953,10 @@ def _configure_toolset(
     Uses TOOL_CATEGORIES for provider-aware config, falls back to simple
     env var prompts for toolsets not in TOOL_CATEGORIES.
     """
+    if ts_key in _FAL_MEDIA_UTILITY_TOOLSETS:
+        _configure_toolset("image_gen", config, force_fresh=force_fresh)
+        return
+
     cat = TOOL_CATEGORIES.get(ts_key)
 
     if cat:
@@ -2309,6 +2354,9 @@ def _toolset_needs_configuration_prompt(
     force_fresh: bool = False,
 ) -> bool:
     """Return True when enabling this toolset should open provider setup."""
+    if ts_key in _FAL_MEDIA_UTILITY_TOOLSETS:
+        return not _fal_media_backend_available()
+
     cat = TOOL_CATEGORIES.get(ts_key)
     if not cat:
         return not _toolset_has_keys(ts_key, config, force_fresh=force_fresh)
@@ -3336,7 +3384,7 @@ def _reconfigure_tool(
     for ts_key, ts_label, _ in _get_effective_configurable_toolsets():
         cat = TOOL_CATEGORIES.get(ts_key)
         reqs = TOOLSET_ENV_REQUIREMENTS.get(ts_key)
-        if cat or reqs:
+        if cat or reqs or ts_key in _FAL_MEDIA_UTILITY_TOOLSETS:
             if (
                 _toolset_has_keys(ts_key, config, force_fresh=force_fresh)
                 or _toolset_enabled_for_reconfigure(ts_key, config)
@@ -3358,7 +3406,9 @@ def _reconfigure_tool(
     ts_key, ts_label = configurable[idx]
     cat = TOOL_CATEGORIES.get(ts_key)
 
-    if cat:
+    if ts_key in _FAL_MEDIA_UTILITY_TOOLSETS:
+        _configure_toolset(ts_key, config, force_fresh=force_fresh)
+    elif cat:
         _configure_tool_category_for_reconfig(
             ts_key,
             cat,
@@ -3724,7 +3774,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             # a free provider exists.
             to_configure = [
                 ts_key for ts_key in sorted(new_enabled)
-                if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
+                if _toolset_has_configuration_surface(ts_key)
                 and ts_key not in auto_configured
             ]
 
@@ -3825,7 +3875,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                             print(color(f"    - {label}", Colors.RED))
                     # Configure API keys for newly enabled tools
                     for ts_key in sorted(added):
-                        if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
+                        if _toolset_has_configuration_surface(ts_key):
                             if _toolset_needs_configuration_prompt(
                                 ts_key,
                                 config,
@@ -3877,7 +3927,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
             # Configure newly enabled toolsets that need API keys
             for ts_key in sorted(added):
-                if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
+                if _toolset_has_configuration_surface(ts_key):
                     if _toolset_needs_configuration_prompt(
                         ts_key,
                         config,

@@ -121,6 +121,7 @@ describe('settings helpers', () => {
   describe('providerGroup', () => {
     it('maps a provider env var to its labeled group', () => {
       expect(providerGroup('XAI_API_KEY')).toBe('xAI')
+      expect(providerGroup('INWORLD_API_KEY')).toBe('Inworld')
       expect(providerGroup('NOUS_API_KEY')).toBe('Nous Portal')
       expect(providerGroup('OPENROUTER_API_KEY')).toBe('OpenRouter')
     })
@@ -149,18 +150,22 @@ describe('settings helpers', () => {
       const opts = enumOptionsFor('tts.provider', 'edge', config)
       expect(opts).toBeDefined()
       expect(opts).toContain('xai')
+      expect(opts).toContain('inworld')
       expect(opts).toContain('edge')
       expect(opts).toContain('elevenlabs')
     })
 
-    it('renders a dropdown for the STT provider including xAI (Grok)', () => {
+    it('renders a dropdown for the STT provider including Inworld and xAI (Grok)', () => {
       const opts = enumOptionsFor('stt.provider', 'local', config)
-      expect(opts).toEqual(['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'])
+      expect(opts).toEqual(['local', 'groq', 'openai', 'inworld', 'mistral', 'xai', 'elevenlabs'])
     })
 
     it('renders dropdowns for per-backend model/device sub-fields', () => {
       expect(enumOptionsFor('stt.openai.model', 'whisper-1', config)).toContain('gpt-4o-transcribe')
+      expect(enumOptionsFor('stt.inworld.model', 'inworld/inworld-stt-1', config)).toContain('inworld/inworld-stt-1')
       expect(enumOptionsFor('tts.openai.model', 'gpt-4o-mini-tts', config)).toContain('tts-1-hd')
+      expect(enumOptionsFor('tts.inworld.model', 'inworld-tts-2', config)).toContain('inworld-tts-1.5-mini')
+      expect(enumOptionsFor('tts.inworld.output_format', 'ogg', config)).toContain('ogg')
       expect(enumOptionsFor('tts.neutts.device', 'cpu', config)).toEqual(['cpu', 'cuda', 'mps'])
     })
 

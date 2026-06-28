@@ -36,7 +36,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Match ``https://meet.google.com/abc-defg-hij`` or ``.../lookup/...`` — the
 # short three-segment code or a lookup URL. Anything else is rejected.
@@ -262,22 +262,170 @@ def _enable_captions_js() -> str:
     """
 
 
+def _load_hermes_config() -> dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _nested_dict(data: dict[str, Any], *keys: str) -> dict[str, Any]:
+    cur: Any = data
+    for key in keys:
+        if not isinstance(cur, dict):
+            return {}
+        cur = cur.get(key)
+    return cur if isinstance(cur, dict) else {}
+
+
+def _env_or_config(
+    env_name: str,
+    cfg: dict[str, Any],
+    key: str,
+    default: str = "",
+) -> str:
+    value = os.environ.get(env_name)
+    if value is not None:
+        return value
+    cfg_value = cfg.get(key)
+    return str(cfg_value) if cfg_value is not None else default
+
+
+def _get_realtime_api_key(provider: str) -> str:
+    explicit = os.environ.get("HERMES_MEET_REALTIME_KEY")
+    if explicit:
+        return explicit
+    if provider == "inworld":
+        try:
+            from hermes_cli.config import get_env_value
+
+            return get_env_value("INWORLD_API_KEY") or ""
+        except Exception:
+            return os.environ.get("INWORLD_API_KEY", "")
+    return os.environ.get("OPENAI_API_KEY", "")
+
+
+def _load_realtime_settings() -> dict[str, Any]:
+    cfg = _load_hermes_config()
+    realtime_cfg = _nested_dict(cfg, "realtime")
+    provider = (
+        os.environ.get("HERMES_MEET_REALTIME_PROVIDER")
+        or realtime_cfg.get("provider")
+        or "openai"
+    )
+    provider = str(provider).strip().lower() or "openai"
+
+    if provider == "inworld":
+        inworld_cfg = _nested_dict(realtime_cfg, "inworld")
+        provider_data = (
+            inworld_cfg.get("provider_data")
+            or inworld_cfg.get("providerData")
+            or {}
+        )
+        if not isinstance(provider_data, dict):
+            provider_data = {}
+        turn_detection = inworld_cfg.get("turn_detection") or {}
+        if not isinstance(turn_detection, dict):
+            turn_detection = {}
+        return {
+            "provider": "inworld",
+            "model": _env_or_config(
+                "HERMES_MEET_REALTIME_MODEL",
+                inworld_cfg,
+                "model",
+                "openai/gpt-4o-mini",
+            ),
+            "voice": _env_or_config(
+                "HERMES_MEET_REALTIME_VOICE",
+                inworld_cfg,
+                "voice",
+                "Dennis",
+            ),
+            "instructions": _env_or_config(
+                "HERMES_MEET_REALTIME_INSTRUCTIONS",
+                inworld_cfg,
+                "instructions",
+                "",
+            ),
+            "tts_model": _env_or_config(
+                "HERMES_MEET_REALTIME_TTS_MODEL",
+                inworld_cfg,
+                "tts_model",
+                "inworld-tts-1.5-mini",
+            ),
+            "stt_model": _env_or_config(
+                "HERMES_MEET_REALTIME_STT_MODEL",
+                inworld_cfg,
+                "stt_model",
+                "inworld/inworld-stt-1",
+            ),
+            "language": _env_or_config(
+                "HERMES_MEET_REALTIME_LANGUAGE",
+                inworld_cfg,
+                "language",
+                "",
+            ),
+            "turn_detection": turn_detection,
+            "provider_data": provider_data,
+            "api_key": _get_realtime_api_key("inworld"),
+        }
+
+    openai_cfg = _nested_dict(realtime_cfg, "openai")
+    return {
+        "provider": "openai",
+        "model": _env_or_config(
+            "HERMES_MEET_REALTIME_MODEL",
+            openai_cfg,
+            "model",
+            "gpt-realtime",
+        ),
+        "voice": _env_or_config(
+            "HERMES_MEET_REALTIME_VOICE",
+            openai_cfg,
+            "voice",
+            "alloy",
+        ),
+        "instructions": _env_or_config(
+            "HERMES_MEET_REALTIME_INSTRUCTIONS",
+            openai_cfg,
+            "instructions",
+            "",
+        ),
+        "tts_model": "",
+        "stt_model": "",
+        "language": "",
+        "turn_detection": {},
+        "provider_data": {},
+        "api_key": _get_realtime_api_key("openai"),
+    }
+
+
 def _start_realtime_speaker(
     *,
     rt: dict,
     out_dir: Path,
     bridge_info: dict,
     api_key: str,
+    provider: str,
     model: str,
     voice: str,
     instructions: str,
+    tts_model: str,
+    stt_model: str,
+    language: str,
+    turn_detection: dict,
+    provider_data: dict,
+    session_id: str,
     stop_flag: dict,
     state: "_BotState",
 ) -> None:
-    """Wire up the OpenAI Realtime session + speaker thread + PCM pump.
+    """Wire up the realtime session + speaker thread + PCM pump.
 
     The speaker thread reads text lines from ``say_queue.jsonl``, sends each
-    to OpenAI Realtime, and writes PCM audio into ``speaker.pcm``. A
+    to the realtime provider, and writes PCM audio into ``speaker.pcm``. A
     separate *pump* thread forwards that PCM into the OS audio sink so
     Chrome's fake mic picks it up. On Linux we pipe to ``paplay`` against
     the null-sink; on macOS the caller is expected to have the BlackHole
@@ -309,6 +457,13 @@ def _start_realtime_speaker(
             instructions=instructions,
             audio_sink_path=pcm_path,
             sample_rate=24000,
+            provider=provider,
+            tts_model=tts_model,
+            stt_model=stt_model,
+            language=language,
+            turn_detection=turn_detection,
+            provider_data=provider_data,
+            session_id=session_id,
         )
         session.connect()
     except Exception as e:
@@ -453,10 +608,12 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     duration_s = _parse_duration(os.environ.get("HERMES_MEET_DURATION", ""))
     # v2: optional realtime mode. Enabled when HERMES_MEET_MODE=realtime.
     mode = os.environ.get("HERMES_MEET_MODE", "transcribe").strip().lower()
-    realtime_model = os.environ.get("HERMES_MEET_REALTIME_MODEL", "gpt-realtime")
-    realtime_voice = os.environ.get("HERMES_MEET_REALTIME_VOICE", "alloy")
-    realtime_instructions = os.environ.get("HERMES_MEET_REALTIME_INSTRUCTIONS", "")
-    realtime_api_key = os.environ.get("HERMES_MEET_REALTIME_KEY") or os.environ.get("OPENAI_API_KEY", "")
+    realtime = _load_realtime_settings()
+    realtime_provider = str(realtime.get("provider") or "openai")
+    realtime_model = str(realtime.get("model") or "")
+    realtime_voice = str(realtime.get("voice") or "")
+    realtime_instructions = str(realtime.get("instructions") or "")
+    realtime_api_key = str(realtime.get("api_key") or "")
 
     if not url or not _is_safe_meet_url(url):
         sys.stderr.write(
@@ -497,7 +654,17 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     }
     if rt["enabled"]:
         if not realtime_api_key:
-            state.set(error="realtime mode requested but no API key in HERMES_MEET_REALTIME_KEY/OPENAI_API_KEY — falling back to transcribe")
+            key_hint = (
+                "HERMES_MEET_REALTIME_KEY/INWORLD_API_KEY"
+                if realtime_provider == "inworld"
+                else "HERMES_MEET_REALTIME_KEY/OPENAI_API_KEY"
+            )
+            state.set(
+                error=(
+                    f"realtime mode requested but no API key in {key_hint} "
+                    "— falling back to transcribe"
+                )
+            )
             rt["enabled"] = False
         else:
             try:
@@ -596,9 +763,16 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                     out_dir=out_dir,
                     bridge_info=rt["bridge_info"],
                     api_key=realtime_api_key,
+                    provider=realtime_provider,
                     model=realtime_model,
                     voice=realtime_voice,
                     instructions=realtime_instructions,
+                    tts_model=str(realtime.get("tts_model") or ""),
+                    stt_model=str(realtime.get("stt_model") or ""),
+                    language=str(realtime.get("language") or ""),
+                    turn_detection=dict(realtime.get("turn_detection") or {}),
+                    provider_data=dict(realtime.get("provider_data") or {}),
+                    session_id=meeting_id,
                     stop_flag=stop_flag,
                     state=state,
                 )

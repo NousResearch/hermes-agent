@@ -1911,10 +1911,11 @@ DEFAULT_CONFIG = {
     # Text-to-speech configuration
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
-    # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # limit (OpenAI 4096, xAI 15000, MiniMax 10000, Inworld 10000,
+    # ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000,
+    # NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "inworld" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -1927,6 +1928,13 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+        "inworld": {
+            "model": "inworld-tts-2",
+            "voice": "Dennis",
+            "output_format": "ogg",
+            "sample_rate": 48000,
+            "delivery_mode": "BALANCED",
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
@@ -1974,7 +1982,7 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "inworld" | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -1990,6 +1998,35 @@ DEFAULT_CONFIG = {
             "language_code": "",  # auto-detect by default; set to "eng", "spa", "fra", etc. to force
             "tag_audio_events": False,
             "diarize": False,
+        },
+        "inworld": {
+            "model": "inworld/inworld-stt-1",
+            "audio_encoding": "AUTO_DETECT",
+            "language": "",
+        },
+    },
+
+    "realtime": {
+        "provider": "openai",  # "openai" | "inworld"; currently used by Google Meet realtime mode
+        "openai": {
+            "model": "gpt-realtime",
+            "voice": "alloy",
+            "instructions": "",
+        },
+        "inworld": {
+            "model": "openai/gpt-4o-mini",
+            "tts_model": "inworld-tts-1.5-mini",
+            "stt_model": "inworld/inworld-stt-1",
+            "voice": "Dennis",
+            "language": "",
+            "instructions": "",
+            "turn_detection": {
+                "type": "semantic_vad",
+                "eagerness": "medium",
+                "create_response": True,
+                "interrupt_response": True,
+            },
+            "provider_data": {},
         },
     },
 
@@ -3094,6 +3131,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "xAI base URL (leave empty for default)",
         "url": None,
         "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "INWORLD_API_KEY": {
+        "description": "Inworld API key for speech-to-text, text-to-speech, and realtime voice",
+        "prompt": "Inworld API key",
+        "url": "https://platform.inworld.ai/api-keys",
+        "password": True,
         "category": "provider",
         "advanced": True,
     },

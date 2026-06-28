@@ -1,9 +1,9 @@
-"""OpenAI Realtime API WebSocket client + file-queue speaker.
+"""Realtime API WebSocket client + file-queue speaker.
 
 This module is the "output" side of the v2 voice bridge: it takes text,
-sends it to the OpenAI Realtime API, receives audio deltas back, and
-appends the PCM bytes to a file. A separate consumer (the audio
-bridge) streams that file into Chrome's fake microphone.
+sends it to the configured Realtime API provider, receives audio deltas
+back, and appends the PCM bytes to a file. A separate consumer (the
+audio bridge) streams that file into Chrome's fake microphone.
 
 Designed for simplicity: a single synchronous WebSocket connection per
 speaker, per session. The ``websockets`` package is imported lazily so
@@ -19,9 +19,11 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import quote
 
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime"
+INWORLD_REALTIME_URL = "wss://api.inworld.ai/api/v1/realtime/session"
 
 
 def _require_websockets():
@@ -30,14 +32,14 @@ def _require_websockets():
         from websockets.sync.client import connect as _connect  # type: ignore
     except ImportError as exc:  # pragma: no cover - exercised via test
         raise RuntimeError(
-            "websockets package is required for OpenAI Realtime; "
+            "websockets package is required for realtime voice; "
             "install with: pip install websockets"
         ) from exc
     return _connect
 
 
 class RealtimeSession:
-    """Minimal sync client for the OpenAI Realtime WebSocket API.
+    """Minimal sync client for realtime voice WebSocket APIs.
 
     Usage:
         sess = RealtimeSession(api_key=..., audio_sink_path=Path("out.pcm"))
@@ -57,6 +59,13 @@ class RealtimeSession:
         instructions: str = "",
         audio_sink_path: Optional[Path] = None,
         sample_rate: int = 24000,
+        provider: str = "openai",
+        tts_model: str = "",
+        stt_model: str = "",
+        language: str = "",
+        turn_detection: Optional[dict] = None,
+        provider_data: Optional[dict] = None,
+        session_id: Optional[str] = None,
     ) -> None:
         import threading as _threading
         self.api_key = api_key
@@ -65,6 +74,13 @@ class RealtimeSession:
         self.instructions = instructions
         self.audio_sink_path = Path(audio_sink_path) if audio_sink_path else None
         self.sample_rate = sample_rate
+        self.provider = (provider or "openai").strip().lower()
+        self.tts_model = tts_model
+        self.stt_model = stt_model
+        self.language = language
+        self.turn_detection = dict(turn_detection or {})
+        self.provider_data = dict(provider_data or {})
+        self.session_id = session_id or f"hermes-meet-{uuid.uuid4().hex}"
         self._ws: Any = None
         self._send_lock = _threading.Lock()
         self._last_response_id: Optional[str] = None
@@ -77,11 +93,16 @@ class RealtimeSession:
     def connect(self) -> None:
         """Open WS and send session.update with voice+instructions."""
         connect = _require_websockets()
-        url = f"{REALTIME_URL}?model={self.model}"
-        headers = [
-            ("Authorization", f"Bearer {self.api_key}"),
-            ("OpenAI-Beta", "realtime=v1"),
-        ]
+        if self.provider == "inworld":
+            sid = quote(self.session_id, safe="")
+            url = f"{INWORLD_REALTIME_URL}?key={sid}&protocol=realtime"
+            headers = [("Authorization", f"Basic {self.api_key}")]
+        else:
+            url = f"{REALTIME_URL}?model={self.model}"
+            headers = [
+                ("Authorization", f"Bearer {self.api_key}"),
+                ("OpenAI-Beta", "realtime=v1"),
+            ]
         # websockets.sync.client.connect accepts either additional_headers=
         # (newer) or extra_headers= depending on version; try the newer
         # name first and fall back.
@@ -90,8 +111,11 @@ class RealtimeSession:
         except TypeError:
             self._ws = connect(url, extra_headers=headers)
 
-        self._send_json(
-            {
+        self._send_json(self._session_update_payload())
+
+    def _session_update_payload(self) -> dict:
+        if self.provider != "inworld":
+            return {
                 "type": "session.update",
                 "session": {
                     "voice": self.voice,
@@ -101,7 +125,45 @@ class RealtimeSession:
                     "input_audio_format": "pcm16",
                 },
             }
-        )
+
+        turn_detection = {
+            "type": "semantic_vad",
+            "eagerness": "medium",
+            "create_response": True,
+            "interrupt_response": True,
+        }
+        turn_detection.update(self.turn_detection)
+        transcription: dict[str, Any] = {}
+        if self.stt_model:
+            transcription["model"] = self.stt_model
+        if self.language:
+            transcription["language"] = self.language
+        provider_data = dict(self.provider_data)
+        audio_input = {
+            "format": {"type": "audio/pcm", "rate": self.sample_rate},
+            "turn_detection": turn_detection,
+        }
+        if transcription:
+            audio_input["transcription"] = transcription
+        audio_output = {
+            "format": {"type": "audio/pcm", "rate": self.sample_rate},
+            "voice": self.voice,
+        }
+        if self.tts_model:
+            audio_output["model"] = self.tts_model
+        session = {
+            "type": "realtime",
+            "model": self.model,
+            "instructions": self.instructions,
+            "output_modalities": ["audio", "text"],
+            "audio": {
+                "input": audio_input,
+                "output": audio_output,
+            },
+        }
+        if provider_data:
+            session["providerData"] = provider_data
+        return {"type": "session.update", "session": session}
 
     def close(self) -> None:
         if self._ws is not None:
@@ -166,7 +228,7 @@ class RealtimeSession:
                 if not isinstance(frame, dict):
                     continue
                 ftype = frame.get("type")
-                if ftype == "response.audio.delta":
+                if ftype in {"response.audio.delta", "response.output_audio.delta"}:
                     b64 = frame.get("delta") or frame.get("audio") or ""
                     if b64 and sink_fp is not None:
                         try:
@@ -183,7 +245,12 @@ class RealtimeSession:
                     rid = (frame.get("response") or {}).get("id")
                     if rid:
                         self._last_response_id = rid
-                elif ftype in {"response.done", "response.completed", "response.cancelled"}:
+                elif ftype in {
+                    "response.done",
+                    "response.completed",
+                    "response.cancelled",
+                    "response.output_audio.done",
+                }:
                     break
                 elif ftype == "error":
                     err = frame.get("error") or frame

@@ -1,0 +1,6 @@
+name: inworld
+version: 0.1.0
+description: "Inworld TTS, STT, and realtime voice backends"
+kind: backend
+requires_env:
+  - INWORLD_API_KEY

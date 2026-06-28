@@ -11,6 +11,7 @@ from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _apply_toolset_change,
     _checklist_toolset_keys,
+    _configure_toolset,
     _configure_provider,
     _reconfigure_provider,
     _get_platform_tools,
@@ -24,6 +25,7 @@ from hermes_cli.tools_config import (
     TOOL_CATEGORIES,
     gui_toolset_label,
     _visible_providers,
+    tools_disable_enable_command,
     tools_command,
 )
 
@@ -145,6 +147,62 @@ def test_gui_toolset_label_strips_leading_emoji():
 
 def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+FAL_MEDIA_UTILITY_TOOLSETS = {
+    "image_edit",
+    "image_background_removal",
+    "image_upscale",
+    "video_background_removal",
+    "video_upscale",
+}
+
+
+def test_configurable_toolsets_include_fal_media_utilities():
+    keys = {key for key, _label, _desc in CONFIGURABLE_TOOLSETS}
+    assert FAL_MEDIA_UTILITY_TOOLSETS.issubset(keys)
+
+
+def test_get_platform_tools_resolves_fal_media_utilities():
+    config = {"platform_toolsets": {"cli": sorted(FAL_MEDIA_UTILITY_TOOLSETS)}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert FAL_MEDIA_UTILITY_TOOLSETS.issubset(enabled)
+
+
+def test_tools_enable_accepts_fal_media_utility_toolsets(monkeypatch):
+    config = {"platform_toolsets": {"cli": ["image_gen"]}}
+    monkeypatch.setattr("hermes_cli.tools_config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda _config: None)
+
+    tools_disable_enable_command(
+        SimpleNamespace(
+            tools_action="enable",
+            platform="cli",
+            names=sorted(FAL_MEDIA_UTILITY_TOOLSETS),
+        )
+    )
+
+    saved = set(config["platform_toolsets"]["cli"])
+    assert FAL_MEDIA_UTILITY_TOOLSETS.issubset(saved)
+
+
+def test_fal_media_utilities_reuse_image_gen_setup(monkeypatch):
+    configured = []
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._fal_media_backend_available",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_tool_category",
+        lambda ts_key, cat, config, **kw: configured.append((ts_key, cat["name"])),
+    )
+
+    assert _toolset_needs_configuration_prompt("image_edit", {}) is True
+    _configure_toolset("image_edit", {}, force_fresh=True)
+
+    assert configured == [("image_gen", "Image Generation")]
 
 
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
@@ -1111,9 +1169,10 @@ class TestImagegenBackendRegistry:
         """catalog_fn should defer import to avoid import cycles."""
         from hermes_cli.tools_config import IMAGEGEN_BACKENDS
         catalog, default = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
-        assert default == "fal-ai/flux-2/klein/9b"
-        assert "fal-ai/flux-2/klein/9b" in catalog
+        assert default == "fal-ai/gemini-3.1-flash-image-preview"
+        assert "fal-ai/gemini-3.1-flash-image-preview" in catalog
         assert "fal-ai/flux-2-pro" in catalog
+        assert "fal-ai/flux-2/klein/9b" in catalog
 
     def test_image_gen_providers_tagged_with_fal_backend(self):
         """Both Nous Subscription and FAL.ai providers must carry the
@@ -1136,8 +1195,8 @@ class TestImagegenModelPicker:
         # Force _prompt_choice to pick index 1 (second-in-ordered-list).
         with patch("hermes_cli.tools_config._prompt_choice", return_value=1):
             _configure_imagegen_model("fal", config)
-        # ordered[0] == current (default klein), ordered[1] == first non-default
-        assert config["image_gen"]["model"] != "fal-ai/flux-2/klein/9b"
+        # ordered[0] == current (default gemini preview), ordered[1] == first non-default
+        assert config["image_gen"]["model"] != "fal-ai/gemini-3.1-flash-image-preview"
         assert config["image_gen"]["model"].startswith("fal-ai/")
 
     def test_picker_with_gpt_image_does_not_prompt_quality(self):
@@ -1182,7 +1241,7 @@ class TestImagegenModelPicker:
         with patch("hermes_cli.tools_config._prompt_choice", return_value=0):
             _configure_imagegen_model("fal", config)
         assert isinstance(config["image_gen"], dict)
-        assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
+        assert config["image_gen"]["model"] == "fal-ai/gemini-3.1-flash-image-preview"
 
 
 def test_save_platform_tools_normalizes_numeric_entries():
@@ -1255,7 +1314,14 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     }
     fake_toolsets["hermes-_test_platform"] = {
         "description": "test composite",
-        "tools": ["web_search", "web_extract", "terminal", "process", "_test_special_tool"],
+        "tools": [
+            "web_search",
+            "web_extract",
+            "terminal",
+            "process",
+            "read_terminal",
+            "_test_special_tool",
+        ],
         "includes": [],
     }
 
@@ -1596,8 +1662,6 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'vision' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
-
-
 def test_vision_picker_writes_provider_and_model(tmp_path, monkeypatch):
     """Picking a provider+model persists auxiliary.vision.{provider,model}.
 
@@ -1674,5 +1738,3 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     # provider pinned to "custom" so the resolver routes through base_url.
     assert v.get("provider") == "custom"
     save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
-
-

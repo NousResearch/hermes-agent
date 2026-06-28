@@ -37,6 +37,7 @@ def test_fal_family_catalog():
         "ltx-2.3", "pixverse-v6",
         # premium
         "veo3.1", "seedance-2.0", "kling-v3-4k", "happy-horse",
+        "happy-horse-v1.1",
     }
     assert expected.issubset(set(FAL_FAMILIES.keys())), (
         f"missing families: {expected - set(FAL_FAMILIES.keys())}"
@@ -77,7 +78,7 @@ def test_fal_list_models_advertises_both_modalities():
 
     models = FALVideoGenProvider().list_models()
     for m in models:
-        assert set(m["modalities"]) == {"text", "image"}, (
+        assert {"text", "image"}.issubset(set(m["modalities"])), (
             f"{m['id']} doesn't advertise both modalities — every family "
             f"should have t2v + i2v"
         )
@@ -238,6 +239,44 @@ class TestFamilyRouting:
         assert with_fake_fal["arguments"].get("start_image_url") == "https://example.com/frame.png"
         assert "image_url" not in with_fake_fal["arguments"]
 
+    def test_happy_horse_v11_reference_routes_to_reference_endpoint(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "character1 dances with character2",
+            model="happy-horse-v1.1",
+            reference_image_urls=[
+                "https://example.com/one.png",
+                "https://example.com/two.png",
+            ],
+        )
+
+        assert result["success"] is True
+        assert result["modality"] == "reference"
+        assert with_fake_fal["endpoint"] == "alibaba/happy-horse/v1.1/reference-to-video"
+        assert with_fake_fal["arguments"]["image_urls"] == [
+            "https://example.com/one.png",
+            "https://example.com/two.png",
+        ]
+
+    def test_happy_horse_v11_image_plus_references_caps_at_nine(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        refs = [f"https://example.com/ref-{i}.png" for i in range(12)]
+        result = FALVideoGenProvider().generate(
+            "character1 leads the scene",
+            model="happy-horse-v1.1",
+            image_url="https://example.com/start.png",
+            reference_image_urls=refs,
+        )
+
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "alibaba/happy-horse/v1.1/reference-to-video"
+        assert with_fake_fal["arguments"]["image_urls"] == [
+            "https://example.com/start.png",
+            *refs[:8],
+        ]
+
 
 class TestPayloadBuilder:
     def test_drops_unsupported_keys(self):
@@ -340,3 +379,47 @@ class TestPayloadBuilder:
         )
         # Only prompt — no payload bloat for fields we can't verify
         assert p == {"prompt": "a horse galloping"}
+
+    def test_happy_horse_v11_payload_supports_documented_controls(self):
+        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+        meta = FAL_FAMILIES["happy-horse-v1.1"]
+        p = _build_payload(
+            meta,
+            prompt="a cinematic walk",
+            image_url=None,
+            reference_image_urls=["https://example.com/character.png"],
+            duration=99,
+            aspect_ratio="9:21",
+            resolution="1080p",
+            negative_prompt="watermark",
+            audio=True,
+            seed=123,
+        )
+
+        assert p == {
+            "prompt": "a cinematic walk",
+            "image_urls": ["https://example.com/character.png"],
+            "seed": 123,
+            "aspect_ratio": "9:21",
+            "resolution": "1080p",
+            "duration": "15",
+            "enable_safety_checker": True,
+        }
+
+    def test_happy_horse_v11_default_duration_is_five(self):
+        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+        p = _build_payload(
+            FAL_FAMILIES["happy-horse-v1.1"],
+            prompt="x",
+            image_url=None,
+            duration=None,
+            aspect_ratio="16:9",
+            resolution="1080p",
+            negative_prompt=None,
+            audio=None,
+            seed=None,
+        )
+
+        assert p["duration"] == "5"

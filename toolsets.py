@@ -134,6 +134,24 @@ TOOLSETS = {
         "includes": []
     },
 
+    "image_edit": {
+        "description": "Edit or transform existing images via FAL.ai",
+        "tools": ["image_edit"],
+        "includes": []
+    },
+
+    "image_background_removal": {
+        "description": "Remove backgrounds from images via FAL.ai BiRefNet V2",
+        "tools": ["remove_background"],
+        "includes": []
+    },
+
+    "image_upscale": {
+        "description": "Upscale images via FAL.ai SeedVR2",
+        "tools": ["upscale_image"],
+        "includes": []
+    },
+
     "video_gen": {
         "description": (
             "Video generation tools. Single ``video_generate`` tool covers "
@@ -142,6 +160,18 @@ TOOLSETS = {
             "``hermes tools`` → Video Generation."
         ),
         "tools": ["video_generate"],
+        "includes": []
+    },
+
+    "video_background_removal": {
+        "description": "Remove backgrounds from videos via FAL.ai BiRefNet V2 Video",
+        "tools": ["remove_video_background"],
+        "includes": []
+    },
+
+    "video_upscale": {
+        "description": "Upscale videos via FAL.ai SeedVR2 Video",
+        "tools": ["upscale_video"],
         "includes": []
     },
 

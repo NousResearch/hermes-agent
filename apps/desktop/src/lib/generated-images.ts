@@ -12,8 +12,11 @@ type TextLike = {
 // Path-ish result fields the model may echo into its prose. Display prefers the
 // host path (gateway-deliverable); stripping must catch every variant so a
 // sandbox path the model restated doesn't slip through as a duplicate image.
-const DISPLAY_KEYS = ['host_image', 'image'] as const
-const ECHO_KEYS = ['host_image', 'image', 'agent_visible_image'] as const
+const IMAGE_TOOL_NAMES = new Set(['image_generate', 'image_edit', 'remove_background', 'upscale_image'])
+const VIDEO_TOOL_NAMES = new Set(['video_generate', 'remove_video_background', 'upscale_video'])
+
+const IMAGE_DISPLAY_KEYS = ['host_image', 'image', 'output_url'] as const
+const ECHO_KEYS = ['host_image', 'image', 'video', 'url', 'output_url', 'agent_visible_image'] as const
 
 function recordFromUnknown(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -45,8 +48,12 @@ function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))]
 }
 
-function imageResult(part: ToolLike): Record<string, unknown> | null {
-  if (part.type !== 'tool-call' || part.toolName !== 'image_generate') {
+function mediaResult(part: ToolLike): Record<string, unknown> | null {
+  if (
+    part.type !== 'tool-call' ||
+    typeof part.toolName !== 'string' ||
+    (!IMAGE_TOOL_NAMES.has(part.toolName) && !VIDEO_TOOL_NAMES.has(part.toolName))
+  ) {
     return null
   }
 
@@ -63,12 +70,22 @@ export function generatedImageFromResult(result: unknown): string | null {
     return null
   }
 
-  return stringFields(record, DISPLAY_KEYS)[0] ?? null
+  return stringFields(record, IMAGE_DISPLAY_KEYS)[0] ?? null
+}
+
+export function generatedVideoFromResult(result: unknown): string | null {
+  const record = recordFromUnknown(result)
+
+  if (!record || record.success === false) {
+    return null
+  }
+
+  return stringFields(record, ['video', 'output_url', 'url'])[0] ?? null
 }
 
 /** Every path/URL a generated image might appear as in prose, for de-duping. */
 export function generatedImageEchoSources(parts: readonly ToolLike[]): string[] {
-  return unique(parts.flatMap(part => stringFields(imageResult(part) ?? {}, ECHO_KEYS)))
+  return unique(parts.flatMap(part => stringFields(mediaResult(part) ?? {}, ECHO_KEYS)))
 }
 
 /** Strip a generated image out of prose so it only ever shows in the tool slot.

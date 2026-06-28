@@ -70,7 +70,7 @@ import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
-import { GeneratedImage } from '@/components/chat/generated-image-result'
+import { GeneratedImage, GeneratedVideo } from '@/components/chat/generated-image-result'
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
@@ -90,6 +90,7 @@ import { useI18n } from '@/i18n'
 import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
+import { generatedImageFromResult, generatedVideoFromResult } from '@/lib/generated-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, StopFilled, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
@@ -518,7 +519,10 @@ const StreamStallIndicator: FC = () => {
   )
 }
 
-const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
+const IMAGE_MEDIA_TOOLS = new Set(['image_generate', 'image_edit', 'remove_background', 'upscale_image'])
+const VIDEO_MEDIA_TOOLS = new Set(['video_generate', 'remove_video_background', 'upscale_video'])
+
+const ImageMediaTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
   const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
 
   return (
@@ -528,14 +532,27 @@ const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
   )
 }
 
+const VideoMediaTool: FC<ToolCallMessagePartProps> = ({ result }) => (
+  <div className="mt-1.5">
+    <GeneratedVideo result={result} />
+  </div>
+)
+
 const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
   // todo parts are hoisted to a dedicated panel above the message content.
   if (props.toolName === 'todo') {
     return null
   }
 
-  if (props.toolName === 'image_generate') {
-    return <ImageGenerateTool {...props} />
+  if (
+    IMAGE_MEDIA_TOOLS.has(props.toolName) &&
+    (props.result === undefined || Boolean(generatedImageFromResult(props.result)))
+  ) {
+    return <ImageMediaTool {...props} />
+  }
+
+  if (VIDEO_MEDIA_TOOLS.has(props.toolName) && Boolean(generatedVideoFromResult(props.result))) {
+    return <VideoMediaTool {...props} />
   }
 
   if (props.toolName === 'clarify') {

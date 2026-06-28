@@ -116,6 +116,18 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 |------|-------------|----------------------|
 | `image_generate` | Generate images from text prompts (text-to-image) or edit/transform an existing image (image-to-image) via the user-configured backend (FAL.ai, OpenAI, xAI, Krea). Pass `image_url` to edit an image and `reference_image_urls` for style references; omit both for text-to-image. The model is user-configured and not selectable by the agent. Returns a single image URL or local path. | FAL_KEY / OPENAI_API_KEY / xAI OAuth / KREA_API_KEY |
 
+## FAL media utility toolsets
+
+These opt-in toolsets use the same FAL.ai credential or managed Nous FAL gateway as Image Generation.
+
+| Toolset | Tool | Description | Requires environment |
+|---------|------|-------------|----------------------|
+| `image_edit` | `image_edit` | Edit or transform an existing image with Gemini 3.1 Flash Image Preview edit support. | FAL_KEY or managed Nous FAL gateway |
+| `image_background_removal` | `remove_background` | Remove an image background with Ideogram Remove Background by default, with BiRefNet V2 variants still selectable. | FAL_KEY or managed Nous FAL gateway |
+| `image_upscale` | `upscale_image` | Upscale an image with SeedVR2. | FAL_KEY or managed Nous FAL gateway |
+| `video_background_removal` | `remove_video_background` | Remove a video background with BiRefNet V2 Video. | FAL_KEY or managed Nous FAL gateway |
+| `video_upscale` | `upscale_video` | Upscale a video with SeedVR2 Video. | FAL_KEY or managed Nous FAL gateway |
+
 ## `kanban` toolset
 
 Registered when the agent is either (a) spawned by the kanban dispatcher (`HERMES_KANBAN_TASK` env set) or (b) running in a profile that explicitly enables the `kanban` toolset. Task-scoped workers use lifecycle tools for their assigned task; orchestrator profiles additionally get board-routing tools like `kanban_list` and `kanban_unblock`. See [Kanban Multi-Agent](/user-guide/features/kanban) for the full workflow.
@@ -192,7 +204,7 @@ Opt-in toolset (not loaded in the default `hermes-cli` set). Add via `--toolsets
 Backends ship as plugins under `plugins/video_gen/<name>/`:
 
 - **xAI Grok-Imagine** — text-to-video and image-to-video (SuperGrok OAuth or `XAI_API_KEY`).
-- **FAL.ai** — Veo 3.1, Pixverse v6, Kling O3 (requires `FAL_KEY`).
+- **FAL.ai** — Veo 3.1, Pixverse v6, Seedance 2.0, Kling 4K, Happy Horse 1.1 (requires `FAL_KEY`; Happy Horse 1.1 also supports reference images).
 
 The single `video_generate` tool covers both modalities — pass `image_url` to animate a still, omit it to generate from text alone. The active backend auto-routes to the right endpoint. The tool's description is rebuilt at session start to reflect the active backend's actual capabilities (modalities, aspect ratios, resolutions, duration range, max reference images, audio support). See [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) for backend authoring.
 
@@ -260,5 +272,3 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
-

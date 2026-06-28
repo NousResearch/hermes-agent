@@ -56,13 +56,21 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 3
   },
   {
+    prefix: 'INWORLD_',
+    name: 'Inworld',
+    description: 'Realtime speech, speech-to-text, and text-to-speech',
+    docsUrl: 'https://platform.inworld.ai/api-keys',
+    priority: 4
+  },
+  {
     prefix: 'GOOGLE_',
     name: 'Gemini',
     description: 'Google AI Studio (Gemini 1.5 / 2.0 / 2.5)',
     docsUrl: 'https://aistudio.google.com/app/apikey',
-    priority: 4
+    priority: 5
   },
   { prefix: 'GEMINI_', name: 'Gemini', priority: 4 },
+  { prefix: 'HERMES_GEMINI_', name: 'Gemini', priority: 4 },
   {
     prefix: 'DEEPSEEK_',
     name: 'DeepSeek',
@@ -235,8 +243,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
   // Speech-to-text backends — kept in sync with the stt block in
-  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
-  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
+  // hermes_cli/config.py (local/groq/openai/inworld/mistral/elevenlabs).
+  'stt.provider': ['local', 'groq', 'openai', 'inworld', 'mistral', 'xai', 'elevenlabs'],
   'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
   // Text-to-speech backends — kept in sync with the built-in source of truth
   // (agent/tts_registry.py::_BUILTIN_NAMES / tools/tts_tool.py::
@@ -245,6 +253,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'edge',
     'elevenlabs',
     'openai',
+    'inworld',
     'xai',
     'minimax',
     'mistral',
@@ -254,8 +263,13 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'piper'
   ],
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'],
+  'stt.inworld.model': ['inworld/inworld-stt-1'],
+  'stt.inworld.audio_encoding': ['AUTO_DETECT', 'LINEAR16', 'MP3', 'OGG_OPUS', 'FLAC'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
+  'tts.inworld.model': ['inworld-tts-2', 'inworld-tts-1.5-max', 'inworld-tts-1.5-mini'],
+  'tts.inworld.output_format': ['ogg', 'mp3', 'wav', 'pcm'],
+  'tts.inworld.delivery_mode': ['BALANCED', 'STABLE', 'CREATIVE'],
   'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
   // NeuTTS local inference device.
   'tts.neutts.device': ['cpu', 'cuda', 'mps'],
@@ -332,6 +346,11 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     openai: {
       model: 'OpenAI STT Model'
     },
+    inworld: {
+      model: 'Inworld STT Model',
+      audioEncoding: 'Inworld Audio Encoding',
+      language: 'Inworld Language'
+    },
     groq: {
       model: 'Groq STT Model'
     },
@@ -353,6 +372,13 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     openai: {
       model: 'OpenAI TTS Model',
       voice: 'OpenAI Voice'
+    },
+    inworld: {
+      model: 'Inworld TTS Model',
+      voice: 'Inworld Voice',
+      outputFormat: 'Inworld Audio Format',
+      sampleRate: 'Inworld Sample Rate',
+      deliveryMode: 'Inworld Delivery Mode'
     },
     elevenlabs: {
       voiceId: 'ElevenLabs Voice',
@@ -465,6 +491,11 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     autoTts: 'Automatically speak assistant responses.'
   },
   tts: {
+    inworld: {
+      voice: 'Inworld voice ID, e.g. Dennis.',
+      outputFormat: 'Desktop voice playback works best with native OGG.',
+      deliveryMode: 'Latency/quality profile for Inworld synthesis.'
+    },
     xai: {
       voiceId: 'xAI voice ID (e.g. eve) or a custom voice ID.',
       language: 'Spoken language code, e.g. en.'
@@ -475,6 +506,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   stt: {
     enabled: 'Enable local or provider-backed speech transcription.',
+    inworld: {
+      audioEncoding: 'AUTO_DETECT works for desktop browser recordings.'
+    },
     elevenlabs: {
       languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
     }
@@ -562,6 +596,11 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.edge.voice',
       'tts.openai.model',
       'tts.openai.voice',
+      'tts.inworld.model',
+      'tts.inworld.voice',
+      'tts.inworld.output_format',
+      'tts.inworld.sample_rate',
+      'tts.inworld.delivery_mode',
       'tts.elevenlabs.voice_id',
       'tts.elevenlabs.model_id',
       'tts.xai.voice_id',
@@ -580,6 +619,9 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.local.model',
       'stt.local.language',
       'stt.openai.model',
+      'stt.inworld.model',
+      'stt.inworld.audio_encoding',
+      'stt.inworld.language',
       'stt.groq.model',
       'stt.mistral.model',
       'stt.elevenlabs.model_id',

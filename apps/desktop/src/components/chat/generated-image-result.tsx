@@ -6,8 +6,15 @@ import { DiffusionCanvas } from '@/components/chat/image-generation-placeholder'
 import { ImageActionButton, ImageLightbox } from '@/components/chat/zoomable-image'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
-import { generatedImageFromResult } from '@/lib/generated-images'
-import { filePathFromMediaPath, gatewayMediaDataUrl, isRemoteGateway, mediaExternalUrl, mediaName } from '@/lib/media'
+import { generatedImageFromResult, generatedVideoFromResult } from '@/lib/generated-images'
+import {
+  filePathFromMediaPath,
+  gatewayMediaDataUrl,
+  isRemoteGateway,
+  mediaExternalUrl,
+  mediaName,
+  mediaStreamUrl
+} from '@/lib/media'
 import { cn } from '@/lib/utils'
 
 // Aspect hint from the tool args sizes the frame *before* the image loads, so
@@ -176,5 +183,55 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
         />
       )}
     </>
+  )
+}
+
+function resolveVideoSrc(path: string): string {
+  if (/^https?:/i.test(path)) {
+    return path
+  }
+
+  if (isRemoteGateway()) {
+    return mediaExternalUrl(path)
+  }
+
+  return mediaStreamUrl(path)
+}
+
+export const GeneratedVideo: FC<{ result?: unknown }> = ({ result }) => {
+  const { t } = useI18n()
+  const copy = t.desktop
+  const video = result === undefined ? null : generatedVideoFromResult(result)
+
+  if (!video) {
+    return null
+  }
+
+  const src = resolveVideoSrc(video)
+
+  return (
+    <span
+      className="group/video relative mt-1.5 block max-w-full overflow-hidden rounded-2xl border border-(--ui-stroke-tertiary) bg-black"
+      data-slot="aui_generated-video"
+      style={{ width: 'min(var(--image-preview-max-width), 100%)' }}
+    >
+      <video
+        className="block aspect-video max-h-[var(--image-preview-height)] w-full bg-black object-contain"
+        controls
+        playsInline
+        preload="metadata"
+        src={src}
+      />
+      <a
+        className="absolute right-2 top-2 rounded-md border border-white/20 bg-black/60 px-2 py-1 text-[0.68rem] font-medium text-white/90 opacity-0 backdrop-blur-sm transition-opacity hover:bg-black/75 group-hover/video:opacity-100 focus-visible:opacity-100"
+        href="#"
+        onClick={event => {
+          event.preventDefault()
+          void window.hermesDesktop?.openExternal(mediaExternalUrl(video))
+        }}
+      >
+        {copy.openImage}: {mediaName(video)}
+      </a>
+    </span>
   )
 }

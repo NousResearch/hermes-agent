@@ -8,7 +8,7 @@ in it, and do the followup work afterwards.
 | Version | What | Status |
 |---|---|---|
 | v1 | Transcribe-only: Playwright joins Meet, scrapes captions to transcript file | ✓ ships by default |
-| v2 | Realtime duplex audio: bot speaks in-call via OpenAI Realtime + BlackHole/PulseAudio null-sink | ✓ opt in with `mode='realtime'` |
+| v2 | Realtime duplex audio: bot speaks in-call via OpenAI or Inworld Realtime + BlackHole/PulseAudio null-sink | ✓ opt in with `mode='realtime'` |
 | v3 | Remote node host: run the bot on a different machine than the gateway | ✓ opt in with `node='<name>'` |
 
 ## Architecture
@@ -34,7 +34,7 @@ in it, and do the followup work afterwards.
 │        ├─ caption scraper → transcript.txt                           │
 │        └─ (realtime mode only) RealtimeSpeaker thread                │
 │             ↓                                                        │
-│           OpenAI Realtime WS → speaker.pcm                           │
+│           Realtime provider WS → speaker.pcm                         │
 │             ↓                                                        │
 │           paplay → null-sink ← Chrome fake mic                       │
 │                                                                      │
@@ -82,6 +82,22 @@ echo 'OPENAI_API_KEY=sk-...' >> ~/.hermes/.env
 hermes meet join https://meet.google.com/abc-defg-hij --mode realtime
 # then from the agent or CLI:
 hermes meet say "Good morning everyone, I'm the note-taker bot."
+```
+
+Inworld realtime uses the same audio bridge and `meet_say` queue. Put the secret in `.env` and provider behavior in `config.yaml`:
+
+```bash
+echo 'INWORLD_API_KEY=...' >> ~/.hermes/.env
+```
+
+```yaml
+realtime:
+  provider: inworld
+  inworld:
+    model: openai/gpt-4o-mini
+    tts_model: inworld-tts-1.5-mini
+    stt_model: inworld/inworld-stt-1
+    voice: Dennis
 ```
 
 macOS:

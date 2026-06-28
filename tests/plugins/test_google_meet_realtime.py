@@ -117,6 +117,47 @@ def test_connect_sends_session_update_with_voice_and_instructions(monkeypatch):
     assert s["input_audio_format"] == "pcm16"
 
 
+def test_inworld_connect_uses_basic_auth_and_provider_payload(monkeypatch):
+    from plugins.google_meet.realtime.openai_client import RealtimeSession
+
+    ws = _FakeWS(recv_frames=[])
+    captured = _install_fake_websockets(monkeypatch, ws)
+
+    sess = RealtimeSession(
+        api_key="base64-key",
+        provider="inworld",
+        session_id="meet id",
+        model="openai/gpt-4o-mini",
+        tts_model="inworld-tts-1.5-mini",
+        stt_model="inworld/inworld-stt-1",
+        voice="Dennis",
+        instructions="Be helpful.",
+        language="en",
+        turn_detection={"eagerness": "high"},
+        provider_data={"backchannel": {"enabled": True}},
+    )
+    sess.connect()
+
+    assert captured["url"].startswith("wss://api.inworld.ai/api/v1/realtime/session")
+    assert "key=meet%20id" in captured["url"]
+    assert "protocol=realtime" in captured["url"]
+    headers = dict(captured["headers"] or [])
+    assert headers["Authorization"] == "Basic base64-key"
+
+    update = ws.sent[0]
+    assert update["type"] == "session.update"
+    session = update["session"]
+    assert session["type"] == "realtime"
+    assert session["model"] == "openai/gpt-4o-mini"
+    assert session["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
+    assert session["audio"]["input"]["transcription"]["model"] == "inworld/inworld-stt-1"
+    assert session["audio"]["input"]["transcription"]["language"] == "en"
+    assert session["audio"]["input"]["turn_detection"]["eagerness"] == "high"
+    assert session["audio"]["output"]["model"] == "inworld-tts-1.5-mini"
+    assert session["audio"]["output"]["voice"] == "Dennis"
+    assert session["providerData"] == {"backchannel": {"enabled": True}}
+
+
 # ---------------------------------------------------------------------------
 # speak()
 # ---------------------------------------------------------------------------
@@ -160,6 +201,26 @@ def test_speak_sends_create_and_response_and_writes_audio(monkeypatch, tmp_path)
     assert result["ok"] is True
     assert result["bytes_written"] == len(audio_bytes) + len(b"more")
     assert result["duration_ms"] >= 0.0
+
+
+def test_speak_accepts_inworld_output_audio_delta(monkeypatch, tmp_path):
+    from plugins.google_meet.realtime.openai_client import RealtimeSession
+
+    audio_bytes = b"inworld-pcm"
+    recv_frames = [
+        {"type": "response.output_audio.delta", "delta": base64.b64encode(audio_bytes).decode()},
+        {"type": "response.output_audio.done"},
+    ]
+    ws = _FakeWS(recv_frames=recv_frames)
+    _install_fake_websockets(monkeypatch, ws)
+
+    sink = tmp_path / "out.pcm"
+    sess = RealtimeSession(api_key="base64-key", provider="inworld", audio_sink_path=sink)
+    sess.connect()
+    result = sess.speak("Hello")
+
+    assert sink.read_bytes() == audio_bytes
+    assert result["bytes_written"] == len(audio_bytes)
 
 
 def test_speak_raises_on_error_frame(monkeypatch, tmp_path):

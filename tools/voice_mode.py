@@ -1163,6 +1163,8 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: OK (Groq)")
     elif stt_provider == "openai":
         details_parts.append("STT provider: OK (OpenAI)")
+    elif stt_provider == "inworld":
+        details_parts.append("STT provider: OK (Inworld)")
     else:
         details_parts.append(
             "STT provider: MISSING (uv pip install faster-whisper — "

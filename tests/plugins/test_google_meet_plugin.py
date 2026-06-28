@@ -721,6 +721,42 @@ def test_realtime_session_counters_initialized():
     assert sess.last_audio_out_at is None
 
 
+def test_meet_bot_loads_inworld_realtime_settings(monkeypatch):
+    from plugins.google_meet import meet_bot
+
+    monkeypatch.setenv("INWORLD_API_KEY", "basic-token")
+    monkeypatch.delenv("HERMES_MEET_REALTIME_KEY", raising=False)
+    monkeypatch.delenv("HERMES_MEET_REALTIME_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        meet_bot,
+        "_load_hermes_config",
+        lambda: {
+            "realtime": {
+                "provider": "inworld",
+                "inworld": {
+                    "model": "openai/gpt-4o-mini",
+                    "tts_model": "inworld-tts-1.5-mini",
+                    "stt_model": "inworld/inworld-stt-1",
+                    "voice": "Dennis",
+                    "language": "en",
+                    "turn_detection": {"eagerness": "high"},
+                    "provider_data": {"backchannel": {"enabled": True}},
+                },
+            }
+        },
+    )
+
+    settings = meet_bot._load_realtime_settings()
+
+    assert settings["provider"] == "inworld"
+    assert settings["api_key"] == "basic-token"
+    assert settings["model"] == "openai/gpt-4o-mini"
+    assert settings["tts_model"] == "inworld-tts-1.5-mini"
+    assert settings["stt_model"] == "inworld/inworld-stt-1"
+    assert settings["turn_detection"] == {"eagerness": "high"}
+    assert settings["provider_data"] == {"backchannel": {"enabled": True}}
+
+
 # ---------------------------------------------------------------------------
 # hermes meet install CLI
 # ---------------------------------------------------------------------------

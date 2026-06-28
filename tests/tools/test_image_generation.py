@@ -33,8 +33,8 @@ def image_tool():
 class TestFalCatalog:
     """Every FAL_MODELS entry must have a consistent shape."""
 
-    def test_default_model_is_klein(self, image_tool):
-        assert image_tool.DEFAULT_MODEL == "fal-ai/flux-2/klein/9b"
+    def test_default_model_is_gemini_preview(self, image_tool):
+        assert image_tool.DEFAULT_MODEL == "fal-ai/gemini-3.1-flash-image-preview"
 
     def test_default_model_in_catalog(self, image_tool):
         assert image_tool.DEFAULT_MODEL in image_tool.FAL_MODELS
@@ -309,7 +309,7 @@ class TestModelResolution:
     def test_no_config_falls_back_to_default(self, image_tool):
         with patch("hermes_cli.config.load_config", return_value={}):
             mid, meta = image_tool._resolve_fal_model()
-        assert mid == "fal-ai/flux-2/klein/9b"
+        assert mid == "fal-ai/gemini-3.1-flash-image-preview"
 
     def test_valid_config_model_is_used(self, image_tool):
         with patch("hermes_cli.config.load_config",
@@ -322,7 +322,7 @@ class TestModelResolution:
         with patch("hermes_cli.config.load_config",
                    return_value={"image_gen": {"model": "fal-ai/nonexistent-9000"}}):
             mid, _ = image_tool._resolve_fal_model()
-        assert mid == "fal-ai/flux-2/klein/9b"
+        assert mid == "fal-ai/gemini-3.1-flash-image-preview"
 
     def test_env_var_fallback_when_no_config(self, image_tool, monkeypatch):
         monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/z-image/turbo")

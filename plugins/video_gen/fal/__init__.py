@@ -4,8 +4,9 @@ User-facing surface: pick a **model family** (e.g. "Pixverse v6",
 "Veo 3.1", "Seedance 2.0", "Kling v3 4K", "LTX 2.3", "Happy Horse").
 The plugin auto-routes to the family's text-to-video endpoint when
 called without ``image_url``, and to its image-to-video endpoint when
-``image_url`` is provided. The agent never sees the routing — it just
-calls ``video_generate(prompt=..., image_url=...)``.
+``image_url`` is provided. Families with a reference-to-video endpoint can
+also route ``reference_image_urls`` to that endpoint. The agent never sees
+the routing — it just calls ``video_generate(...)``.
 
 Model families (each with t2v + i2v endpoints):
 
@@ -18,6 +19,7 @@ Model families (each with t2v + i2v endpoints):
     seedance-2.0  bytedance/seedance-2.0/text-to-video           /  bytedance/seedance-2.0/image-to-video
     kling-v3-4k   fal-ai/kling-video/v3/4k/text-to-video         /  fal-ai/kling-video/v3/4k/image-to-video
     happy-horse   alibaba/happy-horse/text-to-video              /  alibaba/happy-horse/image-to-video
+    happy-horse-v1.1 alibaba/happy-horse/v1.1/text-to-video      /  alibaba/happy-horse/v1.1/image-to-video
 
 Selection precedence for the active family:
     1. ``model=`` arg from the tool call
@@ -63,6 +65,7 @@ logger = logging.getLogger(__name__)
 #                    (heuristic: 2-element with gap > 1 is a range)
 #   audio          : True if generate_audio is supported
 #   negative       : True if negative_prompt is supported
+#   reference_endpoint: optional reference-to-video endpoint for image_urls
 
 FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
     # ─── Cheap / fast tier ─────────────────────────────────────────────
@@ -161,6 +164,25 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "audio": False,
         "negative": False,
     },
+    "happy-horse-v1.1": {
+        "display": "Happy Horse 1.1",
+        "speed": "~60-180s",
+        "price": "$0.14/s 720p, $0.18/s 1080p",
+        "strengths": "Alibaba #1-ranked model. 1080p, native audio, multilingual lip-sync, up to 9 references.",
+        "tier": "premium",
+        "text_endpoint": "alibaba/happy-horse/v1.1/text-to-video",
+        "image_endpoint": "alibaba/happy-horse/v1.1/image-to-video",
+        "reference_endpoint": "alibaba/happy-horse/v1.1/reference-to-video",
+        "aspect_ratios": ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21", "5:4", "4:5"),
+        "resolutions": ("720p", "1080p"),
+        "durations": (3, 15),
+        "default_duration": 5,
+        "audio": False,
+        "native_audio": True,
+        "negative": False,
+        "safety_checker": True,
+        "max_reference_images": 9,
+    },
 }
 
 DEFAULT_MODEL = "pixverse-v6"  # cheap, both modalities, sane defaults
@@ -180,6 +202,9 @@ def _clamp_duration(family: Dict[str, Any], duration: Optional[int]) -> Optional
     if not durations:
         return duration
     if duration is None:
+        default_duration = family.get("default_duration")
+        if isinstance(default_duration, int):
+            return default_duration
         return durations[0]
     if _is_duration_range(durations):
         lo, hi = durations
@@ -245,13 +270,17 @@ def _build_payload(
     negative_prompt: Optional[str],
     audio: Optional[bool],
     seed: Optional[int],
+    reference_image_urls: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Build a family-specific payload, dropping keys the family doesn't declare."""
     payload: Dict[str, Any] = {}
 
     if prompt:
         payload["prompt"] = prompt
-    if image_url:
+    if reference_image_urls:
+        max_refs = int(family.get("max_reference_images") or len(reference_image_urls))
+        payload["image_urls"] = reference_image_urls[:max_refs]
+    elif image_url:
         # Some endpoints (e.g. Kling v3 4K image-to-video) expect
         # `start_image_url` instead of `image_url`. The family entry can
         # declare an override.
@@ -282,6 +311,9 @@ def _build_payload(
 
     if family.get("negative") and negative_prompt:
         payload["negative_prompt"] = negative_prompt
+
+    if "safety_checker" in family:
+        payload["enable_safety_checker"] = bool(family["safety_checker"])
 
     return payload
 
@@ -434,6 +466,8 @@ class FALVideoGenProvider(VideoGenProvider):
                 modalities.append("text")
             if meta.get("image_endpoint"):
                 modalities.append("image")
+            if meta.get("reference_endpoint"):
+                modalities.append("reference")
             out.append({
                 "id": fid,
                 "display": meta["display"],
@@ -452,7 +486,7 @@ class FALVideoGenProvider(VideoGenProvider):
         return {
             "name": "FAL",
             "badge": "paid",
-            "tag": "LTX, Pixverse, Veo 3.1, Seedance 2.0, Kling 4K, Happy Horse — text-to-video & image-to-video",
+            "tag": "LTX, Pixverse, Veo 3.1, Seedance 2.0, Kling 4K, Happy Horse 1.1 — text-to-video & image-to-video",
             "env_vars": [
                 {
                     "key": "FAL_KEY",
@@ -463,15 +497,31 @@ class FALVideoGenProvider(VideoGenProvider):
         }
 
     def capabilities(self) -> Dict[str, Any]:
+        _family_id, family = _resolve_family(None)
+        modalities: List[str] = []
+        if family.get("text_endpoint"):
+            modalities.append("text")
+        if family.get("image_endpoint"):
+            modalities.append("image")
+        if family.get("reference_endpoint"):
+            modalities.append("reference")
+        durations = family.get("durations")
+        min_duration = 1
+        max_duration = 15
+        if durations:
+            if _is_duration_range(durations):
+                min_duration, max_duration = durations
+            else:
+                min_duration, max_duration = min(durations), max(durations)
         return {
-            "modalities": ["text", "image"],
-            "aspect_ratios": ["16:9", "9:16", "1:1"],
-            "resolutions": ["360p", "540p", "720p", "1080p"],
-            "max_duration": 15,
-            "min_duration": 1,
-            "supports_audio": True,
-            "supports_negative_prompt": True,
-            "max_reference_images": 0,
+            "modalities": modalities,
+            "aspect_ratios": list(family.get("aspect_ratios") or []),
+            "resolutions": list(family.get("resolutions") or []),
+            "max_duration": max_duration,
+            "min_duration": min_duration,
+            "supports_audio": bool(family.get("audio")),
+            "supports_negative_prompt": bool(family.get("negative")),
+            "max_reference_images": int(family.get("max_reference_images") or 0),
         }
 
     def generate(
@@ -514,11 +564,30 @@ class FALVideoGenProvider(VideoGenProvider):
         prompt = (prompt or "").strip()
         family_id, family = _resolve_family(model)
 
-        # Route: image_url → image-to-video endpoint; else → text-to-video.
+        # Route: reference images → reference-to-video endpoint when the
+        # family supports it; else image_url → image-to-video; else text.
         image_url_norm = (image_url or "").strip() or None
-        if image_url_norm:
+        reference_images: List[str] = []
+        if isinstance(reference_image_urls, (list, tuple)):
+            reference_images = [
+                str(url).strip()
+                for url in reference_image_urls
+                if isinstance(url, str) and str(url).strip()
+            ]
+        if image_url_norm and reference_images:
+            reference_images = [image_url_norm, *reference_images]
+        max_refs = int(family.get("max_reference_images") or len(reference_images) or 0)
+        if max_refs > 0:
+            reference_images = reference_images[:max_refs]
+
+        if reference_images and family.get("reference_endpoint"):
+            endpoint = family["reference_endpoint"]
+            modality_used = "reference"
+            image_url_for_payload = None
+        elif image_url_norm:
             endpoint = family.get("image_endpoint")
             modality_used = "image"
+            image_url_for_payload = image_url_norm
             if not endpoint:
                 return error_response(
                     error=(
@@ -532,6 +601,7 @@ class FALVideoGenProvider(VideoGenProvider):
         else:
             endpoint = family.get("text_endpoint")
             modality_used = "text"
+            image_url_for_payload = None
             if not endpoint:
                 return error_response(
                     error=(
@@ -553,13 +623,14 @@ class FALVideoGenProvider(VideoGenProvider):
         payload = _build_payload(
             family,
             prompt=prompt,
-            image_url=image_url_norm,
+            image_url=image_url_for_payload,
             duration=duration,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
             negative_prompt=negative_prompt,
             audio=audio,
             seed=seed,
+            reference_image_urls=reference_images if modality_used == "reference" else None,
         )
 
         try:

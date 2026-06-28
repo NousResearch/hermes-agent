@@ -1,75 +1,46 @@
-## What does this PR do?
+## Summary
 
-<!-- Describe the change clearly. What problem does it solve? Why is this approach the right one? -->
-
-
-
-## Related Issue
-
-<!-- Link the issue this PR addresses. If no issue exists, consider creating one first. -->
-
-Fixes #
-
-## Type of Change
-
-<!-- Check the one that applies. -->
-
-- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)
-- [ ] ✨ New feature (non-breaking change that adds functionality)
-- [ ] 🔒 Security fix
-- [ ] 📝 Documentation update
-- [ ] ✅ Tests (adding or improving test coverage)
-- [ ] ♻️ Refactor (no behavior change)
-- [ ] 🎯 New skill (bundled or hub)
-
-## Changes Made
-
-<!-- List the specific changes. Include file paths for code changes. -->
+<!-- What changed, and why is this the right approach for Hermes? -->
 
 - 
 
-## How to Test
+## Footprint and Architecture
 
-<!-- Steps to verify this change works. For bugs: reproduction steps + proof that the fix works. -->
+<!-- New capability should live at the narrowest reasonable surface. -->
 
-1. 
-2. 
-3. 
+- [ ] Extends existing code, or explains why a new surface is needed
+- [ ] Does not add a core model tool unless terminal/file/CLI/plugin/MCP cannot solve it
+- [ ] Keeps plugins inside their plugin directory; no plugin-specific core special cases
+- [ ] Preserves byte-stable system prompts and per-conversation prompt caching
+- [ ] Preserves strict role alternation; no synthetic mid-loop user messages
 
-## Checklist
+## Configuration and Secrets
 
-<!-- Complete these before requesting review. -->
+- [ ] User-facing behavioral settings live in `config.yaml`
+- [ ] `.env` additions are credentials only
+- [ ] Setup/config UI, docs, and defaults are updated together
+- [ ] No telemetry, attribution tags, or third-party identifiers without opt-in gating
 
-### Code
+## Tests
 
-- [ ] I've read the [Contributing Guide](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md)
-- [ ] My commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) (`fix(scope):`, `feat(scope):`, etc.)
-- [ ] I searched for [existing PRs](https://github.com/NousResearch/hermes-agent/pulls) to make sure this isn't a duplicate
-- [ ] My PR contains **only** changes related to this fix/feature (no unrelated commits)
-- [ ] I've run `pytest tests/ -q` and all tests pass
-- [ ] I've added tests for my changes (required for bug fixes, strongly encouraged for features)
-- [ ] I've tested on my platform: <!-- e.g. Ubuntu 24.04, macOS 15.2, Windows 11 -->
+<!-- Include exact commands and any intentional omissions. -->
 
-### Documentation & Housekeeping
+- [ ] Reproduces the original bug or validates the new behavior through the real path
+- [ ] Covers sibling call paths and provider/config propagation where relevant
+- [ ] Avoids change-detector assertions for model lists, versions, or enum counts
+- [ ] Commands run:
 
-<!-- Check all that apply. It's OK to check "N/A" if a category doesn't apply to your change. -->
+```bash
 
-- [ ] I've updated relevant documentation (README, `docs/`, docstrings) — or N/A
-- [ ] I've updated `cli-config.yaml.example` if I added/changed config keys — or N/A
-- [ ] I've updated `CONTRIBUTING.md` or `AGENTS.md` if I changed architecture or workflows — or N/A
-- [ ] I've considered cross-platform impact (Windows, macOS) per the [compatibility guide](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#cross-platform-compatibility) — or N/A
-- [ ] I've updated tool descriptions/schemas if I changed tool behavior — or N/A
+```
 
-## For New Skills
+## Documentation
 
-<!-- Only fill this out if you're adding a skill. Delete this section otherwise. -->
+- [ ] User docs updated, or N/A
+- [ ] Tool/schema references updated, or N/A
+- [ ] Developer docs/skills updated, or N/A
 
-- [ ] This skill is **broadly useful** to most users (if bundled) — see [Contributing Guide](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#should-the-skill-be-bundled)
-- [ ] SKILL.md follows the [standard format](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#skillmd-format) (frontmatter, trigger conditions, steps, pitfalls)
-- [ ] No external dependencies that aren't already available (prefer stdlib, curl, existing Hermes tools)
-- [ ] I've tested the skill end-to-end: `hermes --toolsets skills -q "Use the X skill to do Y"`
+## Reviewer Notes
 
-## Screenshots / Logs
-
-<!-- If applicable, add screenshots or log output showing the fix/feature in action. -->
+<!-- Call out risk, migration notes, follow-ups, screenshots, or logs. -->
 

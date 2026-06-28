@@ -4,6 +4,7 @@ import {
   dedupeGeneratedImageEchoesInParts,
   generatedImageEchoSources,
   generatedImageFromResult,
+  generatedVideoFromResult,
   stripGeneratedImageEchoes
 } from './generated-images'
 
@@ -21,6 +22,18 @@ describe('generatedImageFromResult', () => {
 
   it('ignores failed image generation results', () => {
     expect(generatedImageFromResult({ image: 'https://cdn.example/cat.png', success: false })).toBeNull()
+  })
+})
+
+describe('generatedVideoFromResult', () => {
+  it('returns the video output URL from successful media tool results', () => {
+    expect(generatedVideoFromResult({ media_type: 'video', output_url: 'https://cdn.example/out.mp4', success: true })).toBe(
+      'https://cdn.example/out.mp4'
+    )
+  })
+
+  it('ignores failed video results so the generic error row can render', () => {
+    expect(generatedVideoFromResult({ error: 'No backend configured', success: false, video: null })).toBeNull()
   })
 })
 
@@ -56,6 +69,23 @@ describe('generatedImageEchoSources', () => {
         }
       ])
     ).toEqual(['/host/cat.png', '/sandbox/cat.png'])
+  })
+
+  it('collects media URLs from new FAL utility tool results', () => {
+    expect(
+      generatedImageEchoSources([
+        {
+          result: { image: 'https://cdn.example/edited.png', output_url: 'https://cdn.example/edited.png', success: true },
+          toolName: 'image_edit',
+          type: 'tool-call'
+        },
+        {
+          result: { output_url: 'https://cdn.example/upscaled.mp4', success: true, video: 'https://cdn.example/upscaled.mp4' },
+          toolName: 'upscale_video',
+          type: 'tool-call'
+        }
+      ])
+    ).toEqual(['https://cdn.example/edited.png', 'https://cdn.example/upscaled.mp4'])
   })
 })
 

@@ -79,14 +79,35 @@ class TestGetActiveProvider:
         assert video_gen_registry.get_active_provider() is None
 
     def test_multi_without_config_returns_none(self, tmp_path, monkeypatch):
-        """Unlike image_gen (which falls back to 'fal'), video_gen has no
-        legacy default — when there are multiple providers and no config,
-        the registry returns None and the tool surfaces a helpful error.
+        """When multiple providers are available, video_gen has no legacy
+        default and the tool surfaces a helpful setup error.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         video_gen_registry.register_provider(_FakeProvider("xai"))
         video_gen_registry.register_provider(_FakeProvider("fal"))
         assert video_gen_registry.get_active_provider() is None
+
+    def test_multi_without_config_uses_only_available_provider(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        video_gen_registry.register_provider(_FakeProvider("xai", available=False))
+        video_gen_registry.register_provider(_FakeProvider("fal", available=True))
+        active = video_gen_registry.get_active_provider()
+        assert active is not None and active.name == "fal"
+
+    def test_multi_without_config_ignores_provider_with_broken_availability(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        class BrokenAvailability(_FakeProvider):
+            def is_available(self) -> bool:
+                raise RuntimeError("boom")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        video_gen_registry.register_provider(BrokenAvailability("xai"))
+        video_gen_registry.register_provider(_FakeProvider("fal", available=True))
+        active = video_gen_registry.get_active_provider()
+        assert active is not None and active.name == "fal"
 
     def test_config_selects_provider(self, tmp_path, monkeypatch):
         import yaml

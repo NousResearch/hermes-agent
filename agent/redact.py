@@ -10,6 +10,7 @@ the first 6 and last 4 characters for debuggability.
 import logging
 import os
 import re
+import shlex
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +174,15 @@ _JSON_FIELD_RE = re.compile(
 # while the header name and scheme word are preserved for debuggability. The
 # previous rule only matched ``Bearer``, so ``Basic <base64 user:pass>`` and
 # ``token <pat>`` leaked verbatim into logs/transcripts.
+#
+# The credential class excludes quote characters (``"`` / ``'``): a token sitting
+# flush against a closing quote (``"Authorization: Bearer sk-..."``) must not pull
+# that quote into the match, or masking turns value corruption into *syntax*
+# corruption — the closing quote vanishes and the command/string no longer parses
+# (unterminated quote → shell EOF / Python SyntaxError). Real credentials never
+# contain ``"`` or ``'``, so excluding them is safe. See #43083.
 _AUTH_HEADER_RE = re.compile(
-    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?(\S+)",
+    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)",
     re.IGNORECASE,
 )
 
@@ -202,9 +210,15 @@ _PRIVATE_KEY_RE = re.compile(
 )
 
 # Database connection strings: protocol://user:PASSWORD@host
-# Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password
+# Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password.
+# The userinfo and password groups forbid whitespace ([^:\s]+ / [^@\s]+) so the
+# match can never span a line break. A real DSN password never contains
+# whitespace; without this bound the greedy [^@]+ would scan past the end of a
+# code line to the next stray "@" (e.g. a Python decorator), swallowing
+# intervening lines and corrupting tool OUTPUT for any source containing a
+# postgresql:// f-string template. See issue #33801.
 _DB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:)([^@]+)(@)",
+    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:)([^@\s]+)(@)",
     re.IGNORECASE,
 )
 
@@ -483,9 +497,22 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "BEGIN" in text and "-----" in text:
         text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
 
-    # Database connection string passwords
+    # Database connection string passwords. With code_file=True, a password
+    # group that is a pure ``{...}`` brace expression is an f-string template
+    # reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a literal
+    # credential — preserve it. Literal passwords are still redacted. The regex
+    # forbids whitespace in the password group, so a single-line template's
+    # group(2) is exactly the brace expression. See issue #33801.
     if "://" in text:
-        text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+        if code_file:
+            def _redact_db(m):
+                pw = m.group(2)
+                if pw.startswith("{") and pw.endswith("}"):
+                    return m.group(0)
+                return f"{m.group(1)}***{m.group(3)}"
+            text = _DB_CONNSTR_RE.sub(_redact_db, text)
+        else:
+            text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
 
     # JWT tokens (eyJ... — base64-encoded JSON headers)
     if "eyJ" in text:
@@ -514,6 +541,66 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
+
+
+# Commands whose stdout is an environment-variable dump (KEY=value lines),
+# NOT source code. For these, terminal-output redaction must run the
+# ENV-assignment pass (code_file=False) so opaque tokens with no recognized
+# vendor prefix (e.g. ``MY_SERVICE_TOKEN=abc123randomstring``) are still
+# masked. For all other commands, code_file=True is used to avoid mangling
+# legitimate source/config dumps (``MAX_TOKENS=100``, ``"apiKey": "x"``
+# fixtures, ``postgresql://{user}`` f-string templates). See issue #43025.
+_ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
+
+
+def is_env_dump_command(command: str | None) -> bool:
+    """Return True if ``command`` dumps environment variables to stdout.
+
+    Detects ``env`` / ``printenv`` / ``set`` / ``export`` / ``declare`` as the
+    first token of any segment in a pipeline or sequence (``;`` / ``&&`` /
+    ``||`` / ``|``). Conservative: a parse failure or anything unrecognized
+    returns False (callers then fall back to the safer code_file=True path,
+    which still masks prefix-shaped keys).
+    """
+    if not command or not isinstance(command, str):
+        return False
+    # Split on shell separators, then inspect the first token of each segment.
+    segments = re.split(r"[|;&]+", command)
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        try:
+            tokens = shlex.split(seg)
+        except ValueError:
+            tokens = seg.split()
+        if tokens and tokens[0] in _ENV_DUMP_COMMANDS:
+            return True
+    return False
+
+
+def redact_terminal_output(
+    output: str, command: str | None = None, *, force: bool = False
+) -> str:
+    """Redact secrets from terminal/process stdout.
+
+    Single redaction policy for ALL terminal-output surfaces — foreground
+    ``terminal`` results AND background ``process(action=poll/log/wait)``
+    output — so they can't diverge. Picks ``code_file`` based on whether
+    ``command`` is an environment dump:
+
+    - env-dump command (``env``/``printenv``/``set``/``export``/``declare``)
+      → ``code_file=False`` so the ENV-assignment pass masks opaque tokens.
+    - anything else (or unknown command) → ``code_file=True`` to avoid
+      false positives on source/config dumps.
+
+    ``force=True`` bypasses the global ``security.redact_secrets`` preference
+    for safety boundaries that must never emit raw credentials.
+    """
+    if not output:
+        return output
+    code_file = not is_env_dump_command(command or "")
+    return redact_sensitive_text(output, force=force, code_file=code_file)
 
 
 # Substrings used to gate ``_PREFIX_RE`` execution. If none of these appear in

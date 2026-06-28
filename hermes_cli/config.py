@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Set
 
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -916,13 +916,18 @@ DEFAULT_CONFIG = {
         # Graceful drain timeout for gateway stop/restart (seconds).
         # The gateway stops accepting new work, waits for running agents
         # to finish, then interrupts any remaining runs after the timeout.
-        # 0 = no drain, interrupt immediately.
+        # 0 = no drain, interrupt immediately (the default).
         #
-        # 180s is calibrated for realistic in-flight agent turns: a typical
-        # coding conversation mid-reasoning runs 60–150s per call, so a 60s
-        # budget routinely interrupted legitimate work on /restart. Raise
-        # further in config.yaml if you run very-long-reasoning models.
-        "restart_drain_timeout": 180,
+        # Contract: if you restart the gateway, in-flight work stops. We do
+        # not hold the restart open for a grace window — a drain timeout
+        # large enough to "save" a long agent turn would have to outlast an
+        # unbounded task (some runs take days), which is impossible, and a
+        # drain timeout shorter than systemd's TimeoutStopSec invites a
+        # SIGKILL-mid-cleanup race that leaves a stale lock and crash-loops
+        # the service. 0 sidesteps both: interrupt now, clean up, exit fast.
+        # Set a positive value in config.yaml only if you explicitly want a
+        # grace window on /restart (and keep it well under TimeoutStopSec).
+        "restart_drain_timeout": 0,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries
@@ -939,6 +944,16 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Intent-ack continuation: when the model opens a turn by narrating an
+        # action it will take ("I'll go check the logs...") but emits no tool
+        # call, intercept the turn-end, inject a "continue now, execute the
+        # tools" nudge, and loop instead of ending the turn (capped at 2 nudges
+        # per turn). This is the corrective sibling of tool_use_enforcement (the
+        # preventive prompt-side guard). Values: "auto" (default — fires only on
+        # the codex_responses api_mode, the historical behavior), true (all
+        # api_modes — fixes the Gemini/Claude "stops after stating intent" case),
+        # false (never), or a list of model-name substrings to match.
+        "intent_ack_continuation": "auto",
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating
@@ -1002,7 +1017,13 @@ DEFAULT_CONFIG = {
         # unblocks with "[user did not respond within Xm]" so it can adapt
         # rather than pinning the running-agent guard forever.  CLI clarify
         # blocks indefinitely (input() is synchronous) and ignores this.
-        "clarify_timeout": 600,
+        # Default 3600 (1h): real users step away (meetings, AFK) and the
+        # old 600s default evicted the entry mid-think, so a later button
+        # tap landed on a dead entry (#32762).  Tradeoff: a higher value
+        # holds the gateway's running-agent guard longer for a genuinely
+        # abandoned prompt — lower it if a single session must free up the
+        # guard sooner.
+        "clarify_timeout": 3600,
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
@@ -2972,6 +2993,24 @@ DEFAULT_CONFIG = {
         "cua_telemetry": False,
     },
 
+    # Hermes Desktop (Electron app) launch options. These only affect
+    # `hermes desktop`; they do not touch the CLI/gateway.
+    "desktop": {
+        # Extra Electron command-line flags appended to every desktop launch,
+        # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
+        # explicit ozone backend, or GPU workaround flags. A list of strings;
+        # a single string is also accepted and shell-split.
+        "electron_flags": [],
+        # GPU hardware acceleration policy for the desktop app:
+        #   "auto"  - let the app detect remote displays (SSH/VNC/RDP) and
+        #             disable GPU only then (default; current behavior).
+        #   true    - always disable GPU acceleration (software rendering).
+        #             Use on no-GPU VMs / Proxmox hosts where the GPU path hangs.
+        #   false   - always keep GPU acceleration on, even over a remote display.
+        # Bridged to the HERMES_DESKTOP_DISABLE_GPU env var the Electron app reads.
+        "disable_gpu": "auto",
+    },
+
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 31,
@@ -4121,6 +4160,7 @@ def clear_model_endpoint_credentials(
     *,
     clear_api_key: bool = True,
     clear_api_mode: bool = True,
+    clear_base_url: bool = False,
 ) -> Dict[str, Any]:
     """Remove stale inline endpoint credentials from a model config.
 
@@ -4137,6 +4177,8 @@ def clear_model_endpoint_credentials(
         model_cfg.pop("api", None)
     if clear_api_mode:
         model_cfg.pop("api_mode", None)
+    if clear_base_url:
+        model_cfg.pop("base_url", None)
     return model_cfg
 
 
@@ -4852,7 +4894,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 display["tool_progress"] = "all"
                 results["config_added"].append("display.tool_progress=all (default)")
             config["display"] = display
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
@@ -4867,7 +4909,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             else:
                 config["timezone"] = ""
                 results["config_added"].append("timezone= (empty, uses server-local)")
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 tz_display = config["timezone"] or "(server-local)"
                 print(f"  ✓ Added timezone to config.yaml: {tz_display}")
@@ -4941,7 +4983,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 config["providers"] = providers_dict
                 # Remove the old list — runtime reads via get_compatible_custom_providers()
                 config.pop("custom_providers", None)
-                save_config(config)
+                save_config(config, strip_defaults=False)
                 if not quiet:
                     print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
                     for key in list(providers_dict.keys())[-migrated_count:]:
@@ -5009,7 +5051,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     provider_cfg = stt.setdefault(provider, {})
                     provider_cfg["model"] = legacy_model
             config["stt"] = stt
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 print(f"  ✓ Migrated legacy stt.model to provider-specific config")
 
@@ -5023,7 +5065,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             display["interim_assistant_messages"] = True
             config["display"] = display
             results["config_added"].append("display.interim_assistant_messages=true (default)")
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 print("  ✓ Added display.interim_assistant_messages=true")
 
@@ -5045,7 +5087,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     platforms[plat]["tool_progress"] = mode
             display["platforms"] = platforms
             config["display"] = display
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
                 print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
@@ -5081,7 +5123,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     migrated_keys.append(f"base_url={s_base_url}")
             if migrated_keys or s_model is not None or s_provider is not None or s_base_url is not None:
                 config["compression"] = comp
-                save_config(config)
+                save_config(config, strip_defaults=False)
                 if not quiet:
                     if migrated_keys:
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
@@ -5137,7 +5179,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
             plugins_cfg["enabled"] = grandfathered
             config["plugins"] = plugins_cfg
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append(
                 f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)"
             )
@@ -5217,7 +5259,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             touched = True
 
         if touched:
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if added_curator:
                 results["config_added"].append(
                     f"curator ({len(added_curator)} default key(s))"
@@ -5248,7 +5290,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_mc, dict) and raw_mc.get("ttl_hours") == 24:
             raw_mc["ttl_hours"] = 1
             config["model_catalog"] = raw_mc
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append("model_catalog.ttl_hours 24→1")
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
@@ -5277,7 +5319,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 f"{subsystem}.write_mode → write_approval={sub['write_approval']}"
             )
         if touched:
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
 
@@ -5296,7 +5338,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_curator, dict) and "consolidate" not in raw_curator:
             raw_curator["consolidate"] = False
             config["curator"] = raw_curator
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append("curator.consolidate=false")
             if not quiet:
                 print(
@@ -5325,7 +5367,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if cur is None or is_auto_sentinel:
             raw_agent["verify_on_stop"] = False
             config["agent"] = raw_agent
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append("agent.verify_on_stop=false")
             if not quiet:
                 print(
@@ -5364,7 +5406,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
             if mcp_touched:
                 config["mcp_servers"] = raw_mcp_servers
-                save_config(config)
+                save_config(config, strip_defaults=False)
 
     # ── Always: validate platform_toolsets after migration ──
     # A migration (or hand-edit) that leaves an invalid toolset name in
@@ -5485,12 +5527,12 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         
         # Update version and save
         config["_config_version"] = latest_ver
-        save_config(config)
+        save_config(config, strip_defaults=False)
     elif current_ver < latest_ver:
         # Just update version
         config = read_raw_config()
         config["_config_version"] = latest_ver
-        save_config(config)
+        save_config(config, strip_defaults=False)
 
     # ── Skill-declared config vars ──────────────────────────────────────
     # Skills can declare config.yaml settings they need via
@@ -5531,7 +5573,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         f"Skipped {var['key']} — skill '{var.get('skill', '?')}' may ask for it later"
                     )
                 print()
-            save_config(config)
+            save_config(config, strip_defaults=False)
         else:
             print("  Set later with: hermes config set <key> <value>")
 
@@ -5680,6 +5722,79 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     return current
 
 
+def _explicit_config_paths(config: Dict[str, Any]) -> Set[Tuple[str, ...]]:
+    """Return leaf paths explicitly present in a raw config dict.
+
+    Computed on the **raw** (un-normalized, un-expanded) config so that
+    values injected by normalisation (e.g. ``agent.max_turns`` from
+    ``DEFAULT_CONFIG``) are not mistakenly treated as user-set.
+
+    Used by ``save_config`` to build the *preserve* set passed to
+    ``_strip_default_values`` so only user-authored keys survive the
+    defaults-strip pass.
+    """
+    paths: Set[Tuple[str, ...]] = set()
+
+    def _walk(value: Any, path: Tuple[str, ...]) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                _walk(child, path + (key,))
+            return
+        if path:
+            paths.add(path)
+
+    _walk(config, ())
+    return paths
+
+
+def _strip_default_values(
+    config: Dict[str, Any],
+    defaults: Dict[str, Any] = DEFAULT_CONFIG,
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
+) -> Dict[str, Any]:
+    """Return *config* without keys whose values match *defaults*.
+
+    Keys in *preserve_keys* (explicitly present in the user's raw config,
+    before any normalisation) are always kept even when they equal the
+    default, so user-set values such as ``memory.user_char_limit: 2200``
+    survive a ``save_config`` round-trip.
+
+    Nested dicts whose every child is stripped are removed entirely so
+    default-only subtrees (e.g. ``gateway``) never bloat ``config.yaml``
+    when the user has nothing to say about them.
+    """
+    preserve_keys = {("_config_version",)} | set(preserve_keys or ())
+
+    def _strip(value: Any, default: Any, path: Tuple[str, ...]) -> Any:
+        if path in preserve_keys:
+            return copy.deepcopy(value)
+
+        if isinstance(value, dict) and value:
+            default_dict = default if isinstance(default, dict) else {}
+            stripped: Dict[str, Any] = {}
+            for key, child in value.items():
+                child_default = default_dict.get(key)
+                stripped_child = _strip(child, child_default, path + (key,))
+                if stripped_child is not None:
+                    stripped[key] = stripped_child
+            if stripped:
+                return stripped
+            # Entire subtree stripped — remove it
+            return None
+
+        if value == default:
+            return None
+
+        return copy.deepcopy(value)
+
+    result: Dict[str, Any] = {}
+    for key, value in config.items():
+        stripped = _strip(value, defaults.get(key), (key,))
+        if stripped is not None:
+            result[key] = stripped
+    return result
+
+
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     """Move stale root-level provider/base_url/context_length into model section.
 
@@ -5697,14 +5812,35 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     ``model.base_url``), causing requests to fall back to OpenRouter. We migrate
     the alias to the canonical key (fallback-only — never override an explicit
     ``base_url``) and drop the alias so it can't confuse later loads.
+
+    Finally, canonicalizes the model-id key to ``model.default`` (issue #34500).
+    The runtime resolver and ~14 other readers select the chat model via
+    ``model.default``; ``model.model`` was already aliased inline at some sites
+    but ``model.name`` was not, so a custom-provider config like
+    ``model: {name: <id>, provider: <custom>}`` resolved to an empty model and
+    the API request went out with ``model=`` (HTTP 400 from OpenAI-compatible
+    backends) — while display paths (``hermes status``/``dump``) read ``name``
+    and *showed* the model, making the failure silent. Normalizing here (the
+    single load/save chokepoint) means every reader, present and future, sees a
+    populated ``default`` and the stale alias is migrated out of config.yaml on
+    the next save. Precedence: ``default`` > ``model`` > ``name`` (never
+    overrides an explicit ``default``, so existing configs are unaffected).
     """
-    # Only act if there are root-level keys (or an api_base alias) to migrate
+    # Only act if there's something to migrate: root-level keys, an api_base
+    # alias, or a model dict whose id lives under a non-canonical key.
     model_in = config.get("model")
     model_has_alias = isinstance(model_in, dict) and model_in.get("api_base")
+    # A model dict needs canonicalization if its id lives under a non-canonical
+    # key (``model``/``name``) — either because ``default`` is empty (we must
+    # promote the alias) or because ``default`` is set but a stale alias still
+    # lingers (we must drop it so config.yaml ends up canonical).
+    model_needs_canon = isinstance(model_in, dict) and (
+        model_in.get("model") or model_in.get("name")
+    )
     has_root = any(
         config.get(k) for k in ("provider", "base_url", "context_length", "api_base")
     )
-    if not has_root and not model_has_alias:
+    if not has_root and not model_has_alias and not model_needs_canon:
         return config
 
     config = dict(config)
@@ -5728,18 +5864,45 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     config.pop("api_base", None)
     model.pop("api_base", None)
 
+    # Canonicalize the model id to ``default``. ``model`` and ``name`` are
+    # last-resort aliases (in that order) — only consulted when ``default`` is
+    # empty, then dropped so later loads/saves can't reintroduce the ambiguity.
+    if not (model.get("default") or ""):
+        alias = model.get("model") or model.get("name")
+        if alias:
+            model["default"] = alias
+    if model.get("default"):
+        # Drop the now-redundant aliases so config.yaml ends up canonical.
+        model.pop("model", None)
+        model.pop("name", None)
+
     return config
 
 
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize legacy root-level max_turns into agent.max_turns."""
+    """Normalize legacy root-level max_turns into agent.max_turns.
+
+    Only injects the schema default when the user actually set max_turns
+    somewhere (root level or under ``agent``).  A bare ``load_config()``
+    call that passes the result straight to ``save_config()`` should not
+    materialise ``agent.max_turns`` in config.yaml when the user never set
+    it — that makes the default sticky and blocks future schema changes.
+    """
     config = dict(config)
     agent_config = dict(config.get("agent") or {})
 
-    if "max_turns" in config and "max_turns" not in agent_config:
+    had_root = "max_turns" in config
+    had_agent = "max_turns" in agent_config
+
+    if had_root and not had_agent:
         agent_config["max_turns"] = config["max_turns"]
 
-    if "max_turns" not in agent_config:
+    # Only inject the default when the user explicitly set max_turns
+    # (either root-level or under agent).  Otherwise leave it absent so
+    # save_config can omit it and the schema default fills in at runtime.
+    if not had_root and not had_agent:
+        pass  # deliberately do not inject DEFAULT_CONFIG default
+    elif "max_turns" not in agent_config:
         agent_config["max_turns"] = DEFAULT_CONFIG["agent"]["max_turns"]
 
     config["agent"] = agent_config
@@ -6159,8 +6322,20 @@ _COMMENTED_SECTIONS = """
 """
 
 
-def save_config(config: Dict[str, Any]):
-    """Save configuration to ~/.hermes/config.yaml."""
+def save_config(
+    config: Dict[str, Any],
+    *,
+    strip_defaults: bool = True,
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
+):
+    """Save configuration to ~/.hermes/config.yaml.\n
+
+    Default values from ``DEFAULT_CONFIG`` are not written to disk unless
+    the user explicitly set them (i.e. the path exists in the raw config
+    before any normalisation).  This prevents config.yaml from being
+    contaminated with schema defaults on every save, which makes future
+    default changes invisible to users.
+    """
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
@@ -6185,6 +6360,16 @@ def save_config(config: Dict[str, Any]):
 
         ensure_hermes_home()
         config_path = get_config_path()
+        # Compute explicit user paths BEFORE any normalisation --------
+        # _normalize_max_turns_config may inject agent.max_turns from
+        # DEFAULT_CONFIG; using the raw dict preserves which paths the
+        # user actually set so _strip_default_values can keep them.
+        _raw_for_paths = read_raw_config()
+        explicit_raw_paths: Optional[Set[Tuple[str, ...]]] = (
+            _explicit_config_paths(_raw_for_paths) if _raw_for_paths else None
+        )
+        # ----------------------------------------------------------------
+
         current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         normalized = current_normalized
         raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
@@ -6193,6 +6378,25 @@ def save_config(config: Dict[str, Any]):
                 normalized,
                 raw_existing,
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+            )
+
+        # Strip schema-default values so the user's custom settings are not
+        # silently reset on every save.  Keys the user explicitly set (paths
+        # from the raw pre-normalisation config) are always preserved.
+        effective_preserve_keys: Set[Tuple[str, ...]] = {("_config_version",)}
+        if explicit_raw_paths:
+            effective_preserve_keys.update(explicit_raw_paths)
+        if preserve_keys:
+            effective_preserve_keys.update(preserve_keys)
+
+        if strip_defaults and effective_preserve_keys:
+            # _preserve_env_ref_templates may return Any; cast for type-checker.
+            from typing import cast as _cast
+            normalized = _cast(Dict[str, Any], normalized)
+            normalized = _strip_default_values(
+                normalized,  # type: ignore[arg-type]
+                DEFAULT_CONFIG,
+                preserve_keys=effective_preserve_keys,
             )
 
         # Build optional commented-out sections for features that are off by
@@ -6991,7 +7195,7 @@ def edit_config():
     
     # Ensure config exists
     if not config_path.exists():
-        save_config(DEFAULT_CONFIG)
+        save_config(DEFAULT_CONFIG, strip_defaults=False)
         print(f"Created {config_path}")
     
     # Find editor

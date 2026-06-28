@@ -116,15 +116,42 @@ class ToolEntry:
 # timescales. Cache results for ~30 s so env-var flips via ``hermes tools``
 # or live credential file changes propagate within a turn or two without
 # requiring any explicit invalidation.
+#
+# Transient-failure suppression (issue #21658 / #5304): these probes can flap.
+# A single ``subprocess.run([docker, "version"], timeout=5)`` that times out
+# under load returns False for one call, which would silently strip the entire
+# terminal+file toolset from whatever agent is being built at that instant —
+# most visibly a delegate_task subagent, which then reports "Tool read_file
+# does not exist". To absorb such flakes WITHOUT pinning a permanently-stale
+# "available" verdict, we remember the last time each check returned True and,
+# when a fresh probe fails within a short grace window of that last success,
+# we serve the last-good True instead of caching the failure. A failure that
+# persists past the grace window is honored normally, so a backend that really
+# went down stops advertising its tools.
 # ---------------------------------------------------------------------------
 
 _CHECK_FN_TTL_SECONDS = 30.0
+# How long after a successful check a subsequent transient failure is treated
+# as a flake (last-good True is served) rather than a real outage. Kept short
+# so a genuinely-down backend is reflected within a couple of turns.
+_CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
+# Keyed by (fn, home_path) so each profile home tracks its own availability —
+# a success under one HERMES_HOME must not suppress a real failure under another.
 _check_fn_cache: Dict[tuple, tuple[float, bool]] = {}
+# Monotonic timestamp of the most recent True result per (check_fn, home).
+_check_fn_last_good: Dict[tuple, float] = {}
 _check_fn_cache_lock = threading.Lock()
 
 
 def _check_fn_cached(fn: Callable) -> bool:
-    """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
+    """Return bool(fn()), TTL-cached across calls.
+
+    Exceptions are swallowed as False. A transient False/exception within
+    ``_CHECK_FN_FAILURE_GRACE_SECONDS`` of the last True is suppressed (the
+    last-good True is returned and the failure is NOT cached, so the next call
+    re-probes) to keep flaky external checks (Docker daemon busy, socket
+    contention, probe timeout) from silently stripping tools mid-session.
+    """
     now = time.monotonic()
     try:
         from hermes_constants import get_hermes_home
@@ -139,13 +166,43 @@ def _check_fn_cached(fn: Callable) -> bool:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
                 return value
+
+    raised = False
     try:
         value = bool(fn())
     except Exception:
         value = False
+        raised = True
+
     with _check_fn_cache_lock:
-        _check_fn_cache[cache_key] = (now, value)
-    return value
+        if value:
+            _check_fn_last_good[cache_key] = now
+            _check_fn_cache[cache_key] = (now, True)
+            return True
+
+        last_good = _check_fn_last_good.get(cache_key)
+        if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
+            # Recent success → treat this failure as a flake. Serve last-good
+            # True and do NOT cache the failure, so the next call re-probes
+            # rather than pinning a stale verdict for the full TTL.
+            logger.warning(
+                "check_fn %s failed (%s) within %.0fs of last success; "
+                "treating as transient and keeping tool(s) available",
+                getattr(fn, "__qualname__", fn),
+                "raised" if raised else "returned False",
+                _CHECK_FN_FAILURE_GRACE_SECONDS,
+            )
+            return True
+
+        # No recent success (or grace expired) — honor the failure. Log it so
+        # silent tool loss in quiet mode (subagents) is diagnosable.
+        logger.warning(
+            "check_fn %s %s; dependent tools will be unavailable this turn",
+            getattr(fn, "__qualname__", fn),
+            "raised" if raised else "returned False",
+        )
+        _check_fn_cache[cache_key] = (now, False)
+        return False
 
 
 def invalidate_check_fn_cache() -> None:
@@ -153,6 +210,7 @@ def invalidate_check_fn_cache() -> None:
     affect tool availability (e.g. ``hermes tools enable``)."""
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
+        _check_fn_last_good.clear()
 
 
 class ToolRegistry:

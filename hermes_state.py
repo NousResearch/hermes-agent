@@ -19,6 +19,7 @@ import logging
 import random
 import re
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -241,6 +242,41 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
     return str(mode).strip().lower() if mode is not None else None
 
 
+def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
+    """Enable ``PRAGMA checkpoint_fullfsync`` on macOS (no-op elsewhere).
+
+    On Darwin, ``synchronous=FULL`` (the WAL default) issues a plain
+    ``fsync()``, which Apple documents does *not* guarantee that data
+    has reached stable storage or that writes are not reordered — see
+    the ``fsync(2)`` man page.  SQLite's WAL corruption-safety guarantee
+    assumes the OS honors the fsync write barrier; macOS does not unless
+    the app uses ``F_FULLFSYNC``.
+
+    During a launchd *system* shutdown/reboot the OS page cache is
+    dropped (effectively a power-loss event for in-flight pages), so a
+    WAL checkpoint whose ``fsync()`` "reported" durable may never have
+    hit the platter — corrupting ``state.db`` with a malformed image.
+    This is the trigger in issue #30636 ("SIGTERM during launchd
+    shutdown under high load"), distinct from a plain in-session kill
+    (which the page cache survives and SQLite recovers from).
+
+    ``checkpoint_fullfsync=1`` forces an ``F_FULLFSYNC`` barrier only at
+    checkpoint boundaries — where WAL frames land in the main DB — so the
+    cost amortizes to roughly +0.1 ms/commit (vs ~+4 ms for the broader
+    ``fullfsync=1`` that flushes on every commit's WAL sync).  Guarded by
+    ``sys.platform == "darwin"`` because ``F_FULLFSYNC`` is macOS-only;
+    on other platforms the PRAGMA is a no-op, so we skip it entirely.
+
+    Best-effort: never raises.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        conn.execute("PRAGMA checkpoint_fullfsync=1")
+    except sqlite3.OperationalError:
+        pass
+
+
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
@@ -271,12 +307,14 @@ def apply_wal_with_fallback(
     try:
         current_mode = conn.execute("PRAGMA journal_mode").fetchone()
         if current_mode and current_mode[0] == "wal":
+            _apply_macos_checkpoint_barrier(conn)
             return "wal"
     except sqlite3.OperationalError:
         pass
 
     try:
         conn.execute("PRAGMA journal_mode=WAL")
+        _apply_macos_checkpoint_barrier(conn)
         return "wal"
     except sqlite3.OperationalError as exc:
         msg = str(exc).lower()

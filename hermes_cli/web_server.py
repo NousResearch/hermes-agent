@@ -12210,6 +12210,16 @@ async def pty_ws(ws: WebSocket) -> None:
             # handler never reaches its ``finally`` and the PTY's fds leak.
             # With dashboard auto-reconnect (#52962) every dropped socket then
             # stacks a fresh PTY on top of the orphaned one, exhausting fds.
+            #
+            # Reap the bridge here too (close() is idempotent): on child EOF the
+            # writer loop's ``finally`` is the usual closer, but if the handler
+            # task is cancelled the instant we close the WS, that ``finally``
+            # can be skipped, leaking the PTY. Closing from the EOF path makes
+            # the reap independent of that cancellation race (#54028).
+            try:
+                await asyncio.to_thread(bridge.close)
+            except Exception:
+                pass
             try:
                 await ws.close()
             except Exception:

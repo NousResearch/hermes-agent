@@ -165,4 +165,12 @@ def test_child_eof_closes_socket_and_bridge(pty_client, monkeypatch):
             conn.receive_bytes()
 
     assert len(bridges) == 1
+    # bridge.close() runs in the handler's `finally` via asyncio.to_thread,
+    # which can lag the client-side context exit by a tick or two. Poll briefly
+    # instead of asserting immediately so the teardown isn't a race.
+    import time
+
+    deadline = time.monotonic() + 5.0
+    while not bridges[0].closed and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert bridges[0].closed is True

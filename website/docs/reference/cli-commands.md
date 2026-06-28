@@ -161,6 +161,11 @@ HERMES_INFERENCE_MODEL=anthropic/claude-sonnet-4.6 hermes -z "…"
 
 Same agent, same tools, same skills — just strips every interactive / cosmetic layer. If you need tool output in the transcript too, use `hermes chat -q` instead; `-z` is explicitly for "I only want the final answer".
 
+Compatibility notes:
+
+- `hermes -z` / `--oneshot` is available in Hermes v0.12.0 / v2026.4.30 and later. For scripts that must support older installs, prefer `hermes chat -q "..."`.
+- Top-level `hermes -z` and `hermes chat -q` do not currently accept a `--timeout` flag. Use your shell's timeout wrapper for a whole-process deadline, or tune provider/API timeouts through the existing configuration and environment options.
+
 ## `hermes model`
 
 Interactive provider + model selector. **This is the command for adding new providers, setting up API keys, and running OAuth flows.** Run it from your terminal — not from inside an active Hermes chat session.

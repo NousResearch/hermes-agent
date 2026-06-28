@@ -915,3 +915,27 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+class TestNonUtf8Bytes:
+    """Regression for #53833: a stray non-UTF-8 byte in USER.md/MEMORY.md
+    (e.g. a smart-quote/dash saved under a cp1252 mismatch) must not raise
+    UnicodeDecodeError and wedge every future memory save."""
+
+    def test_read_file_replaces_invalid_bytes(self, tmp_path):
+        p = tmp_path / "MEMORY.md"
+        # ENTRY_DELIMITER is "\n§\n" (§ = \xc2\xa7). 0xd1 is an invalid UTF-8
+        # continuation byte embedded in the entry content.
+        p.write_bytes(b"Daniel prefers tables\n\xc2\xa7\nLikes \xd1 punchy prose")
+        entries = MemoryStore._read_file(p)
+        assert any("Daniel prefers tables" in e for e in entries)
+        assert len(entries) == 2
+
+    def test_load_from_disk_survives_invalid_bytes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_bytes(b"Clean fact\n\xc2\xa7\nBad \xd1 byte fact")
+        (tmp_path / "USER.md").write_bytes(b"User likes \xd1 dashes")
+        s = MemoryStore()
+        s.load_from_disk()  # must not raise UnicodeDecodeError
+        assert any("Clean fact" in e for e in s.memory_entries)
+        assert s.user_entries

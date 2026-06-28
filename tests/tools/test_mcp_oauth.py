@@ -629,9 +629,13 @@ def test_configure_callback_port_picks_free_port():
     from tools.mcp_oauth import _configure_callback_port
 
     cfg = {"redirect_port": 0}
-    port = _configure_callback_port(cfg)
-    assert 1024 < port < 65536
-    assert cfg["_resolved_port"] == port
+    server = _configure_callback_port(cfg)
+    try:
+        assert 1024 < server.port < 65536
+        assert cfg["_resolved_port"] == server.port
+        assert cfg["_callback_server"] is server
+    finally:
+        server.close()
 
 
 def test_configure_callback_port_uses_explicit_port():
@@ -639,9 +643,13 @@ def test_configure_callback_port_uses_explicit_port():
     from tools.mcp_oauth import _configure_callback_port
 
     cfg = {"redirect_port": 54321}
-    port = _configure_callback_port(cfg)
-    assert port == 54321
-    assert cfg["_resolved_port"] == 54321
+    server = _configure_callback_port(cfg)
+    try:
+        assert server.port == 54321
+        assert cfg["_resolved_port"] == 54321
+        assert cfg["_callback_server"] is server
+    finally:
+        server.close()
 
 
 def test_build_oauth_auth_preserves_server_url_path():

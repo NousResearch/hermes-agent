@@ -621,6 +621,52 @@ def run_conversation(
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
         
+        # ── Hard Stop Guard (ADR-010 P0): 无进展 / 超时 / 超费 强制退出 ──
+        if not hasattr(agent, '_hard_stop'):
+            agent._hard_stop = {
+                'wall_start': time.time(),
+                'last_progress': time.time(),
+                'consecutive_no_progress': 0,
+            }
+        now = time.time()
+        hs = agent._hard_stop
+        wall_elapsed = now - hs['wall_start']
+        
+        # 条件1: 墙钟超时
+        hard_stop_wall = getattr(agent, 'hard_stop_wall_time', 600)  # 10min
+        if wall_elapsed > hard_stop_wall:
+            _turn_exit_reason = f"hard_stop_wall_time({int(wall_elapsed)}s)"
+            if not agent.quiet_mode:
+                agent._safe_print(f"\n⏰ Hard stop: wall time {int(wall_elapsed)}s exceeded {hard_stop_wall}s")
+            break
+        
+        # 条件2: 连续无进展（检测最后消息是否和之前一样）
+        if len(messages) >= 6:
+            # 比较最后两次助理消息的内容指纹
+            assistant_msgs = [m for m in messages[-6:] if m.get('role') == 'assistant']
+            if len(assistant_msgs) >= 2:
+                last2 = [m.get('content','')[:200] for m in assistant_msgs[-2:]]
+                if last2[0] and last2[1] and last2[0] == last2[1]:
+                    hs['consecutive_no_progress'] += 1
+                else:
+                    hs['consecutive_no_progress'] = 0
+                    hs['last_progress'] = now
+        
+        max_stale = getattr(agent, 'hard_stop_stale_turns', 5)
+        if hs['consecutive_no_progress'] >= max_stale:
+            _turn_exit_reason = f"hard_stop_no_progress({hs['consecutive_no_progress']} stale turns)"
+            if not agent.quiet_mode:
+                agent._safe_print(f"\n⏰ Hard stop: {hs['consecutive_no_progress']} consecutive turns with no progress")
+            break
+        
+        # 条件3: 进度时间戳超时（WSL+代理环境下放宽到120s）
+        if now - hs['last_progress'] > max(120, hard_stop_wall * 0.20):
+            _turn_exit_reason = f"hard_stop_idle({int(now - hs['last_progress'])}s idle)"
+            if not agent.quiet_mode:
+                agent._safe_print(f"\n⏰ Hard stop: idle for {int(now - hs['last_progress'])}s")
+            break
+        # ── Hard Stop Guard End ──
+        
         api_call_count += 1
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")

@@ -1078,6 +1078,34 @@ def restore_primary_runtime(agent) -> bool:
             api_mode=rt.get("compressor_api_mode", ""),
         )
 
+        # ── Re-select from the credential pool if one is available ──
+        # The snapshot's api_key was captured at construction time.  Across
+        # turns the pool may have rotated (token revocation, billing/rate-limit
+        # exhaustion, cooldown), leaving the snapshot key stale.  Restoring it
+        # blindly re-fails on the first request and burns through the remaining
+        # pool entries before cross-provider fallback even gets a chance.  Ask
+        # the pool for its current best entry and swap the live credential in.
+        # When the pool is absent, empty, or the entry has no usable key, we
+        # keep the snapshot key (the existing behavior).  Fixes #25205.
+        pool = getattr(agent, "_credential_pool", None)
+        if pool is not None and pool.has_available():
+            entry = pool.select()
+            if entry is not None:
+                entry_key = (
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                )
+                if entry_key:
+                    # ``_swap_credential`` rebuilds the OpenAI/Anthropic client,
+                    # reapplies base-url-scoped headers, and carries the
+                    # accumulated base_url / OAuth-detection fixes (#33163).
+                    agent._swap_credential(entry)
+                    logger.info(
+                        "Restore re-selected pool entry %s (%s)",
+                        getattr(entry, "id", "?"),
+                        getattr(entry, "label", "?"),
+                    )
+
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0

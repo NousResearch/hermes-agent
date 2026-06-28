@@ -499,6 +499,30 @@ class TestSenderPrefixWithBackfill:
         assert "[Alice] [Charlie" not in result
         assert "[Alice] [Recent" not in result
 
+    @pytest.mark.asyncio
+    async def test_reply_context_preserves_full_replied_text(self, runner):
+        """Reply context is a pointer, so do not truncate long replied-to text."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        )
+        long_reply = "section-" + ("A" * 700) + "-tail"
+        event = MessageEvent(
+            text="what about this?",
+            source=source,
+            reply_to_message_id="99",
+            reply_to_text=long_reply,
+        )
+
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+
+        assert long_reply in result
+        assert "-tail" in result
+        assert "[Replying to:" in result
+
 
 class TestSessionStoreRewriteTranscript:
     """Regression: /retry and /undo must persist truncated history to DB."""

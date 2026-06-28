@@ -32,6 +32,7 @@
   },
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "dependencies": {
+    "@electron/get": "^5.0.0",
     "@streamdown/math": "^1.0.2",
     "agent-browser": "^0.26.0"
   },

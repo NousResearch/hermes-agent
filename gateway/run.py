@@ -2506,7 +2506,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
-    _busy_input_mode: str = "interrupt"
+    _busy_input_mode: str = "steer"
     _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
@@ -3987,14 +3987,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "queue"
         if mode == "steer":
             return "steer"
-        return "interrupt"
+        if mode == "interrupt":
+            return "interrupt"
+        return "steer"
 
     @staticmethod
     def _load_busy_text_mode() -> str:
         """Resolve normal busy TEXT follow-up behavior.
 
         ``busy_input_mode`` is the single source of truth (default
-        ``interrupt``). The legacy ``busy_text_mode`` knob is honored only
+        ``steer``). The legacy ``busy_text_mode`` knob is honored only
         when a user explicitly set it, so existing queue setups keep
         working; new installs follow ``busy_input_mode``. Returns one of
         ``interrupt`` | ``queue`` (``steer`` is handled upstream by

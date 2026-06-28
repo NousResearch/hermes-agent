@@ -17,13 +17,13 @@ It reads ``agent.image_input_mode`` from config.yaml (``auto`` | ``native``
 | ``text``, default ``auto``) and the active model's capability metadata.
 
 In ``auto`` mode:
-  - If the user has explicitly configured ``auxiliary.vision.provider``
-    (i.e. not ``auto`` and not empty), we assume they want the text pipeline
-    regardless of the main model — they've opted in to a specific vision
-    backend for a reason (cost, quality, local-only, etc.).
-  - Otherwise, if the active model reports ``supports_vision=True`` in its
-    models.dev metadata, we attach natively.
-  - Otherwise (non-vision model, no explicit override), we fall back to text.
+  - If the active model reports ``supports_vision=True`` in config or its
+    models.dev metadata, we attach natively so vision-capable main models see
+    the pixels directly.
+  - Otherwise, if the user has explicitly configured ``auxiliary.vision``, we
+    use the text pre-analysis pipeline.
+  - Otherwise (non-vision/unknown model, no auxiliary backend), we fall back to
+    text.
 
 This keeps ``vision_analyze`` surfaced as a tool in every session — skills
 and agent flows that chain it (browser screenshots, deeper inspection of
@@ -286,6 +286,18 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     return True
 
 
+def _get_model_capabilities(provider: str, model: str):
+    """Import-light wrapper for models.dev capability lookup.
+
+    Tests patch this wrapper instead of importing ``agent.models_dev`` at
+    collection time; that module has optional network dependencies in lean test
+    environments.
+    """
+    from agent.models_dev import get_model_capabilities
+
+    return get_model_capabilities(provider, model)
+
+
 def _lookup_supports_vision(
     provider: str,
     model: str,
@@ -303,8 +315,13 @@ def _lookup_supports_vision(
     if not provider or not model:
         return None
     try:
-        from agent.models_dev import get_model_capabilities
-        caps = get_model_capabilities(provider, model)
+        caps = _get_model_capabilities(provider, model)
+        # Some provider adapters expose the runtime model as a provider-prefixed
+        # slug (e.g. ``openai-codex/gpt-5.5``). models.dev may know the bare
+        # model slug (``gpt-5.5``) instead. Only retry on a complete miss so a
+        # real provider-scoped entry remains authoritative.
+        if caps is None and "/" in model:
+            caps = _get_model_capabilities(provider, model.rsplit("/", 1)[-1])
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("image_routing: caps lookup failed for %s:%s — %s", provider, model, exc)
         return None
@@ -336,13 +353,15 @@ def decide_image_input_mode(
     if mode_cfg == "text":
         return "text"
 
-    # auto
-    if _explicit_aux_vision_override(cfg):
-        return "text"
-
+    # auto: prefer native pixels whenever the active main model is known to be
+    # vision-capable. Auxiliary vision remains the fallback for text-only or
+    # unknown-capability models, not something that silently masks a multimodal
+    # main model.
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
+    if _explicit_aux_vision_override(cfg):
+        return "text"
     return "text"
 
 

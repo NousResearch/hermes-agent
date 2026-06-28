@@ -97,11 +97,16 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
-    def test_auto_respects_aux_vision_override_even_for_vision_model(self):
-        """If the user configured a dedicated vision backend, don't bypass it."""
+    def test_auto_prefers_vision_model_over_aux_vision_override(self):
+        """Vision-capable main models should see pixels directly by default."""
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
-            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
+
+    def test_auto_uses_aux_vision_override_for_non_vision_model(self):
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("openrouter", "qwen/qwen3-235b", cfg) == "text"
 
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
@@ -113,18 +118,8 @@ class TestDecideImageInputMode:
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
     def test_auto_uses_text_for_text_only_modalities_even_with_attachment_flag(self):
-        registry = {
-            "xiaomi": {
-                "models": {
-                    "mimo-v2.5-pro": {
-                        "attachment": True,
-                        "modalities": {"input": ["text"]},
-                        "tool_call": True,
-                    },
-                },
-            },
-        }
-        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+        fake_caps = type("Caps", (), {"supports_vision": False})()
+        with patch("agent.image_routing._get_model_capabilities", return_value=fake_caps):
             assert decide_image_input_mode("xiaomi", "mimo-v2.5-pro", {}) == "text"
 
 
@@ -232,29 +227,42 @@ class TestLookupSupportsVisionOverride:
     def test_config_override_short_circuits_models_dev(self):
         # Config says True, models.dev says None — config wins.
         cfg = {"model": {"supports_vision": True}}
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("agent.image_routing._get_model_capabilities", return_value=None):
             assert _lookup_supports_vision("custom", "my-llava", cfg) is True
 
     def test_config_override_false_beats_vision_capable_models_dev(self):
         # User explicitly disables vision on a models.dev-vision-capable model.
         fake_caps = type("Caps", (), {"supports_vision": True})()
         cfg = {"model": {"supports_vision": False}}
-        with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
+        with patch("agent.image_routing._get_model_capabilities", return_value=fake_caps):
             assert _lookup_supports_vision("anthropic", "claude-sonnet-4", cfg) is False
 
     def test_no_override_falls_back_to_models_dev(self):
         fake_caps = type("Caps", (), {"supports_vision": True})()
-        with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
+        with patch("agent.image_routing._get_model_capabilities", return_value=fake_caps):
             assert _lookup_supports_vision("anthropic", "claude-sonnet-4", {}) is True
 
     def test_no_override_no_models_dev_entry_returns_none(self):
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("agent.image_routing._get_model_capabilities", return_value=None):
             assert _lookup_supports_vision("custom", "my-llava", {}) is None
 
     def test_cfg_none_falls_back_to_models_dev(self):
         # Caller didn't pass cfg at all — old call sites must still work.
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("agent.image_routing._get_model_capabilities", return_value=None):
             assert _lookup_supports_vision("openrouter", "x", None) is None
+
+    def test_provider_prefixed_model_slug_falls_back_to_bare_slug(self):
+        fake_caps = type("Caps", (), {"supports_vision": True})()
+
+        def fake_lookup(provider, model):
+            if model == "openai-codex/gpt-5.5":
+                return None
+            if model == "gpt-5.5":
+                return fake_caps
+            raise AssertionError(f"unexpected lookup: {provider=} {model=}")
+
+        with patch("agent.image_routing._get_model_capabilities", side_effect=fake_lookup):
+            assert _lookup_supports_vision("openai-codex", "openai-codex/gpt-5.5", {}) is True
 
 
 # ─── decide_image_input_mode with auto + override ────────────────────────────
@@ -266,28 +274,29 @@ class TestAutoModeRespectsOverride:
         # Without the override, auto falls back to text. With it, auto picks
         # native — no need to also set agent.image_input_mode: native.
         cfg = {"model": {"supports_vision": True}}
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("agent.image_routing._get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "native"
 
     def test_auto_text_for_custom_with_supports_vision_false(self):
         cfg = {"model": {"supports_vision": False}}
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("agent.image_routing._get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "some-text-only", cfg) == "text"
 
     def test_auto_text_for_custom_with_no_override(self):
         # Unchanged baseline: unknown custom model → text.
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("agent.image_routing._get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "unknown", {}) == "text"
 
-    def test_explicit_aux_vision_override_still_wins(self):
-        # If the user has configured a dedicated vision aux backend, respect
-        # it even when supports_vision: true is also set.
+    def test_supports_vision_override_wins_over_explicit_aux_vision(self):
+        # In auto mode, known vision-capable main models should receive native
+        # pixels. The dedicated aux backend remains a fallback for models that
+        # cannot accept images.
         cfg = {
             "model": {"supports_vision": True},
             "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
         }
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
-            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "text"
+        with patch("agent.image_routing._get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "native"
 
 
 # ─── build_native_content_parts ──────────────────────────────────────────────

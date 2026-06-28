@@ -413,9 +413,10 @@ const WINDOW_BUTTON_POSITION = {
 // It's only the pre-layout fallback — the renderer measures the exact overlay
 // width live via the Window Controls Overlay API.
 const APP_ICON_PATHS = [
+  // nativeImage.createFromPath can't read from inside asar — unpacked first
+  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
-  path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
-  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
+  path.join(APP_ROOT, 'dist', 'apple-touch-icon.png')
 ]
 
 let rendererTitleBarTheme = null

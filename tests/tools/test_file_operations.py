@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 import pytest
 import subprocess
 from pathlib import Path
@@ -700,6 +701,162 @@ class TestSearchFilesFallbackHiddenPaths:
 
         assert result.error is None
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+
+
+class TestSearchFilesIncludesDirectories:
+    """search_files (target='files') is documented as an ls replacement and
+    must list directories, not just files.  Both rg --files and find -type f
+    enumerate files only, so empty directories are invisible.  See #54347."""
+
+    def _make_env(self):
+        env = MagicMock()
+        env.cwd = "/"
+
+        def execute(command, **kwargs):
+            completed = subprocess.run(
+                command, shell=True, text=True, capture_output=True,
+            )
+            return {
+                "output": completed.stdout,
+                "returncode": completed.returncode,
+            }
+
+        env.execute = execute
+        return env
+
+    def test_find_fallback_lists_empty_dir(self, tmp_path, monkeypatch):
+        """Find-fallback path must include empty directories in results."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        empty_dir = root / "vault"       # the reported bug: empty dir
+        full_dir = root / "src"           # dir with a file inside
+        empty_dir.mkdir()
+        full_dir.mkdir()
+        (full_dir / "main.py").write_text("x")
+        (root / "config.py").write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "find")
+        result = ops._search_files("*", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        names = {f.rstrip("/") for f in result.files}
+        assert str(empty_dir) in names     # empty dir must be visible
+        assert str(full_dir) in names      # non-empty dir also listed as entry
+
+    def test_find_fallback_excludes_hidden_dirs(self, tmp_path, monkeypatch):
+        """Hidden directories must still be excluded when listing dirs."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "vault").mkdir()
+        (root / ".secret").mkdir()
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "find")
+        result = ops._search_files("*", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert not any(".secret" in f for f in result.files)
+
+    def test_find_fallback_excludes_search_root(self, tmp_path, monkeypatch):
+        """The search root itself must not appear as a result."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "vault").mkdir()
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "find")
+        result = ops._search_files("*", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        names = {f.rstrip("/") for f in result.files}
+        assert str(root) not in names
+
+    @pytest.mark.skipif(not shutil.which("rg"), reason="ripgrep not installed")
+    def test_rg_lists_empty_dir(self, tmp_path, monkeypatch):
+        """RG path must include empty directories in results."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        empty_dir = root / "vault"
+        full_dir = root / "src"
+        empty_dir.mkdir()
+        full_dir.mkdir()
+        (full_dir / "main.py").write_text("x")
+        (root / "config.py").write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd in ("rg", "find"))
+        result = ops._search_files("*", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        names = {f.rstrip("/") for f in result.files}
+        assert str(empty_dir) in names
+
+    @pytest.mark.skipif(not shutil.which("rg"), reason="ripgrep not installed")
+    def test_rg_excludes_hidden_dirs(self, tmp_path, monkeypatch):
+        """Hidden directories must still be excluded in the RG path."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "vault").mkdir()
+        (root / ".secret").mkdir()
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd in ("rg", "find"))
+        result = ops._search_files("*", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert not any(".secret" in f for f in result.files)
+
+    def test_find_fallback_dir_appears_once_across_pages(self, tmp_path, monkeypatch):
+        """A directory must appear on exactly ONE page, not on every page.
+
+        Regression for the find-fallback path where directories were appended
+        after pagination and so repeated on every page (#54347).
+        """
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "vault").mkdir()
+        for i in range(12):
+            (root / f"f{i:02d}.txt").write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "find")
+
+        limit = 5
+        seen_dirs = []
+        for page_offset in range(0, 40, limit):
+            page = ops._search_files("*", str(root), limit=limit, offset=page_offset)
+            for entry in page.files:
+                if entry.endswith("/"):
+                    seen_dirs.append(entry.rstrip("/"))
+
+        # the single 'vault' directory must be listed exactly once across pages
+        vault_hits = [d for d in seen_dirs if d.endswith("vault")]
+        assert len(vault_hits) == 1, (
+            f"directory repeated across pages: {vault_hits}"
+        )
+
+    def test_find_fallback_respects_limit_with_dirs(self, tmp_path, monkeypatch):
+        """The number of returned entries must respect limit even with dirs."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        for i in range(6):
+            (root / f"f{i:02d}.txt").write_text("x")
+        for d in range(6):
+            (root / f"sub{d}").mkdir()
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "find")
+        page = ops._search_files("*", str(root), limit=5, offset=0)
+
+        assert page.error is None
+        assert len(page.files) <= 5, (
+            f"limit violated: returned {len(page.files)} entries for limit=5"
+        )
+        # 12 total entries -> a second page must exist
+        assert page.total_count == 12, (
+            f"total_count={page.total_count}, expected 12"
+        )
 
 
 class TestShellFileOpsWriteDenied:

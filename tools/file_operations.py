@@ -2054,15 +2054,12 @@ class ShellFileOperations(FileOperations):
         hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
         hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
 
-        # Use shell pagination for standard roots. For hidden roots, gather full
-        # output so we can re-apply hidden-descendant filtering while allowing
-        # explicit hidden-root searches.
-        pagination_expr = ""
-        if not has_hidden_path_ancestor:
-            pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
-
+        # Gather the full file list (no shell pagination) so that directory
+        # entries can be merged in and the combined set paginated consistently.
+        # find on the fallback path is already bounded by a timeout, and rg
+        # remains the preferred fast path for large trees.
         cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
-              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
+              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn"
 
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
@@ -2070,7 +2067,7 @@ class ShellFileOperations(FileOperations):
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
-                        f"2>/dev/null | sort -rn{pagination_expr}"
+                        f"2>/dev/null | sort -rn"
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
 
@@ -2098,15 +2095,88 @@ class ShellFileOperations(FileOperations):
                 if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
                     continue
                 filtered_files.append(file_path)
-            files = filtered_files[offset:offset + limit]
-        # pagination for standard roots is already applied in shell
+            files = filtered_files
+
+        # find -type f lists files only; supplement with matching directories so
+        # the tool honours its documented ls-replacement contract (#54347). Merge
+        # before paginating so directories appear once and limit/offset hold.
+        # Skip the extra traversal when the file search already timed out: we
+        # have partial results and a second find could time out too.
+        if limit_reason == "search_timeout":
+            merged = files
+        else:
+            merged = files + self._collect_matching_dirs(path, search_pattern)
+        page = merged[offset:offset + limit]
 
         return SearchResult(
-            files=files,
-            total_count=len(files),
-            truncated=bool(limit_reason),
+            files=page,
+            total_count=len(merged),
+            truncated=len(merged) > offset + limit or bool(limit_reason),
             limit_reason=limit_reason,
         )
+
+    def _collect_matching_dirs(self, path: str, glob_pattern: str) -> list:
+        """Find directories matching *glob_pattern* to supplement file-only results.
+
+        ``rg --files`` and ``find -type f`` both enumerate files only, so
+        directories — especially empty ones — are invisible. This returns
+        matching directory paths (suffixed with ``/`` to match ``ls -F``
+        convention) so the tool honours its documented ls-replacement contract.
+        """
+        if not self._has_command('find'):
+            return []
+
+        search_root = Path(path)
+        has_hidden_path_ancestor = any(
+            part not in {".", ".."} and part.startswith(".")
+            for part in search_root.parts
+        )
+        hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
+        hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
+
+        # GNU find: -printf for mtime-sorted output; BSD fallback without it.
+        cmd = (
+            f"find {self._escape_shell_arg(path)}{hidden_filter_expr} "
+            f"-type d -name {self._escape_shell_arg(glob_pattern)} "
+            f"-not -path {self._escape_shell_arg(path)} "
+            f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn"
+        )
+        result = self._exec(cmd, timeout=30)
+        lines = [l for l in result.stdout.strip().split('\n') if l]
+
+        if not lines:
+            cmd = (
+                f"find {self._escape_shell_arg(path)}{hidden_filter_expr} "
+                f"-type d -name {self._escape_shell_arg(glob_pattern)} "
+                f"-not -path {self._escape_shell_arg(path)} "
+                f"2>/dev/null"
+            )
+            result = self._exec(cmd, timeout=30)
+            lines = [l for l in result.stdout.strip().split('\n') if l]
+
+        dirs = []
+        for line in lines:
+            parts = line.split(' ', 1)
+            if len(parts) == 2 and parts[0].replace('.', '').isdigit():
+                dirs.append(parts[1])
+            else:
+                dirs.append(line)
+
+        # For explicit hidden roots, apply the same descendant filtering as files.
+        if has_hidden_path_ancestor:
+            normalized_root = search_root.resolve()
+            filtered = []
+            for dir_path in dirs:
+                try:
+                    rel_parts = Path(dir_path).resolve().relative_to(normalized_root).parts
+                except ValueError:
+                    rel_parts = Path(dir_path).parts
+                if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
+                    continue
+                filtered.append(dir_path)
+            dirs = filtered
+
+        return [d.rstrip('/') + '/' for d in dirs]
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name using ripgrep's --files mode.
@@ -2144,6 +2214,12 @@ class ShellFileOperations(FileOperations):
             result = self._exec(cmd_plain, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
             all_files = [f for f in stdout.strip().split('\n') if f]
+
+        # rg --files lists files only; supplement with matching directories
+        # so the tool behaves like ls (its documented contract). See #54347.
+        # Skip the extra traversal when rg already timed out (#54347).
+        if limit_reason != "search_timeout":
+            all_files = all_files + self._collect_matching_dirs(path, glob_pattern)
 
         page = all_files[offset:offset + limit]
 

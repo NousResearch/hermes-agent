@@ -2030,6 +2030,8 @@ class ShellFileOperations(FileOperations):
         else:
             search_pattern = pattern.split('/')[-1]
 
+        includes_hidden_basename = Path(search_pattern).name.startswith(".")
+
         search_root = Path(path)
         has_hidden_path_ancestor = any(
             part not in {".", ".."} and part.startswith(".")
@@ -2050,8 +2052,16 @@ class ShellFileOperations(FileOperations):
                       "https://github.com/BurntSushi/ripgrep#installation"
             )
 
-        # Exclude hidden directories (matching ripgrep's default behavior).
-        hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
+        # Exclude hidden paths by default (matching ripgrep's default
+        # behavior). If the caller explicitly searches for a dotfile basename
+        # such as ".env" or ".hermes_smoke", allow hidden file basenames while
+        # still excluding descendants of hidden directories from normal roots.
+        if has_hidden_path_ancestor:
+            hidden_exclude = ""
+        elif includes_hidden_basename:
+            hidden_exclude = "-not -path '*/.*/*'"
+        else:
+            hidden_exclude = "-not -path '*/.*'"
         hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
 
         # Use shell pagination for standard roots. For hidden roots, gather full
@@ -2118,15 +2128,20 @@ class ShellFileOperations(FileOperations):
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
         # at any depth (equivalent to find -name).
-        if '/' not in pattern and not pattern.startswith('*'):
+        includes_hidden_basename = Path(pattern).name.startswith(".")
+        if includes_hidden_basename:
+            glob_pattern = pattern
+        elif '/' not in pattern and not pattern.startswith('*'):
             glob_pattern = f"*{pattern}"
         else:
             glob_pattern = pattern
 
+        hidden_arg = " --hidden" if includes_hidden_basename else ""
+
         fetch_limit = limit + offset
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
-            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
+            f"rg --files{hidden_arg} --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
             f"{self._escape_shell_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
@@ -2137,13 +2152,27 @@ class ShellFileOperations(FileOperations):
         if not all_files and not limit_reason:
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
-                f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
+                f"rg --files{hidden_arg} -g {self._escape_shell_arg(glob_pattern)} "
                 f"{self._escape_shell_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
             all_files = [f for f in stdout.strip().split('\n') if f]
+
+        if includes_hidden_basename:
+            normalized_root = Path(path).resolve()
+            filtered_files = []
+            for file_path in all_files:
+                try:
+                    rel_parts = Path(file_path).resolve().relative_to(normalized_root).parts
+                except ValueError:
+                    rel_parts = Path(file_path).parts
+                parent_parts = rel_parts[:-1]
+                if any(part not in {".", ".."} and part.startswith(".") for part in parent_parts):
+                    continue
+                filtered_files.append(file_path)
+            all_files = filtered_files
 
         page = all_files[offset:offset + limit]
 

@@ -3,6 +3,7 @@
 import os
 import re
 import pytest
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -700,6 +701,46 @@ class TestSearchFilesFallbackHiddenPaths:
 
         assert result.error is None
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+
+
+    def test_normal_root_allows_explicit_dotfile_basename(self, tmp_path, monkeypatch):
+        """Fallback find should find root dotfiles when the basename is explicit."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        dotfile = root / ".hermes_cross_tool_smoke.txt"
+        hidden_dir_file = root / ".hidden" / ".hermes_cross_tool_smoke.txt"
+
+        dotfile.write_text("x")
+        hidden_dir_file.parent.mkdir(parents=True)
+        hidden_dir_file.write_text("secret")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files(".hermes_cross_tool_smoke.txt", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert result.files == [str(dotfile)]
+
+    def test_rg_search_allows_explicit_dotfile_basename(self, tmp_path, monkeypatch):
+        """rg --files path should add --hidden for explicit dotfile searches."""
+        if shutil.which("rg") is None:
+            pytest.skip("ripgrep not installed")
+
+        root = tmp_path / "repo"
+        root.mkdir()
+        dotfile = root / ".hermes_cross_tool_smoke.txt"
+        hidden_dir_file = root / ".hidden" / ".hermes_cross_tool_smoke.txt"
+
+        dotfile.write_text("x")
+        hidden_dir_file.parent.mkdir(parents=True)
+        hidden_dir_file.write_text("secret")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "rg")
+        result = ops._search_files(".hermes_cross_tool_smoke.txt", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert result.files == [str(dotfile)]
 
 
 class TestShellFileOpsWriteDenied:

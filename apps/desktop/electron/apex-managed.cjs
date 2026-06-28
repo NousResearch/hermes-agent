@@ -68,12 +68,40 @@ const DEFAULT_API_BASE = 'https://api.apex-nodes.com'
 const DEFAULT_RELAY_BASE_URL = 'https://apex-nodes.com/relay/v1'
 
 // Real model the relay routes to (our master key). hc-184 decouples the routed
-// model from the `model` field the runtime sends — the relay routes by DB
-// truth — but we still send the real id for clarity/correctness.
+// model from the `model` field the runtime sends — the relay routes by DB truth
+// (verified: the relay ignores the request's `model` entirely and returns
+// `deepseek-v4-pro` for ANY value, including unknown ids), so the model id we
+// write to config is cosmetic to the relay.
 const DEFAULT_MANAGED_MODEL = 'deepseek-v4-pro'
 
-// Display-only label shown in the UI. The underlying route is unchanged; this
-// is a cosmetic mapping so users see the ApexNodes-branded model name.
+// The model id we actually WRITE to config.yaml (`model.default` + the
+// custom_providers entry's `model`) and show in the UI.
+//
+// ⚠️ This must be a name that is NOT an exact id in any built-in provider's
+// static model catalog (`hermes_cli/models.py` `_PROVIDER_MODELS`). The bare
+// routed id `deepseek-v4-pro` IS in the built-in DeepSeek catalog, and that is
+// exactly what broke managed chat:
+//
+//   The desktop runs `hermes dashboard`; its embedded chat builds the agent via
+//   `tui_gateway/server.py::_make_agent`. At boot (no per-session override) that
+//   path resolves the model through `_resolve_startup_runtime`, which — when an
+//   inference-model env hint is present (`HERMES_MODEL`/`HERMES_INFERENCE_MODEL`,
+//   set by the runtime's own launcher and inheritable into the backend) — runs
+//   `detect_static_provider_for_model(<model id>, …)`. That does an EXACT match
+//   against the built-in catalogs (`models.py:1885`), so `deepseek-v4-pro`
+//   resolves to provider `deepseek` (and `kimi-k2.6`→`kimi-coding`,
+//   `glm-5.2`→`zai`), OVERRIDING the configured `provider: custom`. The built-in
+//   provider has no key → `agent/agent_init.py` raises "Provider 'deepseek' is
+//   set in config.yaml but no API key was found." The gateway caches that failed
+//   build (`agent_build_started`), so switching models in the picker can't
+//   recover the session — every selection shows the same sticky boot error. The
+//   ONLY fix is a boot config whose model id does not collide.
+//
+// `deepseek-v4-pro-APEX` (the ApexNodes display name) is collision-free
+// (`detect_static_provider_for_model` returns None — verified) AND relay-valid
+// (HTTP 200, routed to deepseek-v4-pro — verified). Using it as the config model
+// id makes the startup path resolve to the relay in every case (with or without
+// the env hint), proven against the runtime venv.
 const MANAGED_MODEL_DISPLAY = 'deepseek-v4-pro-APEX'
 
 // The runtime treats the relay as a generic OpenAI-compatible endpoint, so the
@@ -87,18 +115,11 @@ const MANAGED_PROVIDER = 'custom'
 // (`hermes_cli/main.py::_save_custom_provider`) uses the exact same
 // `{name, base_url, api_key, model}` entry shape. We register this entry so the
 // relay is a *named* custom provider — the format Hermes produces after a
-// `hermes model` custom-endpoint selection — not just a bare `model.base_url`.
-//
-// Why this matters: with only the bare-`custom` model block, the relay endpoint
-// is anchored solely by `model.base_url`, and a `model.default` whose id
-// collides with a built-in provider's static catalog (e.g. `deepseek-v4-pro`
-// lives in the built-in DeepSeek catalog) can be re-inferred to that built-in
-// provider by the runtime's model→provider detection, producing
-// "Provider 'deepseek' is set in config.yaml but no API key was found". Emitting
-// the registered entry pins the relay endpoint exactly as Hermes would, so
-// resolution routes the default model to the relay instead of the built-in
-// DeepSeek API. (See also: this is the same on-disk shape returned by the
-// runtime's `get_compatible_custom_providers`.)
+// `hermes model` custom-endpoint selection — which keeps the endpoint durable
+// across `/model` picker switches and session resume (those persist
+// `provider: custom:<slug>`, which only resolves when the named entry exists).
+// The collision fix itself is the non-colliding model id above; this entry is
+// the native-format hardening that goes with it.
 const MANAGED_PROVIDER_NAME = 'Apex-nodes.com'
 
 // Endpoint paths. LOGIN_PATH / REGISTER_PATH are on AUTH_BASE; PROVISION_KEY_PATH
@@ -134,13 +155,23 @@ function resolveApexEndpoints(env = {}) {
   const apiBase = trimTrailingSlash(env.APEXNODES_API_BASE || DEFAULT_API_BASE)
   const relayBaseUrl = trimTrailingSlash(env.APEXNODES_RELAY_BASE_URL || DEFAULT_RELAY_BASE_URL)
   const model = String(env.APEXNODES_MANAGED_MODEL || DEFAULT_MANAGED_MODEL).trim() || DEFAULT_MANAGED_MODEL
+  // The display id is what gets WRITTEN to config (collision-free with built-in
+  // catalogs — see MANAGED_MODEL_DISPLAY). Precedence:
+  //   1. explicit APEXNODES_MANAGED_MODEL_DISPLAY override
+  //   2. when only APEXNODES_MANAGED_MODEL is overridden (e.g. staging), derive a
+  //      collision-free id by appending the `-APEX` brand suffix to it
+  //   3. the prod default display name
+  const explicitDisplay = String(env.APEXNODES_MANAGED_MODEL_DISPLAY || '').trim()
+  const modelDisplay =
+    explicitDisplay ||
+    (env.APEXNODES_MANAGED_MODEL ? `${model}-APEX` : MANAGED_MODEL_DISPLAY)
 
   return {
     authBase,
     apiBase,
     relayBaseUrl,
     model,
-    modelDisplay: MANAGED_MODEL_DISPLAY,
+    modelDisplay,
     provider: MANAGED_PROVIDER,
     loginUrl: `${authBase}${LOGIN_PATH}`,
     registerUrl: `${authBase}${REGISTER_PATH}`,
@@ -287,14 +318,20 @@ function isManagedEnabled(env = {}) {
  * without a credential would 401 every request, which is worse than falling back
  * to BYOK; callers gate on `resolveManagedRelayCredential` first.
  *
+ * The written model id is the ApexNodes display name (`MANAGED_MODEL_DISPLAY`,
+ * env-overridable), NOT the raw routed id — the raw `deepseek-v4-pro` collides
+ * with the built-in DeepSeek catalog and gets the agent init mis-routed to the
+ * keyless built-in `deepseek` provider (see MANAGED_MODEL_DISPLAY above). The
+ * relay routes by DB truth and ignores this id, so it is safe + cosmetic on the
+ * wire; locally it is the collision-free anchor that keeps resolution on the
+ * relay's custom endpoint.
+ *
  * Also returns a `custom_providers` entry registering the relay as a named
  * custom provider (`{name, base_url, api_key, model}` — Hermes' native shape).
  * The `model:` block keeps `provider: custom` + the relay `base_url`/`api_key`
  * (so the resolved provider class matches and there is no per-turn re-switch),
- * while the registered entry pins the relay endpoint by name. This is the format
- * Hermes itself writes for a selected custom endpoint, and it prevents the
- * runtime from re-inferring the catalog-colliding default model id
- * (`deepseek-v4-pro`) onto the built-in DeepSeek provider.
+ * while the registered entry keeps the endpoint durable across picker switches /
+ * session resume (which persist `provider: custom:<slug>`).
  *
  * @param {string} relayKey  the user's relay-valid cloud key
  * @param {Record<string, string | undefined>} [env]
@@ -310,7 +347,15 @@ function buildManagedModelConfig(relayKey, env = {}, overrides = {}) {
     throw new Error('buildManagedModelConfig: a relay key is required.')
   }
   const endpoints = resolveApexEndpoints(env)
-  const model = String(overrides.model || '').trim() || endpoints.model
+  // The model id WRITTEN to config must be collision-free with the built-in
+  // catalogs (see MANAGED_MODEL_DISPLAY). The relay ignores the model id (routes
+  // by DB truth), so a provision-key `overrides.model` is only honored when it is
+  // ALREADY a non-colliding ApexNodes display id (ends with the `-APEX` brand
+  // suffix); otherwise we use the display name so a raw routed id like
+  // `deepseek-v4-pro` can never re-seed the collision the next time config is
+  // (re)written at boot.
+  const overrideModel = String(overrides.model || '').trim()
+  const model = /-APEX$/i.test(overrideModel) ? overrideModel : endpoints.modelDisplay
   const baseUrl = trimTrailingSlash(overrides.baseUrl || '') || endpoints.relayBaseUrl
   return {
     default: model,
@@ -318,8 +363,8 @@ function buildManagedModelConfig(relayKey, env = {}, overrides = {}) {
     base_url: baseUrl,
     api_key: key,
     // Register the relay as a named custom provider (Hermes-native shape) so the
-    // default model resolves to the relay endpoint, not the built-in provider
-    // whose static catalog happens to contain the same model id.
+    // endpoint stays durable across picker switches / resume. Same id as
+    // model.default so both anchors agree.
     custom_providers: [
       {
         name: MANAGED_PROVIDER_NAME,

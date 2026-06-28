@@ -5200,9 +5200,10 @@ def _resolve_task_provider_model(
       3. "auto" (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key, api_mode) where model may
-    be None (use provider default). When base_url is set, provider is forced
-    to "custom" and the task uses that direct endpoint. api_mode is one of
-    "chat_completions", "codex_responses", or None (auto-detect).
+    be None (use provider default). A bare base_url is treated as custom, but
+    a first-class provider plus base_url keeps the provider identity so its
+    auth, transport, and request-shaping behavior still apply. api_mode is one
+    of "chat_completions", "codex_responses", or None (auto-detect).
     """
     cfg_provider = None
     cfg_model = None
@@ -5235,11 +5236,35 @@ def _resolve_task_provider_model(
             return prov, existing_base
         return "custom", existing_base or target_base
 
+    def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
+        normalized = str(prov or "").strip().lower()
+        if normalized in {"", "auto", "custom"} or normalized.startswith("custom:"):
+            return False
+        try:
+            from hermes_cli.providers import get_provider
+
+            return get_provider(normalized) is not None
+        except Exception:
+            # Keep the high-risk provider-backed routes safe even if provider
+            # catalog loading is unavailable during early import/test paths.
+            return normalized in {
+                "anthropic",
+                "copilot",
+                "copilot-acp",
+                "minimax-oauth",
+                "nous",
+                "openai-codex",
+                "qwen-oauth",
+                "xai-oauth",
+            }
+
     if provider:
         provider, base_url = _expand_direct_api_alias(provider, base_url)
     if cfg_provider:
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
+    if base_url and _preserve_provider_with_base_url(provider):
+        return provider, resolved_model, base_url, api_key, resolved_api_mode
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:

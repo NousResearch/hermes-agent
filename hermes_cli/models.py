@@ -1795,6 +1795,17 @@ _AGGREGATOR_PROVIDERS = frozenset(
 # away from the model's native vendor). None are currently defined.
 _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 
+# Providers whose live /v1/models endpoint is the authoritative catalog, so the
+# curated list is a discovery-only fallback. For these, the picker merges
+# live-first (live entries lead, curated-only entries append). Every OTHER
+# provider keeps curated-first (commit 658ac1d86, #46309) so a deliberately
+# surfaced newest model stays at the top even when the live API lags. OpenCode
+# Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
+# their stale curated entries must not pollute the top of the picker. (#49129)
+_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
+    {"opencode-zen", "opencode-go"}
+)
+
 
 def _resolve_static_model_alias(
     name_lower: str,
@@ -2433,24 +2444,22 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     # Merge static curated list with live API results so
                     # models that the live endpoint omits (stale cache,
                     # partial rollout) still appear in the picker.
-                    # Live API entries come first (the provider's authoritative
-                    # catalog), then curated-only entries are appended for
-                    # discovery — models that the live endpoint hasn't caught up
-                    # on still surface, but models the provider no longer serves
-                    # (stale curated entries) don't pollute the top of the picker.
                     #
-                    # Design note: Single providers (kimi, zai) use curated-first
+                    # Single providers (kimi, zai) use curated-first
                     # (commit 658ac1d86) to surface newest models even when live
-                    # API lags (#46309). However, aggregators like OpenCode Zen
-                    # have a live API as their authoritative catalog — the curated
-                    # list is just a fallback for models the live endpoint hasn't
-                    # caught up on. For aggregators, live-first prevents stale
-                    # curated entries from polluting the picker. (#46850)
+                    # API lags (#46309). OpenCode Zen / Go are different: their
+                    # live API is the authoritative catalog, so they merge
+                    # live-first — live entries lead and stale curated entries
+                    # no longer pollute the top of the picker. (#49129)
                     curated = list(_PROVIDER_MODELS.get(normalized, []))
                     if curated:
-                        merged = list(live)
-                        merged_lower = {m.lower() for m in live}
-                        for m in curated:
+                        if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+                            primary, secondary = live, curated
+                        else:
+                            primary, secondary = curated, live
+                        merged = list(primary)
+                        merged_lower = {m.lower() for m in primary}
+                        for m in secondary:
                             if m.lower() not in merged_lower:
                                 merged.append(m)
                                 merged_lower.add(m.lower())

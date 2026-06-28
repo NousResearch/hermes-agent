@@ -45,9 +45,9 @@ from agent.models_dev import (
 )
 
 # Providers whose picker model list should NOT be capped by max_models.
-# OpenCode Zen is an aggregator whose full catalog must be visible so
-# users can pick any model they have access to.
-_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen"})
+# OpenCode Zen / Go are aggregators whose full catalogs (70+ models each) must
+# be visible so users can pick any model they have access to.
+_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go"})
 
 logger = logging.getLogger(__name__)
 

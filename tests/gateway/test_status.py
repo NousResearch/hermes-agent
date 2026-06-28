@@ -843,6 +843,36 @@ class TestScopedLocks:
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "telegram"
 
+    def test_acquire_scoped_lock_replaces_reused_pid_when_record_lacks_start_time(
+        self, tmp_path, monkeypatch
+    ):
+        """A legacy/null-start lock must not block when the live PID is unrelated."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 873,
+            "start_time": None,
+            "kind": "hermes-gateway",
+            "argv": ["/Users/user/.hermes/hermes-agent/hermes_cli/main.py", "gateway", "run"],
+        }))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 456)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/libexec/bluetoothuserd")
+
+        acquired, existing = status.acquire_scoped_lock(
+            "telegram-bot-token",
+            "secret",
+            metadata={"platform": "telegram"},
+        )
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["metadata"]["platform"] == "telegram"
+
     def test_acquire_scoped_lock_keeps_lock_when_cmdline_unreadable_but_record_is_gateway(self, tmp_path, monkeypatch):
         """Windows regression: ps unavailable so cmdline cannot be read.
 

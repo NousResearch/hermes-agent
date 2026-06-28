@@ -1031,17 +1031,18 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     and current_start != existing.get("start_time")
                 ):
                     stale = True
-                # When start_time comparison is unavailable (macOS / Windows
-                # have no /proc, so both sides are None), fall back to
-                # checking the live process command line.  When cmdline is
-                # also unreadable (Windows has no ps), consult the lock
-                # record's own argv — the gateway writes it at startup and
-                # it's the only identity signal on platforms without ps.
+                # When start_time comparison is unavailable on either side,
+                # fall back to checking the live process command line.  When
+                # cmdline is also unreadable (Windows has no ps), consult the
+                # lock record's own argv — the gateway writes it at startup
+                # and it's the only identity signal on platforms without ps.
                 # Both oracles must indicate "not a gateway" to mark stale.
                 if (
                     not stale
-                    and existing.get("start_time") is None
-                    and current_start is None
+                    and (
+                        existing.get("start_time") is None
+                        or current_start is None
+                    )
                     and not _looks_like_gateway_process(existing_pid)
                 ):
                     live_cmdline = _read_process_cmdline(existing_pid)

@@ -329,6 +329,40 @@ def _is_cron_silence_response(text: str) -> bool:
         return True
     return False
 
+
+# ---------------------------------------------------------------------------
+# Content-level failure marker — the symmetric counterpart to [SILENT].
+#
+# When a cron agent's task fails at the content level (skill not found, tool
+# errors, can't complete) but the agent process itself succeeds, the agent
+# can signal this with [FAILURE: reason].  The scheduler marks the run as
+# failed and optionally routes a copy of the response to a configured
+# escalation channel (cron.failure_escalation_channel in config.yaml).
+# ---------------------------------------------------------------------------
+_FAILURE_RE = re.compile(r"\[FAILURE(?::\s*(.+?))?\]", re.IGNORECASE)
+
+
+def _parse_cron_failure_marker(text: str) -> Optional[str]:
+    """Extract a failure reason from a ``[FAILURE: reason]`` marker.
+
+    Returns the reason string if a marker is found, ``None`` otherwise.
+    Only recognizes the bracketed form — no loose matching (unlike silence
+    tokens).  The marker must appear as a prefix or on its own first line
+    so genuine content that quotes ``[FAILURE]`` mid-sentence is not
+    misclassified.
+    """
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    if not stripped:
+        return None
+    # Check the full response or its first non-empty line.
+    first_line = stripped.splitlines()[0].strip()
+    m = _FAILURE_RE.match(first_line)
+    if m:
+        return m.group(1) or "agent reported task failure"
+    return None
+
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
 # The tick function submits jobs here and returns immediately so the ticker
@@ -2445,7 +2479,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "findings normally, or say [SILENT] and nothing more. "
+        "FAILURE: If this task actually failed — a skill isn't found, "
+        "a tool keeps erroring, or you genuinely cannot complete it — "
+        "start your response with [FAILURE: brief reason] "
+        "(e.g. \"[FAILURE: skill not found]\"). The scheduler will mark "
+        "the run as failed and route the report to the operator. "
+        "Do not use send_message for failure reporting.]\n\n"
     )
     prompt = cron_hint + prompt
     if skills is None:
@@ -3828,6 +3868,25 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             if should_deliver and success and _is_cron_silence_response(deliver_content):
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False
+
+            # Content-level failure escalation — see _parse_cron_failure_marker.
+            # When the agent signals [FAILURE: reason], mark the run as failed
+            # and optionally route a copy to cron.failure_escalation_channel.
+            failure_reason = _parse_cron_failure_marker(deliver_content) if should_deliver and success else None
+            if failure_reason:
+                logger.info("Job '%s': agent returned [FAILURE: %s]", job["id"], failure_reason)
+                success = False
+                error = f"Agent-reported failure: {failure_reason}"
+                try:
+                    esc_channel = (load_config() or {}).get("cron", {}).get("failure_escalation_channel")
+                except Exception:
+                    esc_channel = None
+                if esc_channel:
+                    esc_job = {**job, "deliver": esc_channel}
+                    try:
+                        _deliver_result(esc_job, deliver_content, adapters=adapters, loop=loop)
+                    except Exception as esc_err:
+                        logger.error("Failure escalation delivery failed for job %s: %s", job["id"], esc_err)
 
             if should_deliver:
                 try:

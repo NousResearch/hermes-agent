@@ -99,8 +99,52 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
-import { api } from "@/lib/api";
+import { api, HERMES_BASE_PATH } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
+
+function normalizeRoutePath(path: string): string {
+  const trimmed = path.replace(/\/$/, "");
+  return trimmed || "/";
+}
+
+function pluginOwnsPath(pluginPath: string, currentPath: string): boolean {
+  const owner = normalizeRoutePath(pluginPath);
+  const current = normalizeRoutePath(currentPath);
+  return current === owner || current.startsWith(`${owner}/`);
+}
+
+function pluginAssetUrl(manifest: PluginManifest, relativePath: string): string {
+  return `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${relativePath}`;
+}
+
+function withHermesBasePath(routePath: string): string {
+  if (!routePath.startsWith("/")) return routePath;
+  if (!HERMES_BASE_PATH) return routePath;
+  if (routePath === "/") return `${HERMES_BASE_PATH}/`;
+  if (routePath.startsWith(`${HERMES_BASE_PATH}/`) || routePath === HERMES_BASE_PATH) {
+    return routePath;
+  }
+  return `${HERMES_BASE_PATH}${routePath}`;
+}
+
+function selectActivePwaManifest(
+  manifests: PluginManifest[],
+  pathname: string,
+): PluginManifest | null {
+  const active = manifests.find((manifest) =>
+    pluginOwnsPath(manifest.tab.override ?? manifest.tab.path, pathname),
+  );
+  if (!active) return null;
+  if (
+    !active.web_manifest
+    && !active.apple_touch_icon
+    && !active.theme_color
+    && !active.service_worker
+  ) {
+    return null;
+  }
+  return active;
+}
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -417,6 +461,11 @@ export default function App() {
     () => manifests.some((m) => m.tab.override === "/chat"),
     [manifests],
   );
+  const activePwaManifest = useMemo(
+    () => selectActivePwaManifest(manifests, pathname),
+    [manifests, pathname],
+  );
+  const registeredServiceWorkers = useRef<Set<string>>(new Set());
 
   const builtinRoutes = useMemo(
     () => ({
@@ -478,6 +527,102 @@ export default function App() {
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
+
+  useEffect(() => {
+    const head = document.head;
+    const existingManifest = head.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+    const existingAppleTouch = head.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+    const existingThemeColor = head.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+
+    const prevManifestHref = existingManifest?.getAttribute("href") ?? null;
+    const prevAppleTouchHref = existingAppleTouch?.getAttribute("href") ?? null;
+    const prevThemeColorContent = existingThemeColor?.getAttribute("content") ?? null;
+
+    const manifestLink = existingManifest ?? document.createElement("link");
+    const appleTouchLink = existingAppleTouch ?? document.createElement("link");
+    const themeColorMeta = existingThemeColor ?? document.createElement("meta");
+
+    let createdManifest = false;
+    let createdAppleTouch = false;
+    let createdThemeColor = false;
+
+    if (activePwaManifest?.web_manifest) {
+      manifestLink.rel = "manifest";
+      manifestLink.href = pluginAssetUrl(activePwaManifest, activePwaManifest.web_manifest);
+      if (!existingManifest) {
+        head.appendChild(manifestLink);
+        createdManifest = true;
+      }
+    }
+
+    if (activePwaManifest?.apple_touch_icon) {
+      appleTouchLink.rel = "apple-touch-icon";
+      appleTouchLink.href = pluginAssetUrl(activePwaManifest, activePwaManifest.apple_touch_icon);
+      if (!existingAppleTouch) {
+        head.appendChild(appleTouchLink);
+        createdAppleTouch = true;
+      }
+    }
+
+    if (activePwaManifest?.theme_color) {
+      themeColorMeta.setAttribute("name", "theme-color");
+      themeColorMeta.setAttribute("content", activePwaManifest.theme_color);
+      if (!existingThemeColor) {
+        head.appendChild(themeColorMeta);
+        createdThemeColor = true;
+      }
+    }
+
+    return () => {
+      if (activePwaManifest?.web_manifest) {
+        if (createdManifest) {
+          manifestLink.remove();
+        } else if (prevManifestHref !== null) {
+          manifestLink.href = prevManifestHref;
+        } else {
+          manifestLink.removeAttribute("href");
+        }
+      }
+      if (activePwaManifest?.apple_touch_icon) {
+        if (createdAppleTouch) {
+          appleTouchLink.remove();
+        } else if (prevAppleTouchHref !== null) {
+          appleTouchLink.href = prevAppleTouchHref;
+        } else {
+          appleTouchLink.removeAttribute("href");
+        }
+      }
+      if (activePwaManifest?.theme_color) {
+        if (createdThemeColor) {
+          themeColorMeta.remove();
+        } else if (prevThemeColorContent !== null) {
+          themeColorMeta.setAttribute("content", prevThemeColorContent);
+        } else {
+          themeColorMeta.removeAttribute("content");
+        }
+      }
+    };
+  }, [activePwaManifest]);
+
+  useEffect(() => {
+    if (!activePwaManifest?.service_worker) return;
+    if (!("serviceWorker" in navigator)) return;
+
+    const serviceWorkerUrl = pluginAssetUrl(activePwaManifest, activePwaManifest.service_worker);
+    const serviceWorkerScope = activePwaManifest.service_worker_scope
+      ? withHermesBasePath(activePwaManifest.service_worker_scope)
+      : undefined;
+    const registrationKey = `${serviceWorkerUrl}::${serviceWorkerScope ?? ""}`;
+    if (registeredServiceWorkers.current.has(registrationKey)) return;
+    registeredServiceWorkers.current.add(registrationKey);
+
+    void navigator.serviceWorker
+      .register(serviceWorkerUrl, serviceWorkerScope ? { scope: serviceWorkerScope } : undefined)
+      .catch((error) => {
+        registeredServiceWorkers.current.delete(registrationKey);
+        console.warn(`[plugins] Failed to register service worker for ${activePwaManifest.name}`, error);
+      });
+  }, [activePwaManifest]);
 
   return (
     <ProfileProvider>
@@ -784,7 +929,6 @@ export default function App() {
           </PageHeaderProvider>
         </div>
       </div>
-
       <PluginSlot name="overlay" />
     </div>
     </ProfileProvider>

@@ -2256,6 +2256,11 @@ export interface PluginManifestResponse {
   slots?: string[];
   entry: string;
   css?: string | null;
+  web_manifest?: string | null;
+  apple_touch_icon?: string | null;
+  theme_color?: string | null;
+  service_worker?: string | null;
+  service_worker_scope?: string | null;
   has_api: boolean;
   source: string;
 }

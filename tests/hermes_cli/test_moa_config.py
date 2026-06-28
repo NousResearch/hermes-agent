@@ -95,7 +95,7 @@ def test_normalize_moa_config_wraps_bare_dict_reference_models():
 
 
 def test_normalize_moa_config_preserves_reference_reasoning_effort():
-    """Reference slots can opt into model-specific reasoning effort."""
+    """Codex reference slots can opt into model-specific reasoning effort."""
     cfg = normalize_moa_config(
         {
             "presets": {
@@ -114,6 +114,29 @@ def test_normalize_moa_config_preserves_reference_reasoning_effort():
 
     assert cfg["presets"]["p"]["reference_models"] == [
         {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "xhigh"}
+    ]
+
+
+def test_normalize_moa_config_drops_non_codex_reference_reasoning_effort():
+    """Do not impose OpenAI/Codex reasoning knobs on other providers."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {
+                            "provider": "openrouter",
+                            "model": "anthropic/claude-opus-4.8",
+                            "reasoning_effort": "xhigh",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    assert cfg["presets"]["p"]["reference_models"] == [
+        {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"}
     ]
 
 

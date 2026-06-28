@@ -36,6 +36,14 @@ _MAX_REFERENCE_WORKERS = 8
 # untrimmed transcript; this budget only shapes the advisory copy.
 _REFERENCE_TOOL_RESULT_BUDGET = 4000
 
+# Per-reference effort is currently a Codex-specific override. Other Hermes
+# providers expose reasoning through provider-specific contracts (OpenRouter
+# model gates, Anthropic adaptive thinking, Gemini thinking_config,
+# DeepSeek/Kimi/Ollama top-level reasoning_effort, xAI allowlists, etc.). MoA
+# must not blindly send an OpenAI-shaped ``extra_body.reasoning`` to those
+# providers; they should keep their normal defaults or existing session config.
+_REFERENCE_REASONING_EXTRA_BODY_PROVIDERS = {"openai-codex"}
+
 # System prompt prepended to every reference-model call. References are
 # advisory — they do NOT act, call tools, or own the task. Without this
 # framing a reference receives the bare trimmed conversation and assumes it is
@@ -67,6 +75,17 @@ _REFERENCE_SYSTEM_PROMPT = (
 
 def _slot_label(slot: dict[str, str]) -> str:
     return f"{slot.get('provider', '').strip()}:{slot.get('model', '').strip()}"
+
+
+def _reference_extra_body(slot: dict[str, str]) -> dict[str, Any]:
+    """Return per-reference extra_body overrides for providers that support it."""
+    provider = str(slot.get("provider") or "").strip().lower()
+    effort = str(slot.get("reasoning_effort") or "").strip().lower()
+    if not effort or provider not in _REFERENCE_REASONING_EXTRA_BODY_PROVIDERS:
+        return {}
+    if effort == "none":
+        return {"reasoning": {"enabled": False}}
+    return {"reasoning": {"effort": effort}}
 
 
 def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
@@ -138,10 +157,7 @@ def _run_reference(
     concurrency primitive, mirroring ``delegate_task``'s batch fan-out.
     """
     label = _slot_label(slot)
-    extra_body = {}
-    effort = slot.get("reasoning_effort")
-    if effort:
-        extra_body["reasoning"] = {"effort": effort}
+    extra_body = _reference_extra_body(slot)
 
     try:
         # Prepend the advisory-role system prompt so the reference understands

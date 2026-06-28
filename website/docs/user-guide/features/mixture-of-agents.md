@@ -80,7 +80,7 @@ moa:
       reference_models:
         - provider: openai-codex
           model: gpt-5.5
-          reasoning_effort: xhigh  # optional per-reference override
+          reasoning_effort: xhigh  # optional Codex-only per-reference override
         - provider: openrouter
           model: deepseek/deepseek-v4-pro
       aggregator:
@@ -137,3 +137,4 @@ So MoA does not sacrifice prompt caching on either call type. Its only real cost
 - A preset's aggregator cannot be another MoA preset. Recursive MoA trees are intentionally blocked.
 - Credential failures on one reference model do not abort the turn. Hermes includes the failure in the reference context and continues with whatever models returned.
 - MoA increases model-call count. A single model iteration can involve multiple reference calls plus the aggregator call.
+- `reasoning_effort` is currently honored only on `openai-codex` reference slots. Other providers keep their own default/session reasoning behavior because reasoning controls are provider-specific.

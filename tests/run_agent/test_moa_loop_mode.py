@@ -248,6 +248,55 @@ def test_moa_reference_forwards_reasoning_effort(monkeypatch):
     assert calls[0]["extra_body"] == {"reasoning": {"effort": "xhigh"}}
 
 
+def test_moa_reference_reasoning_effort_none_disables_codex_reasoning(monkeypatch):
+    from agent import moa_loop
+
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("reference advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    moa_loop._run_reference(
+        {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "none"},
+        [{"role": "user", "content": "review this"}],
+    )
+
+    assert calls[0]["extra_body"] == {"reasoning": {"enabled": False}}
+
+
+def test_moa_reference_reasoning_effort_is_codex_scoped(monkeypatch):
+    """Non-Codex references keep their provider defaults/configuration."""
+    from agent import moa_loop
+
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("reference advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    moa_loop._run_reference(
+        {"provider": "openrouter", "model": "anthropic/claude-opus-4.8", "reasoning_effort": "xhigh"},
+        [{"role": "user", "content": "review this"}],
+    )
+
+    assert calls[0]["extra_body"] == {}
+
+
 def test_reference_messages_drops_system_but_renders_tools_as_text():
     """System prompt is dropped, but tool calls + results are RENDERED as text.
 

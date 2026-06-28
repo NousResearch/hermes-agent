@@ -78,10 +78,18 @@ class MyMemoryProvider(MemoryProvider):
 | `prefetch(query)` | Before each API call | Return recalled context |
 | `queue_prefetch(query)` | After each turn | Pre-warm for next turn |
 | `sync_turn(user, assistant)` | After each completed turn | Persist conversation |
+| `on_session_switch(new_session_id)` | Session resume/reset/switch | Clear stale per-session caches |
+| `on_delegation(task, result)` | Subagent finishes | Persist delegated task outcomes |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+Providers used by messaging gateways may also receive `session_id` and `user_id`
+keyword arguments on `queue_prefetch()` and `sync_turn()`. Use these for
+multi-user scoping instead of deriving identity from global process state. The
+`memgw` provider is the reference pattern for an MCP-backed provider that bridges
+an async client behind synchronous memory-provider hooks.
 
 ## Config Schema
 

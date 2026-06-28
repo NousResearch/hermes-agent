@@ -110,6 +110,10 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 **Honcho tools** (`honcho_profile`, `honcho_search`, `honcho_context`, `honcho_reasoning`, `honcho_conclude`) are no longer built-in. They are available via the Honcho memory provider plugin at `plugins/memory/honcho/`. See [Memory Providers](../user-guide/features/memory-providers.md) for installation and usage.
 :::
 
+::::note
+**Memory Gateway tools** (`memgw_recall`, `memgw_retain`, `memgw_reflect`) are injected only when the `memgw` memory provider is active and available. They call the configured Memory Gateway MCP endpoint for hybrid recall, durable writes, and reflection. See [Memory Providers](../user-guide/features/memory-providers.md#memgw-memory-gateway) for setup, auth, and failure-mode details.
+::::
+
 ## `image_gen` toolset
 
 | Tool | Description | Requires environment |

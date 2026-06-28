@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, memgw, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: memgw   # or honcho, openviking, mem0, hindsight, holographic, retaindb, byterover, supermemory
 ```
 
 ## How It Works
@@ -39,6 +39,51 @@ When a memory provider is active, Hermes automatically:
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
 ## Available Providers
+
+### memgw (Memory Gateway)
+
+Self-hosted Memory Gateway integration over Streamable-HTTP MCP. The gateway combines vector recall, exact-term recall, graph context, durable writes, and reflection in a backend shared with the `persistent-memory` service.
+
+| | |
+|---|---|
+| **Best for** | Teams that already operate the Memory Gateway and need exact entity/ID recall plus graph-grounded context |
+| **Requires** | `mcp` package (`pip install hermes-agent[mcp]` or install the repo's `mcp` extra) + a Memory Gateway endpoint |
+| **Data storage** | Self-hosted Memory Gateway (Neo4j + Qdrant + Notion/Obsidian integrations) |
+| **Cost** | Free/self-hosted infrastructure cost |
+
+**Tools:** `memgw_recall` (hybrid recall), `memgw_retain` (write durable memory), `memgw_reflect` (synthesized beliefs / mental models).
+
+**Setup:**
+```bash
+hermes memory setup    # select "memgw"
+# Or manually:
+hermes config set memory.provider memgw
+echo 'MEMGW_API_URL=https://mcp.example.com/mcp' >> ~/.hermes/.env
+echo 'MEMGW_API_KEY=***' >> ~/.hermes/.env
+```
+
+For local development, keyless mode is allowed only when `MEMGW_API_URL` parses to an exact loopback host: `localhost`, `127.0.0.1`, or `::1`. Cloud/non-loopback endpoints require `MEMGW_API_KEY`.
+
+**Config:** `$HERMES_HOME/memgw.json` overrides environment defaults.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `api_url` | `https://mcp.danizhaky.com/mcp` | Memory Gateway MCP URL. A base host is normalized to `/mcp`. |
+| `api_key` | empty | Bearer key. Required unless the parsed host is exact loopback. |
+| `recall_limit` | `5` | Max results for automatic prefetch recall. Model-facing `memgw_recall` accepts an explicit `limit` up to 50. |
+| `prefetch_method` | `recall` | Automatic prefetch mode: `recall`, `reflect`, or `off`. |
+
+**Automatic behavior:**
+- Background prefetch runs after each turn and injects the latest completed recall before the next model call.
+- Session switches clear cached prefetch output and invalidate in-flight workers, preventing stale context from a previous session.
+- Completed turns and delegation outcomes are retained asynchronously; shutdown waits for tracked writers before closing the MCP client.
+- Gateway sessions pass `user_id` into recall and write paths so shared deployments can scope memory per user.
+
+**Failure handling:** The provider is inert when `mcp` is not installed or auth is missing for a non-loopback URL. Runtime transport failures trip a circuit breaker after 5 consecutive failures and pause Memory Gateway calls for 120 seconds, returning graceful tool errors instead of blocking the agent loop.
+
+See the [plugin README](https://github.com/dizhaky/hermes-agent/blob/main/plugins/memory/memgw/README.md) for fork-specific notes and the [Memory Gateway backend](https://github.com/dizhaky/persistent-memory) for server operations.
+
+---
 
 ### Honcho
 
@@ -526,6 +571,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
+| **memgw** | Self-hosted | Free | 3 | `mcp` + gateway | Exact-term + semantic + graph-grounded recall |
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
@@ -540,7 +586,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 Each provider's data is isolated per [profile](/docs/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
+- **Config file providers** (memgw, Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 

@@ -212,11 +212,13 @@ Hooks are discovered from `gateway/builtin_hooks/` (an extension point — curre
 
 ## Memory Provider Integration
 
-When a memory provider plugin (e.g., Honcho) is enabled:
+When a memory provider plugin (for example Honcho or memgw) is enabled:
 
 1. Gateway creates an `AIAgent` per message with the session ID
-2. The `MemoryManager` initializes the provider with the session context
-3. Provider tools (e.g., `honcho_profile`, `viking_search`) are routed through:
+2. The `MemoryManager` initializes the provider with the session context and,
+   on multi-user platforms, the platform user ID
+3. Provider tools (for example `honcho_profile`, `viking_search`, or
+   `memgw_recall`) are routed through:
 
 ```text
 AIAgent._invoke_tool()
@@ -224,7 +226,17 @@ AIAgent._invoke_tool()
     → provider.handle_tool_call(name, args)
 ```
 
-4. On session end/reset, `on_session_end()` fires for cleanup and final data flush
+4. After each turn, `sync_turn(..., session_id=..., user_id=...)` persists the
+   exchange when the provider implements it
+5. Before the next turn, `queue_prefetch(..., session_id=..., user_id=...)`
+   can warm provider context without blocking the active response
+6. On session switches, `on_session_switch()` lets providers clear
+   session-scoped caches before new context is injected
+7. On session end/reset, `on_session_end()` fires for cleanup and final data flush
+
+Providers should pass `user_id` through to their backend when it supports
+tenant/user scoping. This is especially important for shared gateway
+deployments where multiple chat users may share one Hermes process.
 
 ### Memory Flush Lifecycle
 

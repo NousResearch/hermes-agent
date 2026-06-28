@@ -223,6 +223,13 @@ class GatewayStreamConsumer:
         meta = dict(self.metadata) if self.metadata else {}
         if expect_edits:
             meta["expect_edits"] = True
+        if not final:
+            # Stream previews, tool-boundary text, and interim commentary are
+            # status/progress UI, not the final assistant reply.  Messaging
+            # adapters that support natural multi-bubble delivery (WhatsApp)
+            # must keep these as one unit so scratch/status text never fans out
+            # into a cascade.
+            meta.setdefault("delivery_style", "single")
         if final:
             meta["notify"] = True
         return meta or None
@@ -1161,7 +1168,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self.metadata,
+                metadata=self._metadata_for_send(final=False),
             )
             # Note: do NOT set _already_sent = True here.
             # Commentary messages are interim status updates (e.g. "Using browser

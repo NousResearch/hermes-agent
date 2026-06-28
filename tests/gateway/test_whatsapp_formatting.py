@@ -50,6 +50,15 @@ def _make_adapter():
     adapter._allow_from = set()
     adapter._group_policy = "open"
     adapter._group_allow_from = set()
+    adapter._human_cascade_messages = True
+    adapter._human_cascade_max_bubbles = 4
+    adapter._human_cascade_delay_seconds = 0
+    adapter._human_cascade_delay_jitter_seconds = 0
+    adapter._human_cascade_max_total_chars = 900
+    adapter._human_cascade_max_bubble_chars = 320
+    adapter._human_cascade_max_merged_bubble_chars = 640
+    adapter._human_cascade_groups = False
+    adapter._chunk_delay_seconds = 0
     return adapter
 
 
@@ -190,6 +199,173 @@ class TestSendChunking:
         assert result.success
         # Only one call to bridge /send
         assert adapter._http_session.post.call_count == 1
+        assert result.raw_response["human_cascade"] is False
+
+    @pytest.mark.asyncio
+    async def test_blank_line_paragraphs_send_as_human_cascade(self):
+        adapter = _make_adapter()
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        result = await adapter.send("chat1", "first thought\n\nsecond thought\n\nthird thought")
+
+        assert result.success
+        assert adapter._http_session.post.call_count == 3
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == [
+            "first thought",
+            "second thought",
+            "third thought",
+        ]
+        assert result.message_id == "msg3"
+        assert result.continuation_message_ids == ("msg1", "msg2")
+        assert result.raw_response["human_cascade"] is True
+
+    @pytest.mark.asyncio
+    async def test_extra_paragraphs_merge_into_final_cascade_bubble(self):
+        adapter = _make_adapter()
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3", "msg4"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        result = await adapter.send(
+            "chat1",
+            "one\n\ntwo\n\nthree\n\n" + ("four " * 40).strip() + "\n\n" + ("five " * 40).strip(),
+        )
+
+        assert result.success
+        assert adapter._http_session.post.call_count == 4
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == [
+            "one",
+            "two",
+            "three",
+            ("four " * 40).strip() + "\n\n" + ("five " * 40).strip(),
+        ]
+        assert result.message_id == "msg4"
+        assert result.continuation_message_ids == ("msg1", "msg2", "msg3")
+        assert result.raw_response["human_cascade"] is True
+
+    @pytest.mark.asyncio
+    async def test_human_cascade_can_be_disabled(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_messages = False
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        await adapter.send("chat1", "first\n\nsecond")
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == "first\n\nsecond"
+
+    @pytest.mark.asyncio
+    async def test_metadata_delivery_style_single_suppresses_human_cascade(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        await adapter.send("chat1", "thinking\n\nstill checking", metadata={"delivery_style": "single"})
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == "thinking\n\nstill checking"
+
+    @pytest.mark.asyncio
+    async def test_metadata_delivery_style_cascade_can_force_structured_message(self):
+        adapter = _make_adapter()
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        await adapter.send(
+            "chat1",
+            "done\n\n- one\n- two\n- three\n\nnext",
+            metadata={"delivery_style": "cascade"},
+        )
+
+        assert adapter._http_session.post.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_code_blocks_do_not_human_cascade(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = "copy this\n\n```bash\necho hi\n```\n\nthen run it"
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert "```bash\necho hi\n```" in payload["message"]
+
+    @pytest.mark.asyncio
+    async def test_approval_gates_do_not_human_cascade(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = "I can restart the gateway.\n\nReply `/approve` to restart.\n\nRisk: brief downtime."
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert "Reply `/approve`" in payload["message"]
+
+    @pytest.mark.asyncio
+    async def test_structured_reports_do_not_human_cascade(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = "done\n\n- changed adapter\n- added tests\n- ran suite\n\n44 passed"
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert "- changed adapter" in payload["message"]
+
+    @pytest.mark.asyncio
+    async def test_long_briefs_do_not_human_cascade(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = "Daily brief\n\n" + ("Lots of info here. " * 80)
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"].startswith("Daily brief")
+
+    @pytest.mark.asyncio
+    async def test_group_chats_do_not_human_cascade_by_default(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        await adapter.send("120363001234567890@g.us", "first\n\nsecond")
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == "first\n\nsecond"
 
     @pytest.mark.asyncio
     async def test_long_message_chunked(self):

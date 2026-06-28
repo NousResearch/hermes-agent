@@ -85,6 +85,48 @@ class TestCleanForDisplay:
         assert result == text
 
 
+# ── Stream send metadata ──────────────────────────────────────────────────
+
+
+class TestStreamSendMetadata:
+    def test_non_final_stream_metadata_forces_single_delivery_style(self):
+        consumer = GatewayStreamConsumer(
+            MagicMock(),
+            "chat_1",
+            metadata={"thread_id": "thread-1"},
+        )
+
+        assert consumer._metadata_for_send(final=False) == {
+            "thread_id": "thread-1",
+            "delivery_style": "single",
+        }
+        assert consumer._metadata_for_send(final=False, expect_edits=True) == {
+            "thread_id": "thread-1",
+            "expect_edits": True,
+            "delivery_style": "single",
+        }
+        assert consumer._metadata_for_send(final=True) == {
+            "thread_id": "thread-1",
+            "notify": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_commentary_send_forces_single_delivery_style(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            metadata={"thread_id": "thread-1"},
+        )
+
+        assert await consumer._send_commentary("thinking\n\nstill checking") is True
+
+        metadata = adapter.send.call_args.kwargs["metadata"]
+        assert metadata["thread_id"] == "thread-1"
+        assert metadata["delivery_style"] == "single"
+
+
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 
 

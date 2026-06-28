@@ -293,6 +293,23 @@ class TestFindAllSkills:
 
         assert [skill["name"] for skill in skills] == ["real-skill"]
 
+    def test_profile_local_root_under_excluded_named_ancestor(self, tmp_path):
+        """Regression for #54035: a skills root whose ANCESTOR is named like
+        an excluded dir (e.g. a profile-local root below a ``venv`` /
+        ``.git`` / ``node_modules`` parent) must not make every skill match
+        the exclusion. The filter applies to the path relative to the scan
+        root, not the absolute path."""
+        # Simulate /.../venv/profiles/p1/skills with a real skill inside.
+        skills_root = tmp_path / "venv" / "profiles" / "p1" / "skills"
+        skills_root.mkdir(parents=True)
+        _make_skill(skills_root, "google-workspace", category="productivity")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            skills = _find_all_skills()
+
+        assert [s["name"] for s in skills] == ["google-workspace"]
+        assert skills[0]["category"] == "productivity"
+
     def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"

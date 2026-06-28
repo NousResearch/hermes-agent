@@ -626,7 +626,18 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+            # Apply the excluded-dir filter to the path RELATIVE to scan_dir,
+            # not the absolute path. Otherwise any ancestor of the skills
+            # root that happens to be named like an excluded dir (e.g. a
+            # profile-local root under ~/.hermes that sits below a `venv`,
+            # `.git`, or `node_modules` ancestor) makes every skill match the
+            # exclusion and report "0 local" even though SKILL.md files exist
+            # on disk (#54035).
+            try:
+                rel_parts = skill_md.relative_to(scan_dir).parts
+            except ValueError:
+                rel_parts = skill_md.parts
+            if any(part in _EXCLUDED_SKILL_DIRS for part in rel_parts):
                 continue
 
             skill_dir = skill_md.parent

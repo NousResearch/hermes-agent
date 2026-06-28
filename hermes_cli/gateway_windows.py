@@ -484,6 +484,13 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     for argv in variants:
         code, out, err = _exec_schtasks(argv)
         if code == 0:
+            limit_ok, limit_detail = _disable_scheduled_task_time_limit(task_name)
+            if not limit_ok:
+                return (
+                    False,
+                    f"Created Scheduled Task {task_name!r}, but failed to disable the default "
+                    f"72-hour time limit: {limit_detail}",
+                )
             return (True, f"Created Scheduled Task {task_name!r}")
         last_code, last_err = code, (err or out or "")
     if delete_detail and "cannot find" not in delete_detail.lower():
@@ -491,6 +498,49 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")
 
 
+def _disable_scheduled_task_time_limit(task_name: str) -> tuple[bool, str]:
+    """Disable Windows Task Scheduler's default 72-hour execution time limit."""
+    _assert_windows()
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
+    if powershell is None:
+        return (False, "PowerShell not found on PATH")
+
+    script = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$task = Get-ScheduledTask -TaskName $env:HERMES_TASK_NAME; "
+        "$task.Settings.ExecutionTimeLimit = 'PT0S'; "
+        "Set-ScheduledTask -InputObject $task | Out-Null"
+    )
+    env = os.environ.copy()
+    env["HERMES_TASK_NAME"] = task_name
+    try:
+        proc = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            encoding=_schtasks_encoding(),
+            errors="replace",
+            timeout=_SCHTASKS_TIMEOUT_S,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return (False, f"PowerShell timed out after {_SCHTASKS_TIMEOUT_S}s")
+    except OSError as e:
+        return (False, f"PowerShell invocation failed: {e}")
+
+    detail = (proc.stderr or proc.stdout or "").strip()
+    if proc.returncode != 0:
+        return (False, detail or f"PowerShell exited with code {proc.returncode}")
+    return (True, "ExecutionTimeLimit set to PT0S")
 
 
 def _install_startup_entry(script_path: Path) -> Path:

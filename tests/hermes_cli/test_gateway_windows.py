@@ -241,6 +241,11 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_disable_scheduled_task_time_limit",
+        lambda task_name: calls.append(("disable_limit", task_name)) or (True, "ok"),
+    )
 
     def fake_schtasks(args):
         calls.append(tuple(args))
@@ -259,6 +264,59 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert calls[1][0] == "/Create"
     assert "/SC" in calls[1]
     assert "ONLOGON" in calls[1]
+    assert ("disable_limit", "Hermes_Gateway_alice") in calls
+
+
+def test_install_scheduled_task_fails_if_time_limit_cannot_be_disabled(monkeypatch, tmp_path):
+    """A gateway task with Windows' default 72h limit is not a valid install."""
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: (0, "SUCCESS", "") if args[0] in {"/Delete", "/Create"} else (1, "", "unexpected"),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_disable_scheduled_task_time_limit",
+        lambda task_name: (False, "Set-ScheduledTask failed"),
+    )
+
+    ok, detail = gateway_windows._install_scheduled_task("Hermes_Gateway_alice", script_path)
+
+    assert ok is False
+    assert "72-hour time limit" in detail
+    assert "Set-ScheduledTask failed" in detail
+
+
+def test_disable_scheduled_task_time_limit_sets_pt0s(monkeypatch):
+    """PT0S disables the Task Scheduler execution time limit."""
+    captured: dict[str, object] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured.update(kwargs)
+        return _FakeCompleted()
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    ok, detail = gateway_windows._disable_scheduled_task_time_limit("Hermes_Gateway_alice")
+
+    assert ok is True
+    assert "PT0S" in detail
+    command = captured["cmd"]
+    assert isinstance(command, list)
+    assert "Set-ScheduledTask" in command[-1]
+    assert "ExecutionTimeLimit = 'PT0S'" in command[-1]
+    assert captured["env"]["HERMES_TASK_NAME"] == "Hermes_Gateway_alice"
 
 
 def test_install_scheduled_task_success_start_now_uses_direct_spawn_not_task_run(monkeypatch, tmp_path, capsys):

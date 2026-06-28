@@ -4856,6 +4856,24 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         # No [Mentioned:] wrapper — reply-context path intentionally skips the hint.
         self.assertNotIn("[Mentioned:", result)
 
+    def test_fetch_message_text_cache_is_bounded_lru(self):
+        adapter = self._build_adapter()
+        adapter._fetch_message_normalized = AsyncMock(
+            side_effect=lambda message_id: SimpleNamespace(text_content=f"text-{message_id}", metadata={})
+        )
+
+        for idx in range(513):
+            asyncio.run(adapter._fetch_message_text(f"m_{idx}"))
+        # Refresh m_1 so it is not the next eviction candidate.
+        asyncio.run(adapter._fetch_message_text("m_1"))
+        asyncio.run(adapter._fetch_message_text("m_513"))
+
+        self.assertEqual(len(adapter._message_text_cache), 512)
+        self.assertNotIn("m_0", adapter._message_text_cache)
+        self.assertIn("m_1", adapter._message_text_cache)
+        self.assertNotIn("m_2", adapter._message_text_cache)
+        self.assertIn("m_513", adapter._message_text_cache)
+
     def test_extract_text_from_raw_content_accepts_mentions_kwarg(self):
         from plugins.platforms.feishu.adapter import FeishuAdapter
 

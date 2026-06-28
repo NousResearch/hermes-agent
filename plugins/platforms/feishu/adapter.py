@@ -4782,6 +4782,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client or not message_id:
             return None
         if message_id in self._message_text_cache:
+            self._message_text_cache.move_to_end(message_id)
             return self._message_text_cache[message_id]
         normalized = await self._fetch_message_normalized(message_id)
         if normalized is None:
@@ -4791,6 +4792,8 @@ class FeishuAdapter(BasePlatformAdapter):
             placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
             text = str(placeholder).strip() if placeholder else ""
         self._message_text_cache[message_id] = text
+        while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
+            self._message_text_cache.popitem(last=False)
         return text
 
     def _extract_text_from_raw_content(

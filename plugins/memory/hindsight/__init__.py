@@ -2262,7 +2262,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error(f"Failed to store memory: {e}")
 
         elif tool_name == "hindsight_recall":
-            query = self._sanitize_recall_query(args.get("query", ""))
+            query = self._summary_enriched_recall_query(args.get("query", ""))
             if not query:
                 return tool_error("Missing required parameter: query")
             try:

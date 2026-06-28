@@ -1739,6 +1739,31 @@ class TestSessionSummaryIntegration:
         assert "active-project" in query
         assert len(query) <= p._recall_max_input_chars
 
+    def test_hindsight_recall_tool_enriches_query_with_summary_in_tools_mode(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            memory_mode="tools",
+            session_summary_enabled=True,
+            session_summary_enrich_recall_query=True,
+            session_summary_max_recall_query_chars=90,
+            recall_max_input_chars=120,
+        )
+        self._seed_summary(p, project="tool-recall-project")
+
+        p.handle_tool_call(
+            "hindsight_recall",
+            {"query": "[message_id: om_x100b6d364e7e60a0c49f20c620fbbc6]\nWhat is next?"},
+        )
+
+        query = p._client.arecall.call_args.kwargs["query"]
+        assert query.startswith("What is next?")
+        assert "message_id" not in query
+        assert "om_x100" not in query
+        assert "Rolling session summary:" in query
+        assert "tool-recall-project" in query
+        assert len(query) <= p._recall_max_input_chars
+
     def test_prefetch_does_not_inject_summary_as_prompt_block(
         self, provider_with_config
     ):

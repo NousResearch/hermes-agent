@@ -1152,6 +1152,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the Matrix homeserver and start syncing."""
+        self._device_id_unverified = False
         if self._client is not None:
             try:
                 await self.disconnect()

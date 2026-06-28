@@ -5131,3 +5131,122 @@ class TestMatrixReconnectDisconnect:
                     await adapter.connect()
 
         adapter.disconnect.assert_awaited_once()
+
+
+class TestDeviceIdRecoveryOnReconnect:
+    """_device_id_unverified must reset on every connect() call so a
+    recovery after a failed resolution clears the stuck-true flag."""
+
+    @pytest.mark.asyncio
+    async def test_flag_clears_when_second_connect_resolves_device_id(self):
+        """Same adapter, first connect fails to resolve, second succeeds. Flag
+        must be False afterward and server verification must run on the second
+        call."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        # --- first connect: whoami returns no device_id, query_keys returns
+        #     zero devices → flag set to True ---
+        mock_client1 = MagicMock()
+        mock_client1.mxid = "@bot:example.org"
+        mock_client1.device_id = None
+        mock_client1.state_store = MagicMock()
+        mock_client1.sync_store = MagicMock()
+        mock_client1.crypto = None
+        mock_client1.whoami = AsyncMock(return_value=MagicMock(
+            user_id="@bot:example.org", device_id=None,
+        ))
+        resolve_resp = MagicMock()
+        resolve_resp.device_keys = {"@bot:example.org": {}}
+        mock_client1.query_keys = AsyncMock(return_value=resolve_resp)
+        mock_client1.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client1.add_event_handler = MagicMock()
+        mock_client1.handle_sync = MagicMock(return_value=[])
+        mock_client1.api = MagicMock()
+        mock_client1.api.token = "syt_test_access_token"
+        mock_client1.api.session = MagicMock()
+        mock_client1.api.session.close = AsyncMock()
+
+        mock_olm1 = MagicMock()
+        mock_olm1.load = AsyncMock()
+        mock_olm1.share_keys = AsyncMock()
+        mock_olm1.share_keys_min_trust = None
+        mock_olm1.send_keys_min_trust = None
+        mock_olm1.account = MagicMock()
+        mock_olm1.account.identity_keys = {"ed25519": "fake_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client1)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm1)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        await adapter.connect()
+
+        assert adapter._device_id_unverified is True
+        await adapter.disconnect()
+
+        # --- second connect (same adapter, re-attaching): whoami returns a
+        #     real device_id this time → flag must be False ---
+        mock_client2 = MagicMock()
+        mock_client2.mxid = "@bot:example.org"
+        mock_client2.device_id = None
+        mock_client2.state_store = MagicMock()
+        mock_client2.sync_store = MagicMock()
+        mock_client2.crypto = None
+        mock_client2.whoami = AsyncMock(return_value=MagicMock(
+            user_id="@bot:example.org", device_id=None,
+        ))
+        resolve_resp2 = MagicMock()
+        resolve_dev = MagicMock()
+        resolve_dev.keys = {"ed25519:DEV2": "fake_ed25519_key2"}
+        resolve_resp2.device_keys = {"@bot:example.org": {"DEV2": resolve_dev}}
+        verify_resp = MagicMock()
+        verify_dev = MagicMock()
+        verify_dev.keys = {"ed25519:DEV2": "fake_ed25519_key2"}
+        verify_resp.device_keys = {"@bot:example.org": {"DEV2": verify_dev}}
+        mock_client2.query_keys = AsyncMock(side_effect=[resolve_resp2, verify_resp])
+        mock_client2.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client2.add_event_handler = MagicMock()
+        mock_client2.handle_sync = MagicMock(return_value=[])
+        mock_client2.api = MagicMock()
+        mock_client2.api.token = "syt_test_access_token"
+        mock_client2.api.session = MagicMock()
+        mock_client2.api.session.close = AsyncMock()
+
+        mock_olm2 = MagicMock()
+        mock_olm2.load = AsyncMock()
+        mock_olm2.share_keys = AsyncMock()
+        mock_olm2.share_keys_min_trust = None
+        mock_olm2.send_keys_min_trust = None
+        mock_olm2.account = MagicMock()
+        mock_olm2.account.identity_keys = {"ed25519": "fake_ed25519_key2"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client2)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm2)
+
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        result = await adapter.connect()
+
+        assert result is True
+        assert adapter._device_id_unverified is False
+        mock_client2.query_keys.assert_awaited()
+
+        await adapter.disconnect()

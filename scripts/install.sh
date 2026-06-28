@@ -509,8 +509,13 @@ detect_os() {
                 if [ -f /etc/os-release ]; then
                     . /etc/os-release
                     DISTRO="$ID"
+                    # VERSION_ID (e.g. "26.04", "14") lets us tell whether the
+                    # apt release is newer than the newest one Playwright's
+                    # platform resolver recognizes — the #35166 hang condition.
+                    DISTRO_VERSION="${VERSION_ID:-}"
                 else
                     DISTRO="unknown"
+                    DISTRO_VERSION=""
                 fi
             fi
             ;;
@@ -1885,10 +1890,43 @@ run_browser_install_with_timeout() {
     shift
 
     if command -v timeout >/dev/null 2>&1; then
-        timeout "$timeout_seconds" "$@"
+        # GNU `timeout` runs the command in its own process group, so a terminal
+        # Ctrl+C is delivered to `timeout` but never reaches the child — the
+        # download looks frozen and ignores Ctrl+C (#35166). `--foreground`
+        # keeps the command in the shell's foreground group so Ctrl+C reaches
+        # it; `-k 10` sends SIGKILL 10s after the deadline so a wedged download
+        # can't outlive the timeout. Both flags are GNU-only — probe once and
+        # fall back to plain `timeout` on BusyBox (Alpine), and to direct exec
+        # when `timeout` is absent (stock macOS, where Ctrl+C works natively).
+        if timeout --foreground -k 10 1 true >/dev/null 2>&1; then
+            timeout --foreground -k 10 "$timeout_seconds" "$@"
+        else
+            timeout "$timeout_seconds" "$@"
+        fi
     else
         "$@"
     fi
+}
+
+# Return success only when the host is an apt release NEWER than the newest one
+# Playwright's platform resolver recognizes — the exact condition that makes
+# `playwright install` hang uninterruptibly (#35166). We scope the override
+# retry to this case rather than retrying on *any* failure, so a genuine
+# network/disk/permission failure doesn't get a mismatched-glibc build forced
+# onto it. Newest Playwright-known apt releases as of this writing: Ubuntu
+# 24.04, Debian 13. Anything above triggers the fallback; everything Playwright
+# already handles (and every non-apt distro) does not.
+playwright_host_unrecognized() {
+    # Compare dotted versions: returns 0 if $1 > $2.
+    _ver_gt() {
+        [ "$1" = "$2" ] && return 1
+        [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+    }
+    case "$DISTRO" in
+        ubuntu) _ver_gt "${DISTRO_VERSION:-0}" "24.04" ;;
+        debian) _ver_gt "${DISTRO_VERSION:-0}" "13" ;;
+        *) return 1 ;;  # Non-apt or unknown — not the #35166 hang condition.
+    esac
 }
 
 # Compute the PLAYWRIGHT_HOST_PLATFORM_OVERRIDE value to retry an install with
@@ -1912,14 +1950,19 @@ playwright_fallback_platform() {
 # Debian 14, future distros — see #35166), retry it ONCE with
 # PLAYWRIGHT_HOST_PLATFORM_OVERRIDE pinned to the newest known build.
 #
-# This is deliberately try-native-first, override-only-on-failure rather than a
-# hardcoded distro/version table: when Playwright already supports the host
-# (e.g. Ubuntu 26.04 on Playwright >=1.61), the first attempt succeeds and the
-# override never runs — so we never force a mismatched-glibc build onto a
-# release Playwright handles correctly (microsoft/playwright#35114). It is also
-# self-correcting: new distro releases work the moment Playwright adds them,
-# with no change here. Playwright's maintainers bless this env var as the
-# supported escape hatch for unrecognized platforms (microsoft/playwright#33434).
+# The override retry is scoped to the actual hang condition: it fires only when
+# the host is an apt release NEWER than Playwright recognizes
+# (playwright_host_unrecognized). On every release Playwright already supports
+# (Ubuntu <=24.04, Debian <=13) and every non-apt distro, the first attempt is
+# authoritative and a failure is reported as-is — we never force a
+# mismatched-glibc build (microsoft/playwright#35114) onto a host Playwright
+# handles correctly. This is deliberately narrower than a retry-on-any-failure:
+# a network/disk/permission error on a supported host should surface, not get
+# papered over with a platform override. Playwright's maintainers bless this
+# env var as the supported escape hatch for unrecognized platforms
+# (microsoft/playwright#33434); a hardcoded full distro/version table was
+# rejected upstream (microsoft/playwright#33432), so we only need the
+# newest-known floor here.
 #
 # An operator-provided PLAYWRIGHT_HOST_PLATFORM_OVERRIDE is always respected:
 # it is inherited by the first attempt, and the retry is skipped.
@@ -1940,14 +1983,21 @@ run_playwright_install() {
         return 1
     fi
 
+    # Only retry with an override on the apt releases too new for Playwright to
+    # recognize (the #35166 hang). Any other failure is a real failure and is
+    # surfaced unchanged.
+    if ! playwright_host_unrecognized; then
+        return 1
+    fi
+
     local fallback
     fallback="$(playwright_fallback_platform)"
     if [ -z "$fallback" ]; then
         return 1  # No usable fallback build for this arch.
     fi
 
-    log_warn "Playwright didn't recognize this platform — retrying with PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$fallback"
-    log_info "(common on apt releases newer than Playwright knows, e.g. Ubuntu 26.04 / Debian 14; see #35166)"
+    log_warn "Playwright doesn't recognize ${DISTRO} ${DISTRO_VERSION} yet — retrying with PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$fallback"
+    log_info "(apt releases newer than Playwright knows hang at this step; see #35166)"
     PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$fallback" \
         run_browser_install_with_timeout "$timeout_seconds" "$@"
 }

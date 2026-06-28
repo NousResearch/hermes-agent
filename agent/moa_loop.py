@@ -26,6 +26,34 @@ logger = logging.getLogger(__name__)
 # opening dozens of sockets at once.
 _MAX_REFERENCE_WORKERS = 8
 
+# System prompt prepended to every reference-model call. References are
+# advisory — they do NOT act, call tools, or own the task. Without this
+# framing a reference receives the bare trimmed conversation and assumes it is
+# the acting agent: it then refuses ("I can't access repositories / URLs from
+# here") or tries to call tools it doesn't have. The prompt reframes the model
+# as an analyst whose job is to reason about the presented state and hand its
+# best thinking to the aggregator/orchestrator that will actually act.
+_REFERENCE_SYSTEM_PROMPT = (
+    "You are a reference advisor in a Mixture of Agents (MoA) process. You are "
+    "NOT the acting agent and you do NOT execute anything: you cannot call "
+    "tools, run commands, browse, or access files, repositories, or URLs, and "
+    "you should not try to or apologize for being unable to. A separate "
+    "aggregator/orchestrator model holds those capabilities and will take the "
+    "actual actions.\n\n"
+    "The conversation below is the current state of a task handled by that "
+    "acting agent. Your job is to give your most intelligent analysis of that "
+    "state: understand the goal, reason about the problem, and advise on what "
+    "to do next. Surface the best approach, concrete next steps and tool-use "
+    "strategy, likely pitfalls and risks, and anything the acting agent may "
+    "have missed or gotten wrong. Assume any referenced files, URLs, or "
+    "systems exist and reason about them from the context given rather than "
+    "asking for access.\n\n"
+    "Respond with your advice directly — no preamble, no disclaimers about "
+    "tools or access. Your response is private guidance handed to the "
+    "aggregator, not an answer shown to the user."
+)
+
+
 
 def _slot_label(slot: dict[str, str]) -> str:
     return f"{slot.get('provider', '').strip()}:{slot.get('model', '').strip()}"
@@ -100,9 +128,14 @@ def _run_reference(
     """
     label = _slot_label(slot)
     try:
+        # Prepend the advisory-role system prompt so the reference understands
+        # it is analyzing state for an aggregator, not acting on the task. The
+        # trimmed view (_reference_messages) already strips the agent's own
+        # system prompt, so this is the only system message the reference sees.
+        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
         response = call_llm(
             task="moa_reference",
-            messages=ref_messages,
+            messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             **_slot_runtime(slot),

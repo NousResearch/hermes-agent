@@ -282,6 +282,35 @@ def test_reference_messages_ends_with_user_not_assistant_prefill():
     ]
 
 
+def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
+    """Each reference call gets the advisory-role system prompt first.
+
+    Without it the reference assumes it is the acting agent and refuses ("I
+    can't access repositories/URLs from here") or tries to call tools it
+    doesn't have. The system prompt reframes it as an analyst advising the
+    aggregator, and the advisory transcript still ends on a user turn.
+    """
+    from agent.moa_loop import _REFERENCE_SYSTEM_PROMPT, _run_reference
+
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    label, text = _run_reference(
+        {"provider": "openai-codex", "model": "gpt-5.5"},
+        [{"role": "user", "content": "review this PR"}],
+    )
+
+    assert text == "advice"
+    msgs = captured["messages"]
+    assert msgs[0] == {"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}
+    assert msgs[-1]["role"] == "user"
+
+
 def test_moa_facade_references_get_trimmed_messages(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -322,8 +351,13 @@ moa:
     )
 
     ref_call = next(c for c in calls if c["task"] == "moa_reference")
-    # Reference never sees system prompt or tool-role messages.
-    assert all(m["role"] == "user" for m in ref_call["messages"])
+    # Reference gets the advisory-role system prompt first, then user turns
+    # only — never the agent's own system prompt or tool-role messages.
+    ref_msgs = ref_call["messages"]
+    assert ref_msgs[0]["role"] == "system"
+    assert "reference advisor" in ref_msgs[0]["content"].lower()
+    assert "huge hermes system prompt" not in ref_msgs[0]["content"]
+    assert all(m["role"] == "user" for m in ref_msgs[1:])
     assert ref_call.get("tools") in (None, [])
     # Aggregator still receives the original messages + tool schema.
     agg_call = next(c for c in calls if c["task"] == "moa_aggregator")

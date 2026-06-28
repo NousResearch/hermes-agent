@@ -2061,7 +2061,8 @@ class ShellFileOperations(FileOperations):
         if not has_hidden_path_ancestor:
             pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
 
-        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+        cmd = f"find {self._escape_shell_arg(path)} -mindepth 1{hidden_filter_expr} " \
+              f"\\( -type f -o -type d \\) -name {self._escape_shell_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
@@ -2069,7 +2070,8 @@ class ShellFileOperations(FileOperations):
 
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+            cmd_simple = f"find {self._escape_shell_arg(path)} -mindepth 1{hidden_filter_expr} " \
+                        f"\\( -type f -o -type d \\) -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
@@ -2108,6 +2110,61 @@ class ShellFileOperations(FileOperations):
             limit_reason=limit_reason,
         )
 
+    def _search_dirs_find(self, pattern: str, path: str, limit: int) -> tuple[List[str], Optional[str]]:
+        """Supplement rg file results with matching directory paths."""
+        if not self._has_command('find'):
+            return [], None
+
+        search_root = Path(path)
+        has_hidden_path_ancestor = any(
+            part not in {".", ".."} and part.startswith(".")
+            for part in search_root.parts
+        )
+        hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
+        hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
+
+        cmd = (
+            f"find {self._escape_shell_arg(path)} -mindepth 1{hidden_filter_expr} "
+            f"-type d -name {self._escape_shell_arg(pattern)} "
+            f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -n {limit}"
+        )
+        result = self._exec(cmd, timeout=60)
+        stdout, limit_reason = _search_stdout_and_limit(result)
+
+        if not stdout.strip() and not limit_reason:
+            cmd_simple = (
+                f"find {self._escape_shell_arg(path)} -mindepth 1{hidden_filter_expr} "
+                f"-type d -name {self._escape_shell_arg(pattern)} "
+                f"2>/dev/null | sort -rn | head -n {limit}"
+            )
+            result = self._exec(cmd_simple, timeout=60)
+            stdout, limit_reason = _search_stdout_and_limit(result)
+
+        dirs = []
+        for line in stdout.strip().split('\n'):
+            if not line:
+                continue
+            parts = line.split(' ', 1)
+            if len(parts) == 2 and parts[0].replace('.', '').isdigit():
+                dirs.append(parts[1])
+            else:
+                dirs.append(line)
+
+        if has_hidden_path_ancestor:
+            normalized_root = search_root.resolve()
+            filtered_dirs = []
+            for dir_path in dirs:
+                try:
+                    rel_parts = Path(dir_path).resolve().relative_to(normalized_root).parts
+                except ValueError:
+                    rel_parts = Path(dir_path).parts
+                if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
+                    continue
+                filtered_dirs.append(dir_path)
+            dirs = filtered_dirs
+
+        return dirs, limit_reason
+
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name using ripgrep's --files mode.
 
@@ -2144,6 +2201,15 @@ class ShellFileOperations(FileOperations):
             result = self._exec(cmd_plain, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
             all_files = [f for f in stdout.strip().split('\n') if f]
+
+        dirs, dir_limit_reason = self._search_dirs_find(glob_pattern, path, fetch_limit)
+        if dirs:
+            seen = set()
+            all_files = [
+                item for item in [*all_files, *dirs]
+                if not (item in seen or seen.add(item))
+            ]
+        limit_reason = limit_reason or dir_limit_reason
 
         page = all_files[offset:offset + limit]
 

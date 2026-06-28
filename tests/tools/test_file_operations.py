@@ -701,6 +701,40 @@ class TestSearchFilesFallbackHiddenPaths:
         assert result.error is None
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
 
+    def test_find_fallback_includes_empty_directories(self, tmp_path, monkeypatch):
+        """Fallback find should surface matching directories, including empty ones."""
+        root = tmp_path / "repo"
+        vault = root / "vault"
+        vault.mkdir(parents=True)
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("vault", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert result.files == [str(vault)]
+
+    def test_rg_search_supplements_matching_directories(self, monkeypatch):
+        """The rg fast path should add directory hits that rg --files omits."""
+        env = MagicMock()
+        env.cwd = "/"
+        ops = ShellFileOperations(env)
+
+        def fake_exec(command, *args, **kwargs):
+            if command.startswith("rg --files"):
+                return MagicMock(exit_code=0, stdout="")
+            if command.startswith("find "):
+                return MagicMock(exit_code=0, stdout="123 /repo/vault\n")
+            return MagicMock(exit_code=0, stdout="")
+
+        monkeypatch.setattr(ops, "_has_command", lambda command: command in {"rg", "find"})
+        monkeypatch.setattr(ops, "_exec", fake_exec)
+
+        result = ops._search_files_rg("vault", "/repo", limit=50, offset=0)
+
+        assert result.error is None
+        assert result.files == ["/repo/vault"]
+
 
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):

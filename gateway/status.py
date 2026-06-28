@@ -165,6 +165,19 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         if raw:
             return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
 
+    # On Windows, skip `ps` (which exists under Git Bash and would flash
+    # a console window) and go straight to psutil, which works correctly.
+    if sys.platform == "win32":
+        try:
+            import psutil  # type: ignore
+            proc = psutil.Process(pid)
+            cmdline_parts = proc.cmdline()
+            if cmdline_parts:
+                return " ".join(cmdline_parts)
+        except Exception:
+            pass
+        return None
+
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],

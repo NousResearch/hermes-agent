@@ -275,6 +275,7 @@ class _SlashWorker:
             bufsize=1,
             cwd=os.getcwd(),
             env=os.environ.copy(),
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()

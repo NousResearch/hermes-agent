@@ -180,8 +180,10 @@ def _get_parent_pid(pid: int) -> int | None:
         pass
     except Exception:
         return None
-    # Fallback: shell out to ps (POSIX only — bare ``ps`` doesn't exist on Windows).
-    if not shutil.which("ps"):
+    # Fallback: shell out to ps (POSIX only — on Windows use psutil which
+    # is already tried above; Git Bash ships a ps.exe that would flash
+    # a console window without CREATE_NO_WINDOW).
+    if sys.platform == "win32" or not shutil.which("ps"):
         return None
     try:
         result = subprocess.run(
@@ -4516,6 +4518,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     success = False
     try:
+        # On Windows, aiohttp/aiodns requires a SelectorEventLoop (Python's
+        # default ProactorEventLoop is incompatible). Set the policy before
+        # asyncio.run() creates the loop so weixin/微信 connections work.
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(
+                asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
+            )
         success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
         _exit_diag("asyncio.run.returned", success=success)
     except KeyboardInterrupt:

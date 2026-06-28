@@ -70,7 +70,11 @@ class TestExhaustionArmsCooldown:
         cooldown = getattr(agent, "_rate_limited_until", 0)
         assert cooldown > before
         # Cooldown is the short exhaustion window, not the 60s rate-limit one.
-        assert cooldown <= before + _FALLBACK_EXHAUSTED_COOLDOWN_S + 1.0
+        # Allow generous scheduling slack: on a loaded CI box the wall-clock
+        # gap between capturing ``before`` and reading ``cooldown`` can exceed
+        # 1s. 10s still proves the short window (5s) was armed rather than the
+        # 60s rate-limit window.
+        assert cooldown <= before + _FALLBACK_EXHAUSTED_COOLDOWN_S + 10.0
 
     def test_no_chain_does_not_arm_cooldown(self):
         """An empty chain (no fallback configured) must not arm a cooldown —

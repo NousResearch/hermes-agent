@@ -6190,13 +6190,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # that raised mid-connect may still have a live
                 # aiohttp.ClientSession or child subprocess.
                 await self._safe_adapter_disconnect(adapter, platform)
+                from agent.redact import redact_sensitive_text
                 self._update_platform_runtime_status(
                     platform.value,
                     platform_state="retrying",
                     error_code=None,
-                    error_message=str(e),
+                    error_message=redact_sensitive_text(str(e)),
                 )
-                startup_retryable_errors.append(f"{platform.value}: {e}")
+                startup_retryable_errors.append(f"{platform.value}: {redact_sensitive_text(str(e))}")
                 # Unexpected exceptions are typically transient — queue for retry
                 self._failed_platforms[platform] = {
                     "config": platform_config,
@@ -7015,11 +7016,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # resources don't accumulate while the watcher
                         # keeps retrying.
                         await _dispose_unused_adapter(adapter)
+                    from agent.redact import redact_sensitive_text
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",
                         error_code=None,
-                        error_message=str(e),
+                        error_message=redact_sensitive_text(str(e)),
                     )
                     backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
                     info["attempts"] = attempt

@@ -228,3 +228,37 @@ def test_decompose_per_child_workspace_override(kanban_home):
         inh = kb.get_task(conn, child_ids[1])
     assert over.workspace_path == "/other/repo"
     assert inh.workspace_path == proj
+
+
+def test_decompose_children_inherit_parent_runtime_cap(kanban_home):
+    """#54089: Children inherit the root's max_runtime_seconds."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="bounded root", assignee="worker",
+            max_runtime_seconds=240, triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator",
+            children=[{"title": "child A"}, {"title": "child B"}],
+            author="decomposer",
+        )
+    assert child_ids and len(child_ids) == 2
+    with kb.connect() as conn:
+        for cid in child_ids:
+            t = kb.get_task(conn, cid)
+            assert t.max_runtime_seconds == 240
+
+
+def test_decompose_children_default_600_when_root_unbounded(kanban_home):
+    """#54089: Unbounded root produces children capped at 600 seconds."""
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="unbounded root")
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator",
+            children=[{"title": "child"}],
+            author="decomposer",
+        )
+    assert child_ids
+    with kb.connect() as conn:
+        t = kb.get_task(conn, child_ids[0])
+    assert t.max_runtime_seconds == 600

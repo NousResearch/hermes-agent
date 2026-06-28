@@ -199,14 +199,15 @@ class TestOnSessionEndHook:
 
         _finalize_session(session, end_reason="tui_close")
 
-        mock_invoke_hook.assert_any_call(
-            "on_session_end",
-            session_id="hook_test_001",
-            completed=False,
-            interrupted=True,
-            model="claude-sonnet-4",
-            platform="tui",
-        )
+        call = next(c for c in mock_invoke_hook.call_args_list if c.args == ("on_session_end",))
+        assert call.kwargs["session_id"] == "hook_test_001"
+        assert call.kwargs["completed"] is False
+        assert call.kwargs["interrupted"] is True
+        assert call.kwargs["model"] == "claude-sonnet-4"
+        assert call.kwargs["platform"] == "tui"
+        assert call.kwargs["terminal_status"] == "interrupted"
+        assert call.kwargs["turn_exit_reason"] == "tui_close"
+        assert call.kwargs["telemetry_schema_version"] == "hermes.observer.v1"
 
     @patch("hermes_cli.plugins.invoke_hook")
     def test_hook_exception_does_not_block(self, mock_invoke_hook):

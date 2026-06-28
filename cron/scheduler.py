@@ -2505,6 +2505,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+        setattr(agent, "_cron_job_id", job_id)
+        setattr(agent, "_cron_job_name", job_name)
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
@@ -2587,6 +2589,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _cur_tool or "none",
             )
             if hasattr(agent, "interrupt"):
+                setattr(agent, "_timeout_kind", "cron_inactivity")
+                setattr(agent, "_terminal_status", "timeout")
+                setattr(agent, "_interrupted_by", "cron_scheduler")
                 agent.interrupt("Cron job timed out (inactivity)")
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "

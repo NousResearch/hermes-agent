@@ -328,6 +328,22 @@ def validate_profile_name(name: str) -> None:
         )
 
 
+def validate_alias_name(name: str) -> None:
+    """Raise ``ValueError`` if *name* is not a safe wrapper-alias identifier.
+
+    The alias is used verbatim as a filename under :func:`_get_wrapper_dir`
+    (``~/.local/bin``), so it must be a single safe command name with no path
+    separators or traversal segments — otherwise a value like ``../../.bashrc``
+    would escape the wrapper directory and clobber arbitrary user files. We
+    reuse the profile id regex, which already forbids ``/``, ``.``, and ``..``.
+    """
+    if not _PROFILE_ID_RE.match(name):
+        raise ValueError(
+            f"Invalid alias name {name!r}. Must match "
+            f"[a-z0-9][a-z0-9_-]{{0,63}}"
+        )
+
+
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
     canon = normalize_profile_name(name)
@@ -351,9 +367,14 @@ def profile_exists(name: str) -> bool:
 def check_alias_collision(name: str) -> Optional[str]:
     """Return a human-readable collision message, or None if the name is safe.
 
-    Checks: reserved names, hermes subcommands, existing binaries in PATH.
+    Checks: alias-name validity, reserved names, hermes subcommands, existing
+    binaries in PATH.
     """
     canon = normalize_profile_name(name)
+    try:
+        validate_alias_name(canon)
+    except ValueError as exc:
+        return str(exc)
     if canon in _RESERVED_NAMES:
         return f"'{canon}' is a reserved name"
     if canon in _HERMES_SUBCOMMANDS:
@@ -403,6 +424,9 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     """
     canon = normalize_profile_name(name)
     profile = normalize_profile_name(target) if target else canon
+    # The alias is used verbatim as a filename under the wrapper dir; reject
+    # any value that isn't a single safe identifier so it can't traverse out.
+    validate_alias_name(canon)
     wrapper_dir = _get_wrapper_dir()
     try:
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -435,6 +459,12 @@ def remove_wrapper_script(name: str) -> bool:
     """Remove the wrapper script for a profile. Returns True if removed."""
     wrapper_dir = _get_wrapper_dir()
     canon = normalize_profile_name(name)
+    # A traversal-shaped name could point unlink() at a file outside the
+    # wrapper dir; refuse it rather than acting on an arbitrary path.
+    try:
+        validate_alias_name(canon)
+    except ValueError:
+        return False
     is_windows = sys.platform == "win32"
 
     # Check both the extensionless path (POSIX) and .bat (Windows)

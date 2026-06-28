@@ -1948,6 +1948,11 @@ class SlackAdapter(BasePlatformAdapter):
         if not content or not content.strip():
             return []
 
+        # Neutralize Slack entity syntax before it reaches Slack. Assistant
+        # output can contain literal `<@U123>` / `<!channel>` / `<#C123>` and
+        # the bot would actively ping users/channels if those survived to the
+        # Block Kit payload. CommonMark links are unchanged (#53893 item 4).
+        content = self._neutralize_slack_entities(content)
         chunks = self.truncate_message(
             content, self._MARKDOWN_BLOCK_CHAR_LIMIT
         )
@@ -2040,6 +2045,27 @@ class SlackAdapter(BasePlatformAdapter):
         # Legacy path: convert to Slack mrkdwn syntax.
         return {"text": self.format_message(content)}
 
+    # Slack entity syntax: ``<@U123>``, ``<!channel>``, ``<#C123>``, optionally
+    # with a ``|label`` suffix (``<@U123|name>``, ``<#C123|general>``). If
+    # reached by Slack as-is, the bot actively pings users / channels / special
+    # groups. This pattern matches only the entity forms — CommonMark links
+    # (``[label](url)``) and bare ``<`` (e.g. in code spans) are untouched.
+    _SLACK_ENTITY_RE = re.compile(
+        r"<([!#@])(?:[A-Za-z0-9._-]+(?:\|[^>]*)?)>"
+    )
+
+    @classmethod
+    def _neutralize_slack_entities(cls, text: str) -> str:
+        r"""Replace Slack entity syntax with a form Slack won't parse as a ping.
+
+        ``<@U123>`` becomes ``<\@U123>`` (backslash escape keeps the chars
+        visible to the reader but breaks Slack's parser). Same for
+        ``<!channel>``, ``<#C123>``, and their ``|label`` variants.
+        CommonMark links and other angle brackets are not affected
+        (#53893 item 4, tw0316 review).
+        """
+        return cls._SLACK_ENTITY_RE.sub(r"<\\\1", text)
+
     @staticmethod
     def _is_markdown_block_rejection(e: BaseException) -> bool:
         """True if Slack rejected a markdown-block payload worth a legacy retry.
@@ -2108,7 +2134,13 @@ class SlackAdapter(BasePlatformAdapter):
         text = _re.sub(r"^\s*-{3,}\s*$", "", text, flags=_re.MULTILINE)
         # Collapse whitespace
         text = _re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()[:3000]
+        text = text.strip()[:3000]
+        # Neutralize Slack entity syntax in the fallback `text=` field too:
+        # Slack parses `<@U123>` / `<!channel>` / `<#C123>` here the same way
+        # it does in the markdown block, and mrkdwn is enabled by default on
+        # the fallback path, so leaving these intact would ping users /
+        # channels on clients that don't render blocks (#53893 item 4).
+        return SlackAdapter._neutralize_slack_entities(text)
 
     # ----- Reactions -----
 

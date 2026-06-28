@@ -117,8 +117,8 @@ wake_word:
 
 Training references:
 
-- openWakeWord — <https://github.com/dscripka/openWakeWord>
-- 2026 training Colab — <https://github.com/alfiedennen/openwakeword-colab-2026>
+- [openWakeWord](https://github.com/dscripka/openWakeWord)
+- [2026 training Colab](https://github.com/alfiedennen/openwakeword-colab-2026)
 
 :::tip Pick a distinctive phrase
 Wake phrases that don't collide with everyday speech generalize best. Two

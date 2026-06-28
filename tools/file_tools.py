@@ -204,10 +204,13 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
         env = getattr(cached, "env", None)
         live_cwd = _live_cwd_if_owned(env, task_id)
         if live_cwd:
+            _remember_last_known_cwd(container_key, live_cwd)
             return live_cwd
         # Legacy: a cache entry carrying its own cwd with no env to own it.
         if env is None and getattr(cached, "cwd", None):
-            return getattr(cached, "cwd", None)
+            legacy_cwd = getattr(cached, "cwd", None)
+            _remember_last_known_cwd(container_key, legacy_cwd)
+            return legacy_cwd
 
     try:
         from tools.terminal_tool import _active_environments, _env_lock
@@ -216,6 +219,7 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
             env = _active_environments.get(container_key) or _active_environments.get(task_id)
         live_cwd = _live_cwd_if_owned(env, task_id)
         if live_cwd:
+            _remember_last_known_cwd(container_key, live_cwd)
             return live_cwd
     except Exception:
         pass
@@ -240,6 +244,16 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     live = _get_live_tracking_cwd(task_id)
     if live:
         return live
+    # When the terminal env was cleaned up mid-conversation, the live cwd is
+    # gone but the directory the agent navigated to is still recorded in the
+    # durable _last_known_cwd registry. Prefer it over the config/process
+    # fallback so a relative-path write resolved BEFORE the env is rebuilt
+    # still lands in the user's directory (root cause of #26211: write happens
+    # via _resolve_path_for_task -> here, which runs before _get_file_ops
+    # rebuilds the env). Keyed by the resolved container id, same as the save.
+    preserved = _last_known_cwd_for(task_id)
+    if preserved:
+        return preserved
     registered = _registered_task_cwd_override(task_id)
     if registered:
         return registered
@@ -559,6 +573,41 @@ _file_ops_cache: dict = {}
 # relative-path file writes land in the right directory after the
 # terminal environment is cleaned up and rebuilt (root cause of #26211).
 _last_known_cwd: dict = {}
+
+
+def _remember_last_known_cwd(task_id: str, cwd: str | None) -> None:
+    """Mirror a live terminal cwd into the durable ``_last_known_cwd`` registry.
+
+    Belt-and-suspenders for #26211: the cleanup thread can pop BOTH
+    ``_file_ops_cache`` and ``_active_environments`` before ``_get_file_ops``
+    reaches its stale-cache detection branch, in which case the old cwd is
+    never saved and the rebuilt env falls back to the config default — exactly
+    the silent-misplacement bug. By recording the cwd on every successful live
+    read (which happens on every relative-path file resolution while the env is
+    alive), the durable anchor no longer depends on the cleanup-detection
+    branch firing, so it survives recreation regardless of pop ordering.
+    """
+    if not cwd:
+        return
+    with _file_ops_lock:
+        if _last_known_cwd.get(task_id) != cwd:
+            _last_known_cwd[task_id] = cwd
+
+
+def _last_known_cwd_for(task_id: str = "default") -> str | None:
+    """Read the durable last-known cwd for *task_id*, container-key aware.
+
+    The registry is keyed by the resolved container id (the same key used by
+    the save sites in ``_get_file_ops`` / ``_get_live_tracking_cwd``), so look
+    up the resolved key first and fall back to the raw task id.
+    """
+    try:
+        from tools.terminal_tool import _resolve_container_task_id
+        container_key = _resolve_container_task_id(task_id)
+    except Exception:
+        container_key = task_id
+    with _file_ops_lock:
+        return _last_known_cwd.get(container_key) or _last_known_cwd.get(task_id)
 
 # Track files read per task to detect re-read loops and deduplicate reads.
 # Per task_id we store:

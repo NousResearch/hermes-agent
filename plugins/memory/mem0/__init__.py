@@ -127,7 +127,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
-        self._prefetch_result = ""
+        self._prefetch_result = None  # (user_id, text) or None
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         self._sync_thread = None
@@ -237,30 +237,33 @@ class Mem0MemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
+        effective_user_id = user_id or self._user_id
         with self._prefetch_lock:
-            result = self._prefetch_result
-            self._prefetch_result = ""
-        if not result:
+            cached = self._prefetch_result
+            self._prefetch_result = None
+        if not cached or cached[0] != effective_user_id or not cached[1]:
             return ""
-        return f"## Mem0 Memory\n{result}"
+        return f"## Mem0 Memory\n{cached[1]}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> None:
         if self._is_breaker_open():
             return
+
+        effective_user_id = user_id or self._user_id
 
         def _run():
             try:
                 client = self._get_client()
                 results = self._unwrap_results(client.search(
                     query=query,
-                    filters=self._read_filters(),
+                    filters={"user_id": effective_user_id},
                     rerank=self._rerank,
                     top_k=5,
                 ))
                 if results:
                     lines = [r.get("memory", "") for r in results if r.get("memory")]
                     with self._prefetch_lock:
-                        self._prefetch_result = "\n".join(f"- {l}" for l in lines)
+                        self._prefetch_result = (effective_user_id, "\n".join(f"- {l}" for l in lines))
                 self._record_success()
             except Exception as e:
                 self._record_failure()

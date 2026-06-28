@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $activeGatewayProfile } from '@/store/profile'
+
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
 const toggleSkill = vi.fn()
@@ -16,6 +18,7 @@ vi.mock('@/hermes', () => ({
   toggleToolset: (name: string, enabled: boolean) => toggleToolset(name, enabled),
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
+  setApiRequestProfile: vi.fn(),
   deleteEnvVar: vi.fn(),
   revealEnvVar: vi.fn(),
   setEnvVar: vi.fn()
@@ -59,6 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $activeGatewayProfile.set('default')
   vi.clearAllMocks()
 })
 
@@ -97,5 +101,16 @@ describe('SkillsView toolset management', () => {
     fireEvent.click(configureBtn)
 
     await waitFor(() => expect(getToolsetConfig).toHaveBeenCalledWith('web'))
+  })
+
+  it('refreshes toolsets when the active gateway profile changes', async () => {
+    await renderSkills()
+
+    await screen.findByRole('switch', { name: 'Toggle Web Search toolset' })
+    expect(getToolsets).toHaveBeenCalledTimes(1)
+
+    $activeGatewayProfile.set('study')
+
+    await waitFor(() => expect(getToolsets).toHaveBeenCalledTimes(2))
   })
 })

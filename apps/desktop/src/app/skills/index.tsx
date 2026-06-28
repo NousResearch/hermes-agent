@@ -1,5 +1,6 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
@@ -12,6 +13,7 @@ import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -92,6 +94,8 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   const [savingSkill, setSavingSkill] = useState<string | null>(null)
   const [savingToolset, setSavingToolset] = useState<string | null>(null)
   const [expandedToolset, setExpandedToolset] = useState<string | null>(null)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const lastGatewayProfileRef = useRef(activeGatewayProfile)
 
   const refreshCapabilities = useCallback(async () => {
     setRefreshing(true)
@@ -118,6 +122,15 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   useEffect(() => {
     void refreshCapabilities()
   }, [refreshCapabilities])
+
+  useEffect(() => {
+    if (lastGatewayProfileRef.current === activeGatewayProfile) {
+      return
+    }
+
+    lastGatewayProfileRef.current = activeGatewayProfile
+    void refreshCapabilities()
+  }, [activeGatewayProfile, refreshCapabilities])
 
   const categories = useMemo(() => {
     if (!skills) {

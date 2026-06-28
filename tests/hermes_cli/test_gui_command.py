@@ -75,6 +75,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
+    assert mock_run.call_args_list[1].kwargs["env"]["HERMES_DESKTOP_HERMES_ROOT"] == str(root)
 
 
 def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):

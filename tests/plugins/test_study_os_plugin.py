@@ -238,6 +238,18 @@ def test_plugin_registers_tools_and_skill(monkeypatch):
         study_os.register(ctx)
         assert registry.get_toolset_for_tool("study_list_notes") == "study"
         assert registry.get_toolset_for_tool("study_export_anki_candidates") == "study"
+        assert registry.get_toolset_for_tool("study_due_reviews") == "study"
+        assert registry.get_toolset_for_tool("study_record_review") == "study"
+        assert registry.get_toolset_for_tool("study_sync_memory") == "study"
+        assert registry.get_toolset_for_tool("study_concept_graph") == "study"
+        assert registry.get_toolset_for_tool("study_review_stats") == "study"
+        assert registry.get_toolset_for_tool("study_learning_queue") == "study"
+        assert registry.get_toolset_for_tool("study_log_session") == "study"
+        assert registry.get_toolset_for_tool("study_update_concept_state") == "study"
+        assert registry.get_toolset_for_tool("study_import_plan") == "study"
+        assert registry.get_toolset_for_tool("study_plan_progress") == "study"
+        assert registry.get_toolset_for_tool("study_create_curriculum") == "study"
+        assert registry.get_toolset_for_tool("study_list_curricula") == "study"
         assert manager.find_plugin_skill("study_os:study-os") is not None
     finally:
         for name in (
@@ -248,5 +260,17 @@ def test_plugin_registers_tools_and_skill(monkeypatch):
             "study_create_review_task",
             "study_generate_weekly_report",
             "study_export_anki_candidates",
+            "study_due_reviews",
+            "study_record_review",
+            "study_sync_memory",
+            "study_concept_graph",
+            "study_review_stats",
+            "study_learning_queue",
+            "study_log_session",
+            "study_update_concept_state",
+            "study_import_plan",
+            "study_plan_progress",
+            "study_create_curriculum",
+            "study_list_curricula",
         ):
             registry.deregister(name)

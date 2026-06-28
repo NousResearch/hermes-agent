@@ -51,10 +51,17 @@ def _get_env_value(name: str) -> str | None:
 def resolve_vault_path(raw: str | None = None) -> Path:
     candidate = (raw or "").strip() or _get_env_value("OBSIDIAN_VAULT_PATH")
     if not candidate:
+        cwd = os.getcwd()
+        if (Path(cwd) / ".obsidian").exists() or (Path(cwd) / "Box").exists():
+            candidate = cwd
+    if not candidate:
         candidate = "~/Documents/Obsidian Vault"
     path = Path(candidate).expanduser().resolve()
     if not path.exists() or not path.is_dir():
-        raise FileNotFoundError(f"Obsidian vault not found: {path}")
+        raise FileNotFoundError(
+            f"Obsidian vault not found: {path}\n"
+            "Set OBSIDIAN_VAULT_PATH env var or pass vault_path explicitly."
+        )
     return path
 
 
@@ -253,7 +260,22 @@ def _iter_markdown_notes(
     return out
 
 
-def _matches_note(note: dict[str, Any], *, query: str | None, tag: str | None, layer: str | None) -> bool:
+_CN_NORMALIZE_RE = re.compile(r"[的与和之]")
+
+def _normalize_cn(text: str) -> str:
+    """Strip common Chinese particles for fuzzy concept-name matching."""
+    return _CN_NORMALIZE_RE.sub("", text.casefold())
+
+
+def _matches_note(
+    note: dict[str, Any],
+    *,
+    query: str | None,
+    tag: str | None,
+    layer: str | None,
+    search_body: bool = False,
+    normalize: bool = False,
+) -> bool:
     if layer and note.get("layer") != layer:
         return False
     if tag:
@@ -272,8 +294,18 @@ def _matches_note(note: dict[str, Any], *, query: str | None, tag: str | None, l
             " ".join(note.get("patterns", [])),
             " ".join(note.get("wikilinks", [])),
         ]
-        if not any(q in h.casefold() for h in haystacks):
-            return False
+        if search_body:
+            haystacks.append(str(note.get("body", "")))
+        haystacks_lower = [h.casefold() for h in haystacks]
+        # Primary: strict substring match
+        if any(q in h for h in haystacks_lower):
+            return True
+        # Secondary: Chinese-normalized fallback (strips 的与和之)
+        if normalize:
+            q_norm = _normalize_cn(q)
+            if q_norm and any(q_norm in _normalize_cn(h) for h in haystacks_lower):
+                return True
+        return False
     return True
 
 
@@ -393,6 +425,9 @@ def handle_study_list_notes(args: dict[str, Any], **_kwargs) -> str:
     try:
         vault = resolve_vault_path(args.get("vault_path"))
         limit = _limit_from(args)
+        search_body = bool(args.get("search_body", False))
+        normalize = bool(args.get("normalize", False))
+        include_body = search_body and bool(args.get("query"))
         notes = []
         warnings: list[str] = []
         for path in _iter_markdown_notes(
@@ -401,9 +436,16 @@ def handle_study_list_notes(args: dict[str, Any], **_kwargs) -> str:
             file_glob=args.get("file_glob"),
             include_study_os=bool(args.get("include_study_os", False)),
         ):
-            note, note_warnings = parse_note(path, vault, include_body=False)
+            note, note_warnings = parse_note(path, vault, include_body=include_body)
             warnings.extend(note_warnings)
-            if not _matches_note(note, query=args.get("query"), tag=args.get("tag"), layer=args.get("layer")):
+            if not _matches_note(
+                note,
+                query=args.get("query"),
+                tag=args.get("tag"),
+                layer=args.get("layer"),
+                search_body=search_body,
+                normalize=normalize,
+            ):
                 continue
             notes.append(note)
             if len(notes) >= limit:
@@ -560,6 +602,34 @@ def handle_study_create_review_task(args: dict[str, Any], **_kwargs) -> str:
         return _err("CREATE_REVIEW_TASK_FAILED", str(exc))
 
 
+def _cluster_errors(errors: list[dict[str, str]]) -> dict[str, Any]:
+    """Cluster errors by (cause × concept) to detect repeated patterns.
+
+    Returns a dict with:
+      - ``pairs``: list of (cause, concept, count), sorted by count desc
+      - ``repeated``: pairs with count ≥ 3 (same mistake on same concept)
+      - ``deep_confusion``: concepts appearing with ≥2 different causes
+    """
+    cause_concept: Counter[tuple[str, str]] = Counter()
+    concept_causes: dict[str, set[str]] = {}
+    for r in errors:
+        cause = (r.get("cause") or "未分类").strip()
+        raw = (r.get("concepts") or "").strip()
+        names = [c.strip() for c in raw.replace("[[", "").replace("]]", "").split(",") if c.strip()]
+        for c_name in names:
+            cause_concept[(cause, c_name)] += 1
+            concept_causes.setdefault(c_name, set()).add(cause)
+
+    pairs = [{"cause": c, "concept": n, "count": cnt} for (c, n), cnt in cause_concept.most_common()]
+    repeated = [p for p in pairs if p["count"] >= 3]
+    deep = [
+        {"concept": name, "causes": sorted(causes), "cause_count": len(causes)}
+        for name, causes in concept_causes.items()
+        if len(causes) >= 2
+    ]
+    return {"pairs": pairs, "repeated": repeated, "deep_confusion": deep}
+
+
 def handle_study_generate_weekly_report(args: dict[str, Any], **_kwargs) -> str:
     try:
         vault = resolve_vault_path(args.get("vault_path"))
@@ -573,6 +643,8 @@ def handle_study_generate_weekly_report(args: dict[str, Any], **_kwargs) -> str:
         tasks = _collect_review_tasks(vault, start, end)
         causes = Counter(r.get("cause", "未分类") or "未分类" for r in errors)
         severities = Counter(r.get("severity", "medium") or "medium" for r in errors)
+        clusters = _cluster_errors(errors)
+
         week = start.isocalendar()
         report_path = _study_dir(vault) / "reports" / f"{week.year}-W{week.week:02d}.md"
         lines = [
@@ -582,29 +654,65 @@ def handle_study_generate_weekly_report(args: dict[str, Any], **_kwargs) -> str:
             f"- Errors logged: {len(errors)}",
             f"- Review tasks in range: {len(tasks)}",
             "",
-            "## Error Causes",
-            "",
         ]
+
+        lines.extend(["## Error Causes", ""])
         if causes:
             lines.extend(f"- {cause}: {count}" for cause, count in causes.most_common())
         else:
             lines.append("- No errors logged.")
+
+        lines.extend(["", "## Error Patterns (cause × concept)", ""])
+        if clusters["pairs"]:
+            lines.append("| Cause | Concept | Count |")
+            lines.append("|-------|---------|-------|")
+            lines.extend(f"| {p['cause']} | [[{p['concept']}]] | {p['count']} |" for p in clusters["pairs"][:20])
+        else:
+            lines.append("- No clustered errors.")
+
+        if clusters["repeated"]:
+            lines.extend(["", "## ⚠️ Repeated Patterns (≥3 occurrences, same cause + concept)", ""])
+            for p in clusters["repeated"]:
+                lines.append(
+                    f"- **{p['cause']}** on **[[{p['concept']}]]** — {p['count']} 次. "
+                    f"建议：检查 /Box 中 `[[{p['concept']}]]` 概念卡是否清晰，"
+                    f"创建专项复习任务重做相关例题。"
+                )
+
+        if clusters["deep_confusion"]:
+            lines.extend(["", "## 🔴 Deep Confusion (same concept, multiple causes)", ""])
+            for d in clusters["deep_confusion"]:
+                causes_str = ", ".join(d["causes"])
+                lines.append(
+                    f"- **[[{d['concept']}]]** 出现 {d['cause_count']} 种不同错因：{causes_str}. "
+                    f"这可能表明该概念的多个侧面都未掌握，建议从定义层重新梳理。"
+                )
+
         lines.extend(["", "## Severity", ""])
         if severities:
             lines.extend(f"- {severity}: {count}" for severity, count in severities.most_common())
         else:
             lines.append("- No severity data.")
+
         lines.extend(["", "## Error Records", ""])
         if errors:
             lines.extend(f"- {r.get('date')} {r.get('title')} ({r.get('cause', '未分类')})" for r in errors)
         else:
             lines.append("- No error records in this range.")
+
         lines.extend(["", "## Review Tasks", ""])
         if tasks:
             lines.extend(tasks)
         else:
             lines.append("- No review tasks in this range.")
-        lines.extend(["", "## Next Focus", "", "- Prioritize repeated causes and overdue review tasks.", ""])
+
+        lines.extend([
+            "", "## Next Focus", "",
+            "- 优先处理 Repeated Patterns 中的概念。",
+            "- Deep Confusion 的概念建议回到 /Box 重新梳理定义层。",
+            "- Overdue 复习任务优先于新任务。",
+            "",
+        ])
         _write_text(report_path, "\n".join(lines))
         return _ok(
             {
@@ -613,6 +721,7 @@ def handle_study_generate_weekly_report(args: dict[str, Any], **_kwargs) -> str:
                 "error_count": len(errors),
                 "task_count": len(tasks),
                 "causes": causes.most_common(),
+                "clusters": clusters,
             }
         )
     except Exception as exc:
@@ -684,18 +793,20 @@ _VAULT_PROP = {
 
 
 STUDY_LIST_NOTES_SCHEMA = {
-    "description": "List Markdown notes in an Obsidian vault with metadata extracted from YAML frontmatter.",
+    "description": "List Markdown notes in an Obsidian vault with metadata extracted from YAML frontmatter. Use search_body=true to also search full body text. Use normalize=true for fuzzy Chinese matching (strips 的与和之).",
     "parameters": {
         "type": "object",
         "properties": {
             "vault_path": _VAULT_PROP,
             "folder": {"type": "string", "description": "Optional vault-relative folder to search."},
             "file_glob": {"type": "string", "description": "Glob under folder, default **/*.md."},
-            "query": {"type": "string", "description": "Case-insensitive query over path, title, excerpt, links, concepts, and patterns."},
+            "query": {"type": "string", "description": "Case-insensitive query over path, title, excerpt, links, concepts, patterns, and wikilinks. With search_body=true also searches full body text."},
             "tag": {"type": "string", "description": "Tag filter, with or without leading #."},
             "layer": {"type": "string", "description": "Layer/type filter such as concept, pattern, example, or note."},
             "limit": {"type": "integer", "description": "Maximum notes to return, capped at 500."},
             "include_study_os": {"type": "boolean", "description": "Include .StudyOS generated files."},
+            "search_body": {"type": "boolean", "description": "Also search full note body text (not just metadata). Set true when the concept name might appear deep in body."},
+            "normalize": {"type": "boolean", "description": "Fallback fuzzy match by stripping common Chinese particles (的与和之) after strict match fails. Use for concept-name variations like 导数定义 vs 导数的定义."},
         },
     },
 }
@@ -807,6 +918,1374 @@ STUDY_EXPORT_ANKI_CANDIDATES_SCHEMA = {
             "include_errors": {"type": "boolean"},
             "start_date": {"type": "string", "description": "YYYY-MM-DD for included errors. Defaults to 30 days ago."},
             "end_date": {"type": "string", "description": "YYYY-MM-DD for included errors. Defaults to today."},
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Spaced Repetition (Ebbinghaus) helpers
+# ---------------------------------------------------------------------------
+
+# Base Ebbinghaus intervals (days) indexed by review_count.
+# review_count 0 = first review, 1 = second, etc.
+_EBBINGHAUS_BASE = [1, 2, 4, 7, 15, 30, 60, 120]
+
+# review_level → interval weight multiplier.
+# Lower mastery → review more frequently; higher mastery → longer intervals.
+_REVIEW_LEVEL_WEIGHT = {0: 0.5, 1: 0.7, 2: 1.0, 3: 1.3, 4: 1.6, 5: 2.5}
+
+
+def _upsert_frontmatter_field(path: Path, field: str, value: Any) -> None:
+    """Add or update a single YAML frontmatter field in-place.
+
+    Uses string-level manipulation to avoid reformatting the entire YAML block.
+    Date values are written as ISO strings; booleans as ``true``/``false``;
+    integers and strings as-is.
+    """
+    raw = _read_text(path)
+    lines = raw.splitlines()
+
+    if isinstance(value, bool):
+        serialized = "true" if value else "false"
+    elif isinstance(value, date):
+        serialized = value.isoformat()
+    elif isinstance(value, datetime):
+        serialized = value.strftime("%Y-%m-%d")
+    else:
+        serialized = str(value)
+
+    if not lines or lines[0].strip() != "---":
+        new_content = f"---\n{field}: {serialized}\n---\n\n{raw}"
+        _write_text(path, new_content)
+        return
+
+    end_idx = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end_idx = i
+            break
+    if end_idx is None:
+        return
+
+    field_re = re.compile(rf"^{re.escape(field)}\s*:.*$")
+    for i in range(1, end_idx):
+        if field_re.match(lines[i]):
+            lines[i] = f"{field}: {serialized}"
+            _write_text(path, "\n".join(lines) + "\n")
+            return
+
+    lines.insert(end_idx, f"{field}: {serialized}")
+    _write_text(path, "\n".join(lines) + "\n")
+
+
+def _calculate_next_review(
+    review_count: int,
+    review_level: int,
+    passed: bool,
+) -> tuple[int, date]:
+    """Return (new_review_count, next_review_date) using Ebbinghaus + review_level weight.
+
+    On pass: increment review_count, calculate interval from base curve × level weight.
+    On fail: reset review_count to 0, next review in 1 day.
+    """
+    if not passed:
+        return 0, date.today() + timedelta(days=1)
+
+    new_count = min(review_count + 1, len(_EBBINGHAUS_BASE) - 1)
+    base = _EBBINGHAUS_BASE[review_count] if review_count < len(_EBBINGHAUS_BASE) else _EBBINGHAUS_BASE[-1]
+    weight = _REVIEW_LEVEL_WEIGHT.get(review_level, 1.0)
+    interval = max(1, int(base * weight))
+    return new_count, date.today() + timedelta(days=interval)
+
+
+def _read_review_state(note: dict[str, Any]) -> dict[str, Any]:
+    """Extract spaced-repetition fields from parsed note frontmatter."""
+    fm = note.get("frontmatter", {})
+    return {
+        "review_count": int(fm.get("review_count", 0)),
+        "last_reviewed_at": str(fm.get("last_reviewed_at", "")),
+        "next_review_at": str(fm.get("next_review_at", "")),
+    }
+
+
+def _is_due(note: dict[str, Any], today: date) -> bool:
+    """Check if a note is due for review.
+
+    Due when: next_review_at <= today, OR never reviewed (no next_review_at).
+    Only applies to example-layer notes.
+    """
+    if note.get("layer") != "example":
+        return False
+    state = _read_review_state(note)
+    next_at = state["next_review_at"]
+    if not next_at:
+        return True
+    try:
+        return _parse_date(next_at) <= today
+    except Exception:
+        return True
+
+
+# ---------------------------------------------------------------------------
+# study_due_reviews
+# ---------------------------------------------------------------------------
+
+def handle_study_due_reviews(args: dict[str, Any], **_kwargs) -> str:
+    """List examples due for spaced-repetition review, sorted by priority."""
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        limit = _limit_from(args, default=30)
+        today = date.today()
+        subject = str(args.get("subject") or "").strip()
+        folder = str(args.get("folder") or "examples").strip()
+
+        due: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for path in _iter_markdown_notes(vault, folder=folder):
+            note, note_warnings = parse_note(path, vault, include_body=False)
+            warnings.extend(note_warnings)
+            if note.get("layer") != "example":
+                continue
+            if not _is_due(note, today):
+                continue
+            if subject:
+                tags = {t.lstrip("#").casefold() for t in note.get("tags", [])}
+                concepts = {c.casefold() for c in note.get("concepts", [])}
+                s = subject.casefold()
+                if s not in tags and not any(s in c for c in concepts):
+                    continue
+
+            state = _read_review_state(note)
+            fm = note.get("frontmatter", {})
+            rl = int(fm.get("review_level", 0))
+            due.append({
+                "path": note["path"],
+                "title": note["title"],
+                "review_level": rl,
+                "review_count": state["review_count"],
+                "last_reviewed_at": state["last_reviewed_at"] or None,
+                "next_review_at": state["next_review_at"] or None,
+                "concepts": note.get("concepts", []),
+                "tags": note.get("tags", []),
+                "difficulty": fm.get("difficulty"),
+            })
+            if len(due) >= limit:
+                break
+
+        # Sort: lowest review_level first, then oldest last_reviewed_at
+        def _sort_key(d: dict[str, Any]) -> tuple[int, str]:
+            return (d["review_level"], d["last_reviewed_at"] or "0000-00-00")
+
+        due.sort(key=_sort_key)
+
+        return _ok({
+            "vault_path": str(vault),
+            "date": today.isoformat(),
+            "count": len(due),
+            "due": due,
+        }, warnings)
+    except Exception as exc:
+        return _err("DUE_REVIEWS_FAILED", str(exc))
+
+
+# ---------------------------------------------------------------------------
+# study_record_review
+# ---------------------------------------------------------------------------
+
+def handle_study_record_review(args: dict[str, Any], **_kwargs) -> str:
+    """Record the result of a spaced-repetition review and update intervals."""
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        note_ref = str(args.get("note") or "").strip()
+        if not note_ref:
+            return _err("MISSING_NOTE", "note is required")
+
+        path, matches = _find_note(vault, note_ref)
+        if matches:
+            return _err(
+                "NOTE_AMBIGUOUS",
+                f"More than one note matched {note_ref!r}",
+                {"matches": [p.relative_to(vault).as_posix() for p in matches[:20]]},
+            )
+        if not path:
+            return _err("NOTE_NOT_FOUND", f"Note not found: {note_ref}")
+
+        note, warnings = parse_note(path, vault, include_body=False)
+        fm = note.get("frontmatter", {})
+        old_rl = int(fm.get("review_level", 0))
+        old_count = int(fm.get("review_count", 0))
+        passed = bool(args.get("passed", True))
+
+        # Optional: user can override review_level
+        new_rl = args.get("new_review_level")
+        if new_rl is not None:
+            try:
+                new_rl = int(new_rl)
+                new_rl = max(0, min(5, new_rl))
+            except (ValueError, TypeError):
+                new_rl = old_rl
+        else:
+            new_rl = old_rl
+
+        # Calculate next review
+        effective_rl = new_rl if new_rl is not None else old_rl
+        new_count, next_date = _calculate_next_review(old_count, effective_rl, passed)
+
+        # Update frontmatter
+        _upsert_frontmatter_field(path, "last_reviewed_at", date.today())
+        _upsert_frontmatter_field(path, "next_review_at", next_date)
+        _upsert_frontmatter_field(path, "review_count", new_count)
+        if new_rl != old_rl:
+            _upsert_frontmatter_field(path, "review_level", new_rl)
+
+        _invalidate_review_stats(vault)
+        _graph_cache_path(vault).unlink(missing_ok=True)
+
+        # Optionally log error for failed reviews
+        error_result = None
+        if not passed and args.get("log_error"):
+            cause = str(args.get("cause") or "未分类").strip()
+            detail = str(args.get("detail") or "").strip()
+            concepts = [_strip_wikilink(v) for v in _as_list(args.get("concepts"))]
+            occurred = _parse_date(args.get("occurred_on"), default=date.today())
+            block = "\n".join([
+                f"### {occurred.isoformat()} {note['title']} (复习错误)",
+                _record_field("Source", path.relative_to(vault).as_posix()),
+                _record_field("Concepts", _md_list(concepts)),
+                _record_field("Cause", cause),
+                _record_field("Severity", args.get("severity") or "medium"),
+                _record_field("Next action", f"明日重做 (Ebbinghaus reset, next={next_date.isoformat()})"),
+                "",
+                detail or "（复习未通过，间隔重置为 1 天）",
+                "",
+            ])
+            err_path = _study_dir(vault) / "errors" / f"{occurred:%Y-%m}.md"
+            if not err_path.exists():
+                _write_text(err_path, f"# Study OS Error Log {occurred:%Y-%m}\n\n")
+            _append_text(err_path, block)
+            error_result = {"path": err_path.relative_to(vault).as_posix()}
+
+        return _ok({
+            "path": note["path"],
+            "title": note["title"],
+            "passed": passed,
+            "review_level": {"old": old_rl, "new": new_rl},
+            "review_count": {"old": old_count, "new": new_count},
+            "last_reviewed_at": date.today().isoformat(),
+            "next_review_at": next_date.isoformat(),
+            "error_logged": error_result,
+        }, warnings)
+    except Exception as exc:
+        return _err("RECORD_REVIEW_FAILED", str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+STUDY_DUE_REVIEWS_SCHEMA = {
+    "description": "List example notes due for spaced-repetition review, sorted by priority (lowest review_level first, oldest last_reviewed_at first). Uses Ebbinghaus intervals × review_level weight.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "folder": {"type": "string", "description": "Folder to scan. Defaults to 'examples'."},
+            "subject": {"type": "string", "description": "Filter by subject (matches tags or concepts case-insensitively)."},
+            "limit": {"type": "integer", "description": "Maximum due notes to return (default 30)."},
+        },
+    },
+}
+
+STUDY_RECORD_REVIEW_SCHEMA = {
+    "description": "Record the result of a spaced-repetition review. Updates review_count, last_reviewed_at, next_review_at in the note's YAML frontmatter. On pass: Ebbinghaus interval advances. On fail: interval resets to 1 day. Optionally logs an error record for failed reviews.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "note": {"type": "string", "description": "Vault-relative path, basename, title, or wikilink target of the reviewed note."},
+            "passed": {"type": "boolean", "description": "Whether the review was successful (default true)."},
+            "new_review_level": {"type": "integer", "description": "Optional: update review_level (0-5). If omitted, level stays unchanged."},
+            "log_error": {"type": "boolean", "description": "If review failed, also log an error record (default false)."},
+            "cause": {"type": "string", "description": "Error cause (for log_error). See study_profile.md for taxonomy."},
+            "concepts": {"type": "array", "items": {"type": "string"}, "description": "Related concepts (for error log)."},
+            "severity": {"type": "string", "description": "Error severity (for log_error)."},
+            "detail": {"type": "string", "description": "Free-text detail about the review or error."},
+            "occurred_on": {"type": "string", "description": "YYYY-MM-DD. Defaults to today."},
+        },
+        "required": ["note"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# study_sync_memory
+# ---------------------------------------------------------------------------
+
+def _count_due(vault: Path) -> tuple[int, int]:
+    """Return (due_count, total_examples) for today."""
+    today = date.today()
+    due = 0
+    total = 0
+    for path in _iter_markdown_notes(vault, folder="examples"):
+        note, _warnings = parse_note(path, vault, include_body=False)
+        if note.get("layer") != "example":
+            continue
+        total += 1
+        if _is_due(note, today):
+            due += 1
+    return due, total
+
+
+def _recent_weak_concepts(vault: Path, days: int = 30) -> list[dict[str, Any]]:
+    """Return concepts with the most errors in recent period, sorted by count."""
+    start = date.today() - timedelta(days=days)
+    end = date.today()
+    errors = _collect_error_records(vault, start, end)
+    concept_errors: Counter[str] = Counter()
+    for r in errors:
+        raw = (r.get("concepts") or "").strip()
+        names = [c.strip() for c in raw.replace("[[", "").replace("]]", "").split(",") if c.strip()]
+        for c_name in names:
+            concept_errors[c_name] += 1
+    return [{"concept": name, "error_count": count} for name, count in concept_errors.most_common(10)]
+
+
+def handle_study_sync_memory(args: dict[str, Any], **_kwargs) -> str:
+    """Build structured memory entries from current study state.
+
+    Returns entries the agent should pass to Hermes's ``memory`` tool
+    (target="memory", action="add"/"replace").  Does NOT write memory
+    directly — the agent decides what to keep and how to consolidate.
+    """
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        today = date.today()
+        due, total = _count_due(vault)
+        weak = _recent_weak_concepts(vault, days=30)
+
+        entries: list[dict[str, str]] = []
+
+        if weak:
+            top5 = ", ".join(f"{w['concept']}({w['error_count']})" for w in weak[:5])
+            entries.append({
+                "action": "replace",
+                "content": (
+                    f"StudyOS Math: 近30天最薄弱的概念（按错误次数）：{top5}。"
+                ),
+                "old_text": "StudyOS Math: 近30天最薄弱的概念",
+            })
+
+        entries.append({
+            "action": "replace",
+            "content": (
+                f"StudyOS Math: 当前 {due}/{total} 道例题待复习（艾宾浩斯间隔到期）。"
+            ),
+            "old_text": "StudyOS Math: 当前",
+        })
+
+        if weak:
+            weakest = weak[0]
+            entries.append({
+                "action": "replace",
+                "content": (
+                    f"StudyOS Math: 最弱概念 [[{weakest['concept']}]] "
+                    f"（{weakest['error_count']} 次错误）。优先复习相关例题。"
+                ),
+                "old_text": f"StudyOS Math: 最弱概念",
+            })
+
+        entries.append({
+            "action": "replace",
+            "content": f"StudyOS Math: 上次同步 {today.isoformat()}。",
+            "old_text": "StudyOS Math: 上次同步",
+        })
+
+        return _ok({
+            "vault_path": str(vault),
+            "due_count": due,
+            "total_examples": total,
+            "weak_concepts": weak,
+            "memory_entries": entries,
+            "timestamp": today.isoformat(),
+        })
+    except Exception as exc:
+        return _err("SYNC_MEMORY_FAILED", str(exc))
+
+
+STUDY_SYNC_MEMORY_SCHEMA = {
+    "description": "Build structured memory entries from current study state (due reviews, weak concepts). Returns entries ready for Hermes's memory tool. Use after daily/weekly review to persist study progress across sessions.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Concept dependency graph
+# ---------------------------------------------------------------------------
+
+def _build_concept_graph(vault: Path) -> dict[str, Any]:
+    """Build a directed dependency graph from all notes in the vault.
+
+    Returns a dict with:
+      - ``prerequisites``: {concept: [concepts it depends on]}
+      - ``dependents``: {concept: [concepts that depend on it]}
+      - ``exercised_by``: {concept: [example paths]}
+      - ``review_levels``: {concept: {"min": int, "avg": float, "count": int}}
+      - ``note_count``: {concept: total notes referencing it}
+    """
+    prerequisites: dict[str, set[str]] = {}
+    exercised_by: dict[str, list[str]] = {}
+    review_by_concept: dict[str, list[int]] = {}
+
+    for path in _iter_markdown_notes(vault):
+        note, _warnings = parse_note(path, vault, include_body=False)
+        note_concepts = [_strip_wikilink(c) for c in note.get("concepts", [])]
+        if not note_concepts:
+            continue
+
+        layer = note.get("layer", "note")
+        note_path = note["path"]
+
+        for c in note_concepts:
+            exercised_by.setdefault(c, []).append(note_path)
+
+            fm = note.get("frontmatter", {})
+            rl = fm.get("review_level")
+            if isinstance(rl, (int, float)):
+                review_by_concept.setdefault(c, []).append(int(rl))
+
+        if layer in ("concept", "pattern"):
+            for c in note_concepts:
+                prereqs = [d for d in note_concepts if d != c]
+                if prereqs:
+                    prerequisites.setdefault(c, set()).update(prereqs)
+
+    dependents: dict[str, set[str]] = {}
+    for concept, prereqs in prerequisites.items():
+        for p in prereqs:
+            dependents.setdefault(p, set()).add(concept)
+
+    review_levels: dict[str, dict[str, Any]] = {}
+    for c, levels in review_by_concept.items():
+        review_levels[c] = {
+            "min": min(levels),
+            "avg": round(sum(levels) / len(levels), 1),
+            "max": max(levels),
+            "count": len(levels),
+        }
+
+    note_count = {c: len(paths) for c, paths in exercised_by.items()}
+
+    return {
+        "prerequisites": {k: sorted(v) for k, v in prerequisites.items()},
+        "dependents": {k: sorted(v) for k, v in dependents.items()},
+        "exercised_by": {k: v for k, v in exercised_by.items()},
+        "review_levels": review_levels,
+        "note_count": note_count,
+    }
+
+
+_GRAPH_CACHE_TTL_HOURS = 1
+
+
+def _graph_cache_path(vault: Path) -> Path:
+    return _study_dir(vault) / "concept_graph.json"
+
+
+def _load_graph_cache(vault: Path) -> dict[str, Any] | None:
+    cache_path = _graph_cache_path(vault)
+    if not cache_path.exists():
+        return None
+    try:
+        data = json.loads(_read_text(cache_path))
+        built_at = data.get("built_at", "")
+        if built_at:
+            age = datetime.now() - datetime.fromisoformat(built_at)
+            if age > timedelta(hours=_GRAPH_CACHE_TTL_HOURS):
+                return None
+        return data.get("graph")
+    except Exception:
+        return None
+
+
+def _save_graph_cache(vault: Path, graph: dict[str, Any]) -> None:
+    _write_text(
+        _graph_cache_path(vault),
+        _json({"built_at": datetime.now().isoformat(), "graph": graph}),
+    )
+
+
+def _get_concept_graph(vault: Path, rebuild: bool = False) -> dict[str, Any]:
+    if not rebuild:
+        cached = _load_graph_cache(vault)
+        if cached is not None:
+            return cached
+    graph = _build_concept_graph(vault)
+    _save_graph_cache(vault, graph)
+    return graph
+
+
+def _concept_ancestors(
+    concept: str, graph: dict[str, Any], max_depth: int = 5
+) -> list[list[str]]:
+    """Return chains of prerequisites (ancestors) for a concept."""
+    prereqs = graph["prerequisites"]
+    chains: list[list[str]] = []
+
+    def walk(current: str, path: list[str], depth: int):
+        if depth > max_depth:
+            return
+        deps = prereqs.get(current, [])
+        if not deps:
+            chains.append(path + [current])
+            return
+        for d in deps:
+            if d in path:
+                chains.append(path + [current, f"(cycle→{d})"])
+            else:
+                walk(d, path + [current], depth + 1)
+
+    walk(concept, [], 0)
+    return chains
+
+
+def _concept_descendants(
+    concept: str, graph: dict[str, Any], max_depth: int = 5
+) -> list[list[str]]:
+    """Return chains of dependents (descendants) for a concept."""
+    deps = graph["dependents"]
+    chains: list[list[str]] = []
+
+    def walk(current: str, path: list[str], depth: int):
+        if depth > max_depth:
+            return
+        children = deps.get(current, [])
+        if not children:
+            chains.append(path + [current])
+            return
+        for c in children:
+            if c in path:
+                chains.append(path + [current, f"(cycle→{c})"])
+            else:
+                walk(c, path + [current], depth + 1)
+
+    walk(concept, [], 0)
+    return chains
+
+
+def _topological_order(concepts: list[str], graph: dict[str, Any]) -> list[str]:
+    """Return concepts in dependency order (prerequisites first).
+
+    Only includes concepts that exist in the graph. Cycles are broken
+    arbitrarily (the first encountered edge is skipped).
+    """
+    prereqs = graph["prerequisites"]
+    relevant: set[str] = set()
+
+    def collect(c: str):
+        if c in relevant:
+            return
+        relevant.add(c)
+        for p in prereqs.get(c, []):
+            collect(p)
+
+    for c in concepts:
+        collect(c)
+
+    in_degree: dict[str, int] = {c: 0 for c in relevant}
+    adj: dict[str, list[str]] = {c: [] for c in relevant}
+    for c in relevant:
+        for p in prereqs.get(c, []):
+            if p in relevant and c != p:
+                adj.setdefault(p, []).append(c)
+                in_degree[c] = in_degree.get(c, 0) + 1
+
+    queue = [c for c in relevant if in_degree.get(c, 0) == 0]
+    order: list[str] = []
+    while queue:
+        node = queue.pop(0)
+        order.append(node)
+        for child in adj.get(node, []):
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                queue.append(child)
+
+    return order
+
+
+def handle_study_concept_graph(args: dict[str, Any], **_kwargs) -> str:
+    """Query the concept dependency graph from cache (rebuilt hourly or on demand)."""
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        rebuild = bool(args.get("rebuild", False))
+        graph = _get_concept_graph(vault, rebuild=rebuild)
+        target = str(args.get("concept") or "").strip()
+        weak_only = bool(args.get("weak_only", False))
+
+        if weak_only:
+            recent = _recent_weak_concepts(vault, days=30)
+            weak_names = {w["concept"] for w in recent}
+
+        if target:
+            target = _strip_wikilink(target)
+            ancestors = _concept_ancestors(target, graph)
+            descendants = _concept_descendants(target, graph)
+            prereqs = graph["prerequisites"].get(target, [])
+            deps = graph["dependents"].get(target, [])
+            examples = graph["exercised_by"].get(target, [])
+            rl = graph["review_levels"].get(target)
+            review_order = _topological_order([target], graph)
+
+            affected_examples = []
+            for d in deps:
+                affected_examples.extend(graph["exercised_by"].get(d, []))
+
+            return _ok({
+                "concept": target,
+                "direct_prerequisites": prereqs,
+                "direct_dependents": deps,
+                "ancestor_chains": ancestors,
+                "descendant_chains": descendants,
+                "exercised_in": examples[:20],
+                "affected_examples": list(set(affected_examples))[:20],
+                "review_level": rl,
+                "note_count": graph["note_count"].get(target, 0),
+                "recommended_review_order": review_order,
+            })
+
+        all_concepts = sorted(
+            set(graph["prerequisites"]) | set(graph["dependents"]) | set(graph["exercised_by"])
+        )
+
+        bottleneck = sorted(
+            [(c, len(graph["dependents"].get(c, []))) for c in all_concepts],
+            key=lambda x: -x[1],
+        )[:15]
+
+        isolated = [
+            c for c in all_concepts
+            if not graph["prerequisites"].get(c) and not graph["dependents"].get(c)
+        ]
+
+        result: dict[str, Any] = {
+            "total_concepts": len(all_concepts),
+            "all_concepts": all_concepts,
+            "concepts_with_dependencies": len(graph["prerequisites"]),
+            "top_bottlenecks": [{"concept": c, "dependents": n} for c, n in bottleneck if n > 0],
+            "isolated_concepts": len(isolated),
+            "isolated_concept_names": isolated,
+            "review_levels": graph["review_levels"],
+        }
+
+        if weak_only:
+            result["weak_concepts"] = [
+                {
+                    "concept": c,
+                    "prerequisites": graph["prerequisites"].get(c, []),
+                    "dependents": graph["dependents"].get(c, []),
+                    "review_level": graph["review_levels"].get(c),
+                    "error_count": next(
+                        (w["error_count"] for w in _recent_weak_concepts(vault, days=30) if w["concept"] == c), 0
+                    ),
+                    "recommended_review_order": _topological_order([c], graph),
+                }
+                for c in weak_names
+                if c in all_concepts
+            ]
+
+        return _ok(result)
+    except Exception as exc:
+        return _err("CONCEPT_GRAPH_FAILED", str(exc))
+
+
+STUDY_CONCEPT_GRAPH_SCHEMA = {
+    "description": "Query the concept dependency graph (cached in .StudyOS/concept_graph.json, auto-refreshed hourly). Use rebuild=true after adding or editing notes. Without a target concept, returns all_concepts (full name list), top_bottlenecks, and isolated_concept_names. With a target concept, returns prerequisite chains (direct_prerequisites, direct_dependents, ancestor_chains, descendant_chains), exercised_in examples, and recommended_review_order.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "concept": {"type": "string", "description": "Focus on a specific concept."},
+            "weak_only": {"type": "boolean", "description": "Only return concepts with recent errors."},
+            "rebuild": {"type": "boolean", "description": "Force rebuild the cache (default false, auto-refreshes hourly)."},
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Review statistics (cached JSON)
+# ---------------------------------------------------------------------------
+
+def _stats_cache_path(vault: Path) -> Path:
+    return _study_dir(vault) / "review_stats.json"
+
+
+def _invalidate_review_stats(vault: Path) -> None:
+    cache = _stats_cache_path(vault)
+    if cache.exists():
+        cache.unlink()
+
+
+def _build_review_stats(vault: Path) -> dict[str, Any]:
+    today = date.today()
+    total = 0
+    by_level: Counter[int] = Counter()
+    concept_levels: dict[str, list[int]] = {}
+    concept_due: dict[str, int] = {}
+    last_reviewed_dates: list[date] = []
+
+    for path in _iter_markdown_notes(vault, folder="examples"):
+        note, _warnings = parse_note(path, vault, include_body=False)
+        if note.get("layer") != "example":
+            continue
+        total += 1
+        fm = note.get("frontmatter", {})
+        rl = int(fm.get("review_level", 0))
+        by_level[rl] += 1
+
+        lr = fm.get("last_reviewed_at")
+        if lr:
+            try:
+                last_reviewed_dates.append(_parse_date(str(lr)))
+            except Exception:
+                pass
+
+        for c in note.get("concepts", []):
+            c_name = _strip_wikilink(c)
+            concept_levels.setdefault(c_name, []).append(rl)
+
+        if _is_due(note, today):
+            for c in note.get("concepts", []):
+                c_name = _strip_wikilink(c)
+                concept_due[c_name] = concept_due.get(c_name, 0) + 1
+
+    mastered = by_level.get(5, 0)
+    progress = round(mastered / total * 100, 1) if total > 0 else 0.0
+
+    concept_stats = {}
+    for c, levels in concept_levels.items():
+        concept_stats[c] = {
+            "avg": round(sum(levels) / len(levels), 1),
+            "min": min(levels),
+            "max": max(levels),
+            "count": len(levels),
+            "due": concept_due.get(c, 0),
+        }
+
+    review_streak = 0
+    if last_reviewed_dates:
+        sorted_dates = sorted(set(last_reviewed_dates), reverse=True)
+        check = today
+        for d in sorted_dates:
+            if d == check or d == check - timedelta(days=1):
+                if d == check - timedelta(days=1):
+                    check = d
+                review_streak += 1
+            elif d < check - timedelta(days=1):
+                break
+
+    return {
+        "built_at": datetime.now().isoformat(),
+        "total_examples": total,
+        "by_review_level": {str(k): v for k, v in sorted(by_level.items())},
+        "mastered": mastered,
+        "progress_pct": progress,
+        "due_today": sum(concept_due.values()),
+        "review_streak_days": review_streak,
+        "concepts": concept_stats,
+    }
+
+
+def _load_review_stats(vault: Path) -> dict[str, Any] | None:
+    cache = _stats_cache_path(vault)
+    if not cache.exists():
+        return None
+    try:
+        return json.loads(_read_text(cache))
+    except Exception:
+        return None
+
+
+def _save_review_stats(vault: Path, stats: dict[str, Any]) -> None:
+    _write_text(_stats_cache_path(vault), _json(stats))
+
+
+def handle_study_review_stats(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        rebuild = bool(args.get("rebuild", False))
+        if not rebuild:
+            cached = _load_review_stats(vault)
+            if cached is not None:
+                return _ok({"cached": True, **cached})
+        stats = _build_review_stats(vault)
+        _save_review_stats(vault, stats)
+        return _ok({"cached": False, **stats})
+    except Exception as exc:
+        return _err("REVIEW_STATS_FAILED", str(exc))
+
+
+STUDY_REVIEW_STATS_SCHEMA = {
+    "description": "Aggregated review statistics cached in .StudyOS/review_stats.json. Returns progress, review_level distribution, due count, review streak, and per-concept averages. Cache auto-invalidates after study_record_review.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "rebuild": {"type": "boolean", "description": "Force rebuild instead of using cache."},
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Learning queue — new material that hasn't entered review yet
+# ---------------------------------------------------------------------------
+
+_LEARNING_STATES = ("未开始", "学习中", "已理解", "已掌握")
+
+
+def _concept_learning_state(note: dict[str, Any]) -> str:
+    fm = note.get("frontmatter", {})
+    state = str(fm.get("learning_state", "未开始")).strip()
+    return state if state in _LEARNING_STATES else "未开始"
+
+
+def handle_study_learning_queue(args: dict[str, Any], **_kwargs) -> str:
+    """Show new material that needs first-pass attention.
+
+    Two sections:
+      - New concepts: ordered by dependency (prerequisites first), filtered by learning_state.
+      - New examples: never reviewed (review_count=0), ordered by difficulty then subject.
+    """
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        graph = _get_concept_graph(vault)
+        state_filter = str(args.get("state") or "").strip()
+        limit = _limit_from(args, default=30)
+
+        new_concepts: list[dict[str, Any]] = []
+        new_examples: list[dict[str, Any]] = []
+
+        for path in _iter_markdown_notes(vault):
+            note, _warnings = parse_note(path, vault, include_body=False)
+            layer = note.get("layer", "note")
+            fm = note.get("frontmatter", {})
+
+            if layer in ("concept", "pattern"):
+                ls = _concept_learning_state(note)
+                if state_filter and ls != state_filter:
+                    continue
+                if ls in ("已掌握",):
+                    continue
+                deps = graph.get("prerequisites", {}).get(
+                    _strip_wikilink(note.get("title", "")), []
+                )
+                new_concepts.append({
+                    "path": note["path"],
+                    "title": note["title"],
+                    "learning_state": ls,
+                    "prerequisites": deps or [],
+                    "tags": note.get("tags", []),
+                })
+
+            elif layer == "example":
+                rc = int(fm.get("review_count", 0))
+                if rc > 0:
+                    continue
+                if state_filter:
+                    rl = int(fm.get("review_level", 0))
+                    if state_filter == "学习中" and rl != 0:
+                        continue
+                    if state_filter == "已理解" and rl == 0:
+                        continue
+                new_examples.append({
+                    "path": note["path"],
+                    "title": note["title"],
+                    "review_level": int(fm.get("review_level", 0)),
+                    "difficulty": fm.get("difficulty"),
+                    "concepts": note.get("concepts", []),
+                    "tags": note.get("tags", []),
+                    "source": fm.get("source"),
+                })
+
+        new_examples.sort(key=lambda e: (
+            {"easy": 1, "medium": 2, "hard": 3}.get(str(e.get("difficulty", "")).lower(), 2),
+            e["title"],
+        ))
+
+        def _concept_order_key(c: dict[str, Any]) -> tuple[int, str]:
+            deps_depth = max(
+                (len(chain) for chain in _concept_ancestors(c["title"], graph)),
+                default=0,
+            )
+            return (deps_depth, c["title"])
+
+        new_concepts.sort(key=_concept_order_key)
+
+        return _ok({
+            "vault_path": str(vault),
+            "new_concepts": new_concepts[:limit],
+            "new_concepts_total": len(new_concepts),
+            "new_examples": new_examples[:limit],
+            "new_examples_total": len(new_examples),
+        })
+    except Exception as exc:
+        return _err("LEARNING_QUEUE_FAILED", str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Study session log
+# ---------------------------------------------------------------------------
+
+def handle_study_log_session(args: dict[str, Any], **_kwargs) -> str:
+    """Log a study session to .StudyOS/sessions/YYYY-MM-DD.md."""
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        occurred = _parse_date(args.get("occurred_on"), default=date.today())
+        duration = args.get("duration_minutes")
+        topics = _as_list(args.get("topics"))
+        notes_created = _as_list(args.get("notes_created"))
+        examples_attempted = _as_list(args.get("examples_attempted"))
+        examples_passed = _as_list(args.get("examples_passed"))
+        examples_failed = _as_list(args.get("examples_failed"))
+        note_text = str(args.get("note") or "").strip()
+
+        ses_dir = _study_dir(vault) / "sessions"
+        ses_dir.mkdir(parents=True, exist_ok=True)
+        ses_path = ses_dir / f"{occurred.isoformat()}.md"
+
+        lines = [
+            f"# Study Session {occurred.isoformat()}",
+            "",
+        ]
+        if duration is not None:
+            lines.append(f"- Duration: {duration} min")
+        if topics:
+            lines.append(f"- Topics: {', '.join(str(t) for t in topics)}")
+        if notes_created:
+            lines.append(f"- Notes created: {', '.join(str(n) for n in notes_created)}")
+        if examples_attempted:
+            lines.append(f"- Examples attempted: {len(examples_attempted)}")
+            lines.append(f"  - Attempted: {', '.join(str(e) for e in examples_attempted)}")
+        if examples_passed:
+            lines.append(f"  - Passed: {', '.join(str(e) for e in examples_passed)}")
+        if examples_failed:
+            lines.append(f"  - Failed: {', '.join(str(e) for e in examples_failed)}")
+        if note_text:
+            lines.extend(["", note_text, ""])
+        lines.append("")
+
+        if ses_path.exists():
+            _append_text(ses_path, "\n".join(lines))
+        else:
+            _write_text(ses_path, "\n".join(lines))
+
+        return _ok({
+            "vault_path": str(vault),
+            "path": ses_path.relative_to(vault).as_posix(),
+            "date": occurred.isoformat(),
+        })
+    except Exception as exc:
+        return _err("LOG_SESSION_FAILED", str(exc))
+
+
+def handle_study_update_concept_state(args: dict[str, Any], **_kwargs) -> str:
+    """Update the learning_state of a concept/pattern note."""
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        note_ref = str(args.get("note") or "").strip()
+        new_state = str(args.get("learning_state") or "").strip()
+        if new_state not in _LEARNING_STATES:
+            return _err("INVALID_STATE", f"learning_state must be one of: {', '.join(_LEARNING_STATES)}")
+
+        path, matches = _find_note(vault, note_ref)
+        if matches:
+            return _err("NOTE_AMBIGUOUS", f"Multiple matches for {note_ref!r}")
+        if not path:
+            return _err("NOTE_NOT_FOUND", f"Note not found: {note_ref}")
+
+        note, warnings = parse_note(path, vault, include_body=False)
+        if note.get("layer") not in ("concept", "pattern"):
+            return _err("NOT_CONCEPT", "learning_state only applies to concept/pattern notes")
+
+        old_state = _concept_learning_state(note)
+        _upsert_frontmatter_field(path, "learning_state", new_state)
+        if new_state == "已掌握":
+            _upsert_frontmatter_field(path, "mastered_at", date.today().isoformat())
+
+        return _ok({
+            "path": note["path"],
+            "title": note["title"],
+            "learning_state": {"old": old_state, "new": new_state},
+        }, warnings)
+    except Exception as exc:
+        return _err("UPDATE_CONCEPT_STATE_FAILED", str(exc))
+
+
+STUDY_LEARNING_QUEUE_SCHEMA = {
+    "description": "List new material that hasn't entered review yet: concepts with learning_state ≠ 已掌握, and examples with review_count=0 (never attempted). Concepts ordered by dependency (prerequisites first), examples ordered by difficulty.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "state": {"type": "string", "description": "Filter by learning_state: 未开始, 学习中, 已理解."},
+            "limit": {"type": "integer", "description": "Maximum items per section (default 30)."},
+        },
+    },
+}
+
+STUDY_LOG_SESSION_SCHEMA = {
+    "description": "Log a study session to .StudyOS/sessions/YYYY-MM-DD.md. Use after every study session to track time, topics, and progress.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "occurred_on": {"type": "string", "description": "YYYY-MM-DD. Defaults to today."},
+            "duration_minutes": {"type": "integer", "description": "Session duration in minutes."},
+            "topics": {"type": "array", "items": {"type": "string"}, "description": "Topics or subjects studied."},
+            "notes_created": {"type": "array", "items": {"type": "string"}, "description": "New notes created this session."},
+            "examples_attempted": {"type": "array", "items": {"type": "string"}, "description": "Examples attempted (E-#### or paths)."},
+            "examples_passed": {"type": "array", "items": {"type": "string"}, "description": "Examples passed."},
+            "examples_failed": {"type": "array", "items": {"type": "string"}, "description": "Examples failed."},
+            "note": {"type": "string", "description": "Free-text notes about the session."},
+        },
+    },
+}
+
+STUDY_UPDATE_CONCEPT_STATE_SCHEMA = {
+    "description": "Update the learning_state of a concept or pattern note. States: 未开始 → 学习中 → 已理解 → 已掌握.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "note": {"type": "string", "description": "Concept/pattern note path, title, or alias."},
+            "learning_state": {"type": "string", "description": "New state: 未开始, 学习中, 已理解, 已掌握."},
+        },
+        "required": ["note", "learning_state"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Learning plan — import 题单 and track progress
+# ---------------------------------------------------------------------------
+
+def _plans_dir(vault: Path) -> Path:
+    d = _study_dir(vault) / "learning_plans"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+_KOD_RE = re.compile(r"考点\s*(\d+)[：:]\s*(.+?)(?:（(\d+)\s*题）)?$")
+_SECTION_RE = re.compile(r"^[│\s├└─]*([一二三四五六七八九十]+)、(.+?)(?:（考点\s*[\d\-,]+)?(?:[，,]\s*(\d+)\s*题)?(?:）)?$")
+_TREE_KAODIAN_RE = re.compile(r"考点\s*(\d+)[：:]\s*(.+?)(?:（(\d+)\s*题）)")
+_TABLE_ID_RE = re.compile(r"\*\*(\d+)\*\*")
+_H1_RE = re.compile(r"^#\s+(.+)")
+
+
+def _parse_tidan(vault: Path, tidan_path: Path) -> dict[str, Any]:
+    raw = _read_text(tidan_path)
+    lines = raw.splitlines()
+    topic = ""
+    kaodian: list[dict[str, Any]] = []
+    sections: list[dict[str, Any]] = []
+    problem_ids: set[int] = set()
+    rounds: list[dict[str, Any]] = []
+    checklist: list[str] = []
+    in_tree = False
+    in_practice = False
+    in_checklist = False
+    current_section: dict[str, Any] | None = None
+    waiting_for_tree = False
+
+    for line in lines:
+        m = _H1_RE.match(line)
+        if m:
+            topic = m.group(1).strip().lstrip("#").strip()
+            continue
+
+        stripped = line.strip()
+
+        if waiting_for_tree and stripped == "```":
+            in_tree = True
+            waiting_for_tree = False
+            continue
+        if in_tree and stripped == "```":
+            in_tree = False
+            continue
+
+        if "考点树状图" in stripped:
+            waiting_for_tree = True
+            continue
+
+        if in_tree:
+            sm = _SECTION_RE.match(line.strip())
+            if sm:
+                current_section = {
+                    "name": f"{sm.group(1)}、{sm.group(2)}",
+                    "kaodian": [],
+                }
+                sections.append(current_section)
+                continue
+            km = _TREE_KAODIAN_RE.search(line)
+            if km and current_section is not None:
+                kd = {
+                    "id": int(km.group(1)),
+                    "name": km.group(2).strip(),
+                    "problem_count": int(km.group(3)) if km.group(3) else 0,
+                }
+                current_section["kaodian"].append(kd)
+                kaodian.append(kd)
+                continue
+
+        if "## 练习计划" in line:
+            in_practice = True
+            in_checklist = False
+            continue
+        if "## 模块完成标志" in line:
+            in_checklist = True
+            in_practice = False
+            continue
+        if line.startswith("## ") and (in_practice or in_checklist):
+            in_practice = False
+            in_checklist = False
+            continue
+
+        if in_checklist and line.startswith("- ["):
+            checklist.append(line.strip())
+            continue
+
+        for pid in _TABLE_ID_RE.findall(line):
+            problem_ids.add(int(pid))
+
+    return {
+        "topic": topic,
+        "source": tidan_path.relative_to(vault).as_posix(),
+        "sections": sections,
+        "kaodian": kaodian,
+        "total_kaodian": len(kaodian),
+        "total_problems": len(problem_ids),
+        "problem_ids": sorted(problem_ids),
+        "checklist": checklist,
+        "imported_at": datetime.now().isoformat(),
+        "completed_kaodian": [],
+    }
+
+
+def handle_study_import_plan(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        tidan_ref = str(args.get("tidan") or "").strip()
+        if not tidan_ref:
+            review_dir = vault / "review"
+            available = (
+                sorted(
+                    [p.relative_to(vault).as_posix() for p in review_dir.glob("*.md")]
+                )
+                if review_dir.exists()
+                else []
+            )
+            return _ok({"available_tidan": available})
+        tidan_path = vault / tidan_ref
+        if not tidan_path.exists():
+            return _err("TIDAN_NOT_FOUND", str(tidan_path))
+        plan = _parse_tidan(vault, tidan_path)
+        topic = plan["topic"]
+        if not topic:
+            topic = tidan_path.stem
+            plan["topic"] = topic
+        out_path = _plans_dir(vault) / f"{topic}.json"
+        _write_text(out_path, _json(plan))
+        return _ok(
+            {"path": out_path.relative_to(vault).as_posix(), "plan": plan}
+        )
+    except Exception as exc:
+        return _err("IMPORT_PLAN_FAILED", str(exc))
+
+
+def handle_study_plan_progress(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        topic = str(args.get("topic") or "").strip()
+        all_plans: list[dict[str, Any]] = []
+        for plan_path in sorted(_plans_dir(vault).glob("*.json")):
+            try:
+                plan = json.loads(_read_text(plan_path))
+                plan["_file"] = plan_path.relative_to(vault).as_posix()
+                all_plans.append(plan)
+            except Exception:
+                continue
+        if topic:
+            all_plans = [p for p in all_plans if p.get("topic") == topic]
+        summaries = []
+        for p in all_plans:
+            completed = len(p.get("completed_kaodian", []))
+            total = p.get("total_kaodian", 0)
+            summaries.append(
+                {
+                    "topic": p["topic"],
+                    "source": p.get("source", ""),
+                    "progress_pct": round(completed / total * 100, 1) if total else 0,
+                    "completed_kaodian": completed,
+                    "total_kaodian": total,
+                    "total_problems": p.get("total_problems", 0),
+                    "checklist_total": len(p.get("checklist", [])),
+                    "checklist_done": sum(
+                        1 for c in p.get("checklist", []) if c.startswith("- [x]")
+                    ),
+                    "file": p.get("_file", ""),
+                }
+            )
+        return _ok({"plans": summaries})
+    except Exception as exc:
+        return _err("PLAN_PROGRESS_FAILED", str(exc))
+
+
+STUDY_IMPORT_PLAN_SCHEMA = {
+    "description": "Import a 题单 (problem checklist) from the vault's review/ directory into a structured learning plan. Parses 考点 tree, problem IDs, practice plan, and completion checklist. If no tidan specified, lists available 题单 files.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "tidan": {"type": "string", "description": "Vault-relative path to a 题单 .md file under review/."},
+        },
+    },
+}
+
+STUDY_PLAN_PROGRESS_SCHEMA = {
+    "description": "Show progress on all imported learning plans from .StudyOS/learning_plans/. Returns per-plan completion stats (考点 done/total, checklist progress).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "topic": {"type": "string", "description": "Filter to a specific topic name."},
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Standardized curriculum — single source of truth for "what to learn"
+# ---------------------------------------------------------------------------
+
+_CURRICULUM_VERSION = "1"
+
+_CURRICULUM_TEMPLATE = {
+    "version": _CURRICULUM_VERSION,
+    "meta": {
+        "topic": "",
+        "textbook": "",
+        "exercise_book": "",
+        "created_at": "",
+    },
+    "sections": [],
+}
+
+
+def _curricula_dir(vault: Path) -> Path:
+    d = _study_dir(vault) / "curricula"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _validate_curriculum(data: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(data.get("meta"), dict):
+        errors.append("meta is required")
+    else:
+        meta = data["meta"]
+        if not meta.get("topic"):
+            errors.append("meta.topic is required")
+        if not meta.get("textbook"):
+            errors.append("meta.textbook is required")
+    if not isinstance(data.get("sections"), list):
+        errors.append("sections must be a list")
+    else:
+        for i, sec in enumerate(data["sections"]):
+            if not isinstance(sec.get("title"), str) or not sec["title"].strip():
+                errors.append(f"sections[{i}].title is required")
+            for j, kd in enumerate(sec.get("kaodian", [])):
+                if not isinstance(kd.get("name"), str) or not kd["name"].strip():
+                    errors.append(f"sections[{i}].kaodian[{j}].name is required")
+    return errors
+
+
+def handle_study_create_curriculum(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        data = args.get("data")
+        if data is None:
+            template = json.loads(json.dumps(_CURRICULUM_TEMPLATE))
+            template["meta"]["created_at"] = datetime.now().isoformat()
+            return _ok({"template": template})
+        if not isinstance(data, dict):
+            return _err("INVALID_DATA", "data must be a JSON object")
+        errors = _validate_curriculum(data)
+        if errors:
+            return _err("VALIDATION_FAILED", "; ".join(errors))
+        topic = data["meta"]["topic"].strip()
+        data.setdefault("version", _CURRICULUM_VERSION)
+        data["meta"]["created_at"] = data["meta"].get("created_at") or datetime.now().isoformat()
+        out_path = _curricula_dir(vault) / f"{topic}.json"
+        _write_text(out_path, _json(data))
+        return _ok({
+            "path": out_path.relative_to(vault).as_posix(),
+            "topic": topic,
+            "sections": len(data.get("sections", [])),
+            "kaodian": sum(len(s.get("kaodian", [])) for s in data.get("sections", [])),
+        })
+    except Exception as exc:
+        return _err("CREATE_CURRICULUM_FAILED", str(exc))
+
+
+def handle_study_list_curricula(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        topic = str(args.get("topic") or "").strip()
+        curricula: list[dict[str, Any]] = []
+        for p in sorted(_curricula_dir(vault).glob("*.json")):
+            try:
+                c = json.loads(_read_text(p))
+                if topic and c.get("meta", {}).get("topic") != topic:
+                    continue
+                curricula.append({
+                    "topic": c["meta"]["topic"],
+                    "textbook": c["meta"].get("textbook", ""),
+                    "exercise_book": c["meta"].get("exercise_book", ""),
+                    "sections": len(c.get("sections", [])),
+                    "kaodian": sum(len(s.get("kaodian", [])) for s in c.get("sections", [])),
+                    "file": p.relative_to(vault).as_posix(),
+                })
+            except Exception:
+                continue
+        return _ok({"curricula": curricula})
+    except Exception as exc:
+        return _err("LIST_CURRICULA_FAILED", str(exc))
+
+
+STUDY_CREATE_CURRICULUM_SCHEMA = {
+    "description": "Create or update a standardized learning curriculum (JSON). Call without data to get an empty template. Curriculum is the single source of truth for 'what to learn' — generated from textbook/exercise book, not from inconsistently formatted review/ 题单.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "data": {"type": "object", "description": "Full curriculum JSON matching the schema. Omit to get a template."},
+        },
+    },
+}
+
+STUDY_LIST_CURRICULA_SCHEMA = {
+    "description": "List all standardized curricula in .StudyOS/curricula/. Each curriculum maps a textbook chapter to its 考点 tree with problem references.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "topic": {"type": "string", "description": "Filter by topic name."},
         },
     },
 }

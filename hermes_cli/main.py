@@ -5601,6 +5601,12 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_IGNORE_EXISTING"] = "1"
     if getattr(args, "hermes_root", None):
         env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
+    elif (PROJECT_ROOT / "apps" / "desktop" / "package.json").exists():
+        # When launching from a Hermes source checkout, prefer the checkout's
+        # backend root so the packaged desktop shell stays in lockstep with the
+        # code the user just edited instead of silently running an older
+        # ~/.hermes/hermes-agent copy.
+        env["HERMES_DESKTOP_HERMES_ROOT"] = str(PROJECT_ROOT)
     env["HERMES_DESKTOP_CWD"] = _desktop_launch_cwd(args)
 
     # Desktop launch options from config.yaml (`desktop.electron_flags`,

@@ -238,7 +238,7 @@ def _strip_html(html: str) -> str:
 #     match, since that's how comparisons read.
 #   * ``a`` additionally needs ``href=``/``name=`` or an actual ``<a>``/``</a>``.
 #   * Any well-formed *closing* tag (``</p>``) also counts.
-_HTML_TAGS = r"html|body|div|br|h[1-6]|ul|ol|li|table|tr|td|th|span|strong|em|b|i|p|img|pre|code|blockquote"
+_HTML_TAGS = r"html|body|div|br|hr|h[1-6]|ul|ol|li|table|tr|td|th|span|strong|em|b|i|p|img|pre|code|blockquote"
 _HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|tr|td|th|span|strong|em|b|i|pre|code|blockquote"
 _HTML_BODY_RE = re.compile(
     rf"<\s*(?:{_HTML_TAGS})\s*/?>"                 # <tag> or <tag/>

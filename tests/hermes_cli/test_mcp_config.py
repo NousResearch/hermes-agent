@@ -413,6 +413,30 @@ class TestMcpAdd:
         out = capsys.readouterr().out
         assert "Unknown MCP preset" in out
 
+    def test_add_uses_configured_connect_timeout(self, tmp_path, capsys, monkeypatch):
+        """Discovery for newly added servers honors connect_timeout."""
+        seen = {}
+
+        def mock_probe(name, config, connect_timeout=30):
+            seen["connect_timeout"] = connect_timeout
+            return [("search", "Search repos")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        inputs = iter(["n", ""])  # no auth needed, enable all tools
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="slow",
+            url="https://slow.example.com/mcp",
+            connect_timeout=180,
+        ))
+
+        assert seen["connect_timeout"] == 180
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_test
@@ -444,6 +468,25 @@ class TestMcpTest:
         out = capsys.readouterr().out
         assert "Connected" in out
         assert "Tools discovered: 2" in out
+
+    def test_test_uses_configured_connect_timeout(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "slow": {"url": "https://slow.example.com/mcp", "connect_timeout": 180},
+        })
+        seen = {}
+
+        def mock_probe(name, config, connect_timeout=30):
+            seen["connect_timeout"] = connect_timeout
+            return [("list", "List")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="slow"))
+
+        assert seen["connect_timeout"] == 180
 
 
 # ---------------------------------------------------------------------------
@@ -716,7 +759,7 @@ class TestMcpLogin:
         # Probe returns tools even though auth never completed.
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server",
-            lambda name, cfg: [("search_files", "d"), ("read_file_content", "d")],
+            lambda name, cfg, **kw: [("search_files", "d"), ("read_file_content", "d")],
         )
         # No token file is created → _oauth_tokens_present() returns False.
         from hermes_cli.mcp_config import cmd_mcp_login
@@ -738,7 +781,7 @@ class TestMcpLogin:
         # cmd_mcp_login wipes tokens before probing, then the real OAuth flow
         # writes a fresh token during the probe. Simulate that: the mocked
         # probe drops a token file, mirroring a successful authorization.
-        def mock_probe(name, cfg):
+        def mock_probe(name, cfg, **kw):
             token_dir.mkdir(exist_ok=True)
             (token_dir / "realserver.json").write_text('{"access_token": "x"}')
             return [("a", "d"), ("b", "d"), ("c", "d")]
@@ -754,6 +797,34 @@ class TestMcpLogin:
 
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
+
+    def test_login_uses_configured_connect_timeout(self, tmp_path, capsys, monkeypatch):
+        """OAuth login can wait longer for large tool lists after auth."""
+        _seed_config(tmp_path, {
+            "slowoauth": {
+                "url": "https://slow.example.com/mcp",
+                "auth": "oauth",
+                "connect_timeout": 180,
+            },
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        seen = {}
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            seen["connect_timeout"] = connect_timeout
+            token_dir.mkdir(exist_ok=True)
+            (token_dir / "slowoauth.json").write_text('{"access_token": "x"}')
+            return [("a", "d")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="slowoauth"))
+
+        assert seen["connect_timeout"] == 180
 
 
 # ---------------------------------------------------------------------------

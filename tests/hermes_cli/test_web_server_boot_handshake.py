@@ -29,6 +29,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_cli.web_server as web_server_mod
+import hermes_state
 
 SLOW_SECONDS = 3  # represents the Defender worst-case (scaled down for CI speed)
 
@@ -186,3 +187,46 @@ def test_concurrent_status_probes_all_respond():
         f"{len(failed)}/{PROBES} probes failed (codes: {responses}). "
         f"This would cause WinError 10054 and orphan accumulation on desktop."
     )
+
+
+def test_status_session_count_does_not_block_event_loop(monkeypatch):
+    import httpx
+
+    class SlowSessionDB:
+        def list_sessions_rich(self, limit: int = 50):
+            time.sleep(SLOW_SECONDS)
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", SlowSessionDB)
+    results: dict[str, float | int] = {}
+
+    async def _run():
+        transport = httpx.ASGITransport(app=web_server_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            scenario_started = time.perf_counter()
+            async with asyncio.TaskGroup() as tg:
+                async def _status():
+                    t = time.perf_counter()
+                    r = await client.get("/api/status", timeout=SLOW_SECONDS + 5)
+                    results["status_ms"] = (time.perf_counter() - t) * 1000
+                    results["status_code"] = r.status_code
+
+                async def _version():
+                    await asyncio.sleep(0.1)
+                    t = time.perf_counter()
+                    r = await client.get("/api/version", timeout=5)
+                    results["version_ms"] = (time.perf_counter() - t) * 1000
+                    results["version_elapsed_ms"] = (time.perf_counter() - scenario_started) * 1000
+                    results["version_code"] = r.status_code
+
+                tg.create_task(_status())
+                tg.create_task(_version())
+
+    asyncio.run(_run())
+
+    assert results.get("version_code") in {200, 401}
+    assert results.get("status_code") == 200
+    assert results["version_elapsed_ms"] < SLOW_SECONDS * 1000

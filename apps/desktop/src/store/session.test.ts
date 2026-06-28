@@ -15,6 +15,7 @@ import {
   setCurrentCwd,
   setSessionAttention,
   setSessionWorking,
+  sortSessionsByNumber,
   workspaceCwdForNewSession
 } from './session'
 
@@ -74,6 +75,19 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('sortSessionsByNumber', () => {
+  it('sorts #number-prefixed sessions numerically before unnumbered recents', () => {
+    const rows = [
+      session({ id: 'recent', title: '최근', last_active: 30, started_at: 30 }),
+      session({ id: 'n10', title: '#0010 열번째', last_active: 10, started_at: 10 }),
+      session({ id: 'n2', title: '#0002 두번째', last_active: 20, started_at: 20 }),
+      session({ id: 'old', title: '오래됨', last_active: 1, started_at: 1 })
+    ]
+
+    expect(sortSessionsByNumber(rows).map(s => s.id)).toEqual(['n2', 'n10', 'recent', 'old'])
   })
 })
 

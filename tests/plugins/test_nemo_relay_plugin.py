@@ -263,6 +263,10 @@ def test_nemo_relay_plugin_emits_llm_tool_and_exports_atif(tmp_path, monkeypatch
     assert "llm.call_end" in event_names
     assert "tool.call" in event_names
     assert "tool.call_end" in event_names
+    tool_end = next(event for event in fake.events if event[0] == "tool.call_end")
+    assert tool_end[3]["data"]["status"] == "ok"
+    assert "error_kind" not in tool_end[3]["data"]
+    assert "hermes.tool.error_kind" not in tool_end[3]["data"]
     assert "scope.pop" in event_names
     assert (tmp_path / "atif" / "hermes-atif-s1.json").exists()
 

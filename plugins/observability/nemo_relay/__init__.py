@@ -563,10 +563,18 @@ def on_post_tool_call(**kwargs: Any) -> None:
         if span is None:
             runtime.mark("hermes.tool.response.unmatched", kwargs)
             return
+        data = {
+            "status": kwargs.get("status"),
+            "duration_ms": kwargs.get("duration_ms"),
+            "error_type": kwargs.get("error_type"),
+            "error_kind": kwargs.get("error_kind"),
+            "hermes.tool.error_kind": kwargs.get("error_kind"),
+            "error_message": kwargs.get("error_message"),
+        }
         runtime.nemo_relay.tools.call_end(
             span,
             _jsonable(kwargs.get("result")),
-            data=_jsonable({"status": kwargs.get("status"), "duration_ms": kwargs.get("duration_ms")}),
+            data=_jsonable({k: v for k, v in data.items() if v is not None}),
             metadata=_metadata(kwargs),
         )
 

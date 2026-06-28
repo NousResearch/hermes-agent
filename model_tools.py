@@ -812,14 +812,19 @@ def _coerce_boolean(value: str):
     return value
 
 
-def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str]]:
+def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
     try:
         parsed_result = json.loads(result) if isinstance(result, str) else result
         if isinstance(parsed_result, dict) and parsed_result.get("error"):
-            return "error", "tool_error", str(parsed_result.get("error"))
+            error_kind = parsed_result.get("error_kind")
+            if error_kind is not None:
+                error_kind = str(error_kind)
+            return "error", "tool_error", str(parsed_result.get("error")), error_kind
+        if isinstance(parsed_result, dict) and parsed_result.get("error_kind"):
+            return "ok", None, None, str(parsed_result.get("error_kind"))
     except Exception:
         pass
-    return "ok", None, None
+    return "ok", None, None, None
 
 
 def _emit_post_tool_call_hook(
@@ -836,6 +841,7 @@ def _emit_post_tool_call_hook(
     status: Optional[str] = None,
     error_type: Optional[str] = None,
     error_message: Optional[str] = None,
+    error_kind: Optional[str] = None,
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook.
@@ -852,7 +858,7 @@ def _emit_post_tool_call_hook(
         if not has_hook("post_tool_call"):
             return
         if status is None:
-            status, error_type, error_message = _tool_result_observer_fields(result)
+            status, error_type, error_message, error_kind = _tool_result_observer_fields(result)
         invoke_hook(
             "post_tool_call",
             tool_name=function_name,
@@ -867,6 +873,7 @@ def _emit_post_tool_call_hook(
             status=status,
             error_type=error_type,
             error_message=error_message,
+            error_kind=error_kind,
             middleware_trace=list(middleware_trace or []),
         )
     except Exception as _hook_err:
@@ -1171,7 +1178,7 @@ def handle_function_call(
         try:
             from hermes_cli.plugins import has_hook, invoke_hook
             if has_hook("transform_tool_result"):
-                status, error_type, error_message = _tool_result_observer_fields(result)
+                status, error_type, error_message, error_kind = _tool_result_observer_fields(result)
                 hook_results = invoke_hook(
                     "transform_tool_result",
                     tool_name=function_name,
@@ -1186,6 +1193,7 @@ def handle_function_call(
                     status=status,
                     error_type=error_type,
                     error_message=error_message,
+                    error_kind=error_kind,
                 )
                 for hook_result in hook_results:
                     if isinstance(hook_result, str):

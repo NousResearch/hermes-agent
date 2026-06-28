@@ -80,6 +80,7 @@ class TestHandleFunctionCall:
                 status="ok",
                 error_type=None,
                 error_message=None,
+                error_kind=None,
                 middleware_trace=[],
             ),
             call(
@@ -96,8 +97,26 @@ class TestHandleFunctionCall:
                 status="ok",
                 error_type=None,
                 error_message=None,
+                error_kind=None,
             ),
         ]
+
+    def test_tool_hooks_receive_error_kind_from_error_results(self):
+        result_json = '{"error":"Could not find old_string in file","error_kind":"match_not_found"}'
+        with (
+            patch("model_tools.registry.dispatch", return_value=result_json),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call("patch", {"mode": "replace"}, task_id="t1")
+
+        assert result == result_json
+        kwargs_by_hook = {c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list}
+        assert kwargs_by_hook["post_tool_call"]["status"] == "error"
+        assert kwargs_by_hook["post_tool_call"]["error_type"] == "tool_error"
+        assert kwargs_by_hook["post_tool_call"]["error_message"] == "Could not find old_string in file"
+        assert kwargs_by_hook["post_tool_call"]["error_kind"] == "match_not_found"
+        assert kwargs_by_hook["transform_tool_result"]["error_kind"] == "match_not_found"
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must

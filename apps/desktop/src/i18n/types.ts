@@ -1146,6 +1146,7 @@ export interface Translations {
     speaking: string
     transcribing: string
     thinking: string
+    thoughtFor: string
     muted: string
     listening: string
     muteMic: string

@@ -67,7 +67,7 @@ import { ThreadTimeline } from '@/components/assistant-ui/thread-timeline'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
-import { useElapsedSeconds } from '@/components/chat/activity-timer'
+import { formatElapsed, useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
@@ -552,15 +552,32 @@ const ThinkingDisclosure: FC<{
   timerKey?: string
 }> = ({ children, messageRunning = false, pending = false, timerKey }) => {
   const { t } = useI18n()
-  // `null` = no explicit user toggle yet, defer to the streaming default.
-  // The default is "auto-open while streaming, auto-collapse when done" so
-  // reasoning surfaces a live preview without manual interaction. The first
-  // explicit toggle wins from then on.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const elapsed = useElapsedSeconds(pending, timerKey)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)
+
+  // Capture final elapsed time when thinking completes
+  const [finalElapsed, setFinalElapsed] = useState<number | null>(() => {
+    if (timerKey && typeof window !== 'undefined') {
+      const stored = localStorage.getItem(`hermes_thinking_time:${timerKey}`)
+      return stored ? parseInt(stored, 10) : null
+    }
+    return null
+  })
+  const wasPendingRef = useRef(pending)
+
+  useEffect(() => {
+    if (wasPendingRef.current && !pending && elapsed > 0) {
+      // Thinking just completed — capture and persist
+      setFinalElapsed(elapsed)
+      if (timerKey && typeof window !== 'undefined') {
+        localStorage.setItem(`hermes_thinking_time:${timerKey}`, String(elapsed))
+      }
+    }
+    wasPendingRef.current = pending
+  }, [pending, elapsed, timerKey])
 
   const open = userOpen ?? pending
   const isPreview = pending && userOpen === null
@@ -608,7 +625,7 @@ const ThinkingDisclosure: FC<{
               pending && 'shimmer text-foreground/55'
             )}
           >
-            {t.assistant.thread.thinking}
+            {pending ? t.assistant.thread.thinking : finalElapsed !== null ? t.assistant.thread.thoughtFor.replace('{time}', formatElapsed(finalElapsed)) : t.assistant.thread.thinking}
           </span>
           {pending && (
             <ActivityTimerText

@@ -162,7 +162,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     path = db_path if db_path is not None else projects_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=30)
     try:
         conn.row_factory = sqlite3.Row
         from hermes_state import apply_wal_with_fallback

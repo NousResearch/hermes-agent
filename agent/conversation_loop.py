@@ -588,6 +588,13 @@ def run_conversation(
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
+    # Per-turn tally of consecutive successful credential-pool token refreshes,
+    # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
+    # ``try_refresh_current()`` "succeed" forever on a single-entry OAuth pool,
+    # so this tally caps same-entry refreshes and lets the fallback chain take
+    # over instead of spinning. Reset here so each turn starts fresh. See #26080.
+    agent._auth_pool_refresh_counts = {}
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.

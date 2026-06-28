@@ -5359,6 +5359,59 @@ class TestCredentialPoolRecovery:
         assert recovered is True
         agent._swap_credential.assert_called_once_with(refreshed_entry)
 
+    def test_recover_with_pool_401_same_entry_refreshes_stop_after_two(self, agent):
+        """Repeated same-entry auth refreshes must eventually fall through.
+
+        A single-entry OAuth pool re-mints a fresh token on every 401, so
+        ``try_refresh_current()`` reports success forever. The cap (#26080)
+        must let the third consecutive same-entry refresh fall through
+        (return not-recovered) so the fallback chain can activate instead of
+        looping on the same dead credential.
+        """
+        refreshed_entry = SimpleNamespace(label="primary", id="abc")
+
+        class _Pool:
+            def try_refresh_current(self):
+                return refreshed_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+        agent._auth_pool_refresh_counts = {}
+
+        first = agent._recover_with_credential_pool(status_code=401, has_retried_429=False)
+        second = agent._recover_with_credential_pool(status_code=401, has_retried_429=False)
+        third = agent._recover_with_credential_pool(status_code=401, has_retried_429=False)
+
+        assert first == (True, False)
+        assert second == (True, False)
+        # Third same-entry refresh exceeds the cap → not recovered, fall through.
+        assert third == (False, False)
+        assert agent._swap_credential.call_count == 2
+
+    def test_recover_with_pool_401_cap_is_per_entry(self, agent):
+        """Rotating to a different entry resets the per-entry refresh tally."""
+        entry_a = SimpleNamespace(label="primary", id="aaa")
+        entry_b = SimpleNamespace(label="secondary", id="bbb")
+        sequence = [entry_a, entry_a, entry_b, entry_b]
+
+        class _Pool:
+            def try_refresh_current(self):
+                return sequence.pop(0)
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+        agent._auth_pool_refresh_counts = {}
+
+        # Two refreshes of entry_a, then two of entry_b — neither hits the cap,
+        # so all four recover. The (provider, id) key isolates the tallies.
+        results = [
+            agent._recover_with_credential_pool(status_code=401, has_retried_429=False)
+            for _ in range(4)
+        ]
+
+        assert all(r == (True, False) for r in results)
+        assert agent._swap_credential.call_count == 4
+
     def test_recover_with_pool_rotates_on_401_when_refresh_fails(self, agent):
         """401 with failed refresh should rotate to next credential."""
         next_entry = SimpleNamespace(label="secondary", id="def")

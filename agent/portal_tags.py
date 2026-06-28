@@ -55,10 +55,32 @@ def hermes_client_tag() -> str:
     return f"client=hermes-client-v{_hermes_version()}"
 
 
-def nous_portal_tags() -> List[str]:
+def conversation_tag(session_id: str) -> str:
+    """Return the ``conversation=...`` tag for a Hermes session/conversation.
+
+    Format: ``conversation=<session_id>``. ``session_id`` is the canonical
+    Hermes conversation identifier (``AIAgent.session_id``) — the same value
+    used for ``~/.hermes/sessions/`` storage, session logs, and lineage.
+
+    Unlike the product/client tags this is high-cardinality (one value per
+    conversation), so it is only appended when a session id is actually
+    available — never as part of the always-on base tag set.
+    """
+    return f"conversation={session_id}"
+
+
+def nous_portal_tags(session_id: str | None = None) -> List[str]:
     """Return the canonical list of Nous Portal product tags.
 
     Always returns a fresh list so callers can mutate it freely
     (e.g. ``merged_extra.setdefault("tags", []).extend(nous_portal_tags())``).
+
+    When ``session_id`` is provided, a ``conversation=<session_id>`` tag is
+    appended so Portal usage can be attributed to a specific Hermes
+    conversation. Callers without a session id (e.g. the auxiliary client's
+    always-on base tags) omit it and get the canonical two-tag set.
     """
-    return ["product=hermes-agent", hermes_client_tag()]
+    tags = ["product=hermes-agent", hermes_client_tag()]
+    if session_id:
+        tags.append(conversation_tag(session_id))
+    return tags

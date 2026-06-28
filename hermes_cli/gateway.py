@@ -732,6 +732,53 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         windows_detach_popen_kwargs,
     )
 
+    # --- Deduplication: skip if a watcher is already monitoring this PID ---
+    # Prevents process accumulation when the gateway is rapidly toggled
+    # on/off (issue #53539).  A marker file keyed by old_pid is checked
+    # before spawning; the watcher deletes it when it exits.
+    marker_path = None
+    try:
+        from hermes_cli.config import get_hermes_home
+
+        marker_path = Path(get_hermes_home()) / f".gateway-watcher-{old_pid}.marker"
+        if marker_path.exists():
+            # Check if the marker is stale (older than 5 minutes).  A stale
+            # marker means the previous watcher crashed without cleaning up.
+            mtime = marker_path.stat().st_mtime
+            if time.time() - mtime < 300:
+                return True  # A watcher is already monitoring this PID
+            marker_path.unlink(missing_ok=True)
+        marker_path.touch()
+    except Exception:
+        marker_path = None  # Best-effort; don't block the restart on marker failures.
+
+    # --- Crash-restart backoff: refuse to restart if too many recent attempts ---
+    # Prevents a tight crash-restart loop when the gateway has a broken config
+    # (issue #53539).  Tracks restart timestamps in a JSON file; if there have
+    # been 5 or more restarts in the last 5 minutes, gives up and returns False.
+    try:
+        from hermes_cli.config import get_hermes_home
+
+        backoff_path = Path(get_hermes_home()) / ".gateway-restart-history.json"
+        now = time.monotonic()
+        history: list = []
+        if backoff_path.exists():
+            history = json.loads(backoff_path.read_text(encoding="utf-8"))
+        # Keep only restarts from the last 5 minutes.
+        history = [t for t in history if now - t < 300]
+        if len(history) >= 5:
+            # Too many restarts in 5 minutes — give up to avoid a crash loop.
+            if marker_path is not None:
+                try:
+                    marker_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return False
+        history.append(now)
+        backoff_path.write_text(json.dumps(history), encoding="utf-8")
+    except Exception:
+        pass  # Best-effort; don't block the restart on backoff failures.
+
     # On Windows the incoming ``run_argv`` leads with the venv's console
     # ``python.exe`` (from ``get_python_path()``).  Respawning the gateway
     # with that interpreter — even under CREATE_NO_WINDOW — leaves a
@@ -759,10 +806,26 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
             respawn_cwd = ""
             respawn_env_overlay = {}
 
+    # The watcher process itself also needs to use ``pythonw.exe`` on Windows.
+    # ``sys.executable`` may be the venv's console ``python.exe`` (when called
+    # from the CLI), and the uv venv launcher would re-exec the base console
+    # interpreter, allocating a conhost window that CREATE_NO_WINDOW can't
+    # suppress — the exact same issue we fix above for the respawned gateway.
+    # This was the root cause of the flashing command windows in issue #53539.
+    watcher_executable = sys.executable
+    if sys.platform == "win32":
+        try:
+            from hermes_cli.gateway_windows import _resolve_detached_python
+
+            watcher_executable, _, _ = _resolve_detached_python(sys.executable)
+        except Exception:
+            pass  # Fall back to sys.executable — visible window but still works.
+
     # Serialized as JSON literals embedded in the watcher source so the
     # inner respawn can apply cwd= / env= without extra argv plumbing.
     respawn_cwd_literal = json.dumps(respawn_cwd)
     respawn_env_literal = json.dumps(respawn_env_overlay)
+    marker_path_literal = json.dumps(str(marker_path) if marker_path else "")
 
     watcher = textwrap.dedent(
         """
@@ -779,6 +842,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         cmd = sys.argv[2:]
         _respawn_cwd = {respawn_cwd_literal}
         _respawn_env_overlay = {respawn_env_literal}
+        _marker_path = {marker_path_literal}
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the
@@ -822,27 +886,48 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         else:
             _popen_kwargs["start_new_session"] = True
             subprocess.Popen(cmd, **_popen_kwargs)
+
+        # Clean up the deduplication marker so future restarts can proceed.
+        if _marker_path:
+            try:
+                os.unlink(_marker_path)
+            except OSError:
+                pass
         """
     ).strip().format(
         respawn_cwd_literal=respawn_cwd_literal,
         respawn_env_literal=respawn_env_literal,
+        marker_path_literal=marker_path_literal,
     )
 
     watcher_argv = [
-        sys.executable,
+        watcher_executable,
         "-c",
         watcher,
         str(old_pid),
         *run_argv,
     ]
 
+    # Build Popen kwargs for the watcher process itself.  On Windows, apply
+    # the same cwd + env overlay used for the respawned gateway so the
+    # watcher can import hermes_cli._subprocess_compat and gateway.status
+    # under the base pythonw.exe (which bypasses the venv launcher's site
+    # config).  On POSIX, cwd/env are empty and this is a no-op.
+    watcher_popen_kwargs: dict = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if respawn_cwd:
+        watcher_popen_kwargs["cwd"] = respawn_cwd
+    if respawn_env_overlay:
+        watcher_popen_kwargs["env"] = {**os.environ, **respawn_env_overlay}
+
     # Same platform-aware detach for the watcher process itself — so
     # closing the user's terminal doesn't kill the watcher.
     try:
         subprocess.Popen(
             watcher_argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            **watcher_popen_kwargs,
             **windows_detach_popen_kwargs(),
         )
     except OSError:
@@ -859,14 +944,17 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
             )
             subprocess.Popen(
                 watcher_argv,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                **watcher_popen_kwargs,
                 **fallback_kwargs,
             )
         except OSError:
+            if marker_path is not None:
+                try:
+                    marker_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             return False
     return True
-
 
 def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
     selected_system = _select_systemd_scope(system)

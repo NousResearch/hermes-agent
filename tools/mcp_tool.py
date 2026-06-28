@@ -4097,6 +4097,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         async def _call():
             _mark_server_call_started(server)
+            # Propagate HERMES_SESSION_SOURCE to MCP tools that create
+            # child sessions (e.g. hermes_studio_use_chat_run). The MCP
+            # server is an independent process that does not inherit the
+            # parent cron agent's env vars, so we inject the source here.
+            if (tool_name == "hermes_studio_use_chat_run"
+                    and "source" not in args
+                    and os.environ.get("HERMES_SESSION_SOURCE")):
+                args = {**args, "source": os.environ["HERMES_SESSION_SOURCE"]}
             async with server._rpc_lock:
                 # Snapshot the agent's context so an elicitation callback
                 # triggered during this call (fired on the MCP recv loop

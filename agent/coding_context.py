@@ -60,6 +60,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+
 logger = logging.getLogger("hermes.coding_context")
 
 CODING_TOOLSET = "coding"
@@ -647,12 +649,14 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
 
 
 def _git(cwd: Path, *args: str) -> str:
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         out = subprocess.run(
             ["git", "-C", str(cwd), *args],
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT,
+            **_popen_kwargs,
         )
     except (OSError, subprocess.SubprocessError):
         return ""

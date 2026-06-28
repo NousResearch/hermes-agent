@@ -567,8 +567,8 @@ class TestDeliverResultWrapping:
         )
         return media_file.resolve()
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
+    def test_delivery_wraps_content_with_header_without_management_footer_by_default(self):
+        """Delivered content should keep cron identity metadata but omit the generic management footer by default."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -577,7 +577,8 @@ class TestDeliverResultWrapping:
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
             job = {
                 "id": "test-job",
                 "name": "daily-report",
@@ -592,6 +593,30 @@ class TestDeliverResultWrapping:
         assert "(job_id: test-job)" in sent_content
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
+        assert "To stop or manage this job" not in sent_content
+
+    def test_delivery_can_include_management_footer_when_config_enabled(self):
+        """An explicit cron.include_management_footer opt-in preserves the legacy footer."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True, "include_management_footer": True}}):
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: daily-report" in sent_content
         assert "To stop or manage this job" in sent_content
 
     def test_delivery_uses_job_id_when_no_name(self):

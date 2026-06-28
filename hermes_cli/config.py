@@ -2769,9 +2769,12 @@ DEFAULT_CONFIG = {
             # Empty → the fire endpoint refuses all tokens (no unsigned decode).
             "nas_jwks_url": "",
         },
-        # Wrap delivered cron responses with a header (task name) and footer
-        # ("The agent cannot see this message").  Set to false for clean output.
+        # Wrap delivered cron responses with a task-name/job-id header.
+        # Set to false for completely clean output.
         "wrap_response": True,
+        # Legacy management hint appended to wrapped cron deliveries.  Default
+        # off keeps user-facing reports focused on the job's own action line.
+        "include_management_footer": False,
         # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
         # and the agent has it in context (no "what is Task #2?" amnesia).
         # Default False preserves the historical isolation guarantee (cron

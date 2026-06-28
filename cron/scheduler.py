@@ -1478,14 +1478,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
-    # Optionally wrap the content with a header/footer so the user knows this
-    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
+    # Optionally wrap the content with cron identity metadata.  Wrapping is on
+    # by default; set cron.wrap_response: false in config.yaml for clean output.
+    # The generic management footer is separately opt-in via
+    # cron.include_management_footer so user-facing reports can keep a clean
+    # action line without losing task-name/job-id context.
     wrap_response = True
+    include_management_footer = False
     user_cfg = None
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {}) or {}
+        wrap_response = cron_cfg.get("wrap_response", True)
+        include_management_footer = cron_cfg.get("include_management_footer", False)
     except Exception:
         pass
 
@@ -1496,9 +1501,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"{content}"
         )
+        if include_management_footer:
+            delivery_content += (
+                f"\n\n"
+                f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            )
     else:
         delivery_content = content
 

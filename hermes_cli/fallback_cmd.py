@@ -184,10 +184,21 @@ def cmd_fallback_add(args) -> None:
         return
 
     # Picker picked the same thing that's already the primary → nothing changed,
-    # and there's nothing useful to add as a fallback to itself.
+    # and there's nothing useful to add as a fallback to itself.  A same
+    # (provider, model) entry whose ``base_url`` DIFFERS points at a distinct
+    # backend endpoint, so it is a valid fallback and must NOT be rejected as
+    # a self-fallback (#54251).
+    def _norm_url(entry: Dict[str, Any]) -> str:
+        return (entry.get("base_url") or "").strip().rstrip("/").lower()
+
     primary_entry = _extract_fallback_from_model_cfg(model_before)
     if primary_entry and primary_entry["provider"] == new_entry["provider"] \
-            and primary_entry["model"] == new_entry["model"]:
+            and primary_entry["model"] == new_entry["model"] \
+            and (
+                _norm_url(primary_entry) == _norm_url(new_entry)
+                or not _norm_url(primary_entry)
+                or not _norm_url(new_entry)
+            ):
         _restore_model_cfg(model_before)
         _restore_auth_active_provider(active_provider_before)
         print()
@@ -205,10 +216,17 @@ def cmd_fallback_add(args) -> None:
     final_cfg = load_config()
     chain = _read_chain(final_cfg)
 
-    # Reject exact-duplicate fallback entries.
+    # Reject exact-duplicate fallback entries.  An entry that shares a
+    # (provider, model) with an existing one but uses a DIFFERENT base_url is
+    # a distinct endpoint and must be appended, not skipped (#54251).
     for existing in chain:
         if existing.get("provider") == new_entry["provider"] \
-                and existing.get("model") == new_entry["model"]:
+                and existing.get("model") == new_entry["model"] \
+                and (
+                    _norm_url(existing) == _norm_url(new_entry)
+                    or not _norm_url(existing)
+                    or not _norm_url(new_entry)
+                ):
             print()
             print(f"  {_format_entry(new_entry)} is already in the fallback chain — skipped.")
             return

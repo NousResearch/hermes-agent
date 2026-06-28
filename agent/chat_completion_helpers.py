@@ -1164,7 +1164,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     current_model = (getattr(agent, "model", "") or "").strip()
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
     fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
-    if fb_provider == current_provider and fb_model == current_model:
+    # Two entries that share a (provider, model) but point at DIFFERENT
+    # base_urls resolve to distinct backend endpoints (e.g. two
+    # ``provider: custom`` entries at different URLs) and ARE valid fallbacks
+    # for each other — falling back to the other endpoint does NOT loop the
+    # failure. Only treat a same-(provider, model) entry as a self-fallback
+    # when its base_url is also the same, or when neither side carries a
+    # distinguishing base_url. See issue #54251.
+    same_provider_model = fb_provider == current_provider and fb_model == current_model
+    same_endpoint = (
+        fb_base_url_for_dedup == current_base_url
+        or not fb_base_url_for_dedup
+        or not current_base_url
+    )
+    if same_provider_model and same_endpoint:
         logger.warning(
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,

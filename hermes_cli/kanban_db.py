@@ -5716,6 +5716,61 @@ _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
 
+# JSON file to persist exit records so they survive gateway restarts.
+_RECENT_WORKER_EXITS_FILE = "recent_worker_exits.json"
+
+
+def _recent_exits_path() -> Optional[Path]:
+    """Return the path to the persisted worker exits file, or None if unresolvable."""
+    try:
+        db_path = kanban_db_path()
+        return db_path.parent / _RECENT_WORKER_EXITS_FILE
+    except Exception:
+        return None
+
+
+def _save_recent_exits() -> None:
+    """Persist _recent_worker_exits to disk (best-effort).
+
+    Thread safety: takes a snapshot via ``dict.copy()`` under the GIL so
+    concurrent writes from ``_record_worker_exit`` (in the reap loop)
+    cannot cause ``RuntimeError: dictionary changed size during iteration``.
+    """
+    path = _recent_exits_path()
+    if path is None:
+        return
+    try:
+        snapshot = dict(_recent_worker_exits)  # safe snapshot under GIL
+        if not snapshot:
+            return
+        # Convert to JSON-serializable format: {pid: [raw_status, timestamp]}
+        data = {
+            str(pid): list(entry)
+            for pid, entry in snapshot.items()
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        tmp.rename(path)
+    except Exception:
+        pass  # best-effort; don't crash the dispatcher
+
+
+def _load_recent_exits() -> None:
+    """Load persisted _recent_worker_exits from disk on startup."""
+    path = _recent_exits_path()
+    if path is None or not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text())
+        now = time.time()
+        for pid_str, (raw_status, ts) in data.items():
+            pid = int(pid_str)
+            # Only load entries younger than the TTL
+            if now - ts < _RECENT_WORKER_EXIT_TTL_SECONDS:
+                _recent_worker_exits[pid] = (int(raw_status), float(ts))
+    except Exception:
+        pass  # corrupted file -> start fresh
+
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
     """Record a reaped child's exit status for later classification.
@@ -5803,6 +5858,8 @@ def reap_worker_zombies() -> "list[int]":
                 reaped.append(pid)
         except Exception:
             pass
+    if reaped:
+        _save_recent_exits()
     return reaped
 
 
@@ -6995,6 +7052,11 @@ def _dispatch_once_locked(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
+    # Load persisted exit records on first tick (survives gateway restart).
+    if not hasattr(_dispatch_once_locked, "_exits_loaded"):
+        _load_recent_exits()
+        _dispatch_once_locked._exits_loaded = True  # type: ignore[attr-defined]
+
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.
     reap_worker_zombies()

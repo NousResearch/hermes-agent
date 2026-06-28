@@ -34,15 +34,17 @@ type Controls = ReturnType<typeof useModelControls>
 function Harness({
   activeSessionId,
   onReady,
+  queryClient,
   requestGateway
 }: {
   activeSessionId: string | null
   onReady: (controls: Controls) => void
+  queryClient?: QueryClient
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
   const controls = useModelControls({
     activeSessionId,
-    queryClient: new QueryClient(),
+    queryClient: queryClient ?? new QueryClient(),
     requestGateway
   })
 
@@ -53,6 +55,7 @@ function Harness({
 
 describe('useModelControls', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentProvider('')
@@ -152,6 +155,56 @@ describe('useModelControls', () => {
       key: 'model',
       value: 'BeastMode --provider moa --session'
     })
+  })
+
+  it('rolls back active-session picker changes when config.set requires confirmation', async () => {
+    setCurrentModel('old/model')
+    setCurrentProvider('old-provider')
+    const queryClient = new QueryClient()
+    queryClient.setQueryData(['model-options', 'session-1'], {
+      model: 'old/model',
+      provider: 'old-provider'
+    })
+    const requestGateway = vi.fn(
+      async () =>
+        ({
+          confirm_required: true,
+          confirm_message: 'EXPENSIVE MODEL WARNING'
+        }) as never
+    )
+    let controls!: Controls
+
+    render(
+      <Harness
+        activeSessionId="session-1"
+        onReady={value => (controls = value)}
+        queryClient={queryClient}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await expect(
+      controls.selectModel({
+        model: 'openai/gpt-5.5-pro',
+        provider: 'openrouter'
+      })
+    ).resolves.toBe(false)
+
+    expect($currentModel.get()).toBe('old/model')
+    expect($currentProvider.get()).toBe('old-provider')
+    expect(queryClient.getQueryData(['model-options', 'session-1'])).toMatchObject({
+      model: 'old/model',
+      provider: 'old-provider'
+    })
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'session-1',
+      key: 'model',
+      value: 'openai/gpt-5.5-pro --provider openrouter --session'
+    })
+    expect(notifyError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'EXPENSIVE MODEL WARNING' }),
+      'Model switch failed'
+    )
   })
 
   it('stores a no-session pick as UI state with no gateway or global write', async () => {

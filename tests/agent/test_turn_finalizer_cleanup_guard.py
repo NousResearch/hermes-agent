@@ -100,7 +100,15 @@ class _StubAgent:
         pass
 
 
-def _run(agent):
+def _run(
+    agent,
+    *,
+    final_response=None,
+    api_call_count=3,
+    turn_exit_reason="unknown",
+    interrupted=False,
+    failed=False,
+):
     messages = [
         {"role": "user", "content": "do a thing"},
         {
@@ -114,10 +122,10 @@ def _run(agent):
     ]
     return finalize_turn(
         agent,
-        final_response=None,  # forces the max-iterations summary path
-        api_call_count=3,
-        interrupted=False,
-        failed=False,
+        final_response=final_response,
+        api_call_count=api_call_count,
+        interrupted=interrupted,
+        failed=failed,
         messages=messages,
         conversation_history=None,
         effective_task_id="task-1",
@@ -125,7 +133,7 @@ def _run(agent):
         user_message="do a thing",
         original_user_message="do a thing",
         _should_review_memory=False,
-        _turn_exit_reason="unknown",
+        _turn_exit_reason=turn_exit_reason,
     )
 
 
@@ -163,3 +171,54 @@ def test_clean_turn_has_no_cleanup_errors_key():
     result = _run(agent)
     assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
     assert "cleanup_errors" not in result
+
+
+def test_text_response_on_last_allowed_call_is_completed():
+    agent = _StubAgent(raise_in=())
+    result = _run(
+        agent,
+        final_response="final report",
+        api_call_count=agent.max_iterations,
+        turn_exit_reason="text_response(finish_reason=stop)",
+    )
+    assert result["final_response"] == "final report"
+    assert result["completed"] is True
+
+
+def test_max_iterations_emit_normalized_timeout_metadata(monkeypatch):
+    calls = []
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *a, **kw: calls.append((a, kw)))
+    agent = _StubAgent(raise_in=())
+
+    result = _run(agent, turn_exit_reason="budget_exhausted")
+
+    assert result["terminal_status"] == "timeout"
+    assert result["timeout_kind"] == "max_turns"
+    assert result["max_turns"] == 3
+    assert result["api_call_count"] == 3
+    assert result["telemetry_schema_version"] == "hermes.observer.v1"
+    session_end = next(call for call in calls if call[0] == ("on_session_end",))
+    assert session_end[1]["terminal_status"] == "timeout"
+    assert session_end[1]["timeout_kind"] == "max_turns"
+    assert session_end[1]["max_turns"] == 3
+
+
+def test_cron_inactivity_metadata_is_preserved(monkeypatch):
+    calls = []
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *a, **kw: calls.append((a, kw)))
+    agent = _StubAgent(raise_in=())
+    setattr(agent, "_timeout_kind", "cron_inactivity")
+    setattr(agent, "_terminal_status", "timeout")
+    setattr(agent, "_interrupted_by", "cron_scheduler")
+    setattr(agent, "_cron_job_id", "abc123")
+    setattr(agent, "_cron_job_name", "Nightly digest")
+
+    result = _run(agent, turn_exit_reason="interrupted_by_user", interrupted=True, failed=True)
+
+    assert result["terminal_status"] == "timeout"
+    assert result["timeout_kind"] == "cron_inactivity"
+    assert result["interrupted_by"] == "cron_scheduler"
+    assert result["cron_job_id"] == "abc123"
+    session_end = next(call for call in calls if call[0] == ("on_session_end",))
+    assert session_end[1]["cron_job_id"] == "abc123"
+    assert session_end[1]["cron_job_name"] == "Nightly digest"

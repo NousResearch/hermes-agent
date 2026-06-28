@@ -85,6 +85,10 @@ def test_interrupted_session_end_helper_emits_observer_shape(mock_invoke_hook):
     assert call.kwargs["completed"] is False
     assert call.kwargs["interrupted"] is True
     assert call.kwargs["reason"] == "keyboard_interrupt"
+    assert call.kwargs["terminal_status"] == "interrupted"
+    assert call.kwargs["interrupted_by"] == "user"
+    assert call.kwargs["turn_exit_reason"] == "keyboard_interrupt"
+    assert call.kwargs["telemetry_schema_version"] == "hermes.observer.v1"
 
 
 @patch("hermes_cli.plugins.invoke_hook")

@@ -27,6 +27,83 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+TELEMETRY_SCHEMA_VERSION = "hermes.observer.v1"
+
+
+def _string_attr(agent, name: str) -> str:
+    value = getattr(agent, name, "")
+    return value if isinstance(value, str) else ""
+
+
+def build_terminal_telemetry(
+    agent,
+    *,
+    completed: bool,
+    interrupted: bool,
+    failed: bool = False,
+    api_call_count: int | None = None,
+    turn_exit_reason: str = "",
+) -> dict[str, object]:
+    """Return normalized terminal-attribution fields for observer hooks."""
+
+    exit_reason = str(turn_exit_reason or "")
+    timeout_kind = _string_attr(agent, "_timeout_kind")
+    if not timeout_kind and (
+        exit_reason == "budget_exhausted"
+        or exit_reason.startswith("error_near_max_iterations")
+        or "max_iterations" in exit_reason
+    ):
+        timeout_kind = "max_turns"
+
+    terminal_status = _string_attr(agent, "_terminal_status")
+    if not terminal_status:
+        if timeout_kind:
+            terminal_status = "timeout"
+        elif interrupted:
+            terminal_status = "interrupted"
+        elif failed:
+            terminal_status = "error"
+        elif completed:
+            terminal_status = "completed"
+        else:
+            terminal_status = "incomplete"
+
+    interrupted_by = _string_attr(agent, "_interrupted_by")
+    if interrupted and not interrupted_by:
+        if timeout_kind.startswith("cron"):
+            interrupted_by = "cron_scheduler"
+        elif getattr(agent, "_interrupt_message", None):
+            interrupted_by = "user"
+        else:
+            interrupted_by = "unknown"
+
+    attrs: dict[str, object] = {
+        "telemetry_schema_version": TELEMETRY_SCHEMA_VERSION,
+        "terminal_status": terminal_status,
+        "turn_exit_reason": exit_reason,
+    }
+    if timeout_kind:
+        attrs["timeout_kind"] = timeout_kind
+    if interrupted_by:
+        attrs["interrupted_by"] = interrupted_by
+    if api_call_count is not None:
+        attrs["api_call_count"] = api_call_count
+
+    max_turns = getattr(agent, "max_iterations", None)
+    if max_turns is not None:
+        attrs["max_turns"] = max_turns
+
+    for attr_name, field_name in (
+        ("_cron_job_id", "cron_job_id"),
+        ("_cron_job_name", "cron_job_name"),
+    ):
+        value = _string_attr(agent, attr_name)
+        if value:
+            attrs[field_name] = value
+
+    return attrs
+
+
 def finalize_turn(
     agent,
     *,
@@ -379,6 +456,15 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    _terminal_telemetry = build_terminal_telemetry(
+        agent,
+        completed=completed,
+        interrupted=interrupted,
+        failed=failed,
+        api_call_count=api_call_count,
+        turn_exit_reason=_turn_exit_reason,
+    )
+    result.update(_terminal_telemetry)
     # Surface any post-loop cleanup failures so the caller can distinguish a
     # clean turn from one whose trajectory/session/resource teardown raised
     # (the response is still returned either way — #8049).
@@ -451,6 +537,7 @@ def finalize_turn(
             interrupted=interrupted,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            **_terminal_telemetry,
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

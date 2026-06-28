@@ -436,6 +436,15 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if agent is not None:
         try:
             from hermes_cli.plugins import invoke_hook
+            from agent.turn_finalizer import build_terminal_telemetry
+
+            _terminal_telemetry = build_terminal_telemetry(
+                agent,
+                completed=False,
+                interrupted=True,
+                failed=True,
+                turn_exit_reason=end_reason,
+            )
 
             invoke_hook(
                 "on_session_end",
@@ -445,6 +454,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                 interrupted=True,
                 model=getattr(agent, "model", "unknown"),
                 platform=getattr(agent, "platform", None) or "tui",
+                **_terminal_telemetry,
             )
         except Exception:
             pass

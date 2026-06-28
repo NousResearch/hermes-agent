@@ -1094,6 +1094,15 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
 
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from agent.turn_finalizer import build_terminal_telemetry
+
+        _terminal_telemetry = build_terminal_telemetry(
+            agent,
+            completed=False,
+            interrupted=True,
+            failed=True,
+            turn_exit_reason=reason,
+        )
         _invoke_hook(
             "on_session_end",
             session_id=session_id,
@@ -1105,6 +1114,7 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
             model=getattr(agent, "model", None),
             platform=getattr(agent, "platform", None) or "cli",
             reason=reason,
+            **_terminal_telemetry,
         )
     except Exception:
         pass

@@ -63,7 +63,14 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.execute("PRAGMA journal_mode=WAL")
+    # Route through the shared helper so verification_evidence.db gets the same
+    # WAL-with-DELETE-fallback behavior and the macOS F_FULLFSYNC checkpoint
+    # barrier (#54045) that every other production DB already uses; it was the
+    # last one still setting journal_mode=WAL with a bare PRAGMA. Lazy import
+    # mirrors hermes_cli.projects_db / kanban_db to avoid an import cycle.
+    from hermes_state import apply_wal_with_fallback
+
+    apply_wal_with_fallback(conn, db_label="verification_evidence.db")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     _ensure_schema(conn)

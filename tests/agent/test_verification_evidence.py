@@ -4,12 +4,32 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from agent import verification_evidence as verification_evidence_module
 from agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
     record_terminal_result,
     verification_status,
 )
+
+
+def test_connect_uses_shared_wal_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    calls = []
+
+    def apply_wal_with_fallback(conn, *, db_label):
+        calls.append((conn, db_label))
+
+    monkeypatch.setattr(
+        "hermes_state.apply_wal_with_fallback",
+        apply_wal_with_fallback,
+    )
+
+    conn = verification_evidence_module._connect()
+    try:
+        assert calls == [(conn, "verification_evidence.db")]
+    finally:
+        conn.close()
 
 
 def _node_project(root: Path) -> None:

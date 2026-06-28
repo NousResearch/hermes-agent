@@ -231,6 +231,31 @@ def _project_meta_path(store: Path, dir_hash: str) -> Path:
     return store / _PROJECTS_DIRNAME / f"{dir_hash}.json"
 
 
+def _resolve_physical_dir(store: Path, working_dir: str) -> str:
+    """Resolve *working_dir* to a physical path that exists on disk.
+
+    When *working_dir* is a Docker container path (e.g.
+    ``/workspace/repos/myproject``) that doesn't exist on the host, look
+    up the project metadata to find the host path that was recorded when
+    the checkpoint was created.  Returns *working_dir* unchanged when it
+    already exists or when no metadata is available.
+    """
+    if Path(working_dir).exists():
+        return working_dir
+    dir_hash = _project_hash(working_dir)
+    meta_path = _project_meta_path(store, dir_hash)
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(meta, dict) and meta.get("workdir"):
+                candidate = meta["workdir"]
+                if Path(candidate).exists():
+                    return candidate
+        except (OSError, ValueError):
+            pass
+    return working_dir
+
+
 # ---------------------------------------------------------------------------
 # Git env
 # ---------------------------------------------------------------------------
@@ -476,9 +501,9 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     return None
 
 
-def _register_project(store: Path, working_dir: str) -> None:
+def _register_project(store: Path, working_dir: str, *, project_key: str | None = None) -> None:
     """Create or update ``projects/<hash>.json`` with workdir + timestamps."""
-    dir_hash = _project_hash(working_dir)
+    dir_hash = _project_hash(project_key or working_dir)
     meta_path = _project_meta_path(store, dir_hash)
     now = time.time()
     meta: Dict = {"workdir": str(_normalize_path(working_dir)),
@@ -497,12 +522,12 @@ def _register_project(store: Path, working_dir: str) -> None:
         logger.debug("Could not write project metadata %s: %s", meta_path, exc)
 
 
-def _touch_project(store: Path, working_dir: str) -> None:
+def _touch_project(store: Path, working_dir: str, *, project_key: str | None = None) -> None:
     """Update last_touch for a project, preserving created_at."""
-    dir_hash = _project_hash(working_dir)
+    dir_hash = _project_hash(project_key or working_dir)
     meta_path = _project_meta_path(store, dir_hash)
     if not meta_path.exists():
-        _register_project(store, working_dir)
+        _register_project(store, working_dir, project_key=project_key)
         return
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -646,11 +671,24 @@ class CheckpointManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def ensure_checkpoint(self, working_dir: str, reason: str = "auto") -> bool:
+    def ensure_checkpoint(
+        self,
+        working_dir: str,
+        reason: str = "auto",
+        *,
+        project_key: str | None = None,
+    ) -> bool:
         """Take a checkpoint if enabled and not already done this turn.
 
+        *project_key* overrides the hash key used to identify the project.
+        When ``None`` (the default), ``working_dir`` is used for both the
+        project hash **and** the git work-tree.  Set *project_key* when the
+        logical project identity differs from the physical path git needs
+        (e.g. Docker bind mounts where ``TERMINAL_CWD`` is the container
+        path but git I/O must use the host path).
+
         Returns True if a checkpoint was taken, False otherwise.
-        Never raises — all errors are silently logged.
+        Never raises \u2014 all errors are silently logged.
         """
         if not self.enabled:
             return False
@@ -675,7 +713,7 @@ class CheckpointManager:
         self._checkpointed_dirs.add(abs_dir)
 
         try:
-            return self._take(abs_dir, reason)
+            return self._take(abs_dir, reason, project_key=project_key)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
@@ -688,10 +726,13 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return []
 
+        # Use physical path for git I/O (Docker container paths may not exist on host)
+        io_dir = _resolve_physical_dir(store, abs_dir)
+
         ref = _ref_name(_project_hash(abs_dir))
         ok, stdout, _ = _run_git(
             ["log", ref, f"--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
-            store, abs_dir,
+            store, io_dir,
             allowed_returncodes={128, 129},
         )
 
@@ -713,7 +754,7 @@ class CheckpointManager:
                 }
                 stat_ok, stat_out, _ = _run_git(
                     ["diff", "--shortstat", f"{parts[0]}~1", parts[0]],
-                    store, abs_dir,
+                    store, io_dir,
                     allowed_returncodes={128, 129},
                 )
                 if stat_ok and stat_out:
@@ -746,8 +787,10 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
+        io_dir = _resolve_physical_dir(store, abs_dir)
+
         ok, _, err = _run_git(
-            ["cat-file", "-t", commit_hash], store, abs_dir,
+            ["cat-file", "-t", commit_hash], store, io_dir,
         )
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found"}
@@ -756,22 +799,22 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage current state into the per-project index to compare.
-        _run_git(["add", "-A"], store, abs_dir,
+        _run_git(["add", "-A"], store, io_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
 
         ok_stat, stat_out, _ = _run_git(
             ["diff", "--stat", commit_hash, "--cached"],
-            store, abs_dir, index_file=index_file,
+            store, io_dir, index_file=index_file,
         )
         ok_diff, diff_out, _ = _run_git(
             ["diff", commit_hash, "--cached", "--no-color"],
-            store, abs_dir, index_file=index_file,
+            store, io_dir, index_file=index_file,
         )
 
         # Reset staged tree back to the project's last checkpoint so the
         # index doesn't drift out of sync with the ref.
         ref = _ref_name(dir_hash)
-        _run_git(["read-tree", ref], store, abs_dir,
+        _run_git(["read-tree", ref], store, io_dir,
                  index_file=index_file,
                  allowed_returncodes={128})
 
@@ -802,15 +845,17 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
+        io_dir = _resolve_physical_dir(store, abs_dir)
+
         ok, _, err = _run_git(
-            ["cat-file", "-t", commit_hash], store, abs_dir,
+            ["cat-file", "-t", commit_hash], store, io_dir,
         )
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found",
                     "debug": err or None}
 
         # Take a pre-rollback snapshot so you can undo the undo.
-        self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
+        self._take(io_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
@@ -818,7 +863,7 @@ class CheckpointManager:
         restore_target = file_path if file_path else "."
         ok, stdout, err = _run_git(
             ["checkout", commit_hash, "--", restore_target],
-            store, abs_dir, timeout=_GIT_TIMEOUT * 2,
+            store, io_dir, timeout=_GIT_TIMEOUT * 2,
             index_file=index_file,
         )
 
@@ -827,7 +872,7 @@ class CheckpointManager:
                     "debug": err or None}
 
         ok2, reason_out, _ = _run_git(
-            ["log", "--format=%s", "-1", commit_hash], store, abs_dir,
+            ["log", "--format=%s", "-1", commit_hash], store, io_dir,
         )
         reason = reason_out if ok2 else "unknown"
 
@@ -863,8 +908,13 @@ class CheckpointManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _take(self, working_dir: str, reason: str) -> bool:
-        """Take a snapshot.  Returns True on success."""
+    def _take(self, working_dir: str, reason: str, *, project_key: str | None = None) -> bool:
+        """Take a snapshot.  Returns True on success.
+
+        *project_key* overrides the hash key for project identification.
+        When ``None``, ``working_dir`` is used for both the project hash
+        and the git work-tree.
+        """
         store = _store_path(CHECKPOINT_BASE)
 
         err = _init_store(store, working_dir)
@@ -872,14 +922,14 @@ class CheckpointManager:
             logger.debug("Checkpoint store init failed: %s", err)
             return False
 
-        _touch_project(store, working_dir)
+        _touch_project(store, working_dir, project_key=project_key)
 
         # Quick size guard — don't try to snapshot enormous directories
         if _dir_file_count(working_dir) > _MAX_FILES:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
 
-        dir_hash = _project_hash(working_dir)
+        dir_hash = _project_hash(project_key or working_dir)
         index_file = _index_path(store, dir_hash)
         ref = _ref_name(dir_hash)
 

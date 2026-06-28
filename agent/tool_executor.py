@@ -447,7 +447,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     file_path = function_args.get("path", "")
                     if file_path:
                         work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
-                        agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+                        agent._checkpoint_mgr.ensure_checkpoint(
+                            work_dir, f"before {function_name}",
+                            project_key=os.getenv("TERMINAL_CWD"),
+                        )
                 except Exception:
                     pass
 
@@ -1004,7 +1007,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 if file_path:
                     work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
                     agent._checkpoint_mgr.ensure_checkpoint(
-                        work_dir, f"before {function_name}"
+                        work_dir, f"before {function_name}",
+                        project_key=os.getenv("TERMINAL_CWD"),
                     )
             except Exception:
                 pass  # never block tool execution

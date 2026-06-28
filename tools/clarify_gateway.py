@@ -231,10 +231,13 @@ def clear_session(session_key: str) -> int:
 def get_clarify_timeout() -> int:
     """Read the clarify response timeout (seconds) from config.
 
-    Defaults to 600 (10 minutes) — long enough for the user to type a
-    thoughtful response, short enough that an abandoned prompt eventually
+    Defaults to 3600 (1 hour) — long enough that a user who steps away
+    (meeting, AFK, slow to read) still finds a live entry when they tap
+    the button, short enough that a genuinely abandoned prompt eventually
     unblocks the agent thread instead of pinning the running-agent guard
-    forever.
+    forever.  The old 600s default evicted the entry mid-think, so a late
+    tap landed on a dead entry and the agent hung on ``running: clarify``
+    (#32762).
 
     Reads ``agent.clarify_timeout`` from config.yaml.
     """
@@ -242,9 +245,9 @@ def get_clarify_timeout() -> int:
         from hermes_cli.config import load_config
         cfg = load_config() or {}
         agent_cfg = cfg.get("agent", {}) or {}
-        return int(agent_cfg.get("clarify_timeout", 600))
+        return int(agent_cfg.get("clarify_timeout", 3600))
     except Exception:
-        return 600
+        return 3600
 
 
 # =========================================================================

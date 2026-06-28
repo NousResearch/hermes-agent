@@ -167,11 +167,11 @@ class TestClarifyPrimitive:
         assert b is not None and b.clarify_id == "idB"
 
     def test_clarify_timeout_config_default(self):
-        """get_clarify_timeout returns 600 by default."""
+        """get_clarify_timeout returns a positive int (default 3600)."""
         from tools import clarify_gateway as cm
 
         timeout = cm.get_clarify_timeout()
-        # Default 600s OR whatever is in the user's loaded config.
+        # Default 3600s OR whatever is in the user's loaded config.
         # Floor check: must be a positive int, not crashed.
         assert isinstance(timeout, int)
         assert timeout > 0

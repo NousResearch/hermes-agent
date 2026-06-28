@@ -2208,18 +2208,24 @@ def text_to_speech_tool(
                 file_path, command_provider_config
             )
     else:
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Unique per call: a plain seconds-resolution timestamp collides when a
+        # caller fires concurrent requests (e.g. a client prefetching several
+        # sentences at once). Two calls in the same second then share one output
+        # path, and the downstream ffmpeg/opus conversion either corrupts it (a
+        # dropped/silent result) or one request reads the other's audio (wrong
+        # output). Microseconds + a random suffix keep every call's path distinct.
+        unique = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:8]}"
         out_dir = Path(DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
-            file_path = out_dir / f"tts_{timestamp}.{fmt}"
+            file_path = out_dir / f"tts_{unique}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
         elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
-            file_path = out_dir / f"tts_{timestamp}.ogg"
+            file_path = out_dir / f"tts_{unique}.ogg"
         else:
-            file_path = out_dir / f"tts_{timestamp}.mp3"
+            file_path = out_dir / f"tts_{unique}.mp3"
 
     # Ensure parent directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)

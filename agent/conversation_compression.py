@@ -32,6 +32,7 @@ import logging
 import os
 import tempfile
 import uuid
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Tuple
@@ -69,6 +70,53 @@ def _compression_lock_holder(agent: Any) -> str:
         f":agent={id(agent):x}"
         f":nonce={uuid.uuid4().hex[:8]}"
     )
+
+
+class _CompressionLockLeaseRefresher:
+    def __init__(
+        self,
+        db: Any,
+        session_id: str,
+        holder: str,
+        ttl_seconds: float,
+        refresh_interval_seconds: float | None = None,
+    ) -> None:
+        self._db = db
+        self._session_id = session_id
+        self._holder = holder
+        self._ttl_seconds = ttl_seconds
+        if refresh_interval_seconds is None:
+            refresh_interval_seconds = max(1.0, min(60.0, ttl_seconds / 2.0))
+        self._refresh_interval_seconds = max(0.1, float(refresh_interval_seconds))
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="compression-lock-refresh",
+            daemon=True,
+        )
+
+    def start(self) -> "_CompressionLockLeaseRefresher":
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._refresh_interval_seconds):
+            try:
+                refreshed = self._db.refresh_compression_lock(
+                    self._session_id,
+                    self._holder,
+                    ttl_seconds=self._ttl_seconds,
+                )
+            except Exception as exc:
+                logger.debug("compression lock refresh failed: %s", exc)
+                refreshed = False
+            if not refreshed:
+                break
 
 
 def check_compression_model_feasibility(agent: Any) -> None:
@@ -420,11 +468,17 @@ def compress_context(
     # and proceed with compression.  Skipping the lock risks a rare
     # concurrent-compression session fork; an infinite no-progress loop
     # that never compresses at all is strictly worse.
+    try:
+        _lock_ttl = float(getattr(agent, "_compression_lock_ttl_seconds", 300.0) or 300.0)
+    except (TypeError, ValueError):
+        _lock_ttl = 300.0
+    _lock_refresh_interval = getattr(agent, "_compression_lock_refresh_interval", None)
+    _lock_refresher: Optional[_CompressionLockLeaseRefresher] = None
     if _lock_db is not None and _lock_sid:
         _lock_holder = _compression_lock_holder(agent)
         try:
             _lock_acquired = _lock_db.try_acquire_compression_lock(
-                _lock_sid, _lock_holder
+                _lock_sid, _lock_holder, ttl_seconds=_lock_ttl
             )
         except Exception as _lock_err:
             # Broken/absent lock subsystem (version skew, etc.).  Log once
@@ -467,9 +521,18 @@ def compress_context(
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
             return messages, _existing_sp
+        _lock_refresher = _CompressionLockLeaseRefresher(
+            _lock_db,
+            _lock_sid,
+            _lock_holder,
+            _lock_ttl,
+            _lock_refresh_interval,
+        ).start()
 
     def _release_lock() -> None:
         """Release the lock keyed on the OLD session_id (before rotation)."""
+        if _lock_refresher is not None:
+            _lock_refresher.stop()
         if _lock_db is not None and _lock_sid and _lock_holder:
             try:
                 _lock_db.release_compression_lock(_lock_sid, _lock_holder)

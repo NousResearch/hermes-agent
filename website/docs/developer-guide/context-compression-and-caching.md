@@ -84,6 +84,9 @@ compression:
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
+  controlled_rebuild: true   # Deterministic exact-anchor packet before lossy summary
+  controlled_rebuild_budget: 12000
+  controlled_rebuild_checkpoint_budget: 16000
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
 
 # Summarization model/provider configured under auxiliary:
@@ -102,7 +105,20 @@ auxiliary:
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
+| `controlled_rebuild` | `true` | bool | Prefix the LLM summary with deterministic exact anchors and write a checkpoint before compression |
+| `controlled_rebuild_budget` | `12000` | positive int | Max chars for the packet injected into the compressed summary |
+| `controlled_rebuild_checkpoint_budget` | `16000` | positive int | Max chars written to `~/.hermes/context/sessions/<id>/checkpoint.md` |
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+
+### Controlled rebuild packet
+
+Before the lossy LLM summarizer runs, Hermes builds a deterministic packet with exact literals: current user intent, paths, commands, tool evidence, errors, and a short live tail. The packet is written to `~/.hermes/context/sessions/<session_id>/checkpoint.md` and prefixed to the compressed summary under `[CONTROLLED CONTEXT REBUILD]`.
+
+This is a safety net, not a second conversation engine. It does **not** change role alternation, tool-call adjacency, prompt caching, or which tail messages remain live. Disable it with:
+
+```bash
+hermes config set compression.controlled_rebuild false
+```
 
 ### Codex gpt-5.5 threshold autoraise
 

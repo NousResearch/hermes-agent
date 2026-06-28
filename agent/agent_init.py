@@ -1428,12 +1428,31 @@ def init_agent(
     compression_controlled_rebuild = is_truthy_value(
         _compression_cfg.get("controlled_rebuild"), default=True
     )
-    compression_controlled_rebuild_budget = int(
-        _compression_cfg.get("controlled_rebuild_budget", 12_000)
-    )
-    compression_controlled_rebuild_checkpoint_budget = int(
-        _compression_cfg.get("controlled_rebuild_checkpoint_budget", 16_000)
-    )
+    try:
+        compression_controlled_rebuild_budget = int(
+            _compression_cfg.get("controlled_rebuild_budget", 12_000)
+        )
+    except (TypeError, ValueError):
+        if not quiet_mode:
+            print("⚠️ Invalid compression.controlled_rebuild_budget; using 12000")
+        compression_controlled_rebuild_budget = 12_000
+    if compression_controlled_rebuild_budget <= 0:
+        if not quiet_mode:
+            print("⚠️ Invalid compression.controlled_rebuild_budget; using 12000")
+        compression_controlled_rebuild_budget = 12_000
+
+    try:
+        compression_controlled_rebuild_checkpoint_budget = int(
+            _compression_cfg.get("controlled_rebuild_checkpoint_budget", 16_000)
+        )
+    except (TypeError, ValueError):
+        if not quiet_mode:
+            print("⚠️ Invalid compression.controlled_rebuild_checkpoint_budget; using 16000")
+        compression_controlled_rebuild_checkpoint_budget = 16_000
+    if compression_controlled_rebuild_checkpoint_budget <= 0:
+        if not quiet_mode:
+            print("⚠️ Invalid compression.controlled_rebuild_checkpoint_budget; using 16000")
+        compression_controlled_rebuild_checkpoint_budget = 16_000
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via

@@ -677,6 +677,7 @@ compression:
   threshold: 0.50
   target_ratio: 0.20         # fraction of threshold to preserve as recent tail
   protect_last_n: 20         # minimum recent messages to keep uncompressed
+  controlled_rebuild: true   # deterministic exact-anchor packet before lossy summary
 ```
 
 :::info Legacy migration

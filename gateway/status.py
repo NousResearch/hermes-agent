@@ -555,13 +555,16 @@ def _pid_exists(pid: int) -> bool:
         # with exit 1 — a silent crash loop under systemd ``Restart=always``,
         # which respawns the gateway before reaping the previous process
         # (issue #42126). Report zombies as dead so the takeover proceeds.
+        # Best-effort: any failure to read status (partial/stub psutil,
+        # access denied, transient race) falls through to the authoritative
+        # ``pid_exists()`` below rather than raising.
         try:
             if psutil.Process(int(pid)).status() == psutil.STATUS_ZOMBIE:
                 return False
-        except psutil.NoSuchProcess:
+        except getattr(psutil, "NoSuchProcess", ()):
             return False
-        except psutil.Error:
-            pass  # Access denied / transient — defer to pid_exists below.
+        except Exception:
+            pass
         return bool(psutil.pid_exists(int(pid)))
 
     except ImportError:

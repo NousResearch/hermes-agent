@@ -1822,6 +1822,7 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
+    promptSubmitTimedOut: string
     providerCredentialRequired: string
     emptySlashCommand: string
     desktopCommands: string

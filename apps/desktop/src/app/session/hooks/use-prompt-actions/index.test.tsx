@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -342,6 +343,7 @@ describe('usePromptActions desktop slash pickers', () => {
 describe('usePromptActions submit / queue drain semantics', () => {
   afterEach(() => {
     cleanup()
+    clearNotifications()
     vi.restoreAllMocks()
   })
 
@@ -484,6 +486,39 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
       false
     )
+  })
+
+  it('explains prompt.submit ACK timeouts without encouraging duplicate retries', async () => {
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('request timed out: prompt.submit')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    expect(await handle!.submitText('will it send twice?')).toBe(false)
+
+    const lastState = states.at(-1) as { messages?: { error?: string }[] }
+    const assistantError = lastState.messages?.find(m => m.error)?.error ?? ''
+    const notification = $notifications.get()[0]
+
+    expect(assistantError).toContain('backend may still process it')
+    expect(assistantError).toContain('avoid sending it twice')
+    expect(notification?.message).toContain('backend may still process it')
+    expect(notification?.message).toContain('avoid sending it twice')
   })
 
   it('a normal (non-queue) submit still respects the busyRef guard', async () => {

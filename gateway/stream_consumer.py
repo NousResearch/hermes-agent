@@ -1132,8 +1132,13 @@ class GatewayStreamConsumer:
             # adapter) don't count toward the permanent-disable threshold —
             # they're transient and the next frame will likely succeed.
             if getattr(result, "retryable", False):
+                # Long flood-control wait: skip this frame silently and stay
+                # in draft mode so the next tick tries again.  Returning True
+                # prevents _send_or_edit from falling through to the regular
+                # edit/send path, which would re-create the edit cascade the
+                # draft transport is meant to prevent.
                 logger.debug("send_draft retryable failure (not counted): %s", error)
-                return False
+                return True
             logger.debug(
                 "send_draft success=False (failure %d/%d): %s",
                 self._draft_failures + 1, self._MAX_DRAFT_FAILURES, error,

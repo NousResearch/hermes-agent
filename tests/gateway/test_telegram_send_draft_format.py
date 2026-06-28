@@ -12,6 +12,9 @@ These tests pin:
   2. A MarkdownV2 BadRequest triggers a single plain-text retry rather than
      killing draft streaming for the whole response.
   3. A non-BadRequest failure propagates so the caller falls back to edit.
+  4. A RetryAfter on sendRichMessageDraft returns a retryable SendResult so
+     send_draft does NOT fall through to legacy sendMessageDraft and burn
+     another call in the same rate-limit bucket (issue #54275).
 """
 import sys
 from unittest.mock import AsyncMock, MagicMock
@@ -114,3 +117,85 @@ async def test_send_draft_non_badrequest_is_suppressed():
     assert result.success is True
     assert result.message_id is None
     assert len(calls) == 1  # no plain-text retry on non-BadRequest
+
+
+def _make_rich_draft_adapter() -> TelegramAdapter:
+    """Adapter with rich draft path enabled and do_api_request wired."""
+    adapter = _make_adapter()
+    adapter.format_message = lambda c: f"FMT::{c}"
+    adapter._rich_messages_enabled = True
+    adapter._rich_drafts_enabled = True
+    adapter._rich_send_disabled = False
+    adapter._rich_draft_disabled = False
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_retry_after_returns_retryable_not_legacy_fallback():
+    """When sendRichMessageDraft raises a flood-control (RetryAfter) exception,
+    send_draft must return a retryable SendResult immediately — it must NOT fall
+    through to legacy sendMessageDraft and burn another API call in the same
+    rate-limit bucket.
+
+    Regression for: https://github.com/NousResearch/hermes-agent/issues/54275
+    """
+    adapter = _make_rich_draft_adapter()
+
+    flood_exc = Exception("Too Many Requests: retry after 280")
+    flood_exc.retry_after = 280  # type: ignore[attr-defined]
+
+    async def _rich_api(method, **kwargs):
+        if method == "sendRichMessageDraft":
+            raise flood_exc
+        return True
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=_rich_api)
+    legacy_calls = []
+
+    async def _legacy(**kwargs):
+        legacy_calls.append(kwargs)
+        return True
+
+    adapter._bot.send_message_draft = AsyncMock(side_effect=_legacy)
+
+    result = await adapter.send_draft("123", 42, "streaming text")
+
+    # Must return retryable failure — not fall through to legacy.
+    assert result.success is False
+    assert result.retryable is True
+    assert getattr(result, "retry_after", None) == 280.0
+    # Legacy sendMessageDraft must NOT have been called.
+    assert len(legacy_calls) == 0, (
+        "RetryAfter on rich draft must not burn a legacy sendMessageDraft call"
+    )
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_capability_error_falls_back_to_legacy():
+    """When sendRichMessageDraft raises a capability error (not RetryAfter),
+    send_draft falls through to legacy sendMessageDraft — this is correct and
+    must not regress."""
+    adapter = _make_rich_draft_adapter()
+
+    cap_exc = Exception("Bad Request: method not found")
+
+    async def _rich_api(method, **kwargs):
+        if method == "sendRichMessageDraft":
+            raise cap_exc
+        return True
+
+    legacy_calls = []
+
+    async def _legacy(**kwargs):
+        legacy_calls.append(kwargs)
+        return True
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=_rich_api)
+    adapter._bot.send_message_draft = AsyncMock(side_effect=_legacy)
+
+    result = await adapter.send_draft("123", 42, "text")
+
+    # Capability failure → success via legacy fallback.
+    assert result.success is True
+    assert len(legacy_calls) >= 1

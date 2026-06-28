@@ -274,6 +274,38 @@ class TestDraftFallbackOnFailure:
         assert consumer._use_draft_streaming is True
 
     @pytest.mark.asyncio
+    async def test_retryable_failure_does_not_cascade_to_edit_send(self):
+        """When send_draft returns retryable=True (long flood-control wait),
+        the frame is skipped gracefully and _send_or_edit must NOT fall through
+        to the regular edit/send path — that would create the edit cascade the
+        draft transport is designed to prevent.
+
+        Regression for: https://github.com/NousResearch/hermes-agent/issues/54275
+        """
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(
+                success=False, error="flood_control:280",
+                retryable=True, retry_after=280.0,
+            )
+        )
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="m1"))
+
+        result = await consumer._send_draft_frame("frame")
+
+        # Must signal "handled" so _send_or_edit does not fall through.
+        assert result is True
+        # No fallthrough to edit or send.
+        adapter.send.assert_not_awaited()
+        adapter.edit_message.assert_not_awaited()
+        # Draft mode preserved — frame was just skipped.
+        assert consumer._use_draft_streaming is True
+        assert consumer._draft_failures == 0
+
+    @pytest.mark.asyncio
     async def test_draft_failure_falls_back_and_delivers_final_via_send(self):
         """When draft frames fail, the consumer must NOT drop the message — it
         must fall back to the edit/send path and deliver the final answer via

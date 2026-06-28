@@ -54,6 +54,12 @@ class GatewayAuthorizationMixin:
         adapters = getattr(self, "adapters", None) or {}
         return adapters.get(platform)
 
+    def _adapter_for_source(self, source: Optional[SessionSource]):
+        """Resolve the live adapter for an inbound ``SessionSource``."""
+        if source is None:
+            return None
+        return self._authorization_adapter(source.platform, source.profile)
+
     def _adapter_authorization_is_upstream(
         self,
         platform: Optional[Platform],
@@ -553,7 +559,12 @@ class GatewayAuthorizationMixin:
 
         return bool(check_ids & allowed_ids)
 
-    def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
+    def _get_unauthorized_dm_behavior(
+        self,
+        platform: Optional[Platform],
+        *,
+        profile: Optional[str] = None,
+    ) -> str:
         """Return how unauthorized DMs should be handled for a platform.
 
         Resolution order:
@@ -598,15 +609,19 @@ class GatewayAuthorizationMixin:
         # allowlist or disabled DM policy means the operator restricted access,
         # so unauthorized DMs should be dropped silently rather than answered
         # with a pairing code. An explicit pairing policy opts back into codes.
-        if platform and config and hasattr(config, "platforms"):
-            platform_cfg = config.platforms.get(platform)
-            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
-            if isinstance(extra, dict):
-                dm_policy = str(extra.get("dm_policy") or "").strip().lower()
-                if dm_policy == "pairing":
-                    return "pair"
-                if dm_policy in {"allowlist", "disabled"}:
-                    return "ignore"
+        # Prefer the profile-scoped live adapter's resolved policy in multiplex
+        # mode; fall back to the default profile's config.extra.
+        if platform:
+            dm_policy = self._adapter_dm_policy(platform, profile=profile)
+            if not dm_policy and config and hasattr(config, "platforms"):
+                platform_cfg = config.platforms.get(platform)
+                extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+                if isinstance(extra, dict):
+                    dm_policy = str(extra.get("dm_policy") or "").strip().lower()
+            if dm_policy == "pairing":
+                return "pair"
+            if dm_policy in {"allowlist", "disabled"}:
+                return "ignore"
 
         # No explicit override.  Fall back to allowlist-aware default:
         # if any allowlist is configured for this platform, silently drop

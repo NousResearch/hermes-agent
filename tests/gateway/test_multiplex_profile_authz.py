@@ -101,6 +101,44 @@ def test_secondary_allowlist_still_authorized(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
+def test_adapter_for_source_resolves_secondary_profile_adapter(monkeypatch):
+    """Ingress adapter lookup must use the stamped profile's adapter map."""
+    runner, default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)
+
+    source = SessionSource(
+        platform=Platform.WECOM,
+        user_id="attacker",
+        chat_id="dm-chat",
+        user_name="attacker",
+        chat_type="dm",
+        profile="coder",
+    )
+
+    assert runner._adapter_for_source(source) is secondary_adapter
+    assert runner._adapter_for_source(
+        SessionSource(
+            platform=Platform.WECOM,
+            user_id="allowed-user",
+            chat_id="dm-chat",
+            user_name="allowed-user",
+            chat_type="dm",
+            profile=None,
+        )
+    ) is default_adapter
+
+
+def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
+    """Unauthorized-DM behavior must read the secondary adapter's dm_policy."""
+    runner, _default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)
+    secondary_adapter._dm_policy = "allowlist"
+
+    assert runner._get_unauthorized_dm_behavior(
+        Platform.WECOM,
+        profile="coder",
+    ) == "ignore"
+    assert runner._get_unauthorized_dm_behavior(Platform.WECOM) == "ignore"
+
+
 def test_secondary_open_policy_fails_startup_guard(monkeypatch):
     """Secondary profiles must pass the same open-policy startup guard."""
     from gateway.run import _own_policy_open_startup_violation

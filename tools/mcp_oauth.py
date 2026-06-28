@@ -479,6 +479,7 @@ class OAuthCallbackServer:
     def __init__(self, port: int = 0, timeout: float = 300.0):
         self._result: dict[str, Any] = {"auth_code": None, "state": None, "error": None}
         self._timeout = timeout
+        self._stop_event = threading.Event()
         handler_cls = self._make_handler()
         # bind server at construction time — port consumed immediately
         self._server = HTTPServer(("127.0.0.1", port), handler_cls)
@@ -525,9 +526,9 @@ class OAuthCallbackServer:
         self._thread.start()
 
     def _serve_loop(self) -> None:
-        """Process requests until callback arrives or timeout."""
+        """Process requests until callback arrives, timeout, or stop event."""
         deadline = time.time() + self._timeout
-        while time.time() < deadline:
+        while not self._stop_event.is_set() and time.time() < deadline:
             try:
                 self._server.handle_request()
             except (ConnectionError, OSError, ValueError):
@@ -564,9 +565,10 @@ class OAuthCallbackServer:
 
     def close(self) -> None:
         """Shut down the server and wait for the thread."""
+        self._stop_event.set()
         self._server.server_close()
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=5.0)
 
 
 # ---------------------------------------------------------------------------

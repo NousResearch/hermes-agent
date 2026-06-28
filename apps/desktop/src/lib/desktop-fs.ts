@@ -155,16 +155,20 @@ export async function copyTextToClipboard(text: string): Promise<void> {
   await bridge().writeClipboard(text)
 }
 
-// Working-tree-vs-HEAD diff for one file. Empty when unchanged / not a repo /
-// remote backend (the diff view simply doesn't show then). Local only.
+// Working-tree-vs-HEAD diff for one file. Empty when unchanged / not a repo.
+// Remote gateway → backend git (/api/git/file-diff); local → Electron git.
 export async function desktopFileDiff(repoRoot: string, filePath: string): Promise<string> {
   const desktop = bridge()
 
-  if (isDesktopFsRemoteMode() || !desktop.git?.fileDiff) {
-    return ''
+  if (isDesktopFsRemoteMode()) {
+    const result = await desktop.api<{ diff: string }>({
+      path: `/api/git/file-diff?path=${encodeURIComponent(repoRoot)}&file=${encodeURIComponent(filePath)}`
+    })
+
+    return result.diff || ''
   }
 
-  return desktop.git.fileDiff(repoRoot, filePath)
+  return desktop.git?.fileDiff ? desktop.git.fileDiff(repoRoot, filePath) : ''
 }
 
 export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Promise<string[]> {

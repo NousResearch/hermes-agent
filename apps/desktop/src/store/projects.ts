@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBranch } from '@/global'
 import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths } from '@/lib/desktop-fs'
+import { desktopGit } from '@/lib/desktop-git'
 import { persistentAtom } from '@/lib/persisted'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
@@ -631,7 +632,7 @@ export async function startWorkInRepo(
   repoPath: string,
   options?: { name?: string; branch?: string; base?: string; existingBranch?: string }
 ): Promise<null | { path: string; branch: string }> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git || !repoPath) {
     return null
@@ -646,7 +647,7 @@ export async function startWorkInRepo(
 // Local branches for the composer's "convert a branch into a worktree" picker.
 // Empty on a remote backend / non-repo (the Electron probe can't run).
 export async function listRepoBranches(repoPath: string): Promise<HermesGitBranch[]> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git?.branchList || !repoPath) {
     return []
@@ -656,7 +657,7 @@ export async function listRepoBranches(repoPath: string): Promise<HermesGitBranc
 }
 
 export async function switchBranchInRepo(repoPath: string, branch: string): Promise<void> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git || !repoPath || !branch.trim()) {
     return
@@ -709,7 +710,7 @@ export async function removeWorktreePath(
   worktreePath: string,
   options?: { force?: boolean }
 ): Promise<void> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git) {
     return

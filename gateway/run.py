@@ -104,6 +104,41 @@ def _gateway_surface_passes_raw_text(platform: Any) -> bool:
     return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
 
 
+_STREAM_VISIBLE_FINAL_MIN_COVERAGE = 0.80
+_STREAM_CURSOR_SUFFIX_RE = re.compile(r"[▉█]+$")
+
+
+def _normalize_stream_delivery_text(value: Any) -> str:
+    text = str(value or "")
+    text = _STREAM_CURSOR_SUFFIX_RE.sub("", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _stream_visible_matches_final(visible: Any, final: Any) -> bool:
+    """Return True when streamed visible text already covers final text."""
+    visible_norm = _normalize_stream_delivery_text(visible)
+    final_norm = _normalize_stream_delivery_text(final)
+    if not visible_norm or not final_norm:
+        return False
+    if visible_norm == final_norm or visible_norm.startswith(final_norm):
+        return True
+    if final_norm.startswith(visible_norm):
+        return len(visible_norm) / max(len(final_norm), 1) >= _STREAM_VISIBLE_FINAL_MIN_COVERAGE
+    return False
+
+
+def _stream_consumer_visible_text(stream_consumer: Any) -> str:
+    if stream_consumer is None:
+        return ""
+    visible_fn = getattr(stream_consumer, "_visible_prefix", None)
+    if callable(visible_fn):
+        try:
+            return str(visible_fn() or "")
+        except Exception:
+            return ""
+    return str(getattr(stream_consumer, "_last_sent_text", "") or "")
+
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -17721,12 +17756,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
                     _previewed = bool(result.get("response_previewed"))
+                    first_response = result.get("final_response", "")
+                    _visible_matches_final = bool(
+                        _sc and _stream_visible_matches_final(
+                            _stream_consumer_visible_text(_sc),
+                            first_response,
+                        )
+                    )
                     _already_streamed = bool(
                         (_sc and getattr(_sc, "final_response_sent", False))
                         or _previewed
                         or (_sc and getattr(_sc, "final_content_delivered", False))
+                        or _visible_matches_final
                     )
-                    first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
                         try:
                             logger.info(
@@ -17742,8 +17784,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:
                         logger.info(
-                            "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",
+                            "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed (visible_matches_final=%s).",
                             session_key or "?",
+                            _visible_matches_final,
                         )
                     # Release deferred bg-review notifications now that the
                     # first response has been delivered.  Pop from the
@@ -17906,17 +17949,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _content_delivered = bool(
                 _sc and getattr(_sc, "final_content_delivered", False)
             )
+            _visible_matches_final = bool(
+                _sc and _stream_visible_matches_final(
+                    _stream_consumer_visible_text(_sc),
+                    _final,
+                )
+            )
             # Plugin hooks (e.g. transform_llm_output) may have appended content
             # after streaming finished — when the response was transformed, always
             # send the final version so the appended content reaches the client.
             _transformed = bool(response.get("response_transformed"))
-            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _content_delivered):
+            if (
+                not _is_empty_sentinel
+                and not _transformed
+                and (
+                    _streamed
+                    or _previewed
+                    or _content_delivered
+                    or _visible_matches_final
+                )
+            ):
                 logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
+                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s visible_matches_final=%s).",
                     session_key or "?",
                     _streamed,
                     _previewed,
                     _content_delivered,
+                    _visible_matches_final,
                 )
                 response["already_sent"] = True
             elif not _is_empty_sentinel and _transformed and _sc is not None:

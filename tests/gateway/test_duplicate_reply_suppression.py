@@ -23,6 +23,7 @@ from gateway.platforms.base import (
     MessageEvent,
     SendResult,
 )
+from gateway.run import _stream_consumer_visible_text, _stream_visible_matches_final
 from gateway.session import SessionSource, build_session_key
 
 
@@ -241,6 +242,40 @@ class TestOnlyFinalStreamDeliverySuppressesFinalSend:
                 response["already_sent"] = True
 
         assert "already_sent" not in response
+
+
+class TestTolerantVisibleFinalMatching:
+    def test_whitespace_and_cursor_artifacts_match(self):
+        visible = "Here is the answer.\n\n" + "\u2589"
+        final = "Here is the answer."
+
+        assert _stream_visible_matches_final(visible, final) is True
+
+    def test_visible_superset_matches_final(self):
+        visible = "Here is the answer.\n\n"
+        final = "Here is the answer."
+
+        assert _stream_visible_matches_final(visible, final) is True
+
+    def test_high_coverage_visible_prefix_matches_final(self):
+        visible = "Here is the answer with almost all details"
+        final = "Here is the answer with almost all details included."
+
+        assert _stream_visible_matches_final(visible, final) is True
+
+    def test_low_coverage_prefix_does_not_match_final(self):
+        visible = "Here is"
+        final = "Here is the answer with important missing details."
+
+        assert _stream_visible_matches_final(visible, final) is False
+
+    def test_empty_visible_text_does_not_match_final(self):
+        assert _stream_visible_matches_final("", "final answer") is False
+
+    def test_reads_visible_prefix_from_consumer(self):
+        sc = SimpleNamespace(_visible_prefix=lambda: "shown")
+
+        assert _stream_consumer_visible_text(sc) == "shown"
 
 
 # ===================================================================

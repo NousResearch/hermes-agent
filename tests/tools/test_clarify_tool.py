@@ -229,6 +229,65 @@ class TestClarifyDictChoices:
         assert all("{" not in c for c in result["choices_offered"])
 
 
+class TestClarifyMultiSelect:
+    """Multi-select is an additive extension of clarify, not a new tool."""
+
+    def test_multi_select_metadata_reaches_callback_and_result(self):
+        seen = {}
+
+        def cb(question, choices, **kwargs):
+            seen["question"] = question
+            seen["choices"] = choices
+            seen.update(kwargs)
+            return "Alpha, Gamma"
+
+        result = json.loads(clarify_tool(
+            "Pick all that apply",
+            choices=["Alpha", "Beta", "Gamma"],
+            callback=cb,
+            multi_select=True,
+            min_selections=1,
+            max_selections=3,
+            allow_other=False,
+        ))
+
+        assert seen == {
+            "question": "Pick all that apply",
+            "choices": ["Alpha", "Beta", "Gamma"],
+            "multi_select": True,
+            "min_selections": 1,
+            "max_selections": 3,
+            "allow_other": False,
+        }
+        assert result["selection_mode"] == "multi"
+        assert result["user_response"] == "Alpha, Gamma"
+        assert result["selected_choices"] == ["Alpha", "Gamma"]
+
+    def test_single_select_result_keeps_backcompat_string(self):
+        result = json.loads(clarify_tool(
+            "Pick one",
+            choices=["Alpha", "Beta"],
+            callback=lambda q, c, **kw: "Beta",
+        ))
+
+        assert result["selection_mode"] == "single"
+        assert result["user_response"] == "Beta"
+        assert result["selected_choices"] == ["Beta"]
+
+    def test_invalid_multi_select_bounds_return_error(self):
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["A"],
+            callback=lambda q, c, **kw: "A",
+            multi_select=True,
+            min_selections=2,
+            max_selections=1,
+        ))
+
+        assert "error" in result
+        assert "min_selections" in result["error"]
+
+
 class TestClarifySchema:
     """Tests for the OpenAI function-calling schema."""
 
@@ -253,6 +312,13 @@ class TestClarifySchema:
         """Schema should specify max items for choices."""
         choices_spec = CLARIFY_SCHEMA["parameters"]["properties"]["choices"]
         assert choices_spec.get("maxItems") == MAX_CHOICES
+
+    def test_schema_exposes_multi_select_fields(self):
+        properties = CLARIFY_SCHEMA["parameters"]["properties"]
+        assert properties["multi_select"]["type"] == "boolean"
+        assert properties["min_selections"]["type"] == "integer"
+        assert properties["max_selections"]["type"] == ["integer", "null"]
+        assert properties["allow_other"]["type"] == "boolean"
 
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""

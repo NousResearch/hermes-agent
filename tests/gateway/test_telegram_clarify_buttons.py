@@ -189,6 +189,29 @@ class TestTelegramSendClarify:
         assert "<script>" not in kwargs["text"]
         assert "&lt;script&gt;" in kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_multi_select_renders_toggle_state_and_done_button(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Pick all that apply",
+            choices=["alpha", "beta", "gamma"],
+            clarify_id="cidMS",
+            session_key="sk-ms",
+            multi_select=True,
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert "Select one or more" in kwargs["text"]
+        assert "cidMS" in adapter._clarify_state
+        assert adapter._clarify_multi_state["cidMS"]["selected"] == set()
+        assert adapter._clarify_multi_state["cidMS"]["choices"] == ["alpha", "beta", "gamma"]
+
 
 # ===========================================================================
 # Callback dispatch — _handle_callback_query routing for cl:* prefixes
@@ -447,6 +470,54 @@ class TestTelegramClarifyCallback:
         assert not entry.event.is_set()
         query.answer.assert_called_once()
         assert "invalid" in query.answer.call_args[1]["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_multi_select_toggle_then_done_resolves_joined_choices(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        cm.register("cidMS", "sk-ms", "Pick", ["red", "green", "blue"], multi_select=True)
+        adapter._clarify_state["cidMS"] = "sk-ms"
+        adapter._clarify_multi_state["cidMS"] = {
+            "choices": ["red", "green", "blue"],
+            "selected": set(),
+        }
+
+        async def click(data: str):
+            query = AsyncMock()
+            query.data = data
+            query.message = MagicMock()
+            query.message.chat_id = 12345
+            query.message.text = "Pick"
+            query.from_user = MagicMock()
+            query.from_user.id = "777"
+            query.from_user.first_name = "Tester"
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            update = MagicMock()
+            update.callback_query = query
+            context = MagicMock()
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+                await adapter._handle_callback_query(update, context)
+            return query
+
+        first = await click("clms:cidMS:toggle:0")
+        assert adapter._clarify_multi_state["cidMS"]["selected"] == {0}
+        first.answer.assert_called_once()
+
+        second = await click("clms:cidMS:toggle:2")
+        assert adapter._clarify_multi_state["cidMS"]["selected"] == {0, 2}
+        second.answer.assert_called_once()
+
+        done = await click("clms:cidMS:done")
+        with cm._lock:
+            entry = cm._entries.get("cidMS")
+        assert entry is not None
+        assert entry.response == "red, blue"
+        assert entry.event.is_set()
+        assert "cidMS" not in adapter._clarify_state
+        assert "cidMS" not in adapter._clarify_multi_state
+        done.edit_message_text.assert_called_once()
 
 
 # ===========================================================================

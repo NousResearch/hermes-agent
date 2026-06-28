@@ -32,6 +32,7 @@ Two delivery paths from the adapter:
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -51,6 +52,10 @@ class _ClarifyEntry:
     session_key: str
     question: str
     choices: Optional[List[str]]
+    multi_select: bool = False
+    min_selections: int = 0
+    max_selections: Optional[int] = None
+    allow_other: bool = True
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
@@ -61,6 +66,10 @@ class _ClarifyEntry:
             "session_key": self.session_key,
             "question": self.question,
             "choices": list(self.choices) if self.choices else None,
+            "multi_select": self.multi_select,
+            "min_selections": self.min_selections,
+            "max_selections": self.max_selections,
+            "allow_other": self.allow_other,
         }
 
 
@@ -80,6 +89,10 @@ def register(
     session_key: str,
     question: str,
     choices: Optional[List[str]],
+    multi_select: bool = False,
+    min_selections: int = 0,
+    max_selections: Optional[int] = None,
+    allow_other: bool = True,
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 
@@ -91,6 +104,10 @@ def register(
         session_key=session_key,
         question=question,
         choices=list(choices) if choices else None,
+        multi_select=bool(multi_select),
+        min_selections=int(min_selections or 0),
+        max_selections=max_selections,
+        allow_other=bool(allow_other),
         # Open-ended (no choices) → next message IS the response, no buttons needed.
         awaiting_text=not bool(choices),
     )
@@ -98,6 +115,45 @@ def register(
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
     return entry
+
+
+def parse_multi_select_response(raw: str, choices: List[str]) -> Optional[List[str]]:
+    """Parse a text fallback multi-select response into offered choice labels.
+
+    Accepts compact forms like ``1,3``, ``A+C``, ``2 + 4``, and exact labels
+    like ``Alpha, Gamma``. Returns ``None`` when the response looks like a
+    custom free-form answer rather than a clean selection.
+    """
+    if not raw or not choices:
+        return None
+
+    tokens = [t.strip() for t in re.split(r"\s*(?:,|\+|;|\n)\s*", raw.strip()) if t.strip()]
+    if not tokens:
+        return None
+
+    labels = list(choices)
+    label_map = {label.lower(): label for label in labels}
+    selected: List[str] = []
+
+    for token in tokens:
+        label = None
+        if token.isdigit():
+            idx = int(token) - 1
+            if 0 <= idx < len(labels):
+                label = labels[idx]
+        elif len(token) == 1 and token.isalpha():
+            idx = ord(token.upper()) - ord("A")
+            if 0 <= idx < len(labels):
+                label = labels[idx]
+        else:
+            label = label_map.get(token.lower())
+
+        if label is None:
+            return None
+        if label not in selected:
+            selected.append(label)
+
+    return selected or None
 
 
 def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:

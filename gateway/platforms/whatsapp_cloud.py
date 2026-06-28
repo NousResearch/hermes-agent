@@ -675,6 +675,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        multi_select: bool = False,
+        min_selections: int = 0,
+        max_selections: Optional[int] = None,
+        allow_other: bool = True,
     ) -> SendResult:
         """Render a clarify prompt as native WhatsApp interactive buttons.
 

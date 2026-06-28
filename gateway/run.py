@@ -16721,7 +16721,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # explaining that no response arrived (so the agent can adapt
             # rather than hang forever).
             # ------------------------------------------------------------------
-            def _clarify_callback_sync(question: str, choices) -> str:
+            def _clarify_callback_sync(
+                question: str,
+                choices,
+                *,
+                multi_select: bool = False,
+                min_selections: int = 0,
+                max_selections = None,
+                allow_other: bool = True,
+            ) -> str:
                 from tools import clarify_gateway as _clarify_mod
                 import uuid as _uuid
 
@@ -16734,6 +16742,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key or "",
                     question=question,
                     choices=list(choices) if choices else None,
+                    multi_select=multi_select,
+                    min_selections=min_selections,
+                    max_selections=max_selections,
+                    allow_other=allow_other,
                 )
 
                 # Pause typing — like approval, we don't want a "thinking..."
@@ -16754,6 +16766,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         clarify_id=clarify_id,
                         session_key=session_key or "",
                         metadata=_status_thread_metadata,
+                        multi_select=multi_select,
+                        min_selections=min_selections,
+                        max_selections=max_selections,
+                        allow_other=allow_other,
                     ),
                     _loop_for_step,
                     logger=logger,

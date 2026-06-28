@@ -1166,15 +1166,23 @@ def _normalize_codex_response(
         if item_type == "message":
             item_phase = getattr(item, "phase", None)
             normalized_phase = None
+            is_commentary_phase = False
             if isinstance(item_phase, str):
                 normalized_phase = item_phase.strip().lower()
                 if normalized_phase in {"commentary", "analysis"}:
                     saw_commentary_phase = True
+                    is_commentary_phase = True
                 elif normalized_phase in {"final_answer", "final"}:
                     saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
             if message_text:
-                content_parts.append(message_text)
+                # Responses ``commentary``/``analysis`` phase text is scratch/tool
+                # preamble for the model/provider protocol, not user-visible final
+                # answer text.  Preserve the exact message item for replay/cache
+                # continuity, but do not expose it as assistant content where the
+                # gateway/CLI/interim callbacks can leak it to the user.
+                if not is_commentary_phase:
+                    content_parts.append(message_text)
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",
                     "role": "assistant",
@@ -1269,7 +1277,11 @@ def _normalize_codex_response(
             ))
 
     final_text = "\n".join([p for p in content_parts if p]).strip()
-    if not final_text and hasattr(response, "output_text"):
+    if (
+        not final_text
+        and hasattr(response, "output_text")
+        and not (saw_commentary_phase and not saw_final_answer_phase)
+    ):
         out_text = getattr(response, "output_text", "")
         if isinstance(out_text, str):
             final_text = out_text.strip()

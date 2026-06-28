@@ -203,6 +203,33 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     agent.context_compressor.compress.assert_not_called()
 
 
+def test_stale_parent_after_rotation_does_not_create_second_child(tmp_path: Path) -> None:
+    """A stale agent that wakes after lock release must not fork the parent.
+
+    The per-session lock blocks true overlap, but an older AIAgent instance can
+    still hold the parent session_id after another path has already compressed
+    and released the lock.  It must notice the existing compression child and
+    return unchanged instead of creating a sibling child.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "STALE_PARENT_AFTER_ROTATION"
+    child_sid = "CANONICAL_CHILD"
+    db.create_session(parent_sid, source="discord")
+    db.end_session(parent_sid, "compression")
+    db.create_session(child_sid, source="discord", parent_session_id=parent_sid)
+
+    agent = _build_agent_with_db(db, parent_sid)
+    messages = [{"role": "user", "content": "m1"}, {"role": "user", "content": "m2"}]
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert compressed is messages or compressed == messages
+    assert agent.session_id == parent_sid
+    assert _count_children(db, parent_sid) == 1
+    agent.context_compressor.compress.assert_not_called()
+    assert db.get_compression_lock_holder(parent_sid) is None
+
+
 def test_compression_restores_user_turn_when_compressor_drops_all_users(tmp_path: Path) -> None:
     """Provider chat templates need at least one user message after compaction.
 

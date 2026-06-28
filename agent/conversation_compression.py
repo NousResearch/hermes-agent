@@ -736,6 +736,36 @@ def compress_context(
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
             return messages, _existing_sp
+        try:
+            _compression_tip = _lock_db.get_compression_tip(_lock_sid)
+            _session_row = _lock_db.get_session(_lock_sid)
+        except Exception as _state_err:
+            logger.debug(
+                "compression post-lock lineage check failed for session=%s: %s",
+                _lock_sid, _state_err,
+            )
+            _compression_tip = _lock_sid
+            _session_row = None
+        if (
+            (_compression_tip and _compression_tip != _lock_sid)
+            or (
+                isinstance(_session_row, dict)
+                and _session_row.get("end_reason") == "compression"
+            )
+        ):
+            logger.warning(
+                "compression skipped: session=%s already rotated to %s",
+                _lock_sid, _compression_tip or "unknown",
+            )
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            if _lock_db is not None and _lock_sid and _lock_holder:
+                try:
+                    _lock_db.release_compression_lock(_lock_sid, _lock_holder)
+                except Exception as _rel_err:
+                    logger.debug("compression lock release failed: %s", _rel_err)
+            return messages, _existing_sp
         if _lock_holder is not None:
             _lock_refresher = _CompressionLockLeaseRefresher(
                 _lock_db,

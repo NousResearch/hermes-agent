@@ -209,6 +209,128 @@ class PrivacyContractTest(unittest.TestCase):
         self.assertNotIn('"token":', redacted)
         self.assertIn("[redacted]", redacted)
 
+    def test_redaction_scrubs_paths_and_urls(self):
+        raw = (
+            "Worker crashed at /home/alice/.hermes/profiles/default/run.py "
+            "posting to https://hooks.example.com/T0/B0/abc "
+            "(C:\\Users\\alice\\secrets.txt)"
+        )
+
+        redacted = plugin_api.redact_text(raw, limit=500)
+
+        self.assertNotIn("/home/alice", redacted)
+        self.assertNotIn("hooks.example.com", redacted)
+        self.assertNotIn("C:\\Users\\alice", redacted)
+        self.assertIn("[redacted-path]", redacted)
+        self.assertIn("[redacted-url]", redacted)
+
+    def test_cron_string_schedule_does_not_crash(self):
+        # Legacy / hand-edited jobs.json can store ``schedule`` as a bare cron
+        # string with no ``schedule_display``. collect_cron must not raise
+        # AttributeError on ``.get("display")`` (which 500s /overview and /tuning).
+        cron_dir = self.home / "cron"
+        cron_dir.mkdir(parents=True)
+        (cron_dir / "jobs.json").write_text(json.dumps({
+            "jobs": [
+                {"id": "j-str", "name": "n1", "enabled": True, "profile": "default", "schedule": "0 9 * * *"},
+                {"id": "j-dict", "name": "n2", "enabled": True, "profile": "default", "schedule": {"display": "every hour"}},
+                {"id": "j-none", "name": "n3", "enabled": True, "profile": "default"},
+            ]
+        }))
+
+        payload = plugin_api.collect_cron([])
+
+        self.assertEqual([p["schedule"] for p in payload], ["0 9 * * *", "every hour", None])
+
+    def test_error_fields_scrub_paths_urls_and_secrets_end_to_end(self):
+        # Free-text error columns (cron last_error, sessions.handoff_error,
+        # task_runs.error / tasks.last_failure_error) must not leak absolute
+        # paths, delivery URLs, or secret-like strings into the API payload.
+        secret = "api_key=SUPER-SECRET-VALUE"
+        local_path = "/home/alice/.hermes/profiles/default/work/run.py"
+        url = "https://hooks.example.com/T0/B0/abcdef"
+        leak = f"Worker crashed: {secret} at {local_path} posting to {url}"
+
+        cron_dir = self.home / "cron"
+        cron_dir.mkdir(parents=True)
+        (cron_dir / "jobs.json").write_text(json.dumps({
+            "jobs": [{
+                "id": "job-1", "name": "n", "enabled": True, "profile": "default",
+                "last_status": "error", "last_error": leak,
+            }]
+        }))
+
+        db = self.home / "state.db"
+        con = sqlite3.connect(db)
+        now = int(time.time())
+        con.executescript(
+            """
+            CREATE TABLE sessions (
+              id TEXT, title TEXT, source TEXT, state TEXT, model TEXT,
+              started_at INTEGER, ended_at INTEGER, message_count INTEGER,
+              tool_call_count INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+              reasoning_tokens INTEGER, api_call_count INTEGER,
+              actual_cost_usd REAL, estimated_cost_usd REAL, handoff_error TEXT,
+              handoff_platform TEXT
+            );
+            """
+        )
+        con.execute(
+            "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("sess-1", "t", "cli", "completed", "m", now - 120, now - 60, 1, 1, 10, 10, 0, 1, None, 0.0, leak, "telegram"),
+        )
+        con.commit()
+        con.close()
+
+        kdb = self.home / "kanban.db"
+        con = sqlite3.connect(kdb)
+        con.executescript(
+            """
+            CREATE TABLE tasks (
+              id TEXT, title TEXT, status TEXT, assignee TEXT, priority INTEGER,
+              created_at INTEGER, started_at INTEGER, completed_at INTEGER,
+              consecutive_failures INTEGER, last_failure_error TEXT,
+              worker_pid INTEGER, claim_expires INTEGER, last_heartbeat_at INTEGER,
+              current_run_id TEXT, max_runtime_seconds INTEGER, session_id TEXT
+            );
+            CREATE TABLE task_runs (
+              id TEXT, task_id TEXT, profile TEXT, step_key TEXT, status TEXT,
+              outcome TEXT, worker_pid INTEGER, last_heartbeat_at INTEGER,
+              started_at INTEGER, ended_at INTEGER, error TEXT, summary TEXT
+            );
+            CREATE TABLE task_events (
+              id TEXT, task_id TEXT, run_id TEXT, kind TEXT, created_at INTEGER
+            );
+            """
+        )
+        con.execute(
+            "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("task-1", "private task", "running", "default", 0, now - 60, now - 30, None,
+             1, leak, 111, now + 600, now - 10, "run-1", 3600, "sess-1"),
+        )
+        con.execute(
+            "INSERT INTO task_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("run-1", "task-1", "default", "step", "crashed", "crashed", 111, now - 5,
+             now - 30, now - 1, leak, None),
+        )
+        con.commit()
+        con.close()
+
+        cron_payload = json.dumps(plugin_api.collect_cron([]))
+        sessions_payload = json.dumps(plugin_api.collect_sessions())
+        kanban_payload = json.dumps(
+            plugin_api.collect_kanban([{"name": "default", "_public_name": "default", "gateway_state": "running"}])
+        )
+
+        for blob in (cron_payload, sessions_payload, kanban_payload):
+            self.assertNotIn("SUPER-SECRET-VALUE", blob)
+            self.assertNotIn("/home/alice", blob)
+            self.assertNotIn("hooks.example.com", blob)
+        # Each error column actually surfaced (scrubbed, not silently dropped).
+        self.assertIn("[redacted", cron_payload)
+        self.assertIn("[redacted", sessions_payload)
+        self.assertIn("[redacted", kanban_payload)
+
 
 if __name__ == "__main__":
     unittest.main()

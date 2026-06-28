@@ -382,7 +382,6 @@
       { label: "Outcome Risks", value: failedRuns || 0, state: failedRuns ? "warning" : "ok" },
       { label: "Cost Risks", value: costRisks, state: costRisks ? "warning" : "ok" },
     ];
-    const primaryTiles = tiles.slice(0, 4);
     const primaryTuningItems = tuningItems.slice(0, 2);
     const backlogTuningItems = tuningItems.slice(2);
 
@@ -409,7 +408,7 @@
         )
       ),
       el("div", { className: "olympus-hq-tiles" },
-        primaryTiles.map((item) => el("div", { key: item.label, className: "olympus-hq-tile" },
+        tiles.map((item) => el("div", { key: item.label, className: "olympus-hq-tile" },
           el("span", null, item.label),
           el("strong", null, String(item.value)),
           el(StatePill, { state: item.state })

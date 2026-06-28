@@ -68,6 +68,15 @@ REDACTION_PATTERNS = [
     re.compile(r"ghp_[A-Za-z0-9_]+"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]+"),
 ]
+# Free-text error/log fields routinely embed absolute filesystem paths and
+# delivery URLs (worker tracebacks, handoff failures, webhook errors). The
+# privacy contract says local paths and base URLs are hidden by default, so
+# scrub them alongside secret-like strings before any error text is returned.
+URL_PATTERN = re.compile(r"(?i)\b(?:https?|ftp|wss?)://[^\s'\"<>]+")
+PATH_PATTERNS = [
+    re.compile(r"(?i)[a-z]:\\[^\s'\"|<>]+"),         # Windows: C:\Users\alice\...
+    re.compile(r"(?<![\w.])~?(?:/[\w.\-]+){2,}/?"),  # POSIX / home: /home/alice/.hermes, ~/x/y
+]
 # Precise log failure signals (avoids false positives like "0 failed" / "failed: false").
 LOG_ERROR_PATTERNS = [
     ("traceback", re.compile(r"\btraceback\b")),
@@ -85,10 +94,9 @@ def now_iso() -> str:
 
 
 def redact_log_value(value: Any, limit: int = 180) -> str:
-    text = "" if value is None else str(value)
-    for pattern in REDACTION_PATTERNS:
-        text = pattern.sub(lambda m: m.group(1) + "[redacted]" if m.groups() else "[redacted]", text)
-    return text[:limit]
+    # Same redaction the API payloads use, so log warnings can't leak a path
+    # or secret that the response fields scrub.
+    return redact_text(value, limit)
 
 
 def log_read_warning(context: str, exc: BaseException) -> None:
@@ -168,6 +176,9 @@ def redact_text(value: Any, limit: int = 180) -> str:
     text = "" if value is None else str(value)
     for pattern in REDACTION_PATTERNS:
         text = pattern.sub(lambda m: m.group(1) + "[redacted]" if m.groups() else "[redacted]", text)
+    text = URL_PATTERN.sub("[redacted-url]", text)
+    for pattern in PATH_PATTERNS:
+        text = pattern.sub("[redacted-path]", text)
     return text[:limit]
 
 
@@ -1382,6 +1393,25 @@ def collect_profiles() -> List[Dict[str, Any]]:
     return profiles
 
 
+def cron_schedule_display(job: Dict[str, Any]) -> Optional[str]:
+    """Human-readable schedule for a cron job, tolerant of legacy shapes.
+
+    ``schedule`` may be a dict (current shape, carrying a ``display`` field), a
+    bare string (older / hand-edited ``jobs.json``), or absent. Mirrors Hermes'
+    own ``_schedule_display_for_job`` normalization so a string schedule doesn't
+    raise ``AttributeError`` on ``.get("display")`` and 500 the whole scan.
+    """
+    display = job.get("schedule_display")
+    if display:
+        return str(display)
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        return schedule.get("display")
+    if schedule is not None:
+        return str(schedule)
+    return None
+
+
 def collect_cron(profiles: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     base = get_hermes_home()
     data = read_json(base / "cron" / "jobs.json") or {}
@@ -1407,7 +1437,7 @@ def collect_cron(profiles: Optional[List[Dict[str, Any]]] = None) -> List[Dict[s
             "label": public_label(job.get("name"), job_ref, "cron"),
             "state": state,
             "enabled": enabled,
-            "schedule": job.get("schedule_display") or (job.get("schedule") or {}).get("display"),
+            "schedule": cron_schedule_display(job),
             "next_run_at": ts_to_iso(job.get("next_run_at")),
             "last_run_at": ts_to_iso(job.get("last_run_at")),
             "last_status": last_status,
@@ -3469,9 +3499,15 @@ def build_metrics_spine(
     ops_evals: Dict[str, Any],
     config_policy: Dict[str, Any],
     usage_rollup: Optional[Dict[str, Any]] = None,
+    orchestration: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Hermes-grounded operational metrics for tuning, not a usage ledger."""
     kanban = kanban or {}
+    # ``stale_workers`` is produced by build_orchestration().summary, never by
+    # the collect_kanban dict — read it from orchestration so the work metric
+    # isn't stuck at 0. Fall back to deriving it if a caller didn't pass one.
+    orchestration = orchestration or build_orchestration(kanban)
+    orch_summary = orchestration.get("summary") if isinstance(orchestration.get("summary"), dict) else {}
     rollup = usage_rollup or collect_usage_rollup(profiles)
     skill_summary = skill_metadata.get("summary") if isinstance(skill_metadata.get("summary"), dict) else {}
     coverage_summary = skill_coverage.get("summary") if isinstance(skill_coverage.get("summary"), dict) else {}
@@ -3536,13 +3572,13 @@ def build_metrics_spine(
             f"avg {performance_summary.get('avg_tools_per_session')} tools/session",
             "/sessions",
         )
-    if int(kanban_totals.get("blocked") or 0) or int(kanban.get("stale_workers") or 0):
+    if int(kanban_totals.get("blocked") or 0) or int(orch_summary.get("stale_workers") or 0):
         add_signal(
             "work",
             "warning",
             "Work reliability needs review",
             "Blocked work or stale workers reduce agent usability even when usage volume looks healthy.",
-            f"{kanban_totals.get('blocked') or 0} blocked / {kanban.get('stale_workers') or 0} stale worker(s)",
+            f"{kanban_totals.get('blocked') or 0} blocked / {orch_summary.get('stale_workers') or 0} stale worker(s)",
             "/kanban",
         )
 
@@ -3567,9 +3603,8 @@ def build_metrics_spine(
             "cost_visibility": cost_confidence,
             "config_grounding": {
                 "toolsets": policy_summary.get("toolsets") or 0,
-                "enabled_toolsets": policy_summary.get("enabled_toolsets") or 0,
                 "max_turns": policy_summary.get("max_turns") or 0,
-                "auxiliary_routes": policy_summary.get("aux_configured") or 0,
+                "auxiliary_routes": policy_summary.get("auxiliary_routes") or 0,
             },
         },
         "usage": {
@@ -3616,7 +3651,7 @@ def build_metrics_spine(
             "running": kanban_totals.get("running") or 0,
             "blocked": kanban_totals.get("blocked") or 0,
             "failed_runs": performance.get("metrics", {}).get("failed_kanban_runs") if isinstance(performance.get("metrics"), dict) else 0,
-            "stale_workers": kanban.get("stale_workers") or 0,
+            "stale_workers": orch_summary.get("stale_workers") or 0,
             "recommended_view": "/kanban",
         },
         "evals": {
@@ -3946,6 +3981,7 @@ async def overview() -> Dict[str, Any]:
         ops_evals,
         config_policy,
         usage_rollup,
+        orchestration=orchestration,
     )
     health = collect_health(profiles, cron)
     attention = build_attention(profiles, gateways, cron, sessions, health, kanban)
@@ -4010,6 +4046,7 @@ async def tuning() -> Dict[str, Any]:
         ops_evals,
         config_policy,
         usage_rollup,
+        orchestration=orchestration,
     )
     health = collect_health(profiles, cron)
     attention = build_attention(profiles, gateways, cron, sessions, health, kanban)

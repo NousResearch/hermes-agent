@@ -134,14 +134,14 @@ class MetricsSpineTest(unittest.TestCase):
         })
         profiles = [{"label": "Default", "_public_name": "default", "_path": str(self.home), "state": "active", "skill_count": 1}]
         sessions = [{"state": "completed", "tool_call_count": 25, "message_count": 4, "avg_input_tokens": 500, "duration_seconds": 10}]
-        kanban = {"boards": [], "totals": {"blocked": 1, "ready": 0, "running": 0}, "open": 1, "stale_workers": 0}
+        kanban = {"boards": [], "totals": {"blocked": 1, "ready": 0, "running": 0}, "open": 1}
         skill_metadata = plugin_api.collect_skill_metadata(profiles)
         skill_coverage = {"summary": {"forced_skill_tasks": 0}}
         skill_hygiene = plugin_api.build_skill_hygiene(skill_metadata, skill_coverage, kanban)
         profile_fitness = {"summary": {"needs_review": 0, "average_score": 100}}
         performance = plugin_api.build_performance_tracking(sessions, kanban)
         ops_evals = {"summary": {"state": "ok", "score": 100}, "items": []}
-        config_policy = {"summary": {"toolsets": 4, "enabled_toolsets": 3, "max_turns": 90, "aux_configured": 1}}
+        config_policy = {"summary": {"toolsets": 4, "max_turns": 90, "auxiliary_routes": 1}}
         rollup = plugin_api.collect_usage_rollup(profiles)
 
         spine = plugin_api.build_metrics_spine(
@@ -153,7 +153,9 @@ class MetricsSpineTest(unittest.TestCase):
 
         self.assertEqual(spine["schema_version"], "olympus.metrics_spine.v1")
         self.assertEqual(spine["window"]["ledger_owner"], "/analytics")
-        self.assertEqual(spine["coverage"]["config_grounding"]["enabled_toolsets"], 3)
+        self.assertEqual(spine["coverage"]["config_grounding"]["toolsets"], 4)
+        self.assertEqual(spine["coverage"]["config_grounding"]["auxiliary_routes"], 1)
+        self.assertNotIn("enabled_toolsets", spine["coverage"]["config_grounding"])
         self.assertEqual(spine["usage"]["cost_confidence"], "missing")
         self.assertEqual(spine["skills"]["agent_created"], 1)
         self.assertIn("Hermes Analytics owns raw usage and cost ledgers", spine["usage"]["note"])
@@ -163,6 +165,30 @@ class MetricsSpineTest(unittest.TestCase):
         self.assertNotIn(str(self.home), serialized)
         self.assertNotIn("daily_bars", serialized)
         self.assertNotIn("leaderboard", serialized.lower())
+
+    def test_metrics_spine_sources_stale_workers_from_orchestration(self):
+        # Regression: stale_workers is produced by build_orchestration().summary,
+        # never by the collect_kanban dict, so build_metrics_spine must read it
+        # from the orchestration it is handed. With the bug it was always 0.
+        profiles = [{"label": "Default", "_public_name": "default", "_path": str(self.home), "state": "active", "skill_count": 1}]
+        sessions = [{"state": "completed", "tool_call_count": 1, "message_count": 1, "avg_input_tokens": 10, "duration_seconds": 5}]
+        kanban = {"boards": [], "totals": {"blocked": 0, "ready": 1, "running": 1}, "open": 2}  # no stale_workers key
+        orchestration = {"summary": {"stale_workers": 2, "blocked": 0}}
+
+        spine = plugin_api.build_metrics_spine(
+            profiles, sessions, kanban,
+            plugin_api.collect_skill_metadata(profiles),
+            {"summary": {"forced_skill_tasks": 0}},
+            {"summary": {}},
+            {"summary": {"needs_review": 0, "average_score": 100}},
+            plugin_api.build_performance_tracking(sessions, kanban),
+            {"summary": {"state": "ok", "score": 100}, "items": []},
+            {"summary": {"toolsets": 0, "max_turns": 0, "auxiliary_routes": 0}},
+            plugin_api.collect_usage_rollup(profiles),
+            orchestration=orchestration,
+        )
+
+        self.assertEqual(spine["work"]["stale_workers"], 2)
 
 
 if __name__ == "__main__":

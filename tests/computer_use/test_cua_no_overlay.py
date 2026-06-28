@@ -47,15 +47,17 @@ class TestNoOverlayFlag:
             assert cua_backend._cua_no_overlay() is False
 
     def test_config_load_failure_fails_safe(self):
-        """Unreadable config => default to overlay enabled."""
+        """Unreadable config => auto-detect (platform-dependent)."""
         with patch("hermes_cli.config.load_config",
                    side_effect=RuntimeError("boom")):
-            assert cua_backend._cua_no_overlay() is False
+            expected = sys.platform == "linux"
+            assert cua_backend._cua_no_overlay() is expected
 
     def test_missing_section_enables(self):
         with patch("hermes_cli.config.load_config",
                    return_value={"other": {}}):
-            assert cua_backend._cua_no_overlay() is False
+            expected = sys.platform == "linux"
+            assert cua_backend._cua_no_overlay() is expected
 
 
 class TestMcpArgsOverlayFlag:

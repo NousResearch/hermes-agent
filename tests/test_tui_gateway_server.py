@@ -982,10 +982,16 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     base = int(time.time()) - 10_000
     db.create_session("parent_root", source="tui")
-    db.append_message("parent_root", role="user", content="pre-compression turn")
+    db.append_message(
+        "parent_root", role="user", content="pre-compression turn",
+        timestamp=base + 10,
+    )
     db.end_session("parent_root", "compression")
     db.create_session("cont_tip", source="tui", parent_session_id="parent_root")
-    db.append_message("cont_tip", role="assistant", content="post-compression reply")
+    db.append_message(
+        "cont_tip", role="assistant", content="post-compression reply",
+        timestamp=base + 110,
+    )
     conn = db._conn
     assert conn is not None
     conn.execute(

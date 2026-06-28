@@ -408,3 +408,38 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+def test_stream_event_translation_keeps_different_calls_with_reset_part_index_distinct():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    event1 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "gimy_set_list_state", "args": {"movieId": "111", "state": 1}}}
+                    ]
+                }
+            }
+        ]
+    }
+    event2 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "gimy_set_list_state", "args": {"movieId": "222", "state": 1}}}
+                    ]
+                }
+            }
+        ]
+    }
+
+    chunks1 = translate_stream_event(event1, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+    chunks2 = translate_stream_event(event2, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+
+    assert chunks1[0].choices[0].delta.tool_calls[0].index == 0
+    assert chunks2[0].choices[0].delta.tool_calls[0].index == 1
+    assert chunks1[0].choices[0].delta.tool_calls[0].id != chunks2[0].choices[0].delta.tool_calls[0].id

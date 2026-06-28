@@ -672,6 +672,7 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 {
                     "part_index": part_index,
                     "name": name,
+                    "args": args_str,
                     "thought_signature": thought_signature,
                 },
                 sort_keys=True,

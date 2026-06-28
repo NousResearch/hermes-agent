@@ -42,6 +42,14 @@ from utils import base_url_host_matches, base_url_hostname, env_var_enabled, ato
 logger = logging.getLogger(__name__)
 
 
+# Max consecutive successful credential-pool token refreshes of the SAME entry
+# on a persistent auth failure before we give up and let the fallback chain
+# activate. A single-entry OAuth pool can re-mint a fresh token indefinitely
+# even when the upstream keeps rejecting it, so without this cap the retry loop
+# spins forever and never reaches ``_try_activate_fallback``. See #26080.
+_MAX_AUTH_REFRESH_ATTEMPTS = 2
+
+
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
     import run_agent
@@ -775,6 +783,30 @@ def recover_with_credential_pool(
             return False, has_retried_429
         refreshed = pool.try_refresh_current()
         if refreshed is not None:
+            # ``try_refresh_current()`` re-mints a fresh OAuth token and reports
+            # success even when the upstream keeps rejecting it — a single-entry
+            # pool (common for OAuth/Max subscribers) has nothing to rotate to,
+            # so a bare "refreshed → retry" loop spins forever on the same dead
+            # token and the configured fallback never activates. Cap consecutive
+            # same-entry refreshes and fall through to fallback once exceeded.
+            # See #26080.
+            refreshed_id = getattr(refreshed, "id", None)
+            if refreshed_id is not None:
+                refresh_counts = getattr(agent, "_auth_pool_refresh_counts", None)
+                if refresh_counts is None:
+                    refresh_counts = {}
+                    agent._auth_pool_refresh_counts = refresh_counts
+                refresh_key = (agent.provider, refreshed_id)
+                refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
+                if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
+                    _ra().logger.warning(
+                        "Credential auth failure persists after %s refreshes for "
+                        "pool entry %s — treating as unrecoverable and allowing "
+                        "fallback to activate.",
+                        refresh_counts[refresh_key] - 1,
+                        refreshed_id,
+                    )
+                    return False, has_retried_429
             _ra().logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
             agent._swap_credential(refreshed)
             return True, has_retried_429
@@ -1045,6 +1077,34 @@ def restore_primary_runtime(agent) -> bool:
             provider=rt["compressor_provider"],
             api_mode=rt.get("compressor_api_mode", ""),
         )
+
+        # ── Re-select from the credential pool if one is available ──
+        # The snapshot's api_key was captured at construction time.  Across
+        # turns the pool may have rotated (token revocation, billing/rate-limit
+        # exhaustion, cooldown), leaving the snapshot key stale.  Restoring it
+        # blindly re-fails on the first request and burns through the remaining
+        # pool entries before cross-provider fallback even gets a chance.  Ask
+        # the pool for its current best entry and swap the live credential in.
+        # When the pool is absent, empty, or the entry has no usable key, we
+        # keep the snapshot key (the existing behavior).  Fixes #25205.
+        pool = getattr(agent, "_credential_pool", None)
+        if pool is not None and pool.has_available():
+            entry = pool.select()
+            if entry is not None:
+                entry_key = (
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                )
+                if entry_key:
+                    # ``_swap_credential`` rebuilds the OpenAI/Anthropic client,
+                    # reapplies base-url-scoped headers, and carries the
+                    # accumulated base_url / OAuth-detection fixes (#33163).
+                    agent._swap_credential(entry)
+                    logger.info(
+                        "Restore re-selected pool entry %s (%s)",
+                        getattr(entry, "id", "?"),
+                        getattr(entry, "label", "?"),
+                    )
 
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
@@ -1420,6 +1480,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
+    # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop,
+    # which honors Retry-After and applies adaptive/jittered backoff. The OpenAI
+    # SDK default (max_retries=2) uses its own 1-2s backoff that ignores
+    # Retry-After and double-retries inside our loop — the same deadlock the
+    # Anthropic clients hit (#26293). This is the single chokepoint every primary
+    # OpenAI/aggregator client passes through (init, switch_model, recovery,
+    # restore, request-scoped); auxiliary_client builds its own clients and keeps
+    # SDK retries because it is NOT wrapped by the conversation loop.
+    client_kwargs.setdefault("max_retries", 0)
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)
@@ -1499,6 +1568,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
     # live dict doesn't poison the rollback target.
     _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
+    # Snapshot the credential pool reference so a failed client rebuild can
+    # restore the original pool (issue #52727: pool reload is part of this
+    # switch and must be reversible on rollback).
+    _snapshot["_credential_pool"] = getattr(agent, "_credential_pool", _MISSING)
 
     try:
         # Clear the per-config context_length override so the new model's
@@ -1523,8 +1596,36 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         if api_key:
             agent.api_key = api_key
 
+        # ── Reload credential pool for the new provider (issue #52727) ──
+        # Without this, ``recover_with_credential_pool`` sees a
+        # ``pool.provider != agent.provider`` mismatch and short-circuits,
+        # leaving the new provider with no rotation/recovery on 401/429 and
+        # burning the original pool's entries. Only reload when the provider
+        # actually changed (or the pool was missing) — re-selecting the same
+        # provider must not churn the pool reference. A reload failure is
+        # logged + swallowed: the switch itself must still complete.
+        old_norm = (old_provider or "").strip().lower()
+        new_norm = (new_provider or "").strip().lower()
+        if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
+            try:
+                from agent.credential_pool import load_pool
+                agent._credential_pool = load_pool(new_provider)
+            except Exception as _pool_exc:  # noqa: BLE001
+                logger.warning(
+                    "switch_model: credential pool reload failed for %s (%s); "
+                    "continuing without pool rotation this turn",
+                    new_provider, _pool_exc,
+                )
+
         # ── Build new client ──
-        if api_mode == "anthropic_messages":
+        if (new_provider or "").strip().lower() == "moa":
+            from agent.moa_loop import MoAClient
+
+            agent.api_key = api_key or "moa-virtual-provider"
+            agent.base_url = "moa://local"
+            agent._client_kwargs = {}
+            agent.client = MoAClient(agent.model or "default")
+        elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,
                 resolve_anthropic_token,

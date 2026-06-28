@@ -1487,6 +1487,21 @@ class TestAbortOnSummaryFailure:
         assert len(result) < len(msgs)
         assert db.get_compression_failure_cooldown("s1") is None
 
+    def test_aux_fallback_clears_persisted_session_cooldown_before_retry(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+
+        c = self._make_compressor()
+        c.bind_session_state(db, "s1")
+        c.summary_model = "aux/model"
+
+        c._fallback_to_main_for_compression(Exception("provider down"), "failed")
+
+        assert c.summary_model == ""
+        assert c._summary_failure_cooldown_until == 0.0
+        assert db.get_compression_failure_cooldown("s1") is None
+
     def test_success_clears_persisted_session_cooldown(self, tmp_path):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

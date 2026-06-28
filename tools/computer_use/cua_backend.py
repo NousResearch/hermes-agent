@@ -199,7 +199,7 @@ def _cua_no_overlay() -> bool:
     if not os.environ.get("DISPLAY"):
         return True
     try:
-        with open("/proc/version") as f:
+        with open("/proc/version", encoding="utf-8") as f:
             if "microsoft" in f.read().lower():
                 return True
     except Exception:

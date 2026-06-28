@@ -218,12 +218,17 @@ def _non_conversational_metadata(
     *,
     platform: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
-    if _gateway_platform_value(platform) != "discord":
-        return metadata
-    merged = dict(metadata or {})
-    merged["non_conversational"] = True
-    return merged
+    """Mark gateway-internal sends so adapters do not render them as user replies."""
+    platform_value = _gateway_platform_value(platform)
+    if platform_value == "discord":
+        merged = dict(metadata or {})
+        merged["non_conversational"] = True
+        return merged
+    if platform_value == "telegram" and metadata:
+        merged = dict(metadata)
+        merged["telegram_reply_to_mode"] = "off"
+        return merged
+    return metadata
 
 
 def _is_transient_network_error(exc: BaseException) -> bool:

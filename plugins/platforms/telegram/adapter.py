@@ -581,6 +581,13 @@ class TelegramAdapter(BasePlatformAdapter):
         return int(reply_to) if reply_to is not None else None
 
     @staticmethod
+    def _metadata_reply_to_mode(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not metadata:
+            return None
+        value = metadata.get("telegram_reply_to_mode")
+        return str(value).strip().lower() if value is not None else None
+
+    @staticmethod
     def _looks_like_private_chat_id(chat_id: str) -> bool:
         try:
             return int(chat_id) > 0
@@ -1202,9 +1209,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         metadata_reply_to = self._metadata_reply_to_message_id(metadata)
         private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
+        effective_reply_to_mode = self._metadata_reply_to_mode(metadata) or self._reply_to_mode
         dm_topic_reply_to_off = (
             private_dm_topic_send
-            and self._reply_to_mode == "off"
+            and effective_reply_to_mode == "off"
             and bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
         )
         reply_to_source = reply_to or (
@@ -1213,7 +1221,7 @@ class TelegramAdapter(BasePlatformAdapter):
             else None
         )
         if private_dm_topic_send:
-            should_thread = reply_to_source is not None and self._reply_to_mode != "off"
+            should_thread = reply_to_source is not None and effective_reply_to_mode != "off"
         else:
             should_thread = self._should_thread_reply(reply_to_source, 0)
         reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
@@ -1222,7 +1230,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id,
             metadata,
             reply_to_message_id=reply_to_id,
-            reply_to_mode=self._reply_to_mode,
+            reply_to_mode=effective_reply_to_mode,
         )
         if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
             # Refusing to send outside the requested DM topic — defer to the
@@ -2887,9 +2895,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 # / commit 21a15b671). Honor it — don't fail loud just because the anchor was
                 # suppressed by config. The new fail-loud contract only applies when the caller
                 # didn't ask for the anchor to be dropped.
+                effective_reply_to_mode = self._metadata_reply_to_mode(metadata) or self._reply_to_mode
                 dm_topic_reply_to_off = (
                     private_dm_topic_send
-                    and self._reply_to_mode == "off"
+                    and effective_reply_to_mode == "off"
                     and bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
                 )
                 reply_to_source = reply_to or (
@@ -2898,7 +2907,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if private_dm_topic_send:
                     should_thread = (
                         reply_to_source is not None
-                        and self._reply_to_mode != "off"
+                        and effective_reply_to_mode != "off"
                     )
                 else:
                     should_thread = self._should_thread_reply(reply_to_source, i)
@@ -2914,7 +2923,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
-                    reply_to_mode=self._reply_to_mode,
+                    reply_to_mode=effective_reply_to_mode,
                 )
                 if used_thread_fallback and thread_kwargs.get("message_thread_id") is not None:
                     thread_kwargs = dict(thread_kwargs)

@@ -458,6 +458,57 @@ async def test_send_private_dm_topic_uses_direct_messages_topic_id():
     assert call_log[0]["direct_messages_topic_id"] == 99999
 
 
+
+
+@pytest.mark.asyncio
+async def test_send_metadata_reply_to_mode_off_suppresses_dm_topic_quote():
+    """Gateway-internal Telegram sends can stay in a DM topic without quoting the user."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=42)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="12345",
+        content="status update",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
+            "telegram_reply_to_message_id": "462",
+            "telegram_reply_to_mode": "off",
+        },
+    )
+
+    assert result.success is True
+    assert len(call_log) == 1
+    assert call_log[0]["chat_id"] == 12345
+    assert call_log[0]["text"] == "status update"
+    assert call_log[0]["parse_mode"]
+    assert call_log[0]["reply_to_message_id"] is None
+    assert call_log[0]["message_thread_id"] == 20197
+
+
+def test_gateway_non_conversational_telegram_metadata_suppresses_reply_quote():
+    from gateway.run import _non_conversational_metadata
+
+    metadata = _non_conversational_metadata(
+        {
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+        },
+        platform=Platform.TELEGRAM,
+    )
+
+    assert metadata["telegram_reply_to_mode"] == "off"
+    assert metadata["telegram_reply_to_message_id"] == "462"
+
+
 def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,

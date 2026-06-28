@@ -640,3 +640,53 @@ class TestResumeRowVisibleMatrixAllScoping:
         runner._gateway_session_origin_for_id = lambda sid: None
         row = {"id": "sid_unknown"}
         assert runner._resume_row_visible(self._matrix_src(), row, allow_all=True) is False
+
+
+class TestSameMatrixRoomThreadScoping:
+    """Matrix `/resume` (direct and listing) scopes by room AND thread: a live
+    session in another thread of the same room is a different session
+    (build_session_key appends thread_id), so a caller in thread A must not
+    resume/enumerate a target whose origin is in thread B. Non-threaded rooms
+    keep room-level sharing unchanged."""
+
+    @staticmethod
+    def _msrc(chat_id="!room-a:hs", user_id="@alice:hs", thread_id=None):
+        return SessionSource(platform=Platform.MATRIX, chat_id=chat_id,
+                             chat_type="group", user_id=user_id, thread_id=thread_id)
+
+    def test_same_room_no_thread_still_shared(self):
+        runner = _make_runner()
+        a = self._msrc(user_id="@alice:hs")
+        b = self._msrc(user_id="@bob:hs")
+        assert runner._same_matrix_room(a, b) is True
+
+    def test_same_room_same_thread_shared(self):
+        runner = _make_runner()
+        a = self._msrc(user_id="@alice:hs", thread_id="thr-1")
+        b = self._msrc(user_id="@bob:hs", thread_id="thr-1")
+        assert runner._same_matrix_room(a, b) is True
+
+    def test_cross_thread_same_room_blocked(self):
+        """The reviewer's probe: caller in thread-a, target origin in thread-b
+        of the same room → must not match."""
+        runner = _make_runner()
+        caller = self._msrc(thread_id="thread-a")
+        victim_origin = self._msrc(thread_id="thread-b")
+        assert runner._same_matrix_room(caller, victim_origin) is False
+
+    def test_thread_vs_no_thread_blocked(self):
+        runner = _make_runner()
+        threaded = self._msrc(thread_id="thread-a")
+        room_level = self._msrc(thread_id=None)
+        assert runner._same_matrix_room(threaded, room_level) is False
+        assert runner._same_matrix_room(room_level, threaded) is False
+
+    def test_resume_row_visible_blocks_cross_thread(self):
+        """End-to-end through the Matrix listing guard."""
+        runner = _make_runner()
+        runner._resume_caller_is_admin = lambda src: False
+        origin_thread_b = self._msrc(thread_id="thread-b")
+        runner._gateway_session_origin_for_id = lambda sid: origin_thread_b
+        row = {"id": "sid_thread_b"}
+        caller_thread_a = self._msrc(thread_id="thread-a")
+        assert runner._resume_row_visible(caller_thread_a, row, allow_all=False) is False

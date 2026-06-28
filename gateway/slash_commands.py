@@ -666,6 +666,15 @@ class GatewaySlashCommandsMixin:
             and origin.platform == Platform.MATRIX
             and current.platform == Platform.MATRIX
             and origin.chat_id == current.chat_id
+            # thread_id is part of the session key (build_session_key appends it
+            # for every chat type when present), and Matrix scopes the model's
+            # turn to the current room/thread. A live session in another thread
+            # of the SAME room is a DIFFERENT session, so a caller in thread A
+            # must not resume/enumerate a target whose origin is in thread B.
+            # Non-threaded rooms have empty thread_id on both sides ("" == ""),
+            # so room-level sharing is preserved unchanged.
+            and str(getattr(current, "thread_id", "") or "")
+            == str(getattr(origin, "thread_id", "") or "")
         )
 
     def _same_origin_chat(self, current: SessionSource, origin: Optional[SessionSource]) -> bool:

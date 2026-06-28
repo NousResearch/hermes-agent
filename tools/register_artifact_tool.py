@@ -230,7 +230,7 @@ def _handle_register_artifact(args, **kw):
 
 registry.register(
     name="register_artifact",
-    toolset="file",
+    toolset="artifact",
     schema=REGISTER_ARTIFACT_SCHEMA,
     handler=_handle_register_artifact,
     check_fn=_check_file_reqs,

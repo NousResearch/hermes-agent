@@ -21,6 +21,7 @@ enabled_toolsets:
   - kanban
   - delegation
   - moa
+  - artifact
 
 disabled_toolsets:
   - cronjob

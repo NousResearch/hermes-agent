@@ -29,6 +29,7 @@ BETA_ENABLED_TOOLSETS: tuple[str, ...] = (
     "kanban",
     "delegation",
     "moa",
+    "artifact",
 )
 
 BETA_DISABLED_TOOLSETS: tuple[str, ...] = (

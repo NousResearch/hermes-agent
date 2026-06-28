@@ -188,8 +188,14 @@ TOOLSETS = {
     
 
     "file": {
-        "description": "File manipulation tools: read, write, patch (with fuzzy matching), search (content + files), and register_artifact (stage a file for delivery to the user)",
-        "tools": ["read_file", "write_file", "patch", "search_files", "register_artifact"],
+        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
+        "tools": ["read_file", "write_file", "patch", "search_files"],
+        "includes": []
+    },
+
+    "artifact": {
+        "description": "Deliver a workspace file to the user: stage it into the run's output directory for the backend to publish as a download.",
+        "tools": ["register_artifact"],
         "includes": []
     },
     

@@ -78,25 +78,124 @@ def _find_git_root(start: Path) -> Optional[Path]:
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
 
 
-def _find_hermes_md(cwd: Path) -> Optional[Path]:
-    """Discover the nearest ``.hermes.md`` or ``HERMES.md``.
-
-    Search order: *cwd* first, then each parent directory up to (and
-    including) the git repository root.  Returns the first match, or
-    ``None`` if nothing is found.
-    """
+def _context_search_dirs(cwd: Path) -> list[Path]:
+    """Return cwd→parent dirs up to the git root for project context search."""
     stop_at = _find_git_root(cwd)
     current = cwd.resolve()
-
+    dirs: list[Path] = []
     for directory in [current, *current.parents]:
-        for name in _HERMES_MD_NAMES:
+        dirs.append(directory)
+        if stop_at and directory == stop_at:
+            break
+    return dirs
+
+
+def _find_first_context_file(cwd: Path, names: tuple[str, ...]) -> Optional[Path]:
+    """Find the nearest matching context file from cwd up to git root."""
+    for directory in _context_search_dirs(cwd):
+        for name in names:
             candidate = directory / name
             if candidate.is_file():
                 return candidate
-        # Stop walking at the git root (or filesystem root).
-        if stop_at and directory == stop_at:
-            break
     return None
+
+
+def _find_hermes_md(cwd: Path) -> Optional[Path]:
+    """Discover the nearest ``.hermes.md`` or ``HERMES.md``."""
+    return _find_first_context_file(cwd, _HERMES_MD_NAMES)
+
+
+_AGENTS_MD_NAMES = ("AGENTS.md", "agents.md")
+_CLAUDE_MD_NAMES = ("CLAUDE.md", "claude.md")
+_CONTEXT_MANIFEST_MAX_FILES = 12
+
+
+def _find_agents_md(cwd: Path) -> Optional[Path]:
+    """Discover the nearest AGENTS.md / agents.md from cwd up to git root."""
+    return _find_first_context_file(cwd, _AGENTS_MD_NAMES)
+
+
+def _find_claude_md(cwd: Path) -> Optional[Path]:
+    """Discover the nearest CLAUDE.md / claude.md from cwd up to git root."""
+    return _find_first_context_file(cwd, _CLAUDE_MD_NAMES)
+
+
+def _find_cursorrules_paths(cwd: Path) -> list[Path]:
+    """Return cwd-local Cursor context files in deterministic order."""
+    paths: list[Path] = []
+    cursorrules_file = cwd / ".cursorrules"
+    if cursorrules_file.is_file():
+        paths.append(cursorrules_file)
+    cursor_rules_dir = cwd / ".cursor" / "rules"
+    if cursor_rules_dir.is_dir():
+        paths.extend(sorted(p for p in cursor_rules_dir.glob("*.mdc") if p.is_file()))
+    return paths
+
+
+def _discover_context_file_paths(cwd: Path) -> list[Path]:
+    """Discover project context files without reading their contents."""
+    found: list[Path] = []
+    for finder in (_find_hermes_md, _find_agents_md, _find_claude_md):
+        path = finder(cwd)
+        if path:
+            found.append(path)
+    found.extend(_find_cursorrules_paths(cwd.resolve()))
+
+    # Dedupe case-insensitively by resolved path while preserving priority order.
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in found:
+        try:
+            key = str(path.resolve()).lower()
+        except Exception:
+            key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def _context_path_label(path: Path, cwd: Path) -> str:
+    try:
+        return str(path.relative_to(cwd.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def _format_skipped_context_manifest(cwd: Path, loaded_path: Optional[Path]) -> str:
+    """Return a small manifest of context files discovered but not injected."""
+    loaded_key = None
+    if loaded_path is not None:
+        try:
+            loaded_key = str(loaded_path.resolve()).lower()
+        except Exception:
+            loaded_key = str(loaded_path).lower()
+
+    skipped: list[Path] = []
+    for path in _discover_context_file_paths(cwd):
+        try:
+            key = str(path.resolve()).lower()
+        except Exception:
+            key = str(path).lower()
+        if loaded_key and key == loaded_key:
+            continue
+        skipped.append(path)
+
+    if not skipped:
+        return ""
+
+    shown = skipped[:_CONTEXT_MANIFEST_MAX_FILES]
+    lines = [
+        "## Additional context files discovered (not auto-loaded)",
+        "Hermes injects one project-context body per turn by priority. These files were found but not read; use read_file if they become relevant:",
+    ]
+    for path in shown:
+        lines.append(f"- {_context_path_label(path, cwd)}: {path}")
+    remaining = len(skipped) - len(shown)
+    if remaining > 0:
+        lines.append(f"- ... {remaining} more context file(s) omitted from this manifest")
+    return "\n".join(lines)
 
 
 def _strip_yaml_frontmatter(content: str) -> str:
@@ -1848,73 +1947,78 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
 
 
 def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "AGENTS.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+    """AGENTS.md / agents.md — nearest file from cwd up to git root."""
+    candidate = _find_agents_md(cwd_path)
+    if not candidate:
+        return ""
+    try:
+        content = candidate.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        content = _scan_context_content(content, candidate.name)
+        rel = candidate.name
+        try:
+            rel = str(candidate.relative_to(cwd_path.resolve()))
+        except ValueError:
+            pass
+        result = f"## {rel}\n\n{content}"
+        return _truncate_content(
+            result, "AGENTS.md", context_length=context_length,
+            read_path=str(candidate),
+        )
+    except Exception as e:
+        logger.debug("Could not read %s: %s", candidate, e)
+        return ""
 
 
 def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """CLAUDE.md / claude.md — cwd only."""
-    for name in ["CLAUDE.md", "claude.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "CLAUDE.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+    """CLAUDE.md / claude.md — nearest file from cwd up to git root."""
+    candidate = _find_claude_md(cwd_path)
+    if not candidate:
+        return ""
+    try:
+        content = candidate.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        content = _scan_context_content(content, candidate.name)
+        rel = candidate.name
+        try:
+            rel = str(candidate.relative_to(cwd_path.resolve()))
+        except ValueError:
+            pass
+        result = f"## {rel}\n\n{content}"
+        return _truncate_content(
+            result, "CLAUDE.md", context_length=context_length,
+            read_path=str(candidate),
+        )
+    except Exception as e:
+        logger.debug("Could not read %s: %s", candidate, e)
+        return ""
 
 
 def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
-    cursorrules_file = cwd_path / ".cursorrules"
-    if cursorrules_file.exists():
+    for context_path in _find_cursorrules_paths(cwd_path):
         try:
-            content = cursorrules_file.read_text(encoding="utf-8").strip()
-            if content:
-                content = _scan_context_content(content, ".cursorrules")
-                cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
-        except Exception as e:
-            logger.debug("Could not read .cursorrules: %s", e)
-
-    cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
-        mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
-        for mdc_file in mdc_files:
+            content = context_path.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
             try:
-                content = mdc_file.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
-                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
-            except Exception as e:
-                logger.debug("Could not read %s: %s", mdc_file, e)
+                rel = str(context_path.relative_to(cwd_path))
+            except ValueError:
+                rel = context_path.name
+            content = _scan_context_content(content, rel)
+            cursorrules_content += f"## {rel}\n\n{content}\n\n"
+        except Exception as e:
+            logger.debug("Could not read %s: %s", context_path, e)
 
     if not cursorrules_content:
         return ""
+    read_path = str(_find_cursorrules_paths(cwd_path)[0])
     return _truncate_content(
         cursorrules_content, ".cursorrules", context_length=context_length,
-        read_path=str(cwd_path / ".cursorrules"),
+        read_path=read_path,
     )
 
 
@@ -1925,11 +2029,14 @@ def build_context_files_prompt(
 ) -> str:
     """Discover and load context files for the system prompt.
 
-    Priority (first found wins — only ONE project context type is loaded):
+    Priority (first found wins — only ONE project context body is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (cwd only)
-      3. CLAUDE.md / claude.md   (cwd only)
+      2. AGENTS.md / agents.md   (walk to git root)
+      3. CLAUDE.md / claude.md   (walk to git root)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+
+    Files discovered but skipped because of this priority are listed as a small
+    manifest with read_file paths, not injected verbatim.
 
     SOUL.md from HERMES_HOME is independent and always included when present.
 
@@ -1947,15 +2054,32 @@ def build_context_files_prompt(
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path, context_length)
-        or _load_agents_md(cwd_path, context_length)
-        or _load_claude_md(cwd_path, context_length)
-        or _load_cursorrules(cwd_path, context_length)
-    )
+    # Priority-based project context: first match wins. Track the path so we
+    # can list any skipped context files without injecting their contents.
+    loaded_context_path: Optional[Path] = None
+    project_context = ""
+    for finder, loader in (
+        (_find_hermes_md, _load_hermes_md),
+        (_find_agents_md, _load_agents_md),
+        (_find_claude_md, _load_claude_md),
+    ):
+        candidate = finder(cwd_path)
+        if not candidate:
+            continue
+        project_context = loader(cwd_path, context_length)
+        if project_context:
+            loaded_context_path = candidate
+            break
+    cursorrules_paths = _find_cursorrules_paths(cwd_path)
+    if not project_context and cursorrules_paths:
+        project_context = _load_cursorrules(cwd_path, context_length)
+        if project_context:
+            loaded_context_path = cursorrules_paths[0]
     if project_context:
         sections.append(project_context)
+        skipped_manifest = _format_skipped_context_manifest(cwd_path, loaded_context_path)
+        if skipped_manifest:
+            sections.append(skipped_manifest)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

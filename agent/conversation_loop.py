@@ -67,6 +67,125 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+
+def _serialized_chars(value: Any) -> int:
+    """Return a stable JSON-ish character count for telemetry buckets."""
+    try:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+def _rough_tokens_for_chars(chars: int) -> int:
+    return (max(0, int(chars)) + 3) // 4
+
+
+def _tool_schema_contributors(
+    tool_defs: List[Dict[str, Any]],
+    *,
+    limit: int = 5,
+) -> List[Dict[str, int | str]]:
+    """Return the largest individual tool schemas for budget diagnostics."""
+    contributors: List[Dict[str, int | str]] = []
+    for index, tool_def in enumerate(tool_defs):
+        fn = tool_def.get("function") if isinstance(tool_def, dict) else None
+        name = None
+        if isinstance(fn, dict):
+            raw_name = fn.get("name")
+            if raw_name:
+                name = str(raw_name)
+        if not name:
+            name = f"tool_{index}"
+        schema_chars = _serialized_chars(tool_def)
+        contributors.append({
+            "name": name,
+            "schema_chars": schema_chars,
+            "schema_tokens": _rough_tokens_for_chars(schema_chars),
+        })
+    contributors.sort(key=lambda item: int(item.get("schema_chars", 0)), reverse=True)
+    return contributors[: max(0, int(limit))]
+
+
+def _request_budget_snapshot(
+    api_messages: List[Dict[str, Any]],
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Break a pending provider request into prompt/schema budget buckets.
+
+    ``estimate_request_tokens_rough`` already gives the all-up number used by
+    compression gates; this helper exposes the buckets that explain *why* a
+    turn is heavy: system prompt, conversation messages, and tool schemas.
+    """
+    messages = api_messages if isinstance(api_messages, list) else []
+    tool_defs = tools if isinstance(tools, list) else []
+    system_messages = [m for m in messages if m.get("role") == "system"]
+    conversation_messages = [m for m in messages if m.get("role") != "system"]
+
+    system_prompt_chars = sum(_serialized_chars(m.get("content", "")) for m in system_messages)
+    conversation_chars = sum(_serialized_chars(m) for m in conversation_messages)
+    message_chars = sum(_serialized_chars(m) for m in messages)
+    tool_schema_chars = _serialized_chars(tool_defs) if tool_defs else 0
+
+    return {
+        "message_count": len(messages),
+        "tool_count": len(tool_defs),
+        "system_prompt_chars": system_prompt_chars,
+        "system_prompt_tokens": _rough_tokens_for_chars(system_prompt_chars),
+        "conversation_chars": conversation_chars,
+        "conversation_tokens": estimate_messages_tokens_rough(conversation_messages),
+        "message_chars": message_chars,
+        "message_tokens": estimate_messages_tokens_rough(messages),
+        "tool_schema_chars": tool_schema_chars,
+        "tool_schema_tokens": _rough_tokens_for_chars(tool_schema_chars),
+        "top_tool_schema_tokens": _tool_schema_contributors(tool_defs),
+        "total_rough_tokens": estimate_request_tokens_rough(
+            messages,
+            tools=tool_defs or None,
+        ),
+    }
+
+
+def _format_top_tool_schema_tokens(budget: Dict[str, Any], *, limit: int = 3) -> str:
+    contributors = budget.get("top_tool_schema_tokens")
+    if not isinstance(contributors, list):
+        return ""
+    parts: list[str] = []
+    for item in contributors[: max(0, int(limit))]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "unknown")
+        tokens = item.get("schema_tokens", 0)
+        try:
+            token_count = int(tokens)
+        except (TypeError, ValueError):
+            token_count = 0
+        parts.append(f"{name}~{token_count}")
+    return ", ".join(parts)
+
+
+def _log_request_budget_telemetry(agent: Any, api_call_count: int, budget: Dict[str, Any]) -> None:
+    """Persist per-call request-size telemetry without changing user output."""
+    try:
+        setattr(agent, "session_last_request_budget", dict(budget))
+    except Exception:
+        pass
+    top_tools = _format_top_tool_schema_tokens(budget)
+    suffix = f" top_tools={top_tools}" if top_tools else ""
+    logger.info(
+        "Request budget #%d: total~%d tokens messages~%d system~%d tools~%d "
+        "(message_chars=%d system_chars=%d tool_schema_chars=%d tool_count=%d)%s",
+        api_call_count,
+        budget.get("total_rough_tokens", 0),
+        budget.get("message_tokens", 0),
+        budget.get("system_prompt_tokens", 0),
+        budget.get("tool_schema_tokens", 0),
+        budget.get("message_chars", 0),
+        budget.get("system_prompt_chars", 0),
+        budget.get("tool_schema_chars", 0),
+        budget.get("tool_count", 0),
+        suffix,
+    )
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -924,12 +1043,12 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Calculate approximate request size for logging
-        total_chars = sum(len(str(msg)) for msg in api_messages)
-        approx_tokens = estimate_messages_tokens_rough(api_messages)
-        approx_request_tokens = estimate_request_tokens_rough(
-            api_messages, tools=agent.tools or None
-        )
+        # Calculate approximate request size for logging and telemetry.
+        _request_budget = _request_budget_snapshot(api_messages, agent.tools or None)
+        total_chars = _request_budget["message_chars"]
+        approx_tokens = _request_budget["message_tokens"]
+        approx_request_tokens = _request_budget["total_rough_tokens"]
+        _log_request_budget_telemetry(agent, api_call_count, _request_budget)
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens
@@ -1125,7 +1244,12 @@ def run_conversation(
                             message_count=len(api_messages),
                             tool_count=len(agent.tools or []),
                             approx_input_tokens=approx_tokens,
+                            approx_request_tokens=approx_request_tokens,
+                            tool_schema_tokens=_request_budget.get("tool_schema_tokens", 0),
+                            system_prompt_tokens=_request_budget.get("system_prompt_tokens", 0),
+                            top_tool_schema_tokens=list(_request_budget.get("top_tool_schema_tokens", [])),
                             request_char_count=total_chars,
+                            request_budget=dict(_request_budget),
                             max_tokens=agent.max_tokens,
                             started_at=api_start_time,
                             middleware_trace=list(_llm_middleware_trace),

@@ -115,14 +115,31 @@ def agent_env():
 
     test_home = tempfile.mkdtemp(prefix="hermes_e2e_47967_")
     os.makedirs(os.path.join(test_home, ".hermes"))
+    os.makedirs(os.path.join(test_home, ".hermes", "logs"), exist_ok=True)
     prev_home = os.environ.get("HERMES_HOME")
     os.environ["HERMES_HOME"] = os.path.join(test_home, ".hermes")
 
     # Import fresh so the patched conversation_loop is exercised even when the
-    # module was imported earlier in the same worker.
-    for mod in list(sys.modules):
-        if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("hermes_"):
-            del sys.modules[mod]
+    # module was imported earlier in the same worker. Preserve and restore the
+    # original modules: pytest imports test modules during collection, so leaving
+    # fresh agent.* modules in sys.modules makes later string-target patches hit
+    # a different module object than already-imported symbols.
+    def _needs_fresh_import(mod: str) -> bool:
+        return (
+            mod in {"agent", "tools"}
+            or mod == "run_agent"
+            or mod.startswith("agent.")
+            or mod.startswith("tools.")
+            or mod.startswith("hermes_")
+        )
+
+    saved_modules = {
+        mod: sys.modules[mod]
+        for mod in list(sys.modules)
+        if _needs_fresh_import(mod)
+    }
+    for mod in saved_modules:
+        del sys.modules[mod]
     from run_agent import AIAgent
 
     agent = AIAgent(
@@ -139,6 +156,10 @@ def agent_env():
     finally:
         srv.shutdown()
         shutil.rmtree(test_home, ignore_errors=True)
+        for mod in list(sys.modules):
+            if _needs_fresh_import(mod):
+                del sys.modules[mod]
+        sys.modules.update(saved_modules)
         if prev_home is None:
             os.environ.pop("HERMES_HOME", None)
         else:

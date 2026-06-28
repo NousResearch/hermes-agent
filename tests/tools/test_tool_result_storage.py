@@ -16,6 +16,7 @@ from tools.tool_result_storage import (
     _build_persisted_message,
     _heredoc_marker,
     _resolve_storage_dir,
+    _tool_result_content_size,
     _write_to_sandbox,
     enforce_turn_budget,
     generate_preview,
@@ -491,6 +492,74 @@ class TestEnforceTurnBudget:
     def test_empty_messages(self):
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
+
+    def test_multimodal_image_counted_by_real_footprint(self):
+        """A vision tool's base64 screenshot must count toward the budget at
+        its real inline size, not ``len(parts)`` (= 2).
+
+        Regression: a multi-MB image used to be sized as 2 chars, so the
+        aggregate stayed under budget and a co-occurring text result was
+        never offloaded.
+        """
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        image_parts = [
+            {"type": "text", "text": "screenshot captured"},
+            {"type": "image_url",
+             "image_url": {"url": "data:image/png;base64," + "A" * 300_000}},
+        ]
+        msgs = [
+            {"role": "tool", "tool_call_id": "img", "content": image_parts},
+            {"role": "tool", "tool_call_id": "txt", "content": "y" * 150_000},
+        ]
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        # The image's real footprint pushes the turn over budget, so the
+        # plain-string text result is spilled to the sandbox.
+        assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
+        # The multimodal content itself is left intact — it is never offered
+        # to the str-only persistence path.
+        assert msgs[0]["content"] is image_parts
+        assert isinstance(msgs[0]["content"], list)
+
+    def test_multimodal_content_never_offloaded_or_corrupted(self):
+        """Multimodal list content can't be spilled to the sandbox (it is not
+        a str), so enforce_turn_budget must leave its structure untouched even
+        when it alone exceeds the budget — image trimming is the strip/shrink
+        path's job, not this one.
+        """
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        image_parts = [
+            {"type": "text", "text": "big screenshot"},
+            {"type": "image_url",
+             "image_url": {"url": "data:image/png;base64," + "B" * 400_000}},
+        ]
+        msgs = [{"role": "tool", "tool_call_id": "img", "content": image_parts}]
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        assert msgs[0]["content"] is image_parts
+        assert isinstance(msgs[0]["content"], list)
+        # maybe_persist_tool_result must never run on non-str content.
+        env.execute.assert_not_called()
+
+
+class TestToolResultContentSize:
+    def test_string_uses_len(self):
+        assert _tool_result_content_size("hello") == 5
+
+    def test_multimodal_list_counts_base64_not_part_count(self):
+        parts = [
+            {"type": "text", "text": "x"},
+            {"type": "image_url",
+             "image_url": {"url": "data:image/png;base64," + "A" * 50_000}},
+        ]
+        # Serialized footprint includes the base64 payload, so it is far
+        # larger than ``len(parts)`` (= 2).
+        assert _tool_result_content_size(parts) > 50_000
+
+    def test_circular_reference_falls_back_to_str(self):
+        d = {}
+        d["self"] = d  # json.dumps raises ValueError on circular refs
+        assert _tool_result_content_size(d) == len(str(d))
 
 
 # ── Per-tool threshold integration ────────────────────────────────────

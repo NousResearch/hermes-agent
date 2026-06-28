@@ -22,10 +22,12 @@ Defense against context-window overflow operates at three levels:
    where many medium-sized results combine to overflow context.
 """
 
+import json
 import logging
 import os
 import shlex
 import uuid
+from typing import Any
 
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
@@ -178,6 +180,24 @@ def maybe_persist_tool_result(
     )
 
 
+def _tool_result_content_size(content: Any) -> int:
+    """Best-effort character footprint of a tool-result message's content.
+
+    Plain strings cost ``len(content)``.  Multimodal results — a list of
+    OpenAI-style content parts, or a ``{"_multimodal": True, ...}`` envelope —
+    must NOT be sized with ``len()``: that returns the number of parts (e.g. 2),
+    hiding a multi-MB base64 screenshot from the per-turn budget.  Serializing
+    instead counts the inline image payload at its real size, which is exactly
+    the footprint the char budget is meant to bound.
+    """
+    if isinstance(content, str):
+        return len(content)
+    try:
+        return len(json.dumps(content, default=str))
+    except (TypeError, ValueError):
+        return len(str(content))
+
+
 def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,
@@ -195,10 +215,14 @@ def enforce_turn_budget(
     total_size = 0
     for i, msg in enumerate(tool_messages):
         content = msg.get("content", "")
-        size = len(content)
-        total_size += size
-        if PERSISTED_OUTPUT_TAG not in content:
-            candidates.append((i, size))
+        total_size += _tool_result_content_size(content)
+        # Only plain-string results can be spilled to the sandbox.  Multimodal
+        # (list/dict) content is counted above for accurate accounting but is
+        # never offered to maybe_persist_tool_result — that helper assumes a
+        # str (len()/substring/sandbox-write), and image parts are trimmed by
+        # the separate image-strip/shrink recovery path instead.
+        if isinstance(content, str) and PERSISTED_OUTPUT_TAG not in content:
+            candidates.append((i, len(content)))
 
     if total_size <= config.turn_budget:
         return tool_messages

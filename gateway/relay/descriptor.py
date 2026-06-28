@@ -71,7 +71,12 @@ class CapabilityDescriptor:
         fields this gateway does not know yet); missing optional keys fall back
         to dataclass defaults.
         """
-        raw = json.loads(data)
+        try:
+            raw = json.loads(data)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(f"Invalid handshake JSON: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise ValueError(f"Expected JSON object, got {type(raw).__name__}")
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         filtered = {k: v for k, v in raw.items() if k in known}
         return cls(**filtered)

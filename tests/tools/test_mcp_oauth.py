@@ -21,7 +21,6 @@ from tools.mcp_oauth import (
     _can_open_browser,
     _is_interactive,
     _wait_for_callback,
-    _make_callback_handler,
     _redirect_handler,
     _paste_callback_reader,
 )
@@ -360,47 +359,57 @@ class TestPathTraversal:
 # ---------------------------------------------------------------------------
 
 class TestCallbackHandlerIsolation:
-    """Verify concurrent OAuth flows don't share state."""
+    """Verify OAuthCallbackServer flows don't share state."""
 
     def test_independent_result_dicts(self):
-        _, result_a = _make_callback_handler()
-        _, result_b = _make_callback_handler()
+        s1 = OAuthCallbackServer(port=0)
+        s2 = OAuthCallbackServer(port=0)
+        try:
+            s1._result["auth_code"] = "code_A"
+            s2._result["auth_code"] = "code_B"
 
-        result_a["auth_code"] = "code_A"
-        result_b["auth_code"] = "code_B"
-
-        assert result_a["auth_code"] == "code_A"
-        assert result_b["auth_code"] == "code_B"
+            assert s1._result["auth_code"] == "code_A"
+            assert s2._result["auth_code"] == "code_B"
+        finally:
+            s1.close()
+            s2.close()
 
     def test_handler_writes_to_own_result(self):
-        HandlerClass, result = _make_callback_handler()
+        server = OAuthCallbackServer(port=0)
+        handler_cls = server._make_handler()
+        result = server._result
         assert result["auth_code"] is None
 
-        # Simulate a GET request
-        handler = HandlerClass.__new__(HandlerClass)
+        handler = handler_cls.__new__(handler_cls)
         handler.path = "/callback?code=test123&state=mystate"
         handler.wfile = BytesIO()
         handler.send_response = MagicMock()
         handler.send_header = MagicMock()
         handler.end_headers = MagicMock()
+        handler.log_message = MagicMock()
         handler.do_GET()
 
         assert result["auth_code"] == "test123"
         assert result["state"] == "mystate"
+        server.close()
 
     def test_handler_captures_error(self):
-        HandlerClass, result = _make_callback_handler()
+        server = OAuthCallbackServer(port=0)
+        handler_cls = server._make_handler()
+        result = server._result
 
-        handler = HandlerClass.__new__(HandlerClass)
+        handler = handler_cls.__new__(handler_cls)
         handler.path = "/callback?error=access_denied"
         handler.wfile = BytesIO()
         handler.send_response = MagicMock()
         handler.send_header = MagicMock()
         handler.end_headers = MagicMock()
+        handler.log_message = MagicMock()
         handler.do_GET()
 
         assert result["auth_code"] is None
         assert result["error"] == "access_denied"
+        server.close()
 
 
 # ---------------------------------------------------------------------------

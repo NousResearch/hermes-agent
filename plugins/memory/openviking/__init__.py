@@ -513,13 +513,32 @@ FORGET_SCHEMA = {
     },
 }
 
+def _is_github_repo_url(url: str) -> bool:
+    """Check if URL is a GitHub repo root (not a specific file/blob/tree)."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if not parsed.hostname or not parsed.hostname.endswith("github.com"):
+        return False
+    parts = [p for p in parsed.path.strip("/").split("/") if p]
+    # github.com/owner/repo — exactly 2 path segments, no /blob/ or /tree/
+    if len(parts) != 2:
+        return False
+    # Normalize .git suffix (owner/repo.git → owner/repo)
+    repo = parts[1].removesuffix(".git")
+    return bool(repo)
+
+
 ADD_RESOURCE_SCHEMA = {
     "name": "viking_add_resource",
     "description": (
         "Add a remote URL or local file/directory to the OpenViking knowledge base. "
         "Remote resources must be public http(s), git, or ssh URLs. "
         "Local files are uploaded first using OpenViking temp_upload. "
-        "The system automatically parses, indexes, and generates summaries."
+        "The system automatically parses, indexes, and generates summaries.\n\n"
+        "⚠️ COST WARNING: Adding a GitHub repo processes EVERY file through the VLM "
+        "(vision-language model) for abstract generation. A 500-file repo can cost "
+        "$5-15 in VLM tokens. For large codebases, prefer adding specific files or "
+        "directories (e.g. github.com/owner/repo/tree/main/docs) instead of the full repo."
     ),
     "parameters": {
         "type": "object",
@@ -3696,10 +3715,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if cleanup_path:
                 cleanup_path.unlink(missing_ok=True)
 
+        warning = ""
+        if _is_github_repo_url(url):
+            warning = (
+                "\n\n⚠️ COST WARNING: This is a full GitHub repo. Every file will be "
+                "processed through the VLM for abstract generation, which can cost "
+                "$5-15+ depending on repo size. Consider adding a subdirectory instead "
+                "(e.g. /tree/main/docs) to reduce VLM costs."
+            )
+
         return json.dumps({
             "status": "added",
             "root_uri": result.get("root_uri", ""),
-            "message": "Resource queued for processing. Use viking_search after a moment to find it.",
+            "message": "Resource queued for processing. Use viking_search after a moment to find it." + warning,
         }, ensure_ascii=False)
 
 

@@ -811,16 +811,28 @@ def feature_install_command(feature: str) -> Optional[str]:
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
-    Features the user has never enabled stay quiet.
+    A feature counts as "active" only when its *signature* package — the
+    first spec in the feature's tuple — is installed (presence check,
+    ignoring version). Every entry in :data:`LAZY_DEPS` leads with its
+    defining package and lists shared libraries afterwards.
+
+    We deliberately do NOT key on "any spec present": trailing specs are
+    often generic libraries (``asyncpg``, ``aiosqlite``, ``aiohttp``,
+    ``qrcode``, ``numpy`` …) that get pulled in transitively by unrelated
+    features. Keying on those produced false positives — e.g. a host that
+    has ``asyncpg`` (for some other reason) but no ``mautrix`` would be
+    flagged as having ``platform.matrix`` active, then ``hermes update``
+    would try to refresh it and fail building ``mautrix[encryption]`` →
+    ``python-olm`` on every run. Gating on the signature package keeps the
+    behaviour aligned with the intent: detect backends the user actually
+    enabled.
 
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        if specs and _is_present(specs[0]):
             active.append(feature)
     return active
 

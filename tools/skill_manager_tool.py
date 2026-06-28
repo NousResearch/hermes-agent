@@ -528,6 +528,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     """
     matches: List[Tuple[str, Path]] = []
     try:
+        from hermes_constants import get_default_hermes_root
         from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
     except Exception:
         return matches

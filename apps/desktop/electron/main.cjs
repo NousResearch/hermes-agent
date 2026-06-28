@@ -2610,17 +2610,61 @@ function readBootstrapMarker() {
 
 function isBootstrapComplete() {
   const marker = readBootstrapMarker()
-  if (!marker || typeof marker !== 'object') return false
-  if (marker.schemaVersion !== BOOTSTRAP_MARKER_SCHEMA_VERSION) return false
-  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) return false
-  // We DELIBERATELY do NOT verify that the checkout is currently at the
-  // pinned commit -- users update via the in-app update path or `hermes
-  // update`, which moves HEAD legitimately. The marker just attests "we
-  // ran the bootstrap successfully at least once." We DO additionally require
-  // a runnable venv: an interrupted or split-home install can leave the marker
-  // + checkout without a venv, and trusting that spawns a dead backend
-  // ("gateway offline") instead of re-running bootstrap to repair it.
-  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
+  const sourceOk = isHermesSourceRoot(ACTIVE_HERMES_ROOT)
+  const venvOk = fileExists(getVenvPython(VENV_ROOT))
+
+  // Marker exists with correct schema → check source + venv are still intact
+  if (marker && typeof marker === 'object' &&
+      marker.schemaVersion === BOOTSTRAP_MARKER_SCHEMA_VERSION &&
+      typeof marker.pinnedCommit === 'string' && marker.pinnedCommit.length >= 7) {
+    return sourceOk && venvOk
+  }
+
+  // Auto-heal: marker missing / stale but the checkout is fully functional.
+  // This handles users who installed Hermes via install.sh / `hermes setup`
+  // from the terminal and then open the desktop app for the first time.
+  // Without this, the app runs the full bootstrap installer (git pull,
+  // recreate venv, reinstall 95+ Python deps, npm install) even though
+  // everything is already set up — a slow, confusing loop that gives the
+  // impression the desktop app "rebuilds every time."
+  if (sourceOk && venvOk) {
+    try {
+      let commit = null
+      let branch = null
+      try {
+        commit = execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: ACTIVE_HERMES_ROOT,
+          encoding: 'utf8',
+          timeout: 5000
+        }).toString().trim()
+        try {
+          branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+            cwd: ACTIVE_HERMES_ROOT,
+            encoding: 'utf8',
+            timeout: 5000
+          }).toString().trim()
+          if (branch === 'HEAD') branch = null
+        } catch {
+          // non-fatal: branch can be null
+        }
+      } catch {
+        // Fall back to the desktop-app's install stamp if git fails
+        if (INSTALL_STAMP) commit = INSTALL_STAMP.commit
+      }
+      writeBootstrapMarker({ pinnedCommit: commit, pinnedBranch: branch })
+      rememberLog(
+        `[bootstrap] auto-healed missing marker at ${ACTIVE_HERMES_ROOT} ` +
+        `(${commit ? commit.slice(0, 12) : 'no-commit'})`
+      )
+      return true
+    } catch {
+      // Marker write failed (permissions, disk full) — treat as incomplete
+      // so the user gets the standard bootstrap flow and a clear error.
+      return false
+    }
+  }
+
+  return false
 }
 
 function writeBootstrapMarker(payload) {

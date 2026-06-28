@@ -1,127 +1,112 @@
-"""Regression test for #33271: terminal recovery after interrupt.
+"""Regression tests for #33271: terminal recovery after interrupt.
 
-After an interrupt, the process_loop finally block must:
-  1. Drain stray escape bytes from the OS input buffer (flush_stdin)
-  2. Force a full prompt_toolkit renderer redraw
+When the user interrupts a running agent turn by typing a new message,
+prompt_toolkit may have an in-flight ``CSI 6n`` cursor-position query whose
+reply (``ESC[<row>;<col>R``) arrives on stdin after the input parser has torn
+down. The reply then leaks as literal text (``^[[19;1R``) and the VT100 parser
+can stall, accepting no further keystrokes — the terminal appears frozen.
 
-Without this fix, CSI 6n cursor position reports can leak as literal
-text (^[[19;1R) and the VT100 input parser can stall, accepting no
-further keystrokes.
+The recovery path lives in ``HermesCLI._recover_terminal_after_interrupt()``,
+which is invoked from ``process_loop``'s ``finally`` block only when
+``self._last_turn_interrupted`` is set. It must:
+  1. Drain stray escape bytes from the OS input buffer (``flush_stdin``).
+  2. Force a clean prompt_toolkit renderer redraw (``_force_full_redraw``).
+
+These tests exercise the real method (not a re-implementation of its logic),
+and assert that the finally block actually wires it in behind the interrupt
+guard.
 """
 
+import inspect
+import re
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+
+import cli as cli_mod
+from cli import HermesCLI
 
 
 @pytest.fixture
-def cli():
-    """Create a minimal HermesCLI mock with the required attributes."""
-    from cli import HermesCLI
-
-    instance = MagicMock(spec=HermesCLI)
-    instance._agent_running = True
-    instance._spinner_text = "thinking"
-    instance._tool_start_time = 1.0
-    instance._pending_tool_info = {"name": "test"}
-    instance._last_scrollback_tool = "tool_a"
-    instance._last_turn_interrupted = False
-    instance._force_full_redraw = MagicMock()
-    instance._last_input_mode_recovery = 0.0
-    instance._input_mode_recovery_notice_shown = False
-
-    app = MagicMock()
-    app.invalidate = MagicMock()
-    instance._app = app
-
-    return instance
+def bare_cli():
+    """A HermesCLI with no __init__ — we only exercise the recovery helper."""
+    return object.__new__(HermesCLI)
 
 
-class TestPostInterruptTerminalRecovery:
-    """Verify that the finally block in process_loop recovers the terminal
-    state after an interrupted agent turn."""
+class TestRecoverTerminalAfterInterrupt:
+    """Directly exercise HermesCLI._recover_terminal_after_interrupt()."""
 
-    def test_no_recovery_when_turn_completes_normally(self, cli):
-        """_force_full_redraw should NOT be called when the turn finishes
-        normally (no interrupt)."""
-        cli._last_turn_interrupted = False
-
-        # Simulate the finally block logic
-        if cli._last_turn_interrupted:
-            cli._force_full_redraw()
-
-        cli._force_full_redraw.assert_not_called()
-
-    def test_recovery_after_interrupt(self, cli):
-        """_force_full_redraw MUST be called when the turn was interrupted."""
-        cli._last_turn_interrupted = True
-
-        # Simulate the finally block logic
-        if cli._last_turn_interrupted:
-            try:
-                from hermes_cli.curses_ui import flush_stdin
-                flush_stdin()
-            except Exception:
-                pass
-            cli._force_full_redraw()
-
-        cli._force_full_redraw.assert_called_once()
-
-    @patch("hermes_cli.curses_ui.flush_stdin")
-    def test_flush_stdin_called_after_interrupt(self, mock_flush, cli):
-        """flush_stdin must be called to drain stray escape bytes."""
-        cli._last_turn_interrupted = True
-
-        if cli._last_turn_interrupted:
-            try:
-                from hermes_cli.curses_ui import flush_stdin
-                flush_stdin()
-            except Exception:
-                pass
-            cli._force_full_redraw()
+    def test_drains_stdin_then_redraws(self, bare_cli):
+        """Happy path: flush_stdin runs, then a full redraw is forced."""
+        bare_cli._force_full_redraw = MagicMock()
+        with patch("hermes_cli.curses_ui.flush_stdin") as mock_flush:
+            bare_cli._recover_terminal_after_interrupt()
 
         mock_flush.assert_called_once()
+        bare_cli._force_full_redraw.assert_called_once()
 
-    @patch("hermes_cli.curses_ui.flush_stdin", side_effect=OSError("no tty"))
-    def test_flush_stdin_failure_does_not_prevent_redraw(self, mock_flush, cli):
-        """Even if flush_stdin fails (e.g., no TTY), _force_full_redraw must
-        still be called."""
-        cli._last_turn_interrupted = True
+    def test_redraw_still_runs_when_flush_fails(self, bare_cli):
+        """A flush_stdin failure (no TTY, non-POSIX) must not skip the redraw.
 
-        if cli._last_turn_interrupted:
-            try:
-                from hermes_cli.curses_ui import flush_stdin
-                flush_stdin()
-            except Exception:
-                pass
-            cli._force_full_redraw()
+        The two recovery steps are independent — losing the stdin drain must
+        never leave the renderer un-repainted.
+        """
+        bare_cli._force_full_redraw = MagicMock()
+        with patch(
+            "hermes_cli.curses_ui.flush_stdin", side_effect=OSError("no tty")
+        ):
+            bare_cli._recover_terminal_after_interrupt()  # must not raise
 
-        cli._force_full_redraw.assert_called_once()
+        bare_cli._force_full_redraw.assert_called_once()
 
-    def test_agent_running_cleared_on_normal_exit(self, cli):
-        """State flags must be reset regardless of interrupt status."""
-        cli._last_turn_interrupted = False
-        cli._agent_running = True
-        cli._spinner_text = "active"
+    def test_flush_runs_before_redraw(self, bare_cli):
+        """Order matters: drain stray bytes first so they don't arrive mid-redraw."""
+        events = []
+        bare_cli._force_full_redraw = MagicMock(
+            side_effect=lambda: events.append("redraw")
+        )
+        with patch(
+            "hermes_cli.curses_ui.flush_stdin",
+            side_effect=lambda: events.append("flush"),
+        ):
+            bare_cli._recover_terminal_after_interrupt()
 
-        # Simulate the finally block
-        cli._agent_running = False
-        cli._spinner_text = ""
+        assert events == ["flush", "redraw"]
 
-        assert cli._agent_running is False
-        assert cli._spinner_text == ""
+    def test_flush_stdin_is_tty_gated(self):
+        """The real flush_stdin is a no-op on non-TTY stdin (piped/redirected).
 
-    def test_agent_running_cleared_on_interrupt(self, cli):
-        """State flags must be reset even after interrupt + recovery."""
-        cli._last_turn_interrupted = True
-        cli._agent_running = True
-        cli._spinner_text = "active"
+        Under pytest stdin is not a TTY, so this must return cleanly without
+        touching termios.
+        """
+        from hermes_cli.curses_ui import flush_stdin
 
-        # Simulate the finally block
-        cli._agent_running = False
-        cli._spinner_text = ""
-        if cli._last_turn_interrupted:
-            cli._force_full_redraw()
+        flush_stdin()  # must not raise in a non-TTY test environment
 
-        assert cli._agent_running is False
-        assert cli._spinner_text == ""
-        cli._force_full_redraw.assert_called_once()
+
+class TestFinallyBlockWiring:
+    """The recovery helper is only useful if process_loop actually calls it.
+
+    These guard against the helper silently becoming dead code (the fix being
+    present but never invoked), which a unit test of the helper alone can't
+    catch.
+    """
+
+    def test_recovery_is_invoked_behind_interrupt_guard(self):
+        src = inspect.getsource(HermesCLI.run)
+        # The recovery call must be gated on _last_turn_interrupted so it only
+        # fires after an actual interrupt, not on every normal turn.
+        guard = re.search(
+            r"if self\._last_turn_interrupted:\s*\n\s*"
+            r"self\._recover_terminal_after_interrupt\(\)",
+            src,
+        )
+        assert guard, (
+            "process_loop's finally block must call "
+            "_recover_terminal_after_interrupt() guarded by "
+            "self._last_turn_interrupted"
+        )
+
+    def test_recovery_helper_exists(self):
+        assert hasattr(HermesCLI, "_recover_terminal_after_interrupt")
+        assert callable(HermesCLI._recover_terminal_after_interrupt)

@@ -3374,6 +3374,24 @@ def _on_tool_progress(
             payload["verbose"] = True
         _emit("reasoning.available", sid, payload)
         return
+    if event_type == "moa.reference" and name:
+        # MoA reference-model output — relay as a labelled block the Ink/desktop
+        # client renders before the aggregator's response (like a thinking
+        # block, tagged with the source model). `name` is the slot label,
+        # `preview` is the reference text.
+        ref_payload: dict[str, object] = {
+            "label": str(name),
+            "text": str(preview or ""),
+        }
+        if _kwargs.get("moa_index") is not None:
+            ref_payload["index"] = _kwargs.get("moa_index")
+        if _kwargs.get("moa_count") is not None:
+            ref_payload["count"] = _kwargs.get("moa_count")
+        _emit("moa.reference", sid, ref_payload)
+        return
+    if event_type == "moa.aggregating":
+        _emit("moa.aggregating", sid, {"aggregator": str(name or "")})
+        return
     if event_type.startswith("subagent."):
         payload = {
             "goal": str(_kwargs.get("goal") or ""),

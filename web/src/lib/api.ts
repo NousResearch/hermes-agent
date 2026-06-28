@@ -471,7 +471,8 @@ export const api = {
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
-  getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
+  getModelOptions: (profile?: string) =>
+    fetchJSON<ModelOptionsResponse>(`/api/model/options${profileQuery(profile)}`),
   getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
   getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
   saveMoaModels: (body: MoaConfigResponse) =>
@@ -529,7 +530,7 @@ export const api = {
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
   getCronDeliveryTargets: () =>
     fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string; skills?: string[] }, profile = "default") =>
+  createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -539,7 +540,7 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   updateCronJob: (
     id: string,
-    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string; skills?: string[] },
+    updates: CronJobMutation,
     profile = "default",
   ) =>
     fetchJSON<CronJob>(
@@ -1895,6 +1896,27 @@ export interface ModelsAnalyticsResponse {
   period_days: number;
 }
 
+export interface CronJobRepeat {
+  times: number | null;
+  completed?: number;
+}
+
+export interface CronJobMutation {
+  name?: string;
+  prompt?: string;
+  schedule?: string;
+  deliver?: string;
+  skills?: string[];
+  provider?: string | null;
+  model?: string | null;
+  base_url?: string | null;
+  script?: string | null;
+  no_agent?: boolean;
+  context_from?: string[] | null;
+  enabled_toolsets?: string[] | null;
+  workdir?: string | null;
+}
+
 export interface CronJob {
   id: string;
   profile?: string | null;
@@ -1905,14 +1927,24 @@ export interface CronJob {
   prompt?: string | null;
   script?: string | null;
   skills?: string[] | null;
-  schedule?: { kind?: string; expr?: string; display?: string };
+  schedule?: { kind?: string; expr?: string; run_at?: string; display?: string };
   schedule_display?: string | null;
+  repeat?: CronJobRepeat | null;
   enabled: boolean;
   state?: string | null;
   deliver?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
+  no_agent?: boolean | null;
+  context_from?: string[] | string | null;
+  enabled_toolsets?: string[] | null;
+  workdir?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  last_status?: string | null;
   last_error?: string | null;
+  last_delivery_error?: string | null;
 }
 
 export interface CronDeliveryTarget {
@@ -2049,6 +2081,7 @@ export interface ModelOptionProvider {
   is_user_defined?: boolean;
   source?: string;
   warning?: string;
+  authenticated?: boolean;
 }
 
 export interface ModelOptionsResponse {

@@ -123,6 +123,17 @@ conservative at the waist.
   without E2E proof, and plugins that touch core files.** Plugins live in their
   own directory and work within the ABCs/hooks we provide; if a plugin needs
   more, widen the generic plugin surface, don't special-case it in core.
+- **Third-party products / other people's projects integrated into the core
+  tree.** Observability backends, vendor SaaS integrations, analytics dashboards,
+  and similar "someone else's product" plugins do NOT land under `plugins/` in
+  this repo. They place an ongoing maintenance burden on us to keep them working
+  against a fast-moving core, for a backend we don't own. Ship them as a
+  **standalone plugin repo** users install into `~/.hermes/plugins/` (or via a
+  pip entry point), and promote them in the Nous Research Discord
+  (`#plugins-skills-and-skins`). This is a coupling-and-maintenance decision, not
+  a quality bar — the plugin can be excellent and still be a close. PRs that add
+  such a directory to the tree are closed with a pointer to publish it as its own
+  repo.
 
 ### Before you call it a bug — verify the premise (and when NOT to close)
 
@@ -782,6 +793,24 @@ landing in this tree. PRs that add a new directory under
 `plugins/memory/` will be closed with a pointer to publish the
 provider as its own repo. Existing in-tree providers stay; bug fixes
 to them are welcome.
+
+**No new third-party-product plugins in-tree (policy, June 2026):** the
+same rule applies beyond memory providers. Plugins that integrate
+someone else's product or project — observability/metrics backends,
+vendor SaaS connectors, analytics dashboards, paid-service tie-ins —
+must ship as **standalone plugin repos** that users install into
+`~/.hermes/plugins/` (or via pip entry points). They register through
+the existing plugin discovery path and use the ABCs/hooks/ctx surface
+we expose; nothing special is needed in core. The reason is
+maintenance load: every product we absorb into the tree becomes our
+burden to keep working against a fast-moving core, for a backend we
+don't own. Promote standalone plugins in the Nous Research Discord
+(`#plugins-skills-and-skins`). PRs that add such a directory under
+`plugins/` are closed with a pointer to publish it as its own repo —
+this is a coupling decision, not a quality judgment. (The
+`observability/`, `kanban/`, `disk-cleanup/`, etc. directories already
+in the tree are existing precedent, not an invitation to add more
+third-party-product plugins alongside them.)
 
 ### Model-provider plugins (`plugins/model-providers/<name>/`)
 

@@ -301,6 +301,12 @@ export interface Translations {
       toolViewDesc: string
       translucencyTitle: string
       translucencyDesc: string
+      embedsTitle: string
+      embedsDesc: string
+      embedsAsk: string
+      embedsAlways: string
+      embedsOff: string
+      embedsReset: (count: number) => string
       product: string
       productDesc: string
       technical: string
@@ -1678,10 +1684,8 @@ export interface Translations {
       loadingQuestion: string
       other: string
       placeholder: string
-      shortcutSuffix: string
-      back: string
       skip: string
-      send: string
+      continueLabel: string
     }
     tool: {
       code: string

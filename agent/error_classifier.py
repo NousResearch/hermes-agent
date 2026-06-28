@@ -133,6 +133,31 @@ _RATE_LIMIT_PATTERNS = [
     "servicequotaexceededexception",
 ]
 
+# Patterns that indicate provider-side overload, NOT a per-credential rate
+# limit or billing problem.  The credential is valid — the server is just
+# busy — so the correct recovery is "back off and retry the same key", never
+# "rotate the credential" (rotating exhausts the pool while the endpoint is
+# still busy; a single-key user has nothing to rotate to).  Some providers
+# (notably Z.AI / Zhipu) reuse HTTP 429 for server-wide overload, so the 429
+# status path matches the body against this list before falling through to
+# the rate_limit default.  Phrases are kept narrow and overload-flavoured so a
+# normal rate-limit message ("you have been rate-limited") doesn't hit this
+# bucket. (#14038, #15297)
+_OVERLOADED_PATTERNS = [
+    "overloaded",
+    "temporarily overloaded",
+    "service is temporarily overloaded",
+    "service may be temporarily overloaded",
+    "server is overloaded",
+    "server overloaded",
+    "service overloaded",
+    "service is overloaded",
+    "upstream overloaded",
+    "currently overloaded",
+    "at capacity",
+    "over capacity",
+]
+
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
 _USAGE_LIMIT_PATTERNS = [
     "usage limit",
@@ -863,7 +888,19 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above; this is a normal rate limit
+        # Already checked long_context_tier above. Some providers (notably
+        # Z.AI / Zhipu) reuse HTTP 429 for server-wide overload — same status
+        # code as a true per-credential rate limit, but the credential is
+        # valid and the correct recovery is "back off and retry the same key",
+        # NOT "rotate the credential" (which exhausts the pool while the
+        # endpoint is still busy, and does nothing for a single-key user).
+        # Disambiguate on the error body so an overload 429 takes the
+        # transient-overload path instead of burning the pool. (#14038)
+        if any(p in error_msg for p in _OVERLOADED_PATTERNS):
+            return result_fn(
+                FailoverReason.overloaded,
+                retryable=True,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
@@ -1214,6 +1251,17 @@ def _classify_by_message(
             should_fallback=True,
         )
 
+    # Overloaded / server-busy patterns — must come BEFORE the rate_limit and
+    # billing checks so that a message-only "overloaded" (no 503/529 status,
+    # e.g. some Anthropic-compatible proxies) classifies as a transient
+    # overload (backoff + retry) instead of falling through to `unknown` or
+    # incorrectly triggering credential rotation.
+    if any(p in error_msg for p in _OVERLOADED_PATTERNS):
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+        )
+
     # Billing patterns
     if any(p in error_msg for p in _BILLING_PATTERNS):
         return result_fn(
@@ -1303,19 +1351,25 @@ def _extract_status_code(error: Exception) -> Optional[int]:
 
 
 def _extract_error_body(error: Exception) -> dict:
-    """Extract the structured error body from an SDK exception."""
-    body = getattr(error, "body", None)
-    if isinstance(body, dict):
-        return body
-    # Some errors have .response.json()
-    response = getattr(error, "response", None)
-    if response is not None:
-        try:
-            json_body = response.json()
-            if isinstance(json_body, dict):
-                return json_body
-        except Exception:
-            pass
+    """Extract the structured error body from an SDK exception or its cause chain."""
+    current = error
+    for _ in range(5):  # Match _extract_status_code() traversal depth.
+        body = getattr(current, "body", None)
+        if isinstance(body, dict):
+            return body
+        # Some errors have .response.json()
+        response = getattr(current, "response", None)
+        if response is not None:
+            try:
+                json_body = response.json()
+                if isinstance(json_body, dict):
+                    return json_body
+            except Exception:
+                pass
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
     return {}
 
 

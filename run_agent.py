@@ -1367,14 +1367,26 @@ class AIAgent:
         return False
 
     def _is_ollama_glm_backend(self) -> bool:
-        """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
+        """Detect Ollama-hosted GLM models affected by stop misreports.
+
+        Ollama can misreport truncated output as finish_reason='stop'.
+        Detection relies on explicit Ollama signatures:
+        - Port 11434 (Ollama default)
+        - "ollama" in the base URL (e.g. ollama.local, /ollama/ path)
+        - provider explicitly set to "ollama"
+
+        Crucially it does NOT match arbitrary local/private endpoints
+        (LiteLLM/sglang/vLLM/LM Studio proxies, Tailscale boxes), which
+        report finish_reason correctly and were the source of #13971's
+        false-positive truncation continuations.
+        """
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
         if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
             return True
-        return bool(self.base_url and is_local_endpoint(self.base_url))
+        return provider_lower == "ollama"
 
     def _should_treat_stop_as_truncated(
         self,
@@ -1412,10 +1424,13 @@ class AIAgent:
         user_message: str,
         assistant_content: str,
         messages: List[Dict[str, Any]],
+        require_workspace: bool = True,
     ) -> bool:
         """Forwarder — see ``agent.agent_runtime_helpers.looks_like_codex_intermediate_ack``."""
         from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
-        return looks_like_codex_intermediate_ack(self, user_message, assistant_content, messages)
+        return looks_like_codex_intermediate_ack(
+            self, user_message, assistant_content, messages, require_workspace
+        )
 
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_reasoning``."""

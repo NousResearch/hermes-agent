@@ -27,7 +27,7 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { parseTodos } from '@/lib/todos'
-import { setClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
@@ -903,6 +903,29 @@ export function useMessageStream({
         if (isActiveEvent) {
           setPetActivity({ reasoning: true })
         }
+      } else if (event.type === 'moa.reference') {
+        // MoA reference-model output — surface as a labelled thinking chunk
+        // (tagged with the source model) before the aggregator's response, so
+        // the mixture-of-agents process is visible. Reuses the reasoning
+        // disclosure rather than introducing a parallel surface.
+        if (sessionId) {
+          const label = coerceGatewayText(payload?.label) || 'reference'
+          const idx = typeof payload?.index === 'number' ? payload.index : undefined
+          const cnt = typeof payload?.count === 'number' ? payload.count : undefined
+          const header = idx && cnt ? `◇ Reference ${idx}/${cnt} — ${label}` : `◇ Reference — ${label}`
+          const body = coerceThinkingText(payload?.text)
+          appendReasoningDelta(sessionId, `${header}\n${body}\n\n`, true)
+        }
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
+        }
+      } else if (event.type === 'moa.aggregating') {
+        // Status transition only; the aggregator's reply arrives via the normal
+        // message stream. No reasoning/transcript mutation here.
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
+        }
       } else if (event.type === 'message.complete') {
         if (!sessionId) {
           return
@@ -913,6 +936,7 @@ export function useMessageStream({
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
+        clearClarifyRequest(undefined, sessionId)
         setSessionCompacting(sessionId, false)
 
         flushQueuedDeltas(sessionId)
@@ -1185,6 +1209,7 @@ export function useMessageStream({
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
           clearAllPrompts(sessionId)
+          clearClarifyRequest(undefined, sessionId)
           setSessionCompacting(sessionId, false)
           compactedTurnRef.current.delete(sessionId)
         }

@@ -192,6 +192,45 @@ def _run_references_parallel(
     return [r for r in results if r is not None]
 
 
+def _normalize_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return provider-safe chat messages with system/developer content at head.
+
+    MoA forwards the normal Hermes transcript to the aggregator/acting model.
+    Long resumed sessions and compression can leave extra system/developer
+    guidance in the middle of the list. Anthropic-backed chat-completions
+    endpoints reject that shape (for example: ``messages.1: role 'system' must
+    precede an 'assistant' message or end the array``). Preserve the guidance,
+    but collapse all system/developer text into one leading system message.
+    """
+    system_parts: list[str] = []
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role in {"system", "developer"}:
+            content = msg.get("content")
+            if isinstance(content, str):
+                text = content.strip()
+            elif isinstance(content, list):
+                chunks: list[str] = []
+                for part in content:
+                    if isinstance(part, str):
+                        chunks.append(part)
+                    elif isinstance(part, dict) and part.get("type") == "text":
+                        chunks.append(str(part.get("text") or ""))
+                text = "\n".join(chunk for chunk in chunks if chunk).strip()
+            else:
+                text = ""
+            if text:
+                system_parts.append(text)
+            continue
+        out.append(dict(msg))
+    if system_parts:
+        out.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
+    return out
+
+
 def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build an advisory-safe view of the conversation for reference models.
 
@@ -374,7 +413,7 @@ class MoAChatCompletions:
         from hermes_cli.moa_config import resolve_moa_preset
 
         preset = resolve_moa_preset(load_config().get("moa") or {}, self.preset_name)
-        messages = list(api_kwargs.get("messages") or [])
+        messages = _normalize_system_messages(list(api_kwargs.get("messages") or []))
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}
         # MoA does not cap reference or aggregator output: each model uses its

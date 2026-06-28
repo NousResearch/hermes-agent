@@ -541,14 +541,16 @@ class MCPOAuthManager:
         client_metadata = _build_client_metadata(cfg)
         _maybe_preregister_client(storage, cfg, client_metadata)
 
+        import functools
+        callback_server = cfg.get("_callback_server")
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
             preregistered=bool(cfg.get("client_id")),
             server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,
-            redirect_handler=_redirect_handler,
-            callback_handler=_wait_for_callback,
+            redirect_handler=functools.partial(_redirect_handler, port=callback_server.port),
+            callback_handler=functools.partial(_wait_for_callback, server=callback_server),
             timeout=float(cfg.get("timeout", 300)),
         )
 

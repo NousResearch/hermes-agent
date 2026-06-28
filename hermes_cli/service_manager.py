@@ -710,6 +710,30 @@ class S6ServiceManager:
         return "\n".join(lines) + "\n"
 
     @staticmethod
+    def _render_finish_script() -> str:
+        """Generate the finish script for a profile-gateway s6 service.
+
+        When the gateway exits with EX_CONFIG (78) — a fatal
+        configuration error such as a token collision or no messaging
+        platforms — we tell s6-supervise to stop restarting by exiting
+        125 (permanent failure).  Any other exit code lets s6 restart
+        normally.  See #51228.
+        """
+        from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+        code = GATEWAY_FATAL_CONFIG_EXIT_CODE
+        return (
+            "#!/command/with-contenv sh\n"
+            "# shellcheck shell=sh\n"
+            "# $1 = exit code from the run script.\n"
+            f"# Exit {code} (EX_CONFIG) = fatal config error — don't restart.\n"
+            f'if [ "$1" = "{code}" ]; then\n'
+            "  exit 125\n"
+            "fi\n"
+            "exit 0\n"
+        )
+
+    @staticmethod
     def _render_log_run(profile: str) -> str:
         """Generate the log/run script for a profile-gateway service.
 
@@ -955,6 +979,10 @@ class S6ServiceManager:
             run_path = tmp_dir / "run"
             run_path.write_text(run_script)
             run_path.chmod(0o755)
+
+            finish_path = tmp_dir / "finish"
+            finish_path.write_text(self._render_finish_script())
+            finish_path.chmod(0o755)
 
             # Persistent log rotation (OQ8-C).
             log_subdir = tmp_dir / "log"

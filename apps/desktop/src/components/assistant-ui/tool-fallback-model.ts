@@ -1,6 +1,7 @@
+import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
+import { summarizeShellCommand } from '@/lib/summarize-command'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
-import { translateNow } from '@/i18n'
 
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
 export type ToolStatus = 'error' | 'running' | 'success' | 'warning'
@@ -18,6 +19,12 @@ export interface SearchResultRow {
   snippet: string
   title: string
   url: string
+}
+
+export interface ToolTitleAction {
+  prefix: string
+  suffix: string
+  text: string
 }
 
 interface CountMetric {
@@ -51,6 +58,7 @@ export interface ToolView {
   status: ToolStatus
   subtitle: string
   title: string
+  titleAction?: ToolTitleAction
   tone: ToolTone
 }
 
@@ -58,6 +66,12 @@ interface ToolMeta {
   done: string
   icon?: string
   pending: string
+  pendingAction: string
+  tone: ToolTone
+}
+
+interface ToolMetaSpec {
+  icon?: string
   tone: ToolTone
 }
 
@@ -72,44 +86,175 @@ export interface MessageRunningStateSlice {
   }
 }
 
-const TOOL_META: Record<string, ToolMeta> = {
-  browser_click: { done: 'Clicked page element', pending: 'Clicking page element', icon: 'globe', tone: 'browser' },
-  browser_fill: { done: 'Filled form field', pending: 'Filling form field', icon: 'globe', tone: 'browser' },
-  browser_navigate: { done: 'Opened page', pending: 'Opening page', icon: 'globe', tone: 'browser' },
+const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
+
+export function isFileEditTool(toolName: string): boolean {
+  return FILE_EDIT_TOOL_NAMES.has(toolName)
+}
+
+export interface DiffLineStats {
+  added: number
+  removed: number
+}
+
+export function countDiffLineStats(diff: string): DiffLineStats {
+  let added = 0
+  let removed = 0
+
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      added += 1
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      removed += 1
+    }
+  }
+
+  return { added, removed }
+}
+
+function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  return (
+    firstStringField(args, ['path', 'file', 'filepath']) ||
+    firstStringField(result, ['path', 'file', 'filepath', 'resolved_path']) ||
+    htmlPathFromInlineDiff(firstStringField(result, ['inline_diff', 'diff']))
+  )
+}
+
+function fileEditBasename(path: string): string {
+  const normalized = path.replace(/\\/g, '/').trim()
+
+  return normalized.split('/').filter(Boolean).pop() || normalized
+}
+
+function numericField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key]
+
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function readFileLineLabel(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  if (numericField(args, 'offset') === undefined && numericField(args, 'limit') === undefined) {
+    return ''
+  }
+
+  const content = firstStringField(result, ['content'])
+  const offset = numericField(args, 'offset')
+  const limit = numericField(args, 'limit')
+
+  if (offset !== undefined && offset > 0) {
+    if (limit === undefined || limit <= 1) {
+      return `L${offset}`
+    }
+
+    return `L${offset}-${offset + limit - 1}`
+  }
+
+  const lines = content
+    .split('\n')
+    .map(line => /^(\d+)\|/.exec(line)?.[1])
+    .filter((line): line is string => !!line)
+    .map(Number)
+
+  if (lines.length === 0) {
+    return ''
+  }
+
+  const start = lines[0]!
+  const end = lines[lines.length - 1]!
+
+  return start === end ? `L${start}` : `L${start}-${end}`
+}
+
+function readFileDisplayTarget(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  const inherited = firstStringField(args, ['context', 'preview'])
+
+  if (inherited) {
+    return inherited
+  }
+
+  const path = firstStringField(args, ['path', 'file', 'filepath'])
+
+  if (!path) {
+    return ''
+  }
+
+  const lineLabel = readFileLineLabel(args, result)
+
+  return [fileEditBasename(path), lineLabel].filter(Boolean).join(' ')
+}
+
+const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
+  browser_click: {
+    icon: 'globe',
+    tone: 'browser'
+  },
+  browser_fill: {
+    icon: 'globe',
+    tone: 'browser'
+  },
+  browser_navigate: {
+    icon: 'globe',
+    tone: 'browser'
+  },
   browser_snapshot: {
-    done: 'Captured page snapshot',
-    pending: 'Capturing page snapshot',
     icon: 'globe',
     tone: 'browser'
   },
   browser_take_screenshot: {
-    done: 'Captured screenshot',
-    pending: 'Capturing screenshot',
     icon: 'file-media',
     tone: 'browser'
   },
-  browser_type: { done: 'Typed on page', pending: 'Typing on page', icon: 'globe', tone: 'browser' },
-  clarify: { done: 'Asked a question', pending: 'Asking a question', icon: 'question', tone: 'agent' },
-  cronjob: { done: 'Cron job', pending: 'Scheduling cron job', icon: 'watch', tone: 'agent' },
-  edit_file: { done: 'Edited file', pending: 'Editing file', icon: 'edit', tone: 'file' },
-  execute_code: { done: 'Ran code', pending: 'Running code', icon: 'terminal', tone: 'terminal' },
-  image_generate: { done: 'Generated image', pending: 'Generating image', icon: 'file-media', tone: 'image' },
-  list_files: { done: 'Listed files', pending: 'Listing files', icon: 'files', tone: 'file' },
-  patch: { done: 'Patched file', pending: 'Patching file', icon: 'diff', tone: 'file' },
-  read_file: { done: 'Read file', pending: 'Reading file', icon: 'file', tone: 'file' },
-  search_files: { done: 'Searched files', pending: 'Searching files', icon: 'search', tone: 'file' },
+  browser_type: {
+    icon: 'globe',
+    tone: 'browser'
+  },
+  clarify: {
+    icon: 'question',
+    tone: 'agent'
+  },
+  cronjob: {
+    icon: 'watch',
+    tone: 'agent'
+  },
+  edit_file: { icon: 'edit', tone: 'file' },
+  execute_code: {
+    icon: 'terminal',
+    tone: 'terminal'
+  },
+  image_generate: {
+    icon: 'file-media',
+    tone: 'image'
+  },
+  list_files: {
+    icon: 'files',
+    tone: 'file'
+  },
+  patch: { icon: 'edit', tone: 'file' },
+  read_file: { icon: 'file', tone: 'file' },
+  search_files: {
+    icon: 'search',
+    tone: 'file'
+  },
   session_search_recall: {
-    done: 'Searched session history',
-    pending: 'Searching session history',
     icon: 'search',
     tone: 'agent'
   },
-  terminal: { done: 'Ran command', pending: 'Running command', icon: 'terminal', tone: 'terminal' },
-  todo: { done: 'Updated todos', pending: 'Updating todos', icon: 'tools', tone: 'agent' },
-  vision_analyze: { done: 'Analyzed image', pending: 'Analyzing image', icon: 'eye', tone: 'image' },
-  web_extract: { done: 'Read webpage', pending: 'Reading webpage', icon: 'globe', tone: 'web' },
-  web_search: { done: 'Searched web', pending: 'Searching web', icon: 'search', tone: 'web' },
-  write_file: { done: 'Edited file', pending: 'Editing file', icon: 'edit', tone: 'file' }
+  terminal: {
+    icon: 'terminal',
+    tone: 'terminal'
+  },
+  todo: { icon: 'tools', tone: 'agent' },
+  vision_analyze: {
+    icon: 'eye',
+    tone: 'image'
+  },
+  web_extract: { icon: 'globe', tone: 'web' },
+  web_search: { icon: 'search', tone: 'web' },
+  write_file: { icon: 'edit', tone: 'file' }
+}
+
+function isToolTitleKey(name: string): name is ToolTitleKey {
+  return name in TOOL_META
 }
 
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
@@ -131,27 +276,45 @@ function titleForTool(name: string): string {
   )
 }
 
-const PREFIX_META: { icon?: string; prefix: string; tone: ToolTone; verb: string }[] = [
-  { prefix: 'browser_', verb: 'Browser', icon: 'globe', tone: 'browser' },
-  { prefix: 'web_', verb: 'Web', icon: 'globe', tone: 'web' }
+const PREFIX_META: { icon?: string; labelKey: string; prefix: string; tone: ToolTone }[] = [
+  { prefix: 'browser_', labelKey: 'browser', icon: 'globe', tone: 'browser' },
+  { prefix: 'web_', labelKey: 'web', icon: 'globe', tone: 'web' }
 ]
 
 function toolMeta(name: string): ToolMeta {
-  if (TOOL_META[name]) {
-    return TOOL_META[name]
+  if (isToolTitleKey(name)) {
+    const meta = TOOL_META[name]
+
+    return {
+      done: translateNow(`assistant.tool.titles.${name}.done`),
+      pending: translateNow(`assistant.tool.titles.${name}.pending`),
+      pendingAction: translateNow(`assistant.tool.titles.${name}.pendingAction`),
+      icon: meta.icon,
+      tone: meta.tone
+    }
   }
 
   const action = titleForTool(name)
   const prefix = PREFIX_META.find(p => name.startsWith(p.prefix))
 
-  return prefix
-    ? {
-        done: `${prefix.verb} ${action}`,
-        pending: `Running ${prefix.verb.toLowerCase()} ${action.toLowerCase()}`,
-        icon: prefix.icon,
-        tone: prefix.tone
-      }
-    : { done: action, pending: `Running ${action.toLowerCase()}`, tone: 'default' }
+  if (prefix) {
+    const prefixLabel = translateNow(`assistant.tool.prefixes.${prefix.labelKey}`)
+
+    return {
+      done: translateNow('assistant.tool.titleTemplates.prefixedDone', prefixLabel, action),
+      pending: translateNow('assistant.tool.titleTemplates.runningPrefixedTool', prefixLabel, action),
+      pendingAction: translateNow('assistant.tool.actions.running'),
+      icon: prefix.icon,
+      tone: prefix.tone
+    }
+  }
+
+  return {
+    done: action,
+    pending: translateNow('assistant.tool.titleTemplates.runningTool', action),
+    pendingAction: translateNow('assistant.tool.actions.running'),
+    tone: 'default'
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -198,8 +361,26 @@ function contextValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
+// Each tool result is server-capped (~100KB), but a turn over a big directory
+// stacks many rows; painting/serializing them all floods the renderer (freeze,
+// then OOM). Clamp every inline-painted payload to a bounded slice — the row's
+// Copy button still reads the uncapped `view.detail` for the full output.
+export const MAX_TOOL_RENDER_CHARS = 20_000
+
+export function clampForDisplay(value: string, max = MAX_TOOL_RENDER_CHARS): string {
+  if (value.length <= max) {
+    return value
+  }
+
+  const omitted = value.length - max
+
+  return `${value.slice(0, max)}\n\n… ${omitted.toLocaleString()} more characters truncated — use Copy for the full output.`
+}
+
 function prettyJson(value: unknown): string {
-  return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  const raw = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+
+  return clampForDisplay(raw ?? '')
 }
 
 function parseMaybeObject(value: unknown): Record<string, unknown> {
@@ -797,8 +978,8 @@ function toolPreviewTarget(toolName: string, args: Record<string, unknown>, resu
     return looksLikeUrl(explicit) ? explicit : findFirstUrl(args, result)
   }
 
-  if (toolName === 'write_file' || toolName === 'edit_file') {
-    return htmlPathFromInlineDiff(firstStringField(result, ['inline_diff']))
+  if (isFileEditTool(toolName)) {
+    return htmlPathFromInlineDiff(firstStringField(result, ['inline_diff', 'diff']))
   }
 
   return ''
@@ -858,9 +1039,17 @@ function stripDividerLines(value: string): string {
 }
 
 export function inlineDiffFromResult(result: unknown): string {
-  const value = parseMaybeObject(result).inline_diff
+  const record = parseMaybeObject(result)
 
-  return typeof value === 'string' ? stripInlineDiffChrome(value) : ''
+  for (const key of ['inline_diff', 'diff']) {
+    const value = record[key]
+
+    if (typeof value === 'string' && value.trim()) {
+      return stripInlineDiffChrome(value)
+    }
+  }
+
+  return ''
 }
 
 // Falls back to a string only when there's something concrete to render —
@@ -901,8 +1090,13 @@ function fallbackDetailText(args: unknown, result: unknown): string {
 }
 
 function cronScalar(value: unknown): string {
-  if (typeof value === 'string') return value.trim()
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (typeof value === 'string') {
+    return value.trim()
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
 
   return ''
 }
@@ -910,7 +1104,9 @@ function cronScalar(value: unknown): string {
 function formatCronTime(iso: string): string {
   const ts = Date.parse(iso)
 
-  if (Number.isNaN(ts)) return iso
+  if (Number.isNaN(ts)) {
+    return iso
+  }
 
   return new Date(ts).toLocaleString(undefined, {
     month: 'short',
@@ -920,10 +1116,7 @@ function formatCronTime(iso: string): string {
   })
 }
 
-function cronjobSubtitle(
-  argsRecord: Record<string, unknown>,
-  resultRecord: Record<string, unknown>
-): string {
+function cronjobSubtitle(argsRecord: Record<string, unknown>, resultRecord: Record<string, unknown>): string {
   const jobs = Array.isArray(resultRecord.jobs) ? resultRecord.jobs : null
 
   if (jobs) {
@@ -932,7 +1125,9 @@ function cronjobSubtitle(
 
   const message = firstStringField(resultRecord, ['message'])
 
-  if (message) return message
+  if (message) {
+    return message
+  }
 
   const action = firstStringField(argsRecord, ['action']) || 'manage'
   const name = firstStringField(resultRecord, ['name']) || firstStringField(argsRecord, ['name', 'job_id'])
@@ -941,14 +1136,13 @@ function cronjobSubtitle(
   return name ? `${label} ${name}` : `Cron ${action}`
 }
 
-function cronjobDetail(
-  argsRecord: Record<string, unknown>,
-  resultRecord: Record<string, unknown>
-): string {
+function cronjobDetail(argsRecord: Record<string, unknown>, resultRecord: Record<string, unknown>): string {
   const jobs = Array.isArray(resultRecord.jobs) ? resultRecord.jobs : null
 
   if (jobs) {
-    if (!jobs.length) return 'No cron jobs scheduled'
+    if (!jobs.length) {
+      return 'No cron jobs scheduled'
+    }
 
     return jobs
       .slice(0, 20)
@@ -963,12 +1157,14 @@ function cronjobDetail(
   }
 
   const nextRun = cronScalar(resultRecord.next_run_at)
+
   const rows: [string, string][] = [
     ['Schedule', cronScalar(resultRecord.schedule)],
     ['Repeat', cronScalar(resultRecord.repeat)],
     ['Delivery', cronScalar(resultRecord.deliver)],
     ['Next run', nextRun ? formatCronTime(nextRun) : '']
   ]
+
   const lines = rows.filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`)
 
   return lines.length ? lines.join('\n') : fallbackDetailText(argsRecord, resultRecord)
@@ -1042,20 +1238,27 @@ function toolSubtitle(
       }
     }
 
-    const command = firstStringField(argsRecord, ['command', 'code']) || contextValue(argsRecord)
+    const command = firstStringField(argsRecord, ['context', 'preview', 'command', 'code']) || contextValue(argsRecord)
 
-    return command ? compactPreview(command, 120) : 'Executed command'
+    return command ? '' : 'Executed command'
   }
 
-  if (toolName === 'read_file' || toolName === 'write_file' || toolName === 'edit_file') {
-    const path =
-      firstStringField(argsRecord, ['path', 'file', 'filepath']) ||
-      htmlPathFromInlineDiff(firstStringField(resultRecord, ['inline_diff']))
+  if (toolName === 'read_file' || isFileEditTool(toolName)) {
+    const isEdit = isFileEditTool(toolName)
 
-    return (
-      path ||
-      (firstStringField(resultRecord, ['inline_diff']) ? 'Changed file' : fallbackDetailText(argsRecord, resultRecord))
-    )
+    const path = isEdit
+      ? fileEditPath(argsRecord, resultRecord)
+      : firstStringField(argsRecord, ['path', 'file', 'filepath'])
+
+    if (path) {
+      return path
+    }
+
+    if (!isEdit) {
+      return fallbackDetailText(argsRecord, resultRecord)
+    }
+
+    return inlineDiffFromResult(resultRecord) ? 'Changed file' : ''
   }
 
   if (toolName === 'web_extract') {
@@ -1086,10 +1289,6 @@ function toolDetailLabel(toolName: string): string {
 
   if (toolName === 'browser_snapshot') {
     return 'Snapshot summary'
-  }
-
-  if (toolName === 'terminal' || toolName === 'execute_code') {
-    return 'Command output'
   }
 
   return ''
@@ -1145,7 +1344,7 @@ function toolDetailText(
     }
   }
 
-  if (part.toolName === 'read_file') {
+  if (part.toolName === 'read_file' && part.result !== undefined) {
     const content = firstStringField(resultRecord, ['content', 'text', 'data', 'body'])
 
     if (content) {
@@ -1153,8 +1352,22 @@ function toolDetailText(
     }
   }
 
-  if (part.toolName === 'write_file' || part.toolName === 'edit_file') {
-    return inlineDiffFromResult(part.result) ? '' : fallbackDetailText(argsRecord, resultRecord)
+  if (isFileEditTool(part.toolName)) {
+    if (inlineDiffFromResult(part.result)) {
+      return ''
+    }
+
+    const summary = firstStringField(resultRecord, ['message', 'summary'])
+
+    if (summary) {
+      return summary
+    }
+
+    if (fileEditPath(argsRecord, resultRecord)) {
+      return ''
+    }
+
+    return fallbackDetailText(argsRecord, resultRecord)
   }
 
   if (part.toolName === 'web_search') {
@@ -1190,6 +1403,7 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     url: translateNow('assistant.tool.copyUrl'),
     generic: translateNow('common.copy')
   }
+
   const args = parseMaybeObject(part.args)
   const result = parseMaybeObject(part.result)
   const detail = view.detail.trim()
@@ -1241,7 +1455,7 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     }
   }
 
-  if (part.toolName === 'read_file') {
+  if (part.toolName === 'read_file' && part.result !== undefined) {
     if (hasSubstantialOutput) {
       return { label: copy.file, text: detail }
     }
@@ -1253,8 +1467,12 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     }
   }
 
-  if (part.toolName === 'write_file' || part.toolName === 'edit_file') {
-    const path = firstStringField(args, ['path', 'file', 'filepath'])
+  if (isFileEditTool(part.toolName)) {
+    if (view.inlineDiff.trim()) {
+      return { label: copy.file, text: view.inlineDiff }
+    }
+
+    const path = fileEditPath(args, result)
 
     if (path) {
       return { label: copy.path, text: path }
@@ -1268,39 +1486,114 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
   return { label: copy.generic, text: view.title }
 }
 
+interface ToolTitleParts {
+  action?: ToolTitleAction
+  title: string
+}
+
+function titlePartsFromAction(title: string, action?: string): ToolTitleParts {
+  if (!action) {
+    return { title }
+  }
+
+  const actionStart = title.indexOf(action)
+
+  if (actionStart < 0) {
+    return { title }
+  }
+
+  return {
+    action: {
+      prefix: title.slice(0, actionStart),
+      suffix: title.slice(actionStart + action.length),
+      text: action
+    },
+    title
+  }
+}
+
 function dynamicTitle(
   part: ToolPart,
   args: Record<string, unknown>,
   result: Record<string, unknown>,
-  fallback: string
-): string {
+  fallback: ToolTitleParts
+): ToolTitleParts {
   const verb = (gerund: string, past: string) => (part.result === undefined ? gerund : past)
+
+  const titledAction = (action: string, title: string): ToolTitleParts =>
+    titlePartsFromAction(title, part.result === undefined ? action : undefined)
 
   if (part.toolName === 'web_extract') {
     const url = findFirstUrl(args, result)
+    const action = verb(translateNow('assistant.tool.actions.reading'), translateNow('assistant.tool.actions.read'))
 
-    return url ? `${verb('Reading', 'Read')} ${hostnameOf(url)}` : fallback
+    return url
+      ? titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, hostnameOf(url)))
+      : fallback
   }
 
   if (part.toolName === 'browser_navigate') {
     const url = findFirstUrl(args, result)
+    const action = verb(translateNow('assistant.tool.actions.opening'), translateNow('assistant.tool.actions.opened'))
 
-    return url ? `${verb('Opening', 'Opened')} ${hostnameOf(url)}` : fallback
+    return url
+      ? titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, hostnameOf(url)))
+      : fallback
   }
 
   if (part.toolName === 'web_search') {
     const query = firstStringField(args, ['search_term', 'query']) || contextValue(args)
 
-    return query ? `${verb('Searching', 'Searched')} “${compactPreview(query, 48)}”` : fallback
+    const action = verb(
+      translateNow('assistant.tool.actions.searching'),
+      translateNow('assistant.tool.actions.searched')
+    )
+
+    return query
+      ? titledAction(
+          action,
+          translateNow('assistant.tool.titleTemplates.actionQuoted', action, compactPreview(query, 48))
+        )
+      : fallback
+  }
+
+  if (part.toolName === 'read_file') {
+    const target = readFileDisplayTarget(args, result)
+    const action = verb(translateNow('assistant.tool.actions.reading'), translateNow('assistant.tool.actions.read'))
+
+    return target
+      ? titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, target))
+      : fallback
   }
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
-    const command = firstStringField(args, ['command', 'code']) || contextValue(args)
+    const command =
+      firstStringField(args, ['context', 'preview']) ||
+      firstStringField(args, ['command', 'code']) ||
+      contextValue(args)
 
     if (command) {
-      const verbText = part.toolName === 'execute_code' ? verb('Running code', 'Ran code') : verb('Running', 'Ran')
+      const action =
+        part.toolName === 'execute_code'
+          ? verb(translateNow('assistant.tool.actions.runningCode'), translateNow('assistant.tool.actions.ranCode'))
+          : verb(translateNow('assistant.tool.actions.running'), translateNow('assistant.tool.actions.ran'))
 
-      return `${verbText} · ${compactPreview(command, 160)}`
+      return titledAction(
+        action,
+        translateNow(
+          'assistant.tool.titleTemplates.actionCommand',
+          action,
+          compactPreview(summarizeShellCommand(command), 160)
+        )
+      )
+    }
+  }
+
+  if (isFileEditTool(part.toolName)) {
+    const path = fileEditPath(args, result)
+
+    if (path) {
+      return { title: fileEditBasename(path) }
     }
   }
 
@@ -1314,10 +1607,23 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const status = toolStatus(part, resultRecord)
   const error = toolErrorText(part, resultRecord)
   const baseTitle = part.result === undefined ? meta.pending : meta.done
-  const title = dynamicTitle(part, argsRecord, resultRecord, baseTitle)
+
+  const titleParts = dynamicTitle(
+    part,
+    argsRecord,
+    resultRecord,
+    titlePartsFromAction(baseTitle, part.result === undefined ? meta.pendingAction : undefined)
+  )
+
+  const title = titleParts.title
   const titleEnriched = title !== baseTitle
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
-  const keepSubtitleWithTitle = part.toolName === 'terminal' || part.toolName === 'execute_code'
+
+  const keepSubtitleWithTitle =
+    part.toolName === 'terminal' ||
+    part.toolName === 'execute_code' ||
+    (isFileEditTool(part.toolName) && Boolean(baseSubtitle.trim()))
+
   const subtitle = titleEnriched && !error && !keepSubtitleWithTitle ? '' : baseSubtitle
   const detailBody = stripDividerLines(toolDetailText(part, argsRecord, resultRecord))
 
@@ -1363,6 +1669,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     status,
     subtitle,
     title,
+    titleAction: titleParts.action,
     tone: meta.tone
   }
 }

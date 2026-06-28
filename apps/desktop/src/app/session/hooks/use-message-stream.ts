@@ -27,15 +27,18 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { parseTodos } from '@/lib/todos'
-import { setClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
+import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
+  $currentCwd,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -45,6 +48,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setSessions,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -52,6 +56,7 @@ import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
+import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../types'
@@ -338,6 +343,9 @@ export function useMessageStream({
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
+  // Last session we applied a session.info cwd for — lets us tell an agent
+  // relocating the SAME session (follow it) from a session switch (don't yank).
+  const lastCwdInfoSessionRef = useRef<null | string>(null)
 
   const flushQueuedDeltas = useCallback(
     (sessionId?: string) => {
@@ -745,7 +753,20 @@ export function useMessageStream({
           }
 
           if (typeof payload?.cwd === 'string') {
+            // The active session's agent can relocate itself (new repo/worktree
+            // via the terminal). When the SAME active session's cwd actually
+            // moves, follow it — refresh the project tree + scope so the sidebar
+            // tracks the live thread. A fresh selection (different session id)
+            // is a switch, not a move, so it refreshes data without yanking scope.
+            const cwdMoved = payload.cwd !== $currentCwd.get()
+            const sameSession = !!sessionId && sessionId === lastCwdInfoSessionRef.current
+
+            lastCwdInfoSessionRef.current = sessionId
             setCurrentCwd(payload.cwd)
+
+            if (cwdMoved && sameSession) {
+              void followActiveSessionCwd(payload.cwd)
+            }
           }
 
           if (typeof payload?.branch === 'string') {
@@ -870,9 +891,40 @@ export function useMessageStream({
         if (sessionId) {
           appendReasoningDelta(sessionId, coerceThinkingText(payload?.text))
         }
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
+        }
       } else if (event.type === 'reasoning.available') {
         if (sessionId) {
           appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), true)
+        }
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
+        }
+      } else if (event.type === 'moa.reference') {
+        // MoA reference-model output — surface as a labelled thinking chunk
+        // (tagged with the source model) before the aggregator's response, so
+        // the mixture-of-agents process is visible. Reuses the reasoning
+        // disclosure rather than introducing a parallel surface.
+        if (sessionId) {
+          const label = coerceGatewayText(payload?.label) || 'reference'
+          const idx = typeof payload?.index === 'number' ? payload.index : undefined
+          const cnt = typeof payload?.count === 'number' ? payload.count : undefined
+          const header = idx && cnt ? `◇ Reference ${idx}/${cnt} — ${label}` : `◇ Reference — ${label}`
+          const body = coerceThinkingText(payload?.text)
+          appendReasoningDelta(sessionId, `${header}\n${body}\n\n`, true)
+        }
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
+        }
+      } else if (event.type === 'moa.aggregating') {
+        // Status transition only; the aggregator's reply arrives via the normal
+        // message stream. No reasoning/transcript mutation here.
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
         }
       } else if (event.type === 'message.complete') {
         if (!sessionId) {
@@ -884,6 +936,7 @@ export function useMessageStream({
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
+        clearClarifyRequest(undefined, sessionId)
         setSessionCompacting(sessionId, false)
 
         flushQueuedDeltas(sessionId)
@@ -895,10 +948,34 @@ export function useMessageStream({
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
+
+          // Pet beat: a finished turn always celebrates — go straight to the
+          // jump, never linger on the run/reason pose. One atom update (clears
+          // toolRunning/reasoning AND sets celebrate together) so no stray "run"
+          // frame leaks to the sprite — including the popped-out overlay, which
+          // mirrors each activity change. The jump runs ~2 loops, then settles.
+          flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
+
+          // Light up the pet's mail icon if the user wasn't looking when the turn
+          // finished — a glanceable "new message" hint on the popped-out overlay.
+          // Cleared when they open the app via the mail icon or refocus the window.
+          if (typeof document !== 'undefined' && !document.hasFocus()) {
+            markPetUnread()
+          }
         }
 
         if (payload?.usage) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        }
+      } else if (event.type === 'session.title') {
+        // Live auto-title push (titler runs async, after the turn's refresh).
+        const storedId = typeof payload?.session_id === 'string' ? payload.session_id : ''
+        const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''
+
+        if (storedId && nextTitle) {
+          setSessions(prev =>
+            prev.map(s => (s.id === storedId || s._lineage_root_id === storedId ? { ...s, title: nextTitle } : s))
+          )
         }
       } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
         if (!sessionId) {
@@ -907,10 +984,19 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
         upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: false, toolRunning: true })
+        }
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(sessionId)
           upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
+
+          if (isActiveEvent) {
+            setPetActivity({ toolRunning: false })
+          }
+
           // A pending clarify blocks the turn, so the first tool.complete after
           // one is the clarify resolving — drop the "needs input" flag here so
           // the sidebar indicator clears as soon as it's answered, not only at
@@ -926,6 +1012,13 @@ export function useMessageStream({
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
           recordToolDiff(payload.tool_id || payload.name || '', payload.inline_diff)
+        }
+
+        // A file-mutating tool just finished — nudge the git-mirroring surfaces
+        // (coding rail, review pane, file tree) to refresh. Event-driven, not
+        // polled: fires exactly when the agent touches the tree.
+        if (payload && toolMayMutateFiles(payload)) {
+          notifyWorkspaceChanged()
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
         if (sessionId && payload && !sessionInterrupted(sessionId)) {
@@ -1116,8 +1209,14 @@ export function useMessageStream({
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
           clearAllPrompts(sessionId)
+          clearClarifyRequest(undefined, sessionId)
           setSessionCompacting(sessionId, false)
           compactedTurnRef.current.delete(sessionId)
+        }
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: false, toolRunning: false })
+          flashPetActivity({ error: true })
         }
 
         dispatchNativeNotification({

@@ -71,6 +71,8 @@ def check_mattermost_requirements() -> bool:
 class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)
 
@@ -254,7 +256,7 @@ class MattermostAdapter(BasePlatformAdapter):
     # Required overrides
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Mattermost and start the WebSocket listener."""
         import aiohttp
 

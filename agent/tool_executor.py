@@ -26,6 +26,7 @@ from agent.display import (
     build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
+    redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
@@ -44,18 +45,58 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
+from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
+
+
+def _budget_for_agent(agent) -> BudgetConfig:
+    """Resolve a tool-result BudgetConfig scaled to the agent's context window.
+
+    Large-context models keep the historical 100K/200K char defaults; small
+    models (e.g. a 65K-token local model switched into mid-session) get a budget
+    proportional to their window so a single large tool result can't push the
+    request past the model's limit (#23767). Falls back to the default budget
+    when the context length isn't resolvable.
+    """
+    try:
+        ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+        return budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
+    except Exception:
+        return DEFAULT_BUDGET
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
 
 
+def _flush_session_db_after_tool_progress(
+    agent,
+    messages: list,
+    *,
+    stage: str,
+) -> None:
+    """Best-effort incremental SessionDB flush for tool-call progress.
+
+    Tool execution can perform side effects that terminate or restart the
+    current Hermes process before the normal turn-end persistence path runs.
+    Flush the already-appended assistant/tool messages immediately so the
+    transcript survives destructive-but-valid tool calls.
+    """
+    try:
+        agent._flush_messages_to_session_db(messages)
+    except Exception as exc:
+        logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
     return run_agent
+
+
+def _is_interpreter_shutdown_submit_error(exc: RuntimeError) -> bool:
+    return "cannot schedule new futures after interpreter shutdown" in str(exc)
 
 
 def _emit_terminal_post_tool_call(
@@ -249,6 +290,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
 
+    # Resolve the context-scaled tool-output budget once per turn (cheap, but
+    # avoids rebuilding it per result inside the loop below).
+    _tool_budget = _budget_for_agent(agent)
+
     # ── Pre-flight: interrupt check ──────────────────────────────────
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
@@ -258,6 +303,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
                 tc.id,
             ))
+            _flush_session_db_after_tool_progress(
+                agent,
+                messages,
+                stage=f"cancelled tool result {tc.function.name}",
+            )
         return
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
@@ -420,10 +470,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
         for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls, 1):
-            args_str = json.dumps(args, ensure_ascii=False)
+            display_args = _redact_tool_args_for_display(name, args) or args
+            args_str = json.dumps(display_args, ensure_ascii=False)
             if agent.verbose_logging:
-                print(f"  📞 Tool {i}: {name}({list(args.keys())})")
-                print(agent._wrap_verbose("Args: ", json.dumps(args, indent=2, ensure_ascii=False)))
+                print(f"  📞 Tool {i}: {name}({list(display_args.keys())})")
+                print(agent._wrap_verbose("Args: ", json.dumps(display_args, indent=2, ensure_ascii=False)))
             else:
                 args_preview = args_str[:agent.log_prefix_chars] + "..." if len(args_str) > agent.log_prefix_chars else args_str
                 print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
@@ -433,8 +484,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             continue
         if agent.tool_progress_callback:
             try:
-                preview = _build_tool_preview(name, args)
-                agent.tool_progress_callback("tool.started", name, preview, args)
+                display_args = _redact_tool_args_for_display(name, args) or args
+                preview = _build_tool_preview(name, display_args)
+                agent.tool_progress_callback("tool.started", name, preview, display_args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -443,7 +495,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             continue
         if agent.tool_start_callback:
             try:
-                agent.tool_start_callback(tc.id, name, args)
+                display_args = _redact_tool_args_for_display(name, args) or args
+                agent.tool_start_callback(tc.id, name, display_args)
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -560,13 +613,40 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if runnable_calls:
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                for i, tc, name, args in runnable_calls:
+                for submit_index, (i, tc, name, args) in enumerate(runnable_calls):
                     # Propagate the agent turn's ContextVars (e.g.
                     # _approval_session_key) AND thread-local approval/sudo
                     # callbacks into the worker thread; clears callbacks on exit.
-                    f = executor.submit(
-                        propagate_context_to_thread(_run_tool), i, tc, name, args, parsed_calls[i][3]
-                    )
+                    try:
+                        f = executor.submit(
+                            propagate_context_to_thread(_run_tool), i, tc, name, args, parsed_calls[i][3]
+                        )
+                    except RuntimeError as submit_error:
+                        if not _is_interpreter_shutdown_submit_error(submit_error):
+                            raise
+                        skipped_calls = runnable_calls[submit_index:]
+                        logger.warning(
+                            "interpreter shutdown while scheduling concurrent tools; "
+                            "skipping %d unsubmitted tool(s)",
+                            len(skipped_calls),
+                        )
+                        for skipped_i, _tc, skipped_name, skipped_args in skipped_calls:
+                            if results[skipped_i] is None:
+                                middleware_trace = parsed_calls[skipped_i][3]
+                                result = (
+                                    f"Error executing tool '{skipped_name}': "
+                                    "Python interpreter is shutting down; tool was not started"
+                                )
+                                results[skipped_i] = (
+                                    skipped_name,
+                                    skipped_args,
+                                    result,
+                                    0.0,
+                                    True,
+                                    False,
+                                    middleware_trace,
+                                )
+                        break
                     futures.append(f)
 
                 # Wait for all to complete with periodic heartbeats so the
@@ -716,7 +796,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         if not blocked and agent.tool_complete_callback:
             try:
-                agent.tool_complete_callback(tc.id, name, args, function_result)
+                display_args = _redact_tool_args_for_display(name, args) or args
+                agent.tool_complete_callback(tc.id, name, display_args, function_result)
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
@@ -725,6 +806,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_name=name,
             tool_use_id=tc.id,
             env=get_active_env(effective_task_id),
+            config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
@@ -746,6 +828,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
         messages.append(make_tool_result_message(name, _tool_content, tc.id))
+        _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"tool result {name}",
+        )
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
@@ -756,7 +843,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     num_tools = len(parsed_calls)
     if num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -769,6 +856,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+    # Resolve the context-scaled tool-output budget once per turn.
+    _tool_budget = _budget_for_agent(agent)
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -779,13 +868,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
-                skip_msg = {
-                    "role": "tool",
-                    "name": skipped_name,
-                    "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
-                    "tool_call_id": skipped_tc.id,
-                }
-                messages.append(skip_msg)
+                messages.append(make_tool_result_message(
+                    skipped_name,
+                    f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
+                    skipped_tc.id,
+                ))
+                _flush_session_db_after_tool_progress(
+                    agent,
+                    messages,
+                    stage=f"cancelled tool result {skipped_name}",
+                )
             break
 
         function_name = tool_call.function.name
@@ -867,10 +959,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._iters_since_skill = 0
 
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
-            args_str = json.dumps(function_args, ensure_ascii=False)
+            display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+            args_str = json.dumps(display_args, ensure_ascii=False)
             if agent.verbose_logging:
-                print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
-                print(agent._wrap_verbose("Args: ", json.dumps(function_args, indent=2, ensure_ascii=False)))
+                print(f"  📞 Tool {i}: {function_name}({list(display_args.keys())})")
+                print(agent._wrap_verbose("Args: ", json.dumps(display_args, indent=2, ensure_ascii=False)))
             else:
                 args_preview = args_str[:agent.log_prefix_chars] + "..." if len(args_str) > agent.log_prefix_chars else args_str
                 print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
@@ -891,14 +984,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not _execution_blocked and agent.tool_progress_callback:
             try:
-                preview = _build_tool_preview(function_name, function_args)
-                agent.tool_progress_callback("tool.started", function_name, preview, function_args)
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                preview = _build_tool_preview(function_name, display_args)
+                agent.tool_progress_callback("tool.started", function_name, preview, display_args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
         if not _execution_blocked and agent.tool_start_callback:
             try:
-                agent.tool_start_callback(tool_call.id, function_name, function_args)
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                agent.tool_start_callback(tool_call.id, function_name, display_args)
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -1022,32 +1117,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     operations=operations,
                     store=agent._memory_store,
                 )
-                # Bridge: notify external memory provider of built-in memory writes.
-                # Covers both the single-op shape and each add/replace inside a batch.
+                # Mirror successful built-in memory writes to external
+                # providers. All gating/op-expansion lives behind the manager
+                # interface (MemoryManager.notify_memory_tool_write).
                 if agent._memory_manager:
-                    if operations:
-                        _mem_ops = [
-                            op for op in operations
-                            if isinstance(op, dict) and op.get("action") in {"add", "replace"}
-                        ]
-                    else:
-                        _mem_ops = (
-                            [{"action": next_args.get("action"), "content": next_args.get("content")}]
-                            if next_args.get("action") in {"add", "replace"} else []
-                        )
-                    for _op in _mem_ops:
-                        try:
-                            agent._memory_manager.on_memory_write(
-                                _op.get("action", ""),
-                                target,
-                                _op.get("content", "") or "",
-                                metadata=agent._build_memory_write_metadata(
-                                    task_id=effective_task_id,
-                                    tool_call_id=getattr(tool_call, "id", None),
-                                ),
-                            )
-                        except Exception:
-                            pass
+                    agent._memory_manager.notify_memory_tool_write(
+                        result,
+                        next_args,
+                        build_metadata=lambda: agent._build_memory_write_metadata(
+                            task_id=effective_task_id,
+                            tool_call_id=getattr(tool_call, "id", None),
+                        ),
+                    )
                 return result
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,
@@ -1142,7 +1223,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if agent._should_emit_quiet_tool_messages():
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
-                preview = _build_tool_preview(function_name, function_args) or function_name
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                preview = _build_tool_preview(function_name, display_args) or function_name
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _ce_result = None
@@ -1175,7 +1257,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
-                preview = _build_tool_preview(function_name, function_args) or function_name
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                preview = _build_tool_preview(function_name, display_args) or function_name
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _mem_result = None
@@ -1206,7 +1289,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
-                preview = _build_tool_preview(function_name, function_args) or function_name
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                preview = _build_tool_preview(function_name, display_args) or function_name
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _spinner_result = None
@@ -1368,7 +1452,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not _execution_blocked and agent.tool_complete_callback:
             try:
-                agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                agent.tool_complete_callback(tool_call.id, function_name, display_args, function_result)
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
@@ -1377,6 +1462,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_name=function_name,
             tool_use_id=tool_call.id,
             env=get_active_env(effective_task_id),
+            config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments
@@ -1391,6 +1477,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
+        _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"tool result {function_name}",
+        )
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the
@@ -1417,6 +1508,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
                     skipped_tc.id,
                 ))
+                _flush_session_db_after_tool_progress(
+                    agent,
+                    messages,
+                    stage=f"skipped tool result {skipped_name}",
+                )
             break
 
         if agent.tool_delay > 0 and i < len(assistant_message.tool_calls):
@@ -1425,7 +1521,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)
     if num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
+        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,

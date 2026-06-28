@@ -65,9 +65,43 @@ import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
-from hermes_constants import get_hermes_home
+from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_cli._subprocess_compat import windows_hide_flags
+
+# Browser-specific tool keys passed through to the agent-browser subprocess
+# AFTER credential stripping.  agent-browser is a Node process loading npm
+# deps; handing it the full operator keyring (#29157 / GHSA-m4m8-xjp4-5rmm)
+# means a compromised transitive dependency could read every Hermes secret
+# straight out of process.env.  Strip by default, then re-add only the
+# browser-backend keys the worker legitimately needs.
+_BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
+    "BROWSERBASE_API_KEY",
+    "BROWSERBASE_PROJECT_ID",
+    "BROWSER_USE_API_KEY",
+    "FIRECRAWL_API_KEY",
+    "FIRECRAWL_API_URL",
+    "FIRECRAWL_BROWSER_TTL",
+)
+
+
+def _build_browser_env() -> dict:
+    """Credential-scrubbed env for an agent-browser subprocess.
+
+    Strips Hermes-managed secrets (provider keys, gateway tokens, GitHub auth,
+    infra secrets) then re-adds only the browser-backend keys the worker needs.
+    The ``hermes_subprocess_env`` import is deferred to keep ``browser_tool``
+    importable under test harnesses that load it against a stubbed ``tools``
+    package (tests/tools/test_managed_browserbase_and_modal.py).
+    """
+    from tools.environments.local import hermes_subprocess_env
+
+    env = hermes_subprocess_env(inherit_credentials=False)
+    for _key in _BROWSER_PASSTHROUGH_KEYS:
+        if _key in os.environ:
+            env[_key] = os.environ[_key]
+    return env
 
 try:
     from tools.website_policy import check_website_access
@@ -619,7 +653,7 @@ def _is_local_mode() -> bool:
 
 
 def _is_local_backend() -> bool:
-    """Return True when the browser runs locally (no cloud provider).
+    """Return True when the browser runs locally AND the terminal is also local.
 
     SSRF protection is only meaningful for cloud backends (Browserbase,
     BrowserUse) where the agent could reach internal resources on a remote
@@ -627,8 +661,20 @@ def _is_local_backend() -> bool:
     Chromium without a cloud provider — the user already has full terminal
     and network access on the same machine, so the check adds no security
     value.
+
+    However, when the terminal runs in a container (docker, modal, daytona,
+    ssh, singularity), the browser on the host can access internal networks
+    that the terminal cannot.  In this case, SSRF protection should be
+    enabled even though the browser is technically "local".
     """
-    return _is_camofox_mode() or _get_cloud_provider() is None
+    if _is_camofox_mode():
+        return True
+    if _get_cloud_provider() is not None:
+        return False
+    # When terminal runs in a container, browser on host can access
+    # internal networks the terminal can't → treat as non-local.
+    terminal_backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
+    return terminal_backend in ("local", "")
 
 
 _auto_local_for_private_urls_resolved = False
@@ -859,7 +905,8 @@ def _run_chrome_fallback_command(
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
-    browser_env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
+    browser_env = _build_browser_env()
+    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
     browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
@@ -903,8 +950,7 @@ def _run_chrome_fallback_command(
                 # the CLI mid-turn. The agent thread's subprocess spawn
                 # unwound MainThread's prompt_toolkit loop that way — see
                 # diag log: "asyncio.CancelledError → KeyboardInterrupt".
-                _CREATE_NO_WINDOW = 0x08000000
-                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                _popen_extra["creationflags"] = windows_hide_flags()
                 _popen_extra["close_fds"] = True
                 _si = subprocess.STARTUPINFO()
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
@@ -1308,6 +1354,92 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
                      session_name, exc)
 
 
+def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
+                                    session_name: str) -> bool:
+    """Confirm a live PID is genuinely *this* session's agent-browser daemon.
+
+    The orphan reaper scans world-writable, predictably-named temp paths
+    (``/tmp/agent-browser-h_*`` etc.) and reads a daemon PID from a ``.pid``
+    file we do not write ourselves — the agent-browser daemon writes it.  A
+    same-user actor can therefore plant a fake socket dir whose ``.pid`` points
+    at an arbitrary victim process, or a recycled PID can land on an unrelated
+    process after the real daemon exits.  Either way, terminating that PID
+    (a *tree* kill via ``_terminate_host_pid``) is an arbitrary-process DoS.
+
+    Before reaping we require, via ``psutil`` (a hard dependency, cross-platform
+    for same-user processes — the only processes the reaper can signal):
+
+      1. **Identity** — the process looks like agent-browser: ``agent-browser``
+         appears in its name or command line.
+      2. **Binding** — the process is bound to *this* session's socket dir: the
+         socket dir path (or its basename) appears in the command line, or in
+         ``AGENT_BROWSER_SOCKET_DIR`` in the process environment.
+
+    Requirement (2) is the real spoof defense: a planted process pointing at a
+    victim PID will not have the victim's cmdline/environ referencing our
+    socket dir.  An attacker would need a process that genuinely embeds this
+    exact session path — i.e. a real daemon they already own and could signal
+    directly.  Fail-closed: any ambiguity (unreadable cmdline, no match) means
+    we refuse to reap and leave the process and its socket dir alone.
+
+    Returns ``True`` only when both checks pass.
+    """
+    try:
+        import psutil
+    except ImportError:  # psutil is a hard dep; defensive only
+        logger.warning(
+            "Refusing to reap browser daemon PID %d (session %s): "
+            "psutil unavailable for identity verification",
+            daemon_pid, session_name)
+        return False
+
+    try:
+        proc = psutil.Process(daemon_pid)
+        name = (proc.name() or "").lower()
+        cmdline = " ".join(proc.cmdline() or []).lower()
+    except psutil.NoSuchProcess:
+        # Vanished between the liveness check and now — nothing to reap.
+        return False
+    except (psutil.AccessDenied, OSError) as exc:
+        logger.warning(
+            "Refusing to reap browser daemon PID %d (session %s): "
+            "could not read process identity (%s)",
+            daemon_pid, session_name, exc)
+        return False
+
+    looks_like_browser = "agent-browser" in name or "agent-browser" in cmdline
+    if not looks_like_browser:
+        logger.warning(
+            "Refusing to reap PID %d (session %s): not an agent-browser "
+            "process (name=%r)", daemon_pid, session_name, name)
+        return False
+
+    # Binding check: the live process must reference *this* socket dir.
+    socket_dir_l = socket_dir.lower()
+    socket_base_l = os.path.basename(socket_dir).lower()
+    bound = socket_dir_l in cmdline or (
+        socket_base_l and socket_base_l in cmdline)
+    if not bound:
+        try:
+            env_dir = (proc.environ() or {}).get(
+                "AGENT_BROWSER_SOCKET_DIR", "")
+            bound = bool(env_dir) and os.path.normpath(env_dir) == \
+                os.path.normpath(socket_dir)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            # environ() can be denied even same-user on some platforms.
+            # cmdline already failed to bind — fail closed.
+            bound = False
+
+    if not bound:
+        logger.warning(
+            "Refusing to reap agent-browser PID %d: not bound to session "
+            "socket dir %s (possible recycled PID or planted pid file)",
+            daemon_pid, socket_dir)
+        return False
+
+    return True
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -1401,6 +1533,17 @@ def _reap_orphaned_browser_sessions():
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
             shutil.rmtree(socket_dir, ignore_errors=True)
+            continue
+
+        # The PID is live — but the .pid file lives in a world-writable,
+        # predictably-named temp dir we don't write ourselves, and PIDs get
+        # recycled after the real daemon exits.  Verify the process really is
+        # *this* session's agent-browser daemon before tree-killing it; refuse
+        # otherwise (don't touch the process, leave the socket dir for a later
+        # sweep once the imposter PID is gone).  Fixes the arbitrary same-user
+        # process DoS in issue #14073.
+        if not _verify_reapable_browser_daemon(
+                daemon_pid, socket_dir, session_name):
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
@@ -1795,10 +1938,19 @@ def _find_agent_browser() -> str:
     # Note: _agent_browser_resolved is set at each return site below
     # (not before the search) to prevent a race where a concurrent thread
     # sees resolved=True but _cached_agent_browser is still None.
+    #
+    # Every candidate below is validated with ``agent_browser_runnable`` before
+    # it is cached. A bare ``shutil.which`` hit is NOT trusted: agent-browser's
+    # npm postinstall re-points a global install symlink at our local
+    # node_modules binary, which disappears on the next ``hermes update`` and
+    # leaves a dangling link that ``which`` still reports but exec fails on with
+    # exit 127 (issue #48521). Validating lets a dead candidate fall through to
+    # the next working resolution (extended PATH → local .bin → npx) instead of
+    # caching the broken one and silently killing every browser tool.
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
-    if which_result:
+    if which_result and agent_browser_runnable(which_result):
         _cached_agent_browser = which_result
         _agent_browser_resolved = True
         return which_result
@@ -1808,7 +1960,7 @@ def _find_agent_browser() -> str:
     extended_path = _merge_browser_path("")
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
-        if which_result:
+        if which_result and agent_browser_runnable(which_result):
             _cached_agent_browser = which_result
             _agent_browser_resolved = True
             return which_result
@@ -1825,7 +1977,7 @@ def _find_agent_browser() -> str:
     local_bin_dir = repo_root / "node_modules" / ".bin"
     if local_bin_dir.is_dir():
         local_which = shutil.which("agent-browser", path=str(local_bin_dir))
-        if local_which:
+        if local_which and agent_browser_runnable(local_which):
             _cached_agent_browser = local_which
             _agent_browser_resolved = True
             return _cached_agent_browser
@@ -1843,22 +1995,18 @@ def _find_agent_browser() -> str:
     try:
         from hermes_cli.dep_ensure import ensure_dependency
         if ensure_dependency("browser"):
-            recheck = shutil.which("agent-browser")
-            if not recheck and extended_path:
-                recheck = shutil.which("agent-browser", path=extended_path)
-            if not recheck:
-                hermes_nm = str(get_hermes_home() / "node_modules" / ".bin")
-                recheck = shutil.which("agent-browser", path=hermes_nm)
-            if not recheck:
-                hermes_node_bin = str(get_hermes_home() / "node" / "bin")
-                recheck = shutil.which("agent-browser", path=hermes_node_bin)
-            if not recheck:
-                hermes_node_root = str(get_hermes_home() / "node")
-                recheck = shutil.which("agent-browser", path=hermes_node_root)
-            if recheck:
-                _cached_agent_browser = recheck
-                _agent_browser_resolved = True
-                return recheck
+            candidates = [
+                shutil.which("agent-browser"),
+                shutil.which("agent-browser", path=extended_path) if extended_path else None,
+                shutil.which("agent-browser", path=str(get_hermes_home() / "node_modules" / ".bin")),
+                shutil.which("agent-browser", path=str(get_hermes_home() / "node" / "bin")),
+                shutil.which("agent-browser", path=str(get_hermes_home() / "node")),
+            ]
+            for recheck in candidates:
+                if recheck and agent_browser_runnable(recheck):
+                    _cached_agent_browser = recheck
+                    _agent_browser_resolved = True
+                    return recheck
     except Exception:
         pass
 
@@ -2011,7 +2159,7 @@ def _run_browser_command(
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
-        browser_env = {**os.environ}
+        browser_env = _build_browser_env()
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
         # used during CLI discovery.
@@ -2082,8 +2230,7 @@ def _run_browser_command(
                 # See matching block at the other Popen site — CREATE_NO_WINDOW
                 # only, NO CREATE_NEW_PROCESS_GROUP (cancels asyncio loop task
                 # on Python 3.11 Windows → KeyboardInterrupt in CLI MainThread).
-                _CREATE_NO_WINDOW = 0x08000000
-                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                _popen_extra["creationflags"] = windows_hide_flags()
                 _popen_extra["close_fds"] = True
                 _si = subprocess.STARTUPINFO()
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
@@ -2548,6 +2695,37 @@ def browser_snapshot(
         snapshot_text = data.get("snapshot", "")
         refs = data.get("refs", {})
 
+        # ── Private-network guard: block snapshots from eval-navigated private pages ──
+        # After any eval (browser_console) that may have changed location.href to a
+        # private/internal address, the snapshot would expose private page content.
+        # Re-check the current URL before returning the snapshot.
+        if (
+            not _is_local_backend()
+            and not _is_local_sidecar_key(effective_task_id)
+            and not _allow_private_urls()
+        ):
+            try:
+                _url_result = _run_browser_command(
+                    effective_task_id, "eval", ["window.location.href"],
+                    timeout=5, _engine_override="auto",
+                )
+                if _url_result.get("success"):
+                    _current_url = (
+                        _url_result.get("data", {}).get("result", "")
+                        .strip().strip('"').strip("'")
+                    )
+                    if _current_url and not _is_safe_url(_current_url):
+                        return json.dumps({
+                            "success": False,
+                            "error": (
+                                "Blocked: page URL targets a private or internal address "
+                                f"({_current_url}). This may have been caused by a "
+                                "JavaScript navigation via browser_console."
+                            ),
+                        }, ensure_ascii=False)
+            except Exception as _url_exc:
+                logger.debug("browser_snapshot: URL safety check failed (%s)", _url_exc)
+
         # Check if snapshot needs summarization
         if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
             snapshot_text = _extract_relevant_content(snapshot_text, user_task)
@@ -2645,19 +2823,34 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     # Use fill command (clears then types)
     result = _run_browser_command(effective_task_id, "fill", [ref, text])
 
+    from agent.display import (
+        redact_browser_typed_text_for_display,
+        redact_tool_args_for_display,
+    )
+
+    display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {})["text"]
+
     if result.get("success"):
         response = {
             "success": True,
-            "typed": text,
+            # Run typed text through the secret-pattern redactor so API keys /
+            # tokens don't leak into tool progress or chat history.  Normal
+            # text passes through unchanged.  The raw value was already sent
+            # to the browser command above.
+            "typed": display_text,
             "element": ref
         }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        response = _copy_fallback_warning(response, result)
+        response = redact_browser_typed_text_for_display(response, text)
+        return json.dumps(response, ensure_ascii=False)
     else:
         response = {
             "success": False,
             "error": result.get("error", f"Failed to type into {ref}")
         }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        response = _copy_fallback_warning(response, result)
+        response = redact_browser_typed_text_for_display(response, text)
+        return json.dumps(response, ensure_ascii=False)
 
 
 def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
@@ -2838,12 +3031,101 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     return json.dumps(response, ensure_ascii=False)
 
 
+def _eval_ssrf_guard_active(effective_task_id: str) -> bool:
+    """Return True when eval-driven private-network access must be guarded.
+
+    Matches the gating used by ``browser_navigate`` / ``browser_snapshot`` /
+    ``browser_vision``: the SSRF guard is only meaningful for non-local
+    backends (cloud browser, or a containerized terminal whose browser-on-host
+    can reach internal networks the terminal can't), and is skipped for local
+    sidecar sessions and when ``allow_private_urls`` is set.
+    """
+    return (
+        not _is_local_backend()
+        and not _is_local_sidecar_key(effective_task_id)
+        and not _allow_private_urls()
+    )
+
+
+# URL-shaped literals embedded in a JS expression (http/https only).  Used to
+# pre-screen ``browser_console(expression=...)`` calls that fetch/XHR/navigate
+# to a private host directly — that path never updates ``location.href`` so the
+# post-eval page-URL recheck below can't see it.
+_JS_URL_LITERAL_RE = re.compile(r"""https?://[^\s'"`)\]<>]+""", re.IGNORECASE)
+
+
+def _expression_targets_private_url(expression: str) -> Optional[str]:
+    """Return the first private/always-blocked URL literal in a JS expression.
+
+    Best-effort: scans for ``http(s)://...`` literals (fetch/XHR/navigation
+    targets the agent may have embedded) and returns the first one that targets
+    a private/internal address or the always-blocked cloud-metadata floor.
+    Returns ``None`` when no such literal is found.
+    """
+    if not isinstance(expression, str):
+        return None
+    for match in _JS_URL_LITERAL_RE.findall(expression):
+        candidate = match.rstrip(".,;")
+        if _is_always_blocked_url(candidate) or not _is_safe_url(candidate):
+            return candidate
+    return None
+
+
+def _current_page_private_url(effective_task_id: str) -> Optional[str]:
+    """Return the current page URL when it targets a private/internal address.
+
+    Reads ``window.location.href`` via a low-cost eval and returns it when the
+    page has been navigated (e.g. via ``location.href = '...'`` in a prior
+    eval) to an address the SSRF guard would reject.  Returns ``None`` when the
+    page is public, the URL can't be determined, or the check errors (fail-open
+    on probe failure, matching the snapshot/vision guards).
+    """
+    try:
+        url_result = _run_browser_command(
+            effective_task_id, "eval", ["window.location.href"],
+            timeout=5, _engine_override="auto",
+        )
+        if url_result.get("success"):
+            current_url = (
+                url_result.get("data", {}).get("result", "")
+                .strip().strip('"').strip("'")
+            )
+            if current_url and (
+                _is_always_blocked_url(current_url) or not _is_safe_url(current_url)
+            ):
+                return current_url
+    except Exception as exc:
+        logger.debug("_current_page_private_url: probe failed (%s)", exc)
+    return None
+
+
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+
+    # ── Private-network guard (eval return-value path) ──────────────────────
+    # browser_snapshot / browser_vision re-check the page URL before returning
+    # content, but eval returns arbitrary JS results directly — an attacker can
+    # read a private page via `fetch('http://127.0.0.1/secret')` or by reading
+    # the DOM after `location.href = 'http://127.0.0.1/'`, never touching
+    # snapshot/vision.  Close both sub-paths on the same gating condition:
+    #   1. Pre-scan the expression for private-host URL literals (direct fetch).
+    #   2. After eval, re-check the page URL (navigate-then-read).
+    if _eval_ssrf_guard_active(effective_task_id):
+        blocked_literal = _expression_targets_private_url(expression)
+        if blocked_literal:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: JavaScript expression targets a private or "
+                    f"internal address ({blocked_literal}). Reading internal "
+                    "endpoints via browser_console is not permitted in this "
+                    "browser mode."
+                ),
+            }, ensure_ascii=False)
 
     # --- Fast path: route through the supervisor's persistent CDP WS ---------
     # When a CDPSupervisor is alive for this task_id, ``Runtime.evaluate`` runs
@@ -2866,6 +3148,20 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                         parsed = json.loads(raw_result)
                     except (json.JSONDecodeError, ValueError):
                         pass  # keep as string
+                # Post-eval page-URL recheck: if this (or a prior) eval
+                # navigated the page to a private address, withhold the result.
+                if _eval_ssrf_guard_active(effective_task_id):
+                    _blocked_url = _current_page_private_url(effective_task_id)
+                    if _blocked_url:
+                        return json.dumps({
+                            "success": False,
+                            "error": (
+                                "Blocked: page URL targets a private or internal "
+                                f"address ({_blocked_url}). This may have been "
+                                "caused by a JavaScript navigation via "
+                                "browser_console."
+                            ),
+                        }, ensure_ascii=False)
                 response = {
                     "success": True,
                     "result": parsed,
@@ -2941,6 +3237,19 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         "result": parsed,
         "result_type": type(parsed).__name__,
     }
+    # Post-eval page-URL recheck: if this (or a prior) eval navigated the page
+    # to a private address, withhold the result (mirrors the supervisor path).
+    if _eval_ssrf_guard_active(effective_task_id):
+        _blocked_url = _current_page_private_url(effective_task_id)
+        if _blocked_url:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: page URL targets a private or internal address "
+                    f"({_blocked_url}). This may have been caused by a "
+                    "JavaScript navigation via browser_console."
+                ),
+            }, ensure_ascii=False)
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False, default=str)
 
 
@@ -3121,6 +3430,37 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     effective_task_id = _last_session_key(task_id or "default")
+
+    # ── Private-network guard: block vision from eval-navigated private pages ──
+    # After any eval (browser_console) that may have changed location.href to a
+    # private/internal address, the screenshot would expose private page content
+    # to the vision model.  Re-check the current URL before capturing anything.
+    if (
+        not _is_local_backend()
+        and not _is_local_sidecar_key(effective_task_id)
+        and not _allow_private_urls()
+    ):
+        try:
+            _url_result = _run_browser_command(
+                effective_task_id, "eval", ["window.location.href"],
+                timeout=5, _engine_override="auto",
+            )
+            if _url_result.get("success"):
+                _current_url = (
+                    _url_result.get("data", {}).get("result", "")
+                    .strip().strip('"').strip("'")
+                )
+                if _current_url and not _is_safe_url(_current_url):
+                    return json.dumps({
+                        "success": False,
+                        "error": (
+                            "Blocked: page URL targets a private or internal address "
+                            f"({_current_url}). This may have been caused by a "
+                            "JavaScript navigation via browser_console."
+                        ),
+                    }, ensure_ascii=False)
+        except Exception as _url_exc:
+            logger.debug("browser_vision: URL safety check failed (%s)", _url_exc)
 
     # Lightpanda has no graphical renderer — pre-route screenshots to Chrome
     # via the fallback helper instead of letting the normal path fail with a

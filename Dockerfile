@@ -189,7 +189,13 @@ RUN cd web && npm run build && \
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
-COPY . .
+# --link decouples this layer from parents for cache purposes; --chmod bakes
+# the final read-only permissions at copy time so we skip the separate
+# `chmod -R` pass that previously walked ~30k files across the venv +
+# node_modules + source (21s amd64 / 222s arm64 — #49113).  `a+rX,go-w`
+# gives the non-root hermes user read + traverse but no write; root retains
+# write so the build steps below don't need chmod u+w dances.
+COPY --link --chmod=a+rX,go-w . .
 
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the
@@ -197,19 +203,15 @@ COPY . .
 # resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
-# Keep /opt/hermes immutable for the runtime hermes user. Hosted/container
-# instances must not be able to self-edit the installed source or venv; user
-# data, skills, plugins, config, logs, and dashboard uploads live under
-# /opt/data instead. Root can still repair the image during build/boot, but
-# supervised Hermes processes drop to the non-root hermes user.
+# Wire the exec shim and install-method stamp.  Files under /opt/hermes are
+# already root-owned (COPY, uv sync, npm install all run as root) and
+# read-only for the hermes user (go-w from the --chmod above).
+
 USER root
 RUN mkdir -p /opt/hermes/bin && \
     cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
     chmod 0755 /opt/hermes/bin/hermes && \
-    printf 'docker\n' > /opt/hermes/.install_method && \
-    chown -R root:root /opt/hermes && \
-    chmod -R a+rX /opt/hermes && \
-    chmod -R a-w /opt/hermes
+    printf 'docker\n' > /opt/hermes/.install_method
 # The ``.install_method`` stamp is baked next to the running code (the install
 # tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data
 # volume that is commonly bind-mounted from the host and even shared with a
@@ -236,13 +238,11 @@ RUN mkdir -p /opt/hermes/bin && \
 #
 # The arg is optional — local `docker build` without --build-arg simply
 # omits the file, and the runtime falls back to live-git lookup.  CI
-# (.github/workflows/docker-publish.yml) passes ${{ github.sha }} so
+# (.github/workflows/docker.yml) passes ${{ github.sha }} so
 # every published image has it.
 ARG HERMES_GIT_SHA=
 RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
-        chmod u+w /opt/hermes && \
-        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha && \
-        chmod a-w /opt/hermes /opt/hermes/.hermes_build_sha; \
+        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha; \
     fi
 
 # ---------- s6-overlay service wiring ----------
@@ -290,6 +290,19 @@ ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data
 ENV HERMES_DISABLE_LAZY_INSTALLS=1
+# The published image seals /opt/hermes (root-owned, read-only) so a runtime
+# lazy install can't mutate the agent's own venv and brick it. But opt-in
+# backends (Firecrawl web search, Exa, Feishu, …) keep their SDKs in
+# tools/lazy_deps.py — deliberately NOT baked into [all] (see pyproject.toml
+# policy 2026-05-12: one quarantined release must not break every install).
+# Redirect those lazy installs to a writable dir on the durable data volume.
+# lazy_deps appends this dir to the END of sys.path, so a package installed
+# here can only ADD modules — it can never shadow or downgrade a core module,
+# so the sealed-venv guarantee holds even with installs re-enabled. The dir
+# is seeded + chowned to the hermes user by docker/stage2-hook.sh and lives
+# on the /opt/data volume, so it persists across container recreates / image
+# updates (an ABI stamp invalidates it if a rebuild bumps the interpreter).
+ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
 
 # `docker exec` privilege-drop shim. When operators run
 # `docker exec <c> hermes ...` they default to root, and any file the

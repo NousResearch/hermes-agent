@@ -137,6 +137,20 @@ function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
   return Object.keys(patch).length > 0
 }
 
+export function applyReasoningAvailable(parts: ChatMessagePart[], text: string): ChatMessagePart[] {
+  if (parts.some(part => part.type === 'reasoning')) {
+    return parts
+  }
+
+  const textIndex = parts.findIndex(part => part.type === 'text')
+
+  if (textIndex < 0) {
+    return [...parts, reasoningPart(text)]
+  }
+
+  return [...parts.slice(0, textIndex), reasoningPart(text), ...parts.slice(textIndex)]
+}
+
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
 // (rAF only), which at typical LLM token rates of ~30-80 tok/sec meant every
 // token got its own React commit + Streamdown markdown re-parse, scaling
@@ -473,17 +487,7 @@ export function useMessageStream({
 
       mutateStream(
         sessionId,
-        (parts, message) => {
-          if (replace && chatMessageText(message).trim()) {
-            return parts
-          }
-
-          if (replace) {
-            return [...parts.filter(part => part.type !== 'reasoning'), reasoningPart(delta)]
-          }
-
-          return appendReasoningPart(parts, delta)
-        },
+        parts => (replace ? applyReasoningAvailable(parts, delta) : appendReasoningPart(parts, delta)),
         () => [reasoningPart(delta)]
       )
     },

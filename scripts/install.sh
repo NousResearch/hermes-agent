@@ -509,8 +509,13 @@ detect_os() {
                 if [ -f /etc/os-release ]; then
                     . /etc/os-release
                     DISTRO="$ID"
+                    # VERSION_ID (e.g. "26.04", "14") lets us tell whether the
+                    # apt release is newer than the newest one Playwright's
+                    # platform resolver recognizes — the #35166 hang condition.
+                    DISTRO_VERSION="${VERSION_ID:-}"
                 else
                     DISTRO="unknown"
+                    DISTRO_VERSION=""
                 fi
             fi
             ;;
@@ -1885,10 +1890,116 @@ run_browser_install_with_timeout() {
     shift
 
     if command -v timeout >/dev/null 2>&1; then
-        timeout "$timeout_seconds" "$@"
+        # GNU `timeout` runs the command in its own process group, so a terminal
+        # Ctrl+C is delivered to `timeout` but never reaches the child — the
+        # download looks frozen and ignores Ctrl+C (#35166). `--foreground`
+        # keeps the command in the shell's foreground group so Ctrl+C reaches
+        # it; `-k 10` sends SIGKILL 10s after the deadline so a wedged download
+        # can't outlive the timeout. Both flags are GNU-only — probe once and
+        # fall back to plain `timeout` on BusyBox (Alpine), and to direct exec
+        # when `timeout` is absent (stock macOS, where Ctrl+C works natively).
+        if timeout --foreground -k 10 1 true >/dev/null 2>&1; then
+            timeout --foreground -k 10 "$timeout_seconds" "$@"
+        else
+            timeout "$timeout_seconds" "$@"
+        fi
     else
         "$@"
     fi
+}
+
+# Return success only when the host is an apt release NEWER than the newest one
+# Playwright's platform resolver recognizes — the exact condition that makes
+# `playwright install` hang uninterruptibly (#35166). We scope the override
+# retry to this case rather than retrying on *any* failure, so a genuine
+# network/disk/permission failure doesn't get a mismatched-glibc build forced
+# onto it. Newest Playwright-known apt releases as of this writing: Ubuntu
+# 24.04, Debian 13. Anything above triggers the fallback; everything Playwright
+# already handles (and every non-apt distro) does not.
+playwright_host_unrecognized() {
+    # Compare dotted versions: returns 0 if $1 > $2.
+    _ver_gt() {
+        [ "$1" = "$2" ] && return 1
+        [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+    }
+    case "$DISTRO" in
+        ubuntu) _ver_gt "${DISTRO_VERSION:-0}" "24.04" ;;
+        debian) _ver_gt "${DISTRO_VERSION:-0}" "13" ;;
+        *) return 1 ;;  # Non-apt or unknown — not the #35166 hang condition.
+    esac
+}
+
+# Compute the PLAYWRIGHT_HOST_PLATFORM_OVERRIDE value to retry an install with
+# when Playwright's platform resolver rejects the host. ubuntu24.04 is the
+# newest Linux build Playwright has shipped across recent releases and runs on
+# newer apt releases (its binaries are dynamically linked); we point too-new /
+# unrecognized hosts at it. Only x64/arm64 Linux have Playwright builds — emit
+# nothing for anything else so the caller skips the retry. Echoes the value
+# (e.g. "ubuntu24.04-x64") or nothing.
+playwright_fallback_platform() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo "ubuntu24.04-x64" ;;
+        aarch64|arm64) echo "ubuntu24.04-arm64" ;;
+        *) : ;;  # No Playwright Linux build for this arch.
+    esac
+}
+
+# Run a `playwright install ...` command, and if it fails or hangs (the
+# uninterruptible "Installing Playwright Chromium with system dependencies"
+# stall on apt releases Playwright doesn't recognize yet — Ubuntu 26.04,
+# Debian 14, future distros — see #35166), retry it ONCE with
+# PLAYWRIGHT_HOST_PLATFORM_OVERRIDE pinned to the newest known build.
+#
+# The override retry is scoped to the actual hang condition: it fires only when
+# the host is an apt release NEWER than Playwright recognizes
+# (playwright_host_unrecognized). On every release Playwright already supports
+# (Ubuntu <=24.04, Debian <=13) and every non-apt distro, the first attempt is
+# authoritative and a failure is reported as-is — we never force a
+# mismatched-glibc build (microsoft/playwright#35114) onto a host Playwright
+# handles correctly. This is deliberately narrower than a retry-on-any-failure:
+# a network/disk/permission error on a supported host should surface, not get
+# papered over with a platform override. Playwright's maintainers bless this
+# env var as the supported escape hatch for unrecognized platforms
+# (microsoft/playwright#33434); a hardcoded full distro/version table was
+# rejected upstream (microsoft/playwright#33432), so we only need the
+# newest-known floor here.
+#
+# An operator-provided PLAYWRIGHT_HOST_PLATFORM_OVERRIDE is always respected:
+# it is inherited by the first attempt, and the retry is skipped.
+#
+# Usage: run_playwright_install <timeout_seconds> npx playwright install [args...]
+run_playwright_install() {
+    local timeout_seconds="$1"
+    shift
+
+    # First attempt: native platform resolution (inherits any operator override).
+    if run_browser_install_with_timeout "$timeout_seconds" "$@" 2>/dev/null; then
+        return 0
+    fi
+
+    # Operator already pinned the platform — their choice already applied to the
+    # attempt above; a second identical run won't help.
+    if [ -n "${PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-}" ]; then
+        return 1
+    fi
+
+    # Only retry with an override on the apt releases too new for Playwright to
+    # recognize (the #35166 hang). Any other failure is a real failure and is
+    # surfaced unchanged.
+    if ! playwright_host_unrecognized; then
+        return 1
+    fi
+
+    local fallback
+    fallback="$(playwright_fallback_platform)"
+    if [ -z "$fallback" ]; then
+        return 1  # No usable fallback build for this arch.
+    fi
+
+    log_warn "Playwright doesn't recognize ${DISTRO} ${DISTRO_VERSION} yet — retrying with PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$fallback"
+    log_info "(apt releases newer than Playwright knows hang at this step; see #35166)"
+    PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$fallback" \
+        run_browser_install_with_timeout "$timeout_seconds" "$@"
 }
 
 configure_browser_env_from_system_browser() {
@@ -1971,7 +2082,7 @@ install_node_deps() {
                     # exact command the admin needs to run separately.
                     if [ "$(id -u)" -eq 0 ] || (command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null); then
                         log_info "Installing Playwright Chromium with system dependencies..."
-                        cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install --with-deps chromium 2>/dev/null || {
+                        cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install --with-deps chromium || {
                             log_warn "Playwright browser installation failed — browser tools will not work."
                             log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
                         }
@@ -1981,7 +2092,7 @@ install_node_deps() {
                         log_info "  sudo npx playwright install-deps chromium"
                         log_info "  (from $INSTALL_DIR, after Node.js deps are installed)"
                         log_info "Installing Chromium binary into this user's Playwright cache..."
-                        cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                        cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
                             log_warn "Playwright browser installation failed — browser tools will not work."
                             log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install chromium"
                         }
@@ -2001,7 +2112,7 @@ install_node_deps() {
                             log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
                         fi
                     fi
-                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
                         log_warn "Playwright browser installation failed — browser tools will not work."
                     }
                     ;;
@@ -2009,7 +2120,7 @@ install_node_deps() {
                     log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
                     log_info "Install Chromium system dependencies manually before using browser tools:"
                     log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
-                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
                         log_warn "Playwright browser installation failed — install dependencies above and retry."
                     }
                     ;;
@@ -2017,7 +2128,7 @@ install_node_deps() {
                     log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
                     log_info "Install Chromium system dependencies manually before using browser tools:"
                     log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
-                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
                         log_warn "Playwright browser installation failed — install dependencies above and retry."
                     }
                     ;;
@@ -2026,7 +2137,7 @@ install_node_deps() {
                     log_info "Install Chromium/browser system dependencies for your distribution, then run:"
                     log_info "  cd $INSTALL_DIR && npx playwright install chromium"
                     log_info "Browser tools will not work until dependencies are installed."
-                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || true
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || true
                     ;;
             esac
         fi

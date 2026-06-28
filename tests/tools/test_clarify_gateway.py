@@ -90,6 +90,27 @@ class TestClarifyPrimitive:
         assert cm.resolve_text_response_for_session("sk3d", custom) is True
         assert cm.wait_for_response("id3d", timeout=0.1) == custom
 
+    def test_multi_select_metadata_is_stored_in_signature(self):
+        """Gateway entries carry multi-select metadata for adapters/Desktop."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "id-ms",
+            "sk-ms",
+            "Pick several",
+            ["Alpha", "Beta", "Gamma"],
+            multi_select=True,
+            min_selections=1,
+            max_selections=2,
+            allow_other=False,
+        )
+
+        assert entry.multi_select is True
+        assert entry.min_selections == 1
+        assert entry.max_selections == 2
+        assert entry.allow_other is False
+        assert entry.signature()["multi_select"] is True
+
     def test_other_button_flips_to_text_mode(self):
         """mark_awaiting_text makes get_pending_for_session find the entry."""
         from tools import clarify_gateway as cm
@@ -250,3 +271,19 @@ class TestGatewayTextIntercept:
         
         # Clean up
         cm.clear_session("sk-tf")
+
+    def test_parse_multi_select_response_accepts_numbers_and_letters(self):
+        from tools import clarify_gateway as cm
+
+        choices = ["Alpha", "Beta", "Gamma", "Delta"]
+
+        assert cm.parse_multi_select_response("1,3", choices) == ["Alpha", "Gamma"]
+        assert cm.parse_multi_select_response("A+C", choices) == ["Alpha", "Gamma"]
+        assert cm.parse_multi_select_response("2 + 4", choices) == ["Beta", "Delta"]
+
+    def test_parse_multi_select_response_exact_labels_and_custom_text(self):
+        from tools import clarify_gateway as cm
+
+        choices = ["Alpha", "Beta", "Gamma"]
+        assert cm.parse_multi_select_response("Alpha, Gamma", choices) == ["Alpha", "Gamma"]
+        assert cm.parse_multi_select_response("Something else", choices) is None

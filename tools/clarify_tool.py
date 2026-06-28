@@ -2,9 +2,10 @@
 """
 Clarify Tool Module - Interactive Clarifying Questions
 
-Allows the agent to present structured multiple-choice questions or open-ended
-prompts to the user. In CLI mode, choices are navigable with arrow keys. On
-messaging platforms, choices are rendered as a numbered list.
+Allows the agent to present structured multiple-choice questions, multi-select
+questions, or open-ended prompts to the user. In CLI mode, choices are
+navigable with arrow keys. On messaging platforms, choices are rendered as
+buttons or a numbered fallback list.
 
 The actual user-interaction logic lives in the platform layer (cli.py for CLI,
 gateway/run.py for messaging). This module defines the schema, validation, and
@@ -12,7 +13,8 @@ a thin dispatcher that delegates to a platform-provided callback.
 """
 
 import json
-from typing import List, Optional, Callable
+import re
+from typing import Callable, List, Optional
 
 
 # Maximum number of predefined choices the agent can offer.
@@ -53,21 +55,65 @@ def _flatten_choice(c) -> str:
     return str(c).strip()
 
 
+def _selected_choices_from_response(response: str, choices: Optional[List[str]]) -> List[str]:
+    """Best-effort parse of selected choice labels from a response string.
+
+    ``user_response`` remains the backcompat source of truth. This additive
+    structured field helps UI/test consumers understand which offered choices
+    were selected. Free-form custom text returns an empty list.
+    """
+    if not response or not choices:
+        return []
+
+    labels = list(choices)
+    label_map = {label.lower(): label for label in labels}
+    selected: List[str] = []
+    tokens = [t.strip() for t in re.split(r"\s*(?:,|\+|;|\n)\s*", response) if t.strip()]
+    if not tokens:
+        tokens = [response.strip()]
+
+    for token in tokens:
+        label = None
+        if token.isdigit():
+            idx = int(token) - 1
+            if 0 <= idx < len(labels):
+                label = labels[idx]
+        elif len(token) == 1 and token.isalpha():
+            idx = ord(token.upper()) - ord("A")
+            if 0 <= idx < len(labels):
+                label = labels[idx]
+        else:
+            label = label_map.get(token.lower())
+        if label and label not in selected:
+            selected.append(label)
+    return selected
+
+
 def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
     callback: Optional[Callable] = None,
+    multi_select: bool = False,
+    min_selections: int = 0,
+    max_selections: Optional[int] = None,
+    allow_other: bool = True,
 ) -> str:
     """
-    Ask the user a question, optionally with multiple-choice options.
+    Ask the user a question, optionally with selectable options.
 
     Args:
         question: The question text to present.
         choices:  Up to 4 predefined answer choices. When omitted the
                   question is purely open-ended.
         callback: Platform-provided function that handles the actual UI
-                  interaction. Signature: callback(question, choices) -> str.
+                  interaction. Preferred signature:
+                  callback(question, choices, **metadata) -> str.
                   Injected by the agent runner (cli.py / gateway).
+        multi_select: Preserve multi-pick UX when several choices can be
+                      selected together.
+        min_selections: Minimum requested selections for multi-select prompts.
+        max_selections: Maximum requested selections for multi-select prompts.
+        allow_other: Whether the UI should allow free-form "Other" answers.
 
     Returns:
         JSON string with the user's response.
@@ -76,6 +122,22 @@ def clarify_tool(
         return tool_error("Question text is required.")
 
     question = question.strip()
+
+    try:
+        min_selections = int(min_selections or 0)
+    except (TypeError, ValueError):
+        return tool_error("min_selections must be an integer.")
+    if max_selections is not None:
+        try:
+            max_selections = int(max_selections)
+        except (TypeError, ValueError):
+            return tool_error("max_selections must be an integer or null.")
+    if min_selections < 0:
+        return tool_error("min_selections must be >= 0.")
+    if max_selections is not None and max_selections < 0:
+        return tool_error("max_selections must be >= 0 when provided.")
+    if max_selections is not None and min_selections > max_selections:
+        return tool_error("min_selections cannot be greater than max_selections.")
 
     # Validate and trim choices
     if choices is not None:
@@ -99,17 +161,33 @@ def clarify_tool(
         )
 
     try:
-        user_response = callback(question, choices)
+        try:
+            user_response = callback(
+                question,
+                choices,
+                multi_select=bool(multi_select),
+                min_selections=min_selections,
+                max_selections=max_selections,
+                allow_other=bool(allow_other),
+            )
+        except TypeError:
+            # Backcompat for platform callbacks/plugins that still implement
+            # callback(question, choices). Hermes-owned callbacks accept the
+            # metadata, but this avoids breaking older integrations.
+            user_response = callback(question, choices)
     except Exception as exc:
         return json.dumps(
             {"error": f"Failed to get user input: {exc}"},
             ensure_ascii=False,
         )
 
+    user_response_text = str(user_response).strip()
     return json.dumps({
         "question": question,
         "choices_offered": choices,
-        "user_response": str(user_response).strip(),
+        "selection_mode": "multi" if multi_select else "single",
+        "user_response": user_response_text,
+        "selected_choices": _selected_choices_from_response(user_response_text, choices),
     }, ensure_ascii=False)
 
 
@@ -126,10 +204,13 @@ CLARIFY_SCHEMA = {
     "name": "clarify",
     "description": (
         "Ask the user a question when you need clarification, feedback, or a "
-        "decision before proceeding. Supports two modes:\n\n"
-        "1. **Multiple choice** — provide up to 4 choices. The user picks one "
-        "or types their own answer via a 5th 'Other' option.\n"
-        "2. **Open-ended** — omit choices entirely. The user types a free-form "
+        "decision before proceeding. Supports three modes:\n\n"
+        "1. **Single-choice multiple choice** — provide up to 4 choices. The "
+        "user picks one or types their own answer via a 5th 'Other' option.\n"
+        "2. **Multi-select** — set `multi_select=true` when several choices "
+        "may be selected together; the UI should preserve checkbox/multi-pick "
+        "semantics where supported.\n"
+        "3. **Open-ended** — omit choices entirely. The user types a free-form "
         "response.\n\n"
         "CRITICAL: when you are offering options, put each option ONLY in the "
         "`choices` array — NEVER enumerate the options inside the `question` "
@@ -169,6 +250,27 @@ CLARIFY_SCHEMA = {
                     "entirely ONLY for a genuinely open-ended free-text question."
                 ),
             },
+            "multi_select": {
+                "type": "boolean",
+                "description": (
+                    "Set true only when the user may select multiple choices "
+                    "together. Leave false for exclusive single-choice decisions."
+                ),
+            },
+            "min_selections": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Minimum number of selections requested for multi-select prompts.",
+            },
+            "max_selections": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "description": "Maximum number of selections requested for multi-select prompts, or null for no explicit cap.",
+            },
+            "allow_other": {
+                "type": "boolean",
+                "description": "Whether the UI should offer a free-form Other answer. Defaults to true.",
+            },
         },
         "required": ["question"],
     },
@@ -185,7 +287,12 @@ registry.register(
     handler=lambda args, **kw: clarify_tool(
         question=args.get("question", ""),
         choices=args.get("choices"),
-        callback=kw.get("callback")),
+        callback=kw.get("callback"),
+        multi_select=bool(args.get("multi_select", False)),
+        min_selections=args.get("min_selections", 0),
+        max_selections=args.get("max_selections"),
+        allow_other=bool(args.get("allow_other", True)),
+    ),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

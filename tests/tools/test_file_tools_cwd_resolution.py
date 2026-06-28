@@ -17,6 +17,7 @@ Core invariant these tests pin:
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -389,6 +390,23 @@ class _FakeOwnedEnv:
     def __init__(self, cwd: str, cwd_owner: str):
         self.cwd = cwd
         self.cwd_owner = cwd_owner
+
+
+def test_raw_cached_cwd_wins_over_shared_default_cache(tmp_path, monkeypatch):
+    """A raw cached cwd must not inherit another session's shared default cwd."""
+    default_cwd = tmp_path / "default-session"
+    raw_cwd = tmp_path / "raw-session"
+    default_cwd.mkdir()
+    raw_cwd.mkdir()
+    monkeypatch.setattr(ft, "_last_known_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(ft, "_file_ops_cache", {
+        "default": SimpleNamespace(env=_FakeOwnedEnv(str(default_cwd), ""), cwd=str(default_cwd)),
+        "live-task": SimpleNamespace(env=_FakeOwnedEnv(str(raw_cwd), ""), cwd=str(raw_cwd)),
+    })
+
+    assert terminal_tool._resolve_container_task_id("live-task") == "default"
+    assert ft._get_live_tracking_cwd("live-task") == str(raw_cwd)
 
 
 @pytest.fixture

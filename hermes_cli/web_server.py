@@ -425,67 +425,6 @@ def _unique_upload_path(directory: Path, filename: str) -> Path:
     raise ValueError("too many files with the same name")
 
 
-_FS_LIST_MAX_ENTRIES = 5000  # safety cap; /tmp or huge dirs would otherwise return tens of thousands of entries
-
-
-def _resolve_fs_path(raw: str) -> Path:
-    """Resolve a user-supplied path for /api/fs/list (P-004).
-
-    P-004 helper: empty / missing → home; ~ expansion; .. folded via .resolve().
-    Restricted to the user home subtree — anything outside raises 400 so the
-    web picker cannot wander into /Library, /private, /System etc. (most of
-    which are TCC-blocked anyway and would 403 the whole listing).
-    """
-    home = Path.home().resolve(strict=False)
-    candidate = (raw or "").strip()
-    if not candidate:
-        return home
-    if candidate.startswith("~"):
-        path = Path(candidate).expanduser().resolve(strict=False)
-    else:
-        path = Path(candidate).resolve(strict=False)
-    try:
-        path.relative_to(home)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Path must be inside your home directory ({home})",
-        )
-    return path
-
-
-def _list_directory_entries(directory: Path, include_hidden: bool) -> List[Dict[str, Any]]:
-    """List immediate children of a directory for /api/fs/list (P-004).
-
-    Returns dicts with name/path/is_dir.  Skips entries whose stat fails (broken
-    symlinks, permission errors).  Sorted: directories first, then case-insensitive name.
-    Capped at _FS_LIST_MAX_ENTRIES to keep responses bounded.
-    """
-    entries: List[Dict[str, Any]] = []
-    try:
-        with os.scandir(directory) as scanner:
-            for entry in scanner:
-                if not include_hidden and entry.name.startswith("."):
-                    continue
-                try:
-                    is_dir = entry.is_dir(follow_symlinks=False)
-                except OSError:
-                    continue
-                entries.append({
-                    "name": entry.name,
-                    "path": str(directory / entry.name),
-                    "is_dir": is_dir,
-                })
-                if len(entries) >= _FS_LIST_MAX_ENTRIES:
-                    break
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="Permission denied")
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read directory: {exc}")
-    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-    return entries
-
-
 # Accepted Host header values for loopback binds. DNS rebinding attacks
 # point a victim browser at an attacker-controlled hostname (evil.test)
 # which resolves to 127.0.0.1 after a TTL flip — bypassing same-origin

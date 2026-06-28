@@ -9,7 +9,7 @@ This document explains the fork-specific changes on `main` that diverge from ups
 | **P-025** | `hermes_cli/web_server.py` | `/api/providers/oauth` now (1) serves from a 20s per-profile in-process TTL cache, (2) runs each provider's status check concurrently via `asyncio.to_thread` (OFF the FastAPI event loop) instead of serially inline, and (3) busts the cache on every connect/disconnect (disconnect clear paths, PKCE submit, device-code/loopback poll→`approved`). Adds a `refresh=true` escape hatch. | The desktop Models page enumerated every OAuth provider's status serially on every open AND every window refocus; some checks touch the network/subprocess, and because the handler is `async` they blocked the event loop that also serves the chat gateway WebSocket — so 模型页 took seconds to open and could stutter live chat. | Should be upstreamed (generic responsiveness fix) |
 | **P-002** | `hermes_cli/web_server.py` | Adds `POST /api/upload` for dashboard attachment uploads | v2 web composer's drag-to-upload depends on it; upstream had it once (`e7c3cd772`) then reverted | Not in upstream |
 | **P-003** | `hermes_cli/web_server.py` | Drops the `_DASHBOARD_EMBEDDED_CHAT_ENABLED` gate on `/api/ws` | v2 runs `hermes dashboard` without `--tui`, the gate would close gateway WS | **Largely addressed upstream** — v0.16.0 (#38591) defaults the flag to `True` and removes the dashboard `--tui` flag; fork keeps the explicit gate removal on `/api/ws` as defense-in-depth |
-| **P-004** | `hermes_cli/web_server.py` | Adds `GET /api/fs/list` for the v2 web workspace picker | v2 `/new` task page browses directories instead of `window.prompt()` for path; restricted to user home subtree | Not in upstream |
+| **P-004** | `hermes_cli/web_server.py` | Originally added `GET /api/fs/list` for the v2 web workspace picker | Upstream later shipped its own `/api/fs/list`; fork helpers removed, route now matches upstream (no home restriction) | Converged upstream |
 | **P-005** | `hermes_cli/web_server.py` | Adds `GET /api/mcp-servers` (read-only `{summary, servers:[{name,enabled}]}`) — handler `list_mcp_servers_summary` | v2 panel "健康检查" cell needs MCP count without leaking command/args/env (which embed secrets) | Distinct from upstream's `/api/mcp/servers` (exposes url/command/args); fork handler renamed in 2026-06-04 sync to avoid an operationId clash |
 | **P-006** | `hermes_cli/config.py` | Registers `OPTIONAL_ENV_VARS` for CN providers (ARK / QIANFAN / HUNYUAN / SILICONFLOW / MODELSCOPE / AI302 / COMPSHARE) | Dashboard env panel is metadata-driven; upstream only knows global providers (OpenAI / Anthropic / Google / DeepSeek) | Won't be upstreamed (CN-specific) |
 | ~~**P-007**~~ | `tui_gateway/ws.py` | ~~Wraps the dispatch handler in a try/except that logs traceback + returns a JSON-RPC error response instead of silently closing the WS~~ | Without this, any unhandled handler exception or json.dumps serialization failure shows up in the client as "WebSocket closed" with zero diagnostic context | **Superseded by upstream** — dropped in 2026-06-04 sync |
@@ -163,22 +163,18 @@ These are fork maintenance changes, not runtime behavior patches:
 
 **Symptom**: v2 `/new` task page → "选择 workspace" → falls back to `window.prompt()` asking the user to type a path. UX is bad on a desktop OS.
 
-**Root cause**: Upstream has no filesystem browse endpoint. Electron desktop shells use the OS native dialog, but a pure web UI can't.
+**Root cause**: Upstream (at the time) had no filesystem browse endpoint. Electron desktop shells use the OS native dialog, but a pure web UI can't.
 
-**What the patch does**: Adds `GET /api/fs/list?path=<dir>&include_hidden=<bool>` returning `{path, parent, home, entries: [{name, path, is_dir}]}`. Path is resolved through:
-- `~` expansion
-- `..` folding via `Path.resolve(strict=False)`
-- enforced subtree of `Path.home()` (raises 400 if outside)
+**Original patch**: Added `GET /api/fs/list?path=<dir>&include_hidden=<bool>` returning `{path, parent, home, entries: [{name, path, is_dir}]}`, resolved via `~` expansion, `..` folding, and an enforced `Path.home()` subtree (400 if outside), plus a 5000-entry cap. Fork helpers: `_resolve_fs_path`, `_list_directory_entries`, `_FS_LIST_MAX_ENTRIES`.
 
-Plus a 5000-entry cap to bound responses on huge directories.
+**Update (2026-06 — converged with upstream)**: Upstream subsequently shipped its own `/api/fs/list` (`fs_list` → `_fs_path`), which replaced the fork handler during a sync. The route now IS upstream's: it returns `{entries: [{name, path, isDirectory}]}` (camelCase, **no** top-level `path`/`parent`/`home`) and on permission/IO errors returns **HTTP 200** with `{entries: [], error: "EACCES"|"ENOENT"|...}`. `_fs_path` only rejects null bytes / unparseable paths and resolves relative paths against cwd — there is **no home-subtree restriction** anymore.
+- The original fork helpers (`_resolve_fs_path`, `_list_directory_entries`, `_FS_LIST_MAX_ENTRIES`) were orphaned by that sync and have now been **removed** as dead code.
+- The home restriction was intentionally **not** restored: desktop session workspaces are legitimately arbitrary (outside `$HOME`, other drives, containers), so a hard home cap would break them. The Desktop's Rust `read_workspace_file` command already confines file *reads* to the session workspace root.
+- Desktop consumers were realigned to this shape in Hermes-CN-Desktop PR #330 (tolerant Zod parser; the old required `path`/`parent`/`home`/`is_dir` had been breaking the file browser for every user).
 
-**Side effects**: Adds a directory-listing attack surface. Mitigated by:
-- Token gate (same as all `/api/` routes)
-- Enforced home subtree — picker can't wander into `/Library`, `/private`, `/System`, etc.
-- Permissions tolerant — entries that fail `is_dir()` (broken symlinks, denied access) are silently skipped
-- Hidden-file filter defaults to off
+**Side effects**: Directory-listing attack surface, mitigated by the token gate on all `/api/` routes (local, loopback-bound). No home restriction — acceptable for a local desktop runtime.
 
-**Should we upstream?** Maybe — depends on whether upstream wants browser-only Web UI to be a first-class deployment target.
+**Should we upstream?** N/A — already converged with upstream.
 
 ---
 

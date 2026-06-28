@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 import tui_gateway.server as server
 
 
@@ -235,3 +237,116 @@ def test_discover_repos_from_full_history(tmp_path):
 
     # The probe is persisted back onto the session rows (membership at the source).
     assert os.path.realpath(db.get_session("s1")["git_repo_root"]) == os.path.realpath(str(repo))
+
+
+def _profile_home(tmp_path: Path, name: str) -> Path:
+    home = tmp_path / name
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
+def _create_project(home: Path, name: str, folder: Path, *, use: bool = False) -> dict:
+    token = set_hermes_home_override(home)
+    server._db = None
+    server._db_error = None
+    try:
+        return _call("projects.create", {"name": name, "folders": [str(folder)], "use": use})["project"]
+    finally:
+        server._db = None
+        server._db_error = None
+        reset_hermes_home_override(token)
+
+
+def _create_session(home: Path, session_id: str, cwd: Path) -> None:
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        db.create_session(session_id, "cli", cwd=str(cwd))
+        db.append_message(session_id, "user", f"hello from {session_id}")
+    finally:
+        db.close()
+
+
+def test_projects_rpc_profile_scope_isolates_projects_and_sessions(monkeypatch, tmp_path):
+    launch_home = _profile_home(tmp_path, "launch")
+    coder_home = _profile_home(tmp_path, "coder")
+    launch_repo = tmp_path / "launch-repo"
+    coder_repo = tmp_path / "coder-repo"
+    launch_repo.mkdir()
+    coder_repo.mkdir()
+
+    launch_project = _create_project(launch_home, "Launch", launch_repo, use=True)
+    coder_project = _create_project(coder_home, "Coder", coder_repo, use=True)
+    _create_session(launch_home, "launch-session", launch_repo)
+    _create_session(coder_home, "coder-session", coder_repo)
+
+    token = set_hermes_home_override(launch_home)
+    server._db = None
+    server._db_error = None
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda name: coder_home if name == "coder" else launch_home if name == "default" else tmp_path / name,
+    )
+    try:
+        from hermes_state import SessionDB
+
+        server._db = SessionDB(db_path=launch_home / "state.db")
+        launch_listing = _call("projects.list")
+        coder_listing = _call("projects.list", {"profile": "coder"})
+        launch_tree = _call("projects.tree")
+        coder_tree = _call("projects.tree", {"profile": "coder"})
+        coder_sessions = _call("projects.project_sessions", {"profile": "coder", "project_id": coder_project["id"]})
+    finally:
+        if server._db is not None:
+            server._db.close()
+        server._db = None
+        server._db_error = None
+        reset_hermes_home_override(token)
+
+    assert [p["name"] for p in launch_listing["projects"]] == ["Launch"]
+    assert [p["name"] for p in coder_listing["projects"]] == ["Coder"]
+    assert launch_listing["active_id"] == launch_project["id"]
+    assert coder_listing["active_id"] == coder_project["id"]
+    assert [p["label"] for p in launch_tree["projects"]] == ["Launch"]
+    assert [p["label"] for p in coder_tree["projects"]] == ["Coder"]
+    assert launch_tree["projects"][0]["sessionCount"] == 1
+    assert coder_tree["projects"][0]["sessionCount"] == 1
+    assert coder_sessions["project"]["id"] == coder_project["id"]
+    assert coder_sessions["project"]["sessionCount"] == 1
+    assert coder_sessions["project"]["repos"][0]["groups"][0]["sessions"][0]["id"] == "coder-session"
+
+
+def test_projects_record_repos_writes_to_target_profile(monkeypatch, tmp_path):
+    launch_home = _profile_home(tmp_path, "launch")
+    coder_home = _profile_home(tmp_path, "coder")
+    launch_repo = tmp_path / "launch-scan"
+    coder_repo = tmp_path / "coder-scan"
+    launch_repo.mkdir()
+    coder_repo.mkdir()
+
+    token = set_hermes_home_override(launch_home)
+    server._db = None
+    server._db_error = None
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda name: coder_home if name == "coder" else launch_home if name == "default" else tmp_path / name,
+    )
+    try:
+        from hermes_state import SessionDB
+
+        server._db = SessionDB(db_path=launch_home / "state.db")
+        _call("projects.record_repos", {"repos": [{"root": str(launch_repo), "label": "launch"}]})
+        _call("projects.record_repos", {"profile": "coder", "repos": [{"root": str(coder_repo), "label": "coder"}]})
+
+        launch_repos = _call("projects.discover_repos")["repos"]
+        coder_repos = _call("projects.discover_repos", {"profile": "coder"})["repos"]
+    finally:
+        if server._db is not None:
+            server._db.close()
+        server._db = None
+        server._db_error = None
+        reset_hermes_home_override(token)
+
+    assert [repo["label"] for repo in launch_repos] == ["launch"]
+    assert [repo["label"] for repo in coder_repos] == ["coder"]

@@ -1,18 +1,50 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { HermesGateway } from '@/hermes'
+
+const { fakeGateway, request } = vi.hoisted(() => {
+  const request = vi.fn(async () => ({ projects: [], active_id: null, scoped_session_ids: [] }))
+  const fakeGateway = {
+    connectionState: 'open',
+    request
+  } as unknown as HermesGateway
+
+  return {
+    fakeGateway,
+    request
+  }
+})
+
+vi.mock('@/store/gateway', () => ({
+  activeGateway: () => fakeGateway,
+  ensureActiveGatewayOpen: vi.fn(async () => fakeGateway)
+}))
 
 import {
+  $activeProjectId,
   $projectScope,
+  $projects,
+  $projectTree,
   $worktreeRefreshToken,
   ALL_PROJECTS,
   enterProject,
   exitProjectScope,
+  fetchProjectSessions,
+  refreshProjects,
+  refreshProjectTree,
   refreshWorktrees
 } from './projects'
+import { $activeGatewayProfile } from './profile'
 
 describe('project scope', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    request.mockClear()
     $projectScope.set(ALL_PROJECTS)
+    $projects.set([])
+    $projectTree.set([])
+    $activeProjectId.set(null)
+    $activeGatewayProfile.set('default')
   })
 
   it('defaults to ALL_PROJECTS', () => {
@@ -40,6 +72,21 @@ describe('project scope', () => {
   it('persists the scope to localStorage', () => {
     enterProject('p_abc')
     expect(window.localStorage.getItem('hermes.desktop.projectScope')).toBe('p_abc')
+  })
+
+  it('forwards the active profile to projects RPCs', async () => {
+    $activeGatewayProfile.set('coder')
+
+    await refreshProjects()
+    await refreshProjectTree()
+    await fetchProjectSessions('p_123')
+
+    expect(request).toHaveBeenNthCalledWith(1, 'projects.list', { profile: 'coder' })
+    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { preview_limit: 3, profile: 'coder' })
+    expect(request).toHaveBeenNthCalledWith(3, 'projects.project_sessions', {
+      project_id: 'p_123',
+      profile: 'coder'
+    })
   })
 })
 

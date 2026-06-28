@@ -923,6 +923,40 @@ def _profile_scoped(handler):
     return wrapper
 
 
+@contextlib.contextmanager
+def _projects_profile_home(params: dict | None):
+    """Bind ``params['profile']``'s HERMES_HOME for profile-scoped projects RPCs."""
+    home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+    if home is None:
+        yield None
+        return
+    token = set_hermes_home_override(home)
+    try:
+        yield home
+    finally:
+        reset_hermes_home_override(token)
+
+
+@contextlib.contextmanager
+def _projects_session_db(params: dict | None):
+    """Yield the session db that matches a projects RPC's target profile."""
+    profile_home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+    if profile_home is None:
+        yield _get_db()
+        return
+
+    from hermes_state import SessionDB
+
+    db = None
+    try:
+        db = SessionDB(db_path=profile_home / "state.db")
+        yield db
+    finally:
+        if db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
+
+
 # Placeholder ``terminal.cwd`` values that don't name a real directory — the
 # gateway resolves these to the home dir at runtime, so they must NOT be treated
 # as an explicit workspace (mirrors gateway/run.py's config bridge).
@@ -10191,8 +10225,9 @@ def _projects_method(name: str):
             try:
                 from hermes_cli import projects_db as pdb
 
-                with pdb.connect_closing() as conn:
-                    return fn(rid, params, pdb, conn)
+                with _projects_profile_home(params):
+                    with pdb.connect_closing() as conn:
+                        return fn(rid, params, pdb, conn)
             except _NoProject:
                 return _err(rid, _E_NO_PROJECT, "no such project")
             except ValueError as e:
@@ -10404,10 +10439,11 @@ def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dic
 def _(rid, params: dict) -> dict:
     """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived."""
     try:
-        db = _get_db()
-        if db is None:
-            return _ok(rid, {"repos": []})
-        return _ok(rid, {"repos": _discover_repos_payload(db)})
+        with _projects_profile_home(params):
+            with _projects_session_db(params) as db:
+                if db is None:
+                    return _ok(rid, {"repos": []})
+                return _ok(rid, {"repos": _discover_repos_payload(db)})
     except Exception as e:
         return _err(rid, 5061, str(e))
 
@@ -10427,11 +10463,12 @@ def _(rid, params: dict) -> dict:
             elif isinstance(item, dict) and item.get("root"):
                 pairs.append((str(item["root"]), item.get("label")))
 
-        with pdb.connect_closing() as conn:
-            pdb.record_discovered_repos(conn, pairs, replace=True)
+        with _projects_profile_home(params):
+            with pdb.connect_closing() as conn:
+                pdb.record_discovered_repos(conn, pairs, replace=True)
 
-        db = _get_db()
-        return _ok(rid, {"repos": _discover_repos_payload(db) if db is not None else []})
+            with _projects_session_db(params) as db:
+                return _ok(rid, {"repos": _discover_repos_payload(db) if db is not None else []})
     except Exception as e:
         return _err(rid, 5061, str(e))
 
@@ -10476,7 +10513,7 @@ def _project_tree_row(r: dict) -> dict:
 
 
 def _project_tree_inputs(
-    db, session_limit: int, *, include_discovered: bool
+    db, session_limit: int, *, include_discovered: bool, params: dict | None = None
 ) -> tuple[list[dict], list[dict], list[dict], str | None]:
     """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
 
@@ -10502,23 +10539,24 @@ def _project_tree_inputs(
 
     from hermes_cli import projects_db as pdb
 
-    with pdb.connect_closing() as conn:
-        projects = [p.to_dict() for p in pdb.list_projects(conn)]
-        active_id = pdb.get_active_id(conn)
-        # backfill stays off the hot tree path — grouping uses the live resolver.
-        discovered = _discover_repos_payload(db, conn=conn, backfill=False) if include_discovered else []
+    with _projects_profile_home(params):
+        with pdb.connect_closing() as conn:
+            projects = [p.to_dict() for p in pdb.list_projects(conn)]
+            active_id = pdb.get_active_id(conn)
+            # backfill stays off the hot tree path — grouping uses the live resolver.
+            discovered = _discover_repos_payload(db, conn=conn, backfill=False) if include_discovered else []
 
     return sessions, projects, discovered, active_id
 
 
 def _build_project_tree(
-    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
+    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool, params: dict | None = None
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
 
     sessions, projects, discovered, active_id = _project_tree_inputs(
-        db, session_limit, include_discovered=include_discovered
+        db, session_limit, include_discovered=include_discovered, params=params
     )
     tree = project_tree.build_tree(
         projects,
@@ -10540,21 +10578,27 @@ def _(rid, params: dict) -> dict:
     Lanes carry no session rows here; drill-in uses ``projects.project_sessions``.
     """
     try:
-        db = _get_db()
-        if db is None:
-            return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
+        with _projects_profile_home(params):
+            with _projects_session_db(params) as db:
+                if db is None:
+                    return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
 
-        tree, active_id = _build_project_tree(
-            db,
-            preview_limit=int(params.get("preview_limit") or 3),
-            hydrate=False,
-            session_limit=int(params.get("session_limit") or 2000),
-            include_discovered=True,
-        )
-        return _ok(
-            rid,
-            {"projects": tree["projects"], "active_id": active_id, "scoped_session_ids": tree["scoped_session_ids"]},
-        )
+                tree, active_id = _build_project_tree(
+                    db,
+                    preview_limit=int(params.get("preview_limit") or 3),
+                    hydrate=False,
+                    session_limit=int(params.get("session_limit") or 2000),
+                    include_discovered=True,
+                    params=params,
+                )
+                return _ok(
+                    rid,
+                    {
+                        "projects": tree["projects"],
+                        "active_id": active_id,
+                        "scoped_session_ids": tree["scoped_session_ids"],
+                    },
+                )
     except Exception as e:
         return _err(rid, 5061, str(e))
 
@@ -10569,18 +10613,23 @@ def _(rid, params: dict) -> dict:
         if not project_id:
             return _err(rid, 5063, "project_id required")
 
-        db = _get_db()
-        if db is None:
-            return _ok(rid, {"project": None})
+        with _projects_profile_home(params):
+            with _projects_session_db(params) as db:
+                if db is None:
+                    return _ok(rid, {"project": None})
 
-        # Drill-in only needs the entered project (which has sessions), so skip
-        # the zero-session discovery tier entirely.
-        tree, _active = _build_project_tree(
-            db, preview_limit=0, hydrate=True, session_limit=int(params.get("session_limit") or 5000),
-            include_discovered=False,
-        )
-        proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
-        return _ok(rid, {"project": proj})
+                # Drill-in only needs the entered project (which has sessions), so skip
+                # the zero-session discovery tier entirely.
+                tree, _active = _build_project_tree(
+                    db,
+                    preview_limit=0,
+                    hydrate=True,
+                    session_limit=int(params.get("session_limit") or 5000),
+                    include_discovered=False,
+                    params=params,
+                )
+                proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
+                return _ok(rid, {"project": proj})
     except Exception as e:
         return _err(rid, 5061, str(e))
 

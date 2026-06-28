@@ -5,7 +5,7 @@ import type { HermesGitBranch } from '@/global'
 import { persistentAtom } from '@/lib/persisted'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
-import { requestFreshSession } from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey, requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
@@ -204,6 +204,14 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
+function projectProfile(): string {
+  return normalizeProfileKey($activeGatewayProfile.get())
+}
+
+function projectParams(params: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...params, profile: projectProfile() }
+}
+
 function applyPayload(payload: ProjectsPayload): void {
   $projects.set(payload.projects ?? [])
   $activeProjectId.set(payload.active_id ?? null)
@@ -213,7 +221,7 @@ function applyPayload(payload: ProjectsPayload): void {
 // not up yet) leaves the cached atoms intact so the sidebar doesn't flicker.
 export async function refreshProjects(): Promise<void> {
   try {
-    applyPayload(await gatewayRequest<ProjectsPayload>('projects.list'))
+    applyPayload(await gatewayRequest<ProjectsPayload>('projects.list', projectParams()))
   } catch {
     // Backend may not be ready; keep the last known list.
   }
@@ -232,7 +240,7 @@ export async function refreshProjectTree(): Promise<void> {
   $projectTreeLoading.set(true)
 
   try {
-    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
+    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', projectParams({ preview_limit: 3 }))
     // The flat Sessions list shows everything; scoped ids are only used here to
     // reconcile the optimistic eviction layer against what the server still lists.
     const scoped = new Set(res.scoped_session_ids ?? [])
@@ -264,9 +272,10 @@ export async function refreshProjectTree(): Promise<void> {
 // membership match exactly.
 export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
   try {
-    const res = await gatewayRequest<{ project: SidebarProjectTree | null }>('projects.project_sessions', {
-      project_id: projectId
-    })
+    const res = await gatewayRequest<{ project: SidebarProjectTree | null }>(
+      'projects.project_sessions',
+      projectParams({ project_id: projectId })
+    )
 
     return res.project ?? null
   } catch {
@@ -291,7 +300,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
 
   try {
     const repos = await scan([])
-    await gatewayRequest('projects.record_repos', { repos })
+    await gatewayRequest('projects.record_repos', projectParams({ repos }))
     // The disk scan may surface new zero-session repos; refold them into the tree.
     await refreshProjectTree()
   } catch {
@@ -409,17 +418,20 @@ function projectInfoToTreeNode(project: ProjectInfo): SidebarProjectTree {
 }
 
 export async function createProject(input: CreateProjectInput): Promise<ProjectInfo | null> {
-  const res = await gatewayRequest<{ project: ProjectInfo | null }>('projects.create', {
-    name: input.name,
-    folders: input.folders ?? [],
-    primary_path: input.primaryPath,
-    slug: input.slug,
-    description: input.description,
-    icon: input.icon,
-    color: input.color,
-    board_slug: input.boardSlug,
-    use: input.use ?? false
-  })
+  const res = await gatewayRequest<{ project: ProjectInfo | null }>(
+    'projects.create',
+    projectParams({
+      name: input.name,
+      folders: input.folders ?? [],
+      primary_path: input.primaryPath,
+      slug: input.slug,
+      description: input.description,
+      icon: input.icon,
+      color: input.color,
+      board_slug: input.boardSlug,
+      use: input.use ?? false
+    })
+  )
 
   // Not optimistic (the create awaits the RPC first, so there's nothing to roll
   // back): apply the server's row into the cached list + tree at once, so it
@@ -480,12 +492,15 @@ export async function updateProject(
   // Backend treats null/undefined as "leave unchanged"; "" clears (stores NULL).
   // Map explicit null → "" so "no color"/"no icon" actually clear.
   await persistOrRollback(snap, () =>
-    gatewayRequest('projects.update', {
-      id,
-      ...patch,
-      ...(patch.color === null && { color: '' }),
-      ...(patch.icon === null && { icon: '' })
-    })
+    gatewayRequest(
+      'projects.update',
+      projectParams({
+        id,
+        ...patch,
+        ...(patch.color === null && { color: '' }),
+        ...(patch.icon === null && { icon: '' })
+      })
+    )
   )
 }
 
@@ -524,7 +539,10 @@ export async function addProjectFolder(
   }
 
   await persistOrRollback(snap, () =>
-    gatewayRequest('projects.add_folder', { id, path, label: opts.label, is_primary: opts.isPrimary ?? false })
+    gatewayRequest(
+      'projects.add_folder',
+      projectParams({ id, path, label: opts.label, is_primary: opts.isPrimary ?? false })
+    )
   )
   reconcileProjects()
 }
@@ -567,13 +585,13 @@ export async function deleteProject(id: string): Promise<void> {
   }
 
   await persistOrRollback(snap, async () => {
-    applyPayload(await gatewayRequest<ProjectsPayload>('projects.delete', { id }))
+    applyPayload(await gatewayRequest<ProjectsPayload>('projects.delete', projectParams({ id })))
   })
   void refreshProjectTree()
 }
 
 export async function setActiveProject(id: null | string): Promise<void> {
-  const res = await gatewayRequest<{ active_id: null | string }>('projects.set_active', { id })
+  const res = await gatewayRequest<{ active_id: null | string }>('projects.set_active', projectParams({ id }))
   $activeProjectId.set(res.active_id ?? null)
 }
 

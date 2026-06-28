@@ -31,6 +31,7 @@ CHAT_PLATFORMS = [
 NOISY_STATUS_MESSAGES = [
     "🗜️ Preflight compression check before sending...",
     "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
+    "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⏳ Retrying in 4.2s (attempt 1/3)...",

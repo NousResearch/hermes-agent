@@ -1669,13 +1669,14 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
-        if not or_key:
-            _mark_provider_unhealthy("openrouter", ttl=60)
-            return None, None
-        base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
-        logger.debug("Auxiliary client: OpenRouter via pool")
-        return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+        if or_key:
+            base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+            logger.debug("Auxiliary client: OpenRouter via pool")
+            return OpenAI(api_key=or_key, base_url=base_url,
+                           default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+        # Pool exists but is exhausted (no usable runtime key) — fall through to
+        # the OPENROUTER_API_KEY env-var path rather than failing outright.
+        logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:

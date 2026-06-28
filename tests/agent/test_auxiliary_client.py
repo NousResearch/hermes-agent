@@ -27,6 +27,9 @@ from agent.auxiliary_client import (
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
+    _try_openrouter,
+    _OPENROUTER_MODEL,
+    OPENROUTER_BASE_URL,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
@@ -918,6 +921,35 @@ class TestExplicitProviderRouting:
             "OPENROUTER_API_KEY not set" in record.message
             for record in caplog.records
         )
+
+    def test_try_openrouter_pool_exhausted_falls_back_to_env(self, monkeypatch):
+        """Pool present but exhausted → fall through to OPENROUTER_API_KEY env var."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env-fallback")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock(name="openrouter_client")
+            mock_openai.return_value = mock_client
+
+            client, model = _try_openrouter()
+
+        assert client is mock_client
+        assert model == _OPENROUTER_MODEL
+        mock_openai.assert_called_once()
+        assert mock_openai.call_args.kwargs["api_key"] == "sk-or-env-fallback"
+        assert mock_openai.call_args.kwargs["base_url"] == OPENROUTER_BASE_URL
+
+    def test_try_openrouter_pool_exhausted_no_env_marks_unhealthy(self, monkeypatch):
+        """Pool exhausted AND no env var → final failure marks provider unhealthy."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
+             patch("agent.auxiliary_client._mark_provider_unhealthy") as mock_mark, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _try_openrouter()
+
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+        mock_mark.assert_called_once_with("openrouter", ttl=60)
 
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""

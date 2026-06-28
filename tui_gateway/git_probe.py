@@ -26,12 +26,16 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
 _GIT_TIMEOUT = 1.5
+
+# Windows: suppress conhost.exe window flashes from git subprocess calls
+_CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 _WARM_WORKERS = 8
 
 # How long a "not a git repo" answer stays cached before it's re-probed. Short
@@ -53,6 +57,7 @@ def run_git(cwd: str, *args: str) -> str:
             timeout=_GIT_TIMEOUT,
             check=False,
             stdin=subprocess.DEVNULL,
+            creationflags=_CREATE_NO_WINDOW,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:

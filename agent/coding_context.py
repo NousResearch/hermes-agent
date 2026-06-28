@@ -653,6 +653,7 @@ def _git(cwd: Path, *args: str) -> str:
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
         return ""

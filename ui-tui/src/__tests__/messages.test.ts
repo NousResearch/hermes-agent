@@ -70,6 +70,84 @@ describe('MessageLine', () => {
 
     expect(renderedLine).toContain('Ψ > Okay')
   })
+
+  it('wraps completed user history input with matching divider rules', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 20,
+        msg: { role: 'user', text: 'hello, Jarvis' },
+        showUserInputDividers: true,
+        t: DEFAULT_THEME
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    const cleanOutput = stripAnsi(output)
+    const divider = '─'.repeat(18)
+    const dividerLines = cleanOutput.split('\n').filter(line => line.includes(divider))
+
+    expect(dividerLines).toHaveLength(2)
+    expect(cleanOutput).toContain('hello, Jarvis')
+  })
+
+  it('does not wrap assistant history output with user input dividers', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 20,
+        msg: { role: 'assistant', text: 'Completed output' },
+        showUserInputDividers: true,
+        t: DEFAULT_THEME
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    const divider = '─'.repeat(18)
+    const dividerLines = stripAnsi(output)
+      .split('\n')
+      .filter(line => line.includes(divider))
+
+    expect(dividerLines).toHaveLength(0)
+  })
 })
 
 describe('upsert', () => {

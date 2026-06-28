@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process'
+
 export interface ThemeColors {
   primary: string
   accent: string
@@ -256,7 +258,7 @@ export const DARK_THEME: Theme = {
     primary: '#FFD700',
     accent: '#FFBF00',
     border: '#CD7F32',
-    text: '#FFF8DC',
+    text: '#FFFFFF',
     muted: '#CC9B1F',
     // Bumped from the old `#B8860B` darkgoldenrod (~53% luminance) which
     // read as barely-visible on dark terminals for long body text.  The
@@ -273,7 +275,7 @@ export const DARK_THEME: Theme = {
     error: '#ef5350',
     warn: '#ffa726',
 
-    prompt: '#FFF8DC',
+    prompt: '#FFFFFF',
     // sessionLabel/sessionBorder intentionally track the `dim` value — they
     // are "same role, same colour" by design.  fromSkin's banner_dim fallback
     // relies on this pairing (#11300).
@@ -301,46 +303,55 @@ export const DARK_THEME: Theme = {
   bannerHero: ''
 }
 
-// Light-terminal palette: darker golds/ambers that stay legible on white
-// backgrounds. Same shape as DARK_THEME so `fromSkin` still layers on top
-// cleanly (#11300).
+const JARVIS_LIGHT_BRAND: ThemeBrand = {
+  ...BRAND,
+  name: 'Jarvis',
+  welcome: 'Jarvis online. Type your message or /help for commands.',
+  goodbye: 'Shutting down.',
+  tool: '│',
+  helpHeader: 'Available Commands'
+}
+
+// Light-terminal default mirrors the `jarvis-light` skin: high-contrast
+// blue/slate tones for white or pale terminals. Same shape as DARK_THEME
+// so `fromSkin` still layers explicit skins on top cleanly (#11300).
 export const LIGHT_THEME: Theme = {
   color: {
-    primary: '#8B6914',
-    accent: '#A0651C',
-    border: '#7A4F1F',
-    text: '#3D2F13',
-    muted: '#7A5A0F',
-    completionBg: '#F5F5F5',
-    completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
-    completionMetaBg: '#F5F5F5',
-    completionMetaCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
+    primary: '#020617',
+    accent: '#2563EB',
+    border: '#2563EB',
+    text: '#020617',
+    muted: '#334155',
+    completionBg: '#F8FAFC',
+    completionCurrentBg: '#DBEAFE',
+    completionMetaBg: '#E2E8F0',
+    completionMetaCurrentBg: '#BFDBFE',
 
-    label: '#7A5A0F',
-    ok: '#2E7D32',
-    error: '#C62828',
-    warn: '#E65100',
+    label: '#0F172A',
+    ok: '#166534',
+    error: '#B91C1C',
+    warn: '#92400E',
 
-    prompt: '#2B2014',
-    sessionLabel: '#7A5A0F',
-    sessionBorder: '#7A5A0F',
+    prompt: '#020617',
+    sessionLabel: '#020617',
+    sessionBorder: '#475569',
 
-    statusBg: '#F5F5F5',
-    statusFg: '#333333',
-    statusGood: '#2E7D32',
-    statusWarn: '#8B6914',
-    statusBad: '#D84315',
-    statusCritical: '#B71C1C',
-    selectionBg: '#D4E4F7',
+    statusBg: '#E2E8F0',
+    statusFg: '#020617',
+    statusGood: '#166534',
+    statusWarn: '#92400E',
+    statusBad: '#C2410C',
+    statusCritical: '#7F1D1D',
+    selectionBg: '#DBEAFE',
 
     diffAdded: 'rgb(200,240,200)',
     diffRemoved: 'rgb(240,200,200)',
     diffAddedWord: 'rgb(27,94,32)',
     diffRemovedWord: 'rgb(183,28,28)',
-    shellDollar: '#1565C0'
+    shellDollar: '#2563EB'
   },
 
-  brand: BRAND,
+  brand: JARVIS_LIGHT_BRAND,
 
   bannerLogo: '',
   bannerHero: ''
@@ -361,6 +372,7 @@ const LIGHT_DEFAULT_TERM_PROGRAMS = new Set<string>(['Apple_Terminal'])
 // query helper can cache its answer there too, but additional formats
 // (rgb()/hsl()/named colours) would need explicit parsing here first.
 const LUMA_LIGHT_THRESHOLD = 0.6
+const RGB_16BIT_MAX = 65535
 
 // Strict allow-list: parseInt(..., 16) silently truncates at the first
 // non-hex character (e.g. `fffgff` would parse as `fff` and yield a
@@ -392,6 +404,45 @@ function backgroundLuminance(raw: string): null | number {
   return (0.2126 * rgb[0]! + 0.7152 * rgb[1]! + 0.0722 * rgb[2]!) / 255
 }
 
+type TerminalBackgroundReader = (env: NodeJS.ProcessEnv) => null | number
+
+function parseItermBackgroundLuminance(raw: string): null | number {
+  const parts = raw
+    .trim()
+    .split(',')
+    .map(part => part.trim())
+
+  if (parts.length !== 3 || parts.some(part => !/^\d+$/.test(part))) {
+    return null
+  }
+
+  const rgb = parts.map(part => Number(part))
+
+  if (rgb.some(value => !Number.isFinite(value) || value < 0 || value > RGB_16BIT_MAX)) {
+    return null
+  }
+
+  return (0.2126 * rgb[0]! + 0.7152 * rgb[1]! + 0.0722 * rgb[2]!) / RGB_16BIT_MAX
+}
+
+function readItermBackgroundLuminance(env: NodeJS.ProcessEnv = process.env): null | number {
+  if ((env.TERM_PROGRAM ?? '').trim() !== 'iTerm.app') {
+    return null
+  }
+
+  try {
+    const raw = execFileSync(
+      'osascript',
+      ['-e', 'tell application "iTerm" to get background color of current session of current window'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 500 }
+    )
+
+    return parseItermBackgroundLuminance(raw)
+  } catch {
+    return null
+  }
+}
+
 // Pick light vs dark with ordered, explainable signals (#11300):
 //
 //   1. `HERMES_TUI_LIGHT` boolean — `1`/`true`/`yes`/`on` → light;
@@ -401,11 +452,14 @@ function backgroundLuminance(raw: string): null | number {
 //      every signal below.
 //   3. `HERMES_TUI_BACKGROUND` hex hint (3- or 6-digit) — luminance
 //      ≥ LUMA_LIGHT_THRESHOLD → light.
-//   4. `COLORFGBG` last field — XFCE / rxvt / Terminal.app emit
+//   4. iTerm current session background via AppleScript — iTerm's inherited
+//      COLORFGBG can be stale after profile/appearance switches, while the
+//      live session colour reflects what is actually on screen.
+//   5. `COLORFGBG` last field — XFCE / rxvt / Terminal.app emit
 //      slot 7 or 15 on light profiles; 0–15 ranges are otherwise
 //      treated as authoritatively dark so the TERM_PROGRAM
 //      allow-list below cannot override an explicit dark profile.
-//   5. `TERM_PROGRAM` light-default allow-list.
+//   6. `TERM_PROGRAM` light-default allow-list.
 //
 // Anything we can't decide stays dark — the default Hermes palette
 // is the dark one.
@@ -413,7 +467,8 @@ export function detectLightMode(
   env: NodeJS.ProcessEnv = process.env,
   // Injectable so tests can prove the COLORFGBG-over-TERM_PROGRAM
   // precedence rule even though the production allow-list is empty.
-  lightDefaultTermPrograms: ReadonlySet<string> = LIGHT_DEFAULT_TERM_PROGRAMS
+  lightDefaultTermPrograms: ReadonlySet<string> = LIGHT_DEFAULT_TERM_PROGRAMS,
+  terminalBackgroundReader: TerminalBackgroundReader = readItermBackgroundLuminance
 ): boolean {
   const lightFlag = (env.HERMES_TUI_LIGHT ?? '').trim().toLowerCase()
 
@@ -439,6 +494,12 @@ export function detectLightMode(
 
   if (bgHint !== null) {
     return bgHint >= LUMA_LIGHT_THRESHOLD
+  }
+
+  const terminalBgHint = terminalBackgroundReader(env)
+
+  if (terminalBgHint !== null) {
+    return terminalBgHint >= LUMA_LIGHT_THRESHOLD
   }
 
   const colorfgbg = (env.COLORFGBG ?? '').trim()
@@ -500,7 +561,7 @@ export function normalizeThemeForAnsiLightTerminal(
   return { ...theme, color }
 }
 
-const DEFAULT_LIGHT_MODE = detectLightMode()
+export const DEFAULT_LIGHT_MODE = detectLightMode()
 
 export const DEFAULT_THEME: Theme = normalizeThemeForAnsiLightTerminal(
   DEFAULT_LIGHT_MODE ? LIGHT_THEME : DARK_THEME,

@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { IndicatorStyle, Notice } from '../app/interfaces.js'
+import { DEFAULT_STATUS_BAR_FIELDS, type IndicatorStyle, type Notice, type StatusBarField } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -18,12 +18,43 @@ import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
+const BUSY_STATUS_SHIMMER_MS = 180
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
-// Keep verb segment width stable so status-bar content to the right doesn't
-// jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+export const BUSY_STATUS_TEXT = 'working'
+// Keep the busy-text segment width stable so status-bar content to the right
+// doesn't jitter.  The reservation intentionally matches the old rotating-verb
+// slot (longest verb + ellipsis) even though the visible word is now static.
+export const BUSY_STATUS_PAD_LEN = Math.max(
+  BUSY_STATUS_TEXT.length,
+  VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1
+)
+export const padBusyStatusText = (text = BUSY_STATUS_TEXT) => text.padEnd(BUSY_STATUS_PAD_LEN, ' ')
+
+export type BusyStatusTone = 'base' | 'peak' | 'soft'
+export interface BusyStatusSegment {
+  char: string
+  tone: BusyStatusTone
+}
+
+const BUSY_STATUS_WAVE_LEAD = 2
+const BUSY_STATUS_WAVE_TRAIL = 2
+
+export const busyStatusShimmerSegments = (frame: number): BusyStatusSegment[] => {
+  const chars = [...BUSY_STATUS_TEXT]
+  const cycle = chars.length + BUSY_STATUS_WAVE_LEAD + BUSY_STATUS_WAVE_TRAIL
+  const center = (((Math.floor(frame) % cycle) + cycle) % cycle) - BUSY_STATUS_WAVE_LEAD
+
+  return chars.map((char, index) => {
+    const distance = Math.abs(index - center)
+    const tone = distance === 0 ? 'peak' : distance === 1 ? 'soft' : 'base'
+
+    return { char, tone }
+  })
+}
+
+const COMPOSER_DIVIDER_INSET = 2
+export const composerDividerLine = (cols: number) => '─'.repeat(Math.max(1, Math.floor(cols) - COMPOSER_DIVIDER_INSET))
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -37,23 +68,24 @@ const SPINNER_TICK_MS = 100
 interface IndicatorRender {
   frame: string
   intervalMs: number
-  // When false, FaceTicker hides the rotating verb and just shows the
-  // glyph + duration.  Lets `unicode` stay minimal while the other
-  // styles keep the verb-rotation flavour users associate with the
-  // running… status.
-  showVerb: boolean
+  padBusyText: boolean
+  // When false, FaceTicker hides the busy text and just shows the glyph +
+  // duration.  Lets `unicode` stay minimal while the other styles keep the
+  // visible working indicator.
+  showBusyText: boolean
 }
 
 const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
   if (style === 'kaomoji') {
-    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, padBusyText: true, showBusyText: true }
   }
 
   if (style === 'emoji') {
     return {
       frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ',
       intervalMs: SPINNER_TICK_MS * 6,
-      showVerb: true
+      padBusyText: true,
+      showBusyText: true
     }
   }
 
@@ -61,7 +93,17 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
     return {
       frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
       intervalMs: SPINNER_TICK_MS,
-      showVerb: true
+      padBusyText: true,
+      showBusyText: true
+    }
+  }
+
+  if (style === 'plain') {
+    return {
+      frame: '',
+      intervalMs: BUSY_STATUS_SHIMMER_MS,
+      padBusyText: false,
+      showBusyText: true
     }
   }
 
@@ -72,7 +114,7 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   const spinner = unicodeSpinners.braille
   const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
 
-  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
+  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), padBusyText: false, showBusyText: false }
 }
 
 // `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
@@ -89,6 +131,10 @@ const indicatorFrameWidth = (style: IndicatorStyle): number => {
     return EMOJI_FRAME_WIDTH
   }
 
+  if (style === 'plain') {
+    return 0
+  }
+
   // 'ascii' and 'unicode' are single-column glyphs.
   return 1
 }
@@ -102,88 +148,126 @@ export const MAX_DURATION_WIDTH = Math.max(
   stringWidth(fmtDuration(99 * 3_600_000 + 59 * 60_000)) // "99h 59m"
 )
 
-// Display width to reserve for the busy indicator so its verb + elapsed-time
+// Display width to reserve for the busy indicator so its text + elapsed-time
 // tail can't shove the model off-screen on narrow terminals. Style-aware:
-// `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
-// ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
-// Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
+// `unicode` is a bare 1-col braille spinner with no busy text, `plain` is a
+// bare `working` label, while kaomoji/emoji/ascii add a fixed-width glyph +
+// `working` slot; any style adds a bounded elapsed-time tail. Mirrors
+// FaceTicker's `frame + busyStatusSegment + durationSegment` layout.
 export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
-  const { showVerb } = renderIndicator(style, 0)
-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+  const { padBusyText, showBusyText } = renderIndicator(style, 0)
+  const frameWidth = indicatorFrameWidth(style)
+  const busyText = showBusyText
+    ? (frameWidth > 0 ? 1 : 0) + (padBusyText ? BUSY_STATUS_PAD_LEN : BUSY_STATUS_TEXT.length)
+    : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
-  return indicatorFrameWidth(style) + verb + duration
+  return frameWidth + busyText + duration
 }
 
-function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+function BusyStatusWord({
+  baseColor,
+  frame,
+  highlightColor,
+  padded = true,
+  softHighlightColor
+}: {
+  baseColor: string
+  frame: number
+  highlightColor: string
+  padded?: boolean
+  softHighlightColor: string
+}) {
+  const padding = padded ? padBusyStatusText().slice(BUSY_STATUS_TEXT.length) : ''
+
+  return (
+    <>
+      {busyStatusShimmerSegments(frame).map(({ char, tone }, index) => (
+        <Text
+          bold={tone === 'peak'}
+          color={tone === 'peak' ? highlightColor : tone === 'soft' ? softHighlightColor : baseColor}
+          key={`${index}-${char}`}
+        >
+          {char}
+        </Text>
+      ))}
+      {padding}
+    </>
+  )
+}
+
+function FaceTicker({
+  busyTextColor,
+  color,
+  highlightColor,
+  softHighlightColor,
+  startedAt,
+  style
+}: {
+  busyTextColor?: string
+  color: string
+  highlightColor: string
+  softHighlightColor: string
+  startedAt?: null | number
+  style: IndicatorStyle
+}) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [shimmerTick, setShimmerTick] = useState(BUSY_STATUS_WAVE_LEAD)
   const [now, setNow] = useState(() => Date.now())
 
-  // Pre-compute cadence + verb-visibility for the active style so an
-  // `/indicator` switch re-arms the interval (and skips the verb timer
-  // for verb-less styles like `unicode`) without leaving the previous
-  // timer dangling.
-  const { intervalMs, showVerb } = renderIndicator(style, 0)
+  // Pre-compute cadence + busy-text visibility for the active style so an
+  // `/indicator` switch re-arms the interval (and skips the shimmer timer for
+  // text-less styles like `unicode`) without leaving the previous timer
+  // dangling.
+  const { intervalMs, padBusyText, showBusyText } = renderIndicator(style, 0)
 
   useEffect(() => {
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
-    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
-    // entirely, so cycling `verbTick` would be an avoidable re-render.
-    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+
+    // Shimmer timer is gated on `showBusyText` — `unicode` style hides the
+    // text entirely, so cycling the wave would be an avoidable re-render.
+    const shimmer = showBusyText
+      ? setInterval(() => setShimmerTick(n => n + 1), BUSY_STATUS_SHIMMER_MS)
+      : null
 
     return () => {
       clearInterval(glyph)
       clearInterval(clock)
 
-      if (verb !== null) {
-        clearInterval(verb)
+      if (shimmer !== null) {
+        clearInterval(shimmer)
       }
     }
-  }, [intervalMs, showVerb])
+  }, [intervalMs, showBusyText])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
-  // Leading space keeps a gap between the frame and the duration when the
-  // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
-  // IS shown, its trailing padding already provides the gap, so the extra
-  // space is harmless.
+
+  const busyStatusSegment = showBusyText ? (
+    <>
+      {frame ? ' ' : ''}
+      <BusyStatusWord
+        baseColor={busyTextColor ?? color}
+        frame={shimmerTick}
+        highlightColor={highlightColor}
+        padded={padBusyText}
+        softHighlightColor={softHighlightColor}
+      />
+    </>
+  ) : null
+  // Styles with a glyph get one gap before the working label; `plain` keeps
+  // the label bare. The elapsed tail carries its own ` · ` separator.
+
   const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
 
   return (
     <Text color={color}>
       {frame}
-      {verbSegment}
+      {busyStatusSegment}
       {durationSegment}
     </Text>
   )
-}
-
-function ctxBarColor(pct: number | undefined, t: Theme) {
-  if (pct == null) {
-    return t.color.muted
-  }
-
-  if (pct >= 95) {
-    return t.color.statusCritical
-  }
-
-  if (pct > 80) {
-    return t.color.statusBad
-  }
-
-  if (pct >= 50) {
-    return t.color.statusWarn
-  }
-
-  return t.color.statusGood
-}
-
-function statusSessionCountLabel(count: number) {
-  return `${count} ${count === 1 ? 'session' : 'sessions'}`
 }
 
 // Colour a credits notice by its level. The notice TEXT already carries its
@@ -204,13 +288,6 @@ function noticeColor(level: Notice['level'], t: Theme): string {
 
   // 'info' / undefined — keep it readable but understated.
   return t.color.accent
-}
-
-function ctxBar(pct: number | undefined, w = 10) {
-  const p = Math.max(0, Math.min(100, pct ?? 0))
-  const filled = Math.round((p / 100) * w)
-
-  return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
 // `minLeftContent` is the display width of the high-priority left segments
@@ -248,6 +325,7 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
+  cost: boolean
   duration: boolean
   subagents: boolean
   voice: boolean
@@ -261,9 +339,10 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     bar: w >= 72,
     duration: w >= 76,
     compressions: w >= 80,
-    voice: w >= 84,
+    voice: w >= 80,
     bg: w >= 88,
-    subagents: w >= 92
+    subagents: w >= 92,
+    cost: w >= 96
   }
 }
 
@@ -377,6 +456,14 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
+export function ComposerDivider({ cols, t }: { cols: number; t: Theme }) {
+  return (
+    <Text color={t.color.border} wrap="truncate-end">
+      {composerDividerLine(cols)}
+    </Text>
+  )
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -416,34 +503,34 @@ export function StatusRule({
   usage,
   bgCount,
   lastTurnEndedAt,
-  liveSessionCount,
   sessionStartedAt,
+  showCost = false,
   turnStartedAt,
   voiceLabel,
-  onSessionCountClick,
+  fields = DEFAULT_STATUS_BAR_FIELDS,
   t
 }: StatusRuleProps) {
-  const pct = usage.context_percent
-  const barColor = ctxBarColor(pct, t)
+  const hasField = (field: StatusBarField) => fields.includes(field)
+  const showCwd = hasField('cwd')
   const segs = statusBarSegments(cols)
 
   // On narrow terminals the context read-out collapses to a bare token count
-  // (`12k tok`) and the visual fill bar is dropped entirely.
-  const ctxLabel = usage.context_max
-    ? segs.compactCtx
-      ? `${fmtK(usage.context_used ?? 0)} tok`
-      : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
-    : usage.total > 0
-      ? `${fmtK(usage.total)} tok`
-      : ''
+  // (`12k tok`). The visual percentage bar is intentionally hidden.
+  const ctxLabel =
+    hasField('context') && usage.context_max
+      ? segs.compactCtx
+        ? `${fmtK(usage.context_used ?? 0)} tok`
+        : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+      : hasField('context') && usage.total > 0
+        ? `${fmtK(usage.total)} tok`
+        : ''
 
-  const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelText = hasField('model') ? modelLabel(model, modelReasoningEffort, modelFast) : ''
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
   // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
-  const showNotice = !busy && !!notice?.text
+  const showNotice = hasField('status') && !busy && !!notice?.text
   // The notice slot is shrinkable (flexShrink={1}, truncate-end), so reserve
   // only a small bounded width for it in the essentials budget — enough that
   // a short notice never gets crushed, but a long one ellipsizes instead of
@@ -457,25 +544,26 @@ export function StatusRule({
   // yields first. The busy face width depends on the active /indicator style
   // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
-  const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
-    : showNotice
-      ? noticeReserve
-      : stringWidth(status)
+  const slotWidth = hasField('status')
+    ? busy
+      ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
+      : showNotice
+        ? noticeReserve
+        : stringWidth(status)
+    : 0
 
   const essentialWidth =
     stringWidth('─ ') +
     slotWidth +
-    stringWidth(' │ ') +
-    stringWidth(modelText) +
+    (modelText ? stringWidth(' │ ') + stringWidth(modelText) : 0) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
 
-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, essentialWidth)
+  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, showCwd ? cwdLabel : '', essentialWidth)
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
-  // descending priority order — bar, duration, compressions, voice, session
-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
+  // descending priority order — duration, compressions, voice, bg, cost.
+  // Lower-priority segments drop first and nothing truncates
   // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
@@ -490,8 +578,8 @@ export function StatusRule({
     return false
   }
 
-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
@@ -502,19 +590,20 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
-  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
-  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
-
+  const showDuration = hasField('session_duration') && segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
   // Idle clock — time since the last final agent response. Hidden while busy
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
   // turn completes. Shares the duration breakpoint and width reservation.
   const showIdle =
-    segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
-
-  const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
-  const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
-  const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
-  const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
+    hasField('session_duration') &&
+    segs.duration &&
+    !busy &&
+    lastTurnEndedAt != null &&
+    fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+  const showCompressions =
+    hasField('compressions') && segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+  const showVoice = hasField('voice') && segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+  const showBg = hasField('background') && segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
   const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
 
@@ -528,22 +617,10 @@ export function StatusRule({
     subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
 
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
-  // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
-  // so it consumes tail budget LAST and drops first on a narrow terminal.
+  const showCostSeg = hasField('cost') && segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
+  // No segs flag / no showCost coupling — dev credits are server-gated and lowest priority,
+  // so they consume tail budget LAST and drop first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
-
-  const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
-    event.stopImmediatePropagation?.()
-    onSessionCountClick?.()
-  }
-
-  const sessionCountNode = onSessionCountClick ? (
-    <Box flexShrink={0} onClick={handleSessionCountClick}>
-      <Text color={t.color.accent}> │ {sessionCountText}</Text>
-    </Box>
-  ) : (
-    <Text color={t.color.muted}> │ {sessionCountText}</Text>
-  )
 
   return (
     <Box height={1}>
@@ -554,13 +631,22 @@ export function StatusRule({
             ellipsizes instead of crushing model │ ctx (R3-M7). */}
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
-          {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
-          ) : showNotice ? null : (
-            <Text color={statusColor} wrap="truncate-end">
-              {status}
-            </Text>
-          )}
+          {hasField('status') ? (
+            busy ? (
+              <FaceTicker
+                busyTextColor={t.color.error}
+                color={statusColor}
+                highlightColor={t.color.accent}
+                softHighlightColor={t.color.label}
+                startedAt={turnStartedAt}
+                style={indicatorStyle}
+              />
+            ) : showNotice ? null : (
+              <Text color={statusColor} wrap="truncate-end">
+                {status}
+              </Text>
+            )
+          ) : null}
         </Box>
         {/* Notice slot — the only shrinkable left element (R3-M7). Sits in a
             flexShrink={1} box with truncate-end so it yields/ellipsizes
@@ -579,10 +665,12 @@ export function StatusRule({
               {' (dev credits)'}
             </Text>
           ) : null}
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {modelText}
-          </Text>
+          {modelText ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ '}
+              {modelText}
+            </Text>
+          ) : null}
           {ctxLabel ? (
             <Text color={t.color.muted} wrap="truncate-end">
               {' │ '}
@@ -590,12 +678,6 @@ export function StatusRule({
             </Text>
           ) : null}
         </Box>
-        {showBar ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
-          </Text>
-        ) : null}
         {showDuration ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
@@ -627,7 +709,6 @@ export function StatusRule({
             {voiceLabel}
           </Text>
         ) : null}
-        {showSessionCount ? sessionCountNode : null}
         {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
@@ -645,6 +726,12 @@ export function StatusRule({
             {resumeHintText}
           </Text>
         ) : null}
+        {showCostSeg ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {costText}
+          </Text>
+        ) : null}
         {showDevCredits ? (
           <Text color={t.color.accent} wrap="truncate-end">
             {' │ '}
@@ -654,7 +741,7 @@ export function StatusRule({
         {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
             renders last — any overflow truncates the HUD itself rather than the
             budgeted segments before it. It self-hides when no delegation runs. */}
-        <SpawnHud t={t} />
+        {hasField('delegation') ? <SpawnHud t={t} /> : null}
       </Box>
 
       {rightWidth > 0 ? (
@@ -776,12 +863,14 @@ interface StatusRuleProps {
   busy: boolean
   cols: number
   cwdLabel: string
+  fields?: readonly StatusBarField[]
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number
+  showCost?: boolean
   status: string
   statusColor: string
   t: Theme

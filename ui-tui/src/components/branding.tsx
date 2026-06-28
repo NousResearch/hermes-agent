@@ -44,8 +44,8 @@ export function ArtLines({ lines }: { lines: [string, string][] }) {
 // Terminals can't scale glyphs, so "responsive" means picking a layout that
 // fits the available columns. Thresholds are picked so each tier reads
 // comfortably without forcing wrap or truncation drift on box-drawing edges.
-const TAG_FULL = 'Nous Research · Messenger of the Digital Gods'
-const TAG_MID = 'Messenger of the Digital Gods'
+const TAG_FULL = 'Nous Research · Messenger of Digital Intelligence'
+const TAG_MID = 'Messenger of Digital Intelligence'
 const TAG_TINY = 'Nous Research'
 const HIDE_BELOW = 34
 const COMPACT_FROM = 58
@@ -156,7 +156,20 @@ function CollapseToggle({
 // ── SessionPanel ─────────────────────────────────────────────────────
 
 const SKILLS_MAX = 8
-const TOOLSETS_MAX = 8
+const DELEGATION_PROFILE_NAMES = new Set([
+  'audit-readonly',
+  'coding',
+  'critic',
+  'dev',
+  'executor',
+  'hermes-ops',
+  'planner',
+  'previewer',
+  'research',
+  'reviewer',
+  'sandbox',
+  'scout'
+])
 
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const term = useStdout().stdout?.columns ?? 100
@@ -169,7 +182,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
 
   // ── Local collapse state for each section ──
-  const [toolsOpen, setToolsOpen] = useState(true)
+  const [profilesOpen, setProfilesOpen] = useState(true)
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [systemOpen, setSystemOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
@@ -218,8 +231,25 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
     )
   }
 
-  // ── Collapsible tools section ──
-  const toolEntries = Object.entries(info.tools).sort()
+  // ── Profiles section ──
+  const profileEntries = [...(info.profiles ?? [])]
+    .filter(p => DELEGATION_PROFILE_NAMES.has(p.name))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  const profilesTotal = profileEntries.length
+
+  const profilesBody = () => {
+    if (profileEntries.length === 0) {
+      return <Text color={t.color.muted}>No delegation profiles found.</Text>
+    }
+
+    return (
+      <Text color={t.color.text} wrap="wrap">
+        {profileEntries.map((p, i) => `${p.name}${i < profileEntries.length - 1 ? ', ' : ''}`).join('')}
+      </Text>
+    )
+  }
+
+  // ── Tool counts ──
   const toolsTotal = flat(info.tools).length
 
   // MCP headline counts *connected* servers, not configured-but-disabled ones,
@@ -227,23 +257,6 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   // hermes_cli/banner.py) and the "connected" label on the collapse toggle.
   const mcpServers = info.mcp_servers ?? []
   const mcpConnected = mcpServers.filter(s => s.connected).length
-
-  const toolsBody = () => {
-    const shown = toolEntries.slice(0, TOOLSETS_MAX)
-    const overflow = toolEntries.length - TOOLSETS_MAX
-
-    return (
-      <>
-        {shown.map(([k, vs]) => (
-          <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
-          </Text>
-        ))}
-        {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>}
-      </>
-    )
-  }
 
   // ── Collapsible MCP section ──
   const mcpBody = () => (
@@ -336,10 +349,16 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           </Box>
         )}
 
-        {/* ── Tools (expanded by default) ── */}
+        {/* ── Profiles (expanded by default) ── */}
         <Box flexDirection="column" marginTop={1}>
-          <CollapseToggle onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools" />
-          {toolsOpen && toolsBody()}
+          <CollapseToggle
+            count={profilesTotal > 0 ? profilesTotal : undefined}
+            onToggle={() => setProfilesOpen(v => !v)}
+            open={profilesOpen}
+            t={t}
+            title="Profiles"
+          />
+          {profilesOpen && profilesBody()}
         </Box>
 
         {/* ── Skills (collapsed by default) ── */}
@@ -389,6 +408,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text />
 
         <Text color={t.color.text}>
+          {profilesTotal ? `${profilesTotal} profiles · ` : ''}
           {toolsTotal} tools{' · '}
           {skillsTotal} skills
           {mcpConnected ? ` · ${mcpConnected} MCP` : ''}

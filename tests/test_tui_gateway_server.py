@@ -1679,6 +1679,49 @@ def test_startup_runtime_does_not_call_network_detector(monkeypatch):
     assert provider in {None, "anthropic"}
 
 
+def test_subagent_progress_payload_includes_worker_metadata(monkeypatch):
+    events = []
+    server._sessions["sid"] = _session(tool_progress_mode="all")
+    monkeypatch.setattr(server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload)))
+    monkeypatch.setattr(server, "_mirror_subagent_to_child", lambda *args, **kwargs: None)
+
+    try:
+        server._on_tool_progress(
+            "sid",
+            "subagent.tool",
+            name="terminal",
+            preview="pytest",
+            goal="review patch",
+            task_index=0,
+            model="kimi-k2.6",
+            provider="opencode-go",
+            profile="reviewer",
+            lane="leaf",
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert events == [
+        (
+            "subagent.tool",
+            "sid",
+            {
+                "goal": "review patch",
+                "task_count": 1,
+                "task_index": 0,
+                "model": "kimi-k2.6",
+                "provider": "opencode-go",
+                "profile": "reviewer",
+                "lane": "leaf",
+                "tool_name": "terminal",
+                "text": "pytest",
+                "tool_preview": "pytest",
+            },
+        )
+    ]
+
+
+
 def _session(agent=None, **extra):
     return {
         "agent": agent if agent is not None else types.SimpleNamespace(),
@@ -4552,6 +4595,65 @@ def test_session_info_includes_session_title(monkeypatch):
     )
 
     assert info["title"] == "Dashboard title"
+
+
+def test_session_info_includes_profile_summaries(monkeypatch):
+    profile_type = types.SimpleNamespace
+    fake_profiles = [
+        profile_type(
+            alias_name=None,
+            description="Primary operator profile",
+            gateway_running=True,
+            is_default=True,
+            model="gpt-5.5",
+            name="default",
+            provider="openai-codex",
+            skill_count=279,
+        ),
+        profile_type(
+            alias_name="sandbox",
+            description="Scratch lane",
+            gateway_running=False,
+            is_default=False,
+            model="deepseek-v4-flash",
+            name="sandbox",
+            provider="opencode-go",
+            skill_count=0,
+        ),
+    ]
+
+    fake_mod = types.ModuleType("hermes_cli.profiles")
+    fake_mod.get_active_profile_name = lambda: "sandbox"
+    fake_mod.list_profiles = lambda: fake_profiles
+    monkeypatch.setitem(sys.modules, "hermes_cli.profiles", fake_mod)
+
+    info = server._session_info(types.SimpleNamespace(tools=[], model="", provider="openai-codex"))
+
+    assert info["profile_name"] == "sandbox"
+    assert info["profiles"] == [
+        {
+            "active": False,
+            "alias": None,
+            "description": "Primary operator profile",
+            "gateway_running": True,
+            "is_default": True,
+            "model": "gpt-5.5",
+            "name": "default",
+            "provider": "openai-codex",
+            "skill_count": 279,
+        },
+        {
+            "active": True,
+            "alias": "sandbox",
+            "description": "Scratch lane",
+            "gateway_running": False,
+            "is_default": False,
+            "model": "deepseek-v4-flash",
+            "name": "sandbox",
+            "provider": "opencode-go",
+            "skill_count": 0,
+        },
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -10,8 +10,11 @@ import { asRpcResult } from '../lib/rpc.js'
 import {
   type BusyInputMode,
   DEFAULT_INDICATOR_STYLE,
+  DEFAULT_STATUS_BAR_FIELDS,
   INDICATOR_STYLES,
   type IndicatorStyle,
+  STATUS_BAR_FIELDS,
+  type StatusBarField,
   type StatusBarMode
 } from './interfaces.js'
 import { turnController } from './turnController.js'
@@ -26,6 +29,62 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
 
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
   raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
+
+const STATUS_BAR_FIELD_SET: ReadonlySet<StatusBarField> = new Set(STATUS_BAR_FIELDS)
+
+const STATUS_BAR_FIELD_ALIAS: Record<string, StatusBarField> = {
+  bg: 'background',
+  context_count: 'context',
+  ctx: 'context',
+  delegations: 'delegation',
+  folder: 'cwd',
+  path: 'cwd',
+  tasks: 'background',
+  tokens: 'context',
+  working_dir: 'cwd'
+}
+
+const normalizeStatusBarField = (raw: unknown): StatusBarField | null => {
+  if (typeof raw !== 'string') {
+    return null
+  }
+
+  const value = raw.trim().toLowerCase().replace(/[\s-]+/g, '_')
+
+  if (!value) {
+    return null
+  }
+
+  const canonical = (STATUS_BAR_FIELD_ALIAS[value] ?? value) as StatusBarField
+
+  return STATUS_BAR_FIELD_SET.has(canonical) ? canonical : null
+}
+
+export const normalizeStatusBarFields = (raw: unknown): readonly StatusBarField[] => {
+  if (raw == null) {
+    return DEFAULT_STATUS_BAR_FIELDS
+  }
+
+  const items = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,]+/) : []
+
+  if (!items.length) {
+    return DEFAULT_STATUS_BAR_FIELDS
+  }
+
+  const fields: StatusBarField[] = []
+  const seen = new Set<StatusBarField>()
+
+  for (const item of items) {
+    const field = normalizeStatusBarField(item)
+
+    if (field && !seen.has(field)) {
+      fields.push(field)
+      seen.add(field)
+    }
+  }
+
+  return fields.length ? fields : DEFAULT_STATUS_BAR_FIELDS
+}
 
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
@@ -229,6 +288,7 @@ export const applyDisplay = (
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
+    statusBarFields: normalizeStatusBarFields(d.tui_statusbar_fields),
     streaming: d.streaming !== false
   })
 }

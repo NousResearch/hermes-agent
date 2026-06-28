@@ -1,8 +1,20 @@
+import { PassThrough } from 'stream'
+
+import { renderSync } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { StatusRule } from '../components/appChrome.js'
+import { ZERO } from '../domain/usage.js'
+import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
+
+type ElementProps = {
+  children?: React.ReactNode
+  onClick?: unknown
+}
+type AnyElementProps = ElementProps & Record<string, unknown>
+type StatusRulePropsForTest = Parameters<typeof StatusRule>[0]
 
 type ReactNodeLike = React.ReactNode
 
@@ -19,14 +31,16 @@ const textContent = (node: ReactNodeLike): string => {
     return node.map(textContent).join('')
   }
 
-  if (React.isValidElement(node)) {
-    return textContent(node.props.children)
+  if (React.isValidElement<ElementProps>(node)) {
+    const element = node as React.ReactElement<ElementProps>
+
+    return textContent(element.props.children)
   }
 
   return ''
 }
 
-const findClickableWithText = (node: ReactNodeLike, needle: string): React.ReactElement | null => {
+const findClickableWithText = (node: ReactNodeLike, needle: string): React.ReactElement<ElementProps> | null => {
   if (node === null || node === undefined || typeof node === 'boolean') {
     return null
   }
@@ -43,15 +57,17 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
     return null
   }
 
-  if (!React.isValidElement(node)) {
+  if (!React.isValidElement<ElementProps>(node)) {
     return null
   }
 
-  if (typeof node.props.onClick === 'function' && textContent(node).includes(needle)) {
-    return node
+  const element = node as React.ReactElement<ElementProps>
+
+  if (typeof element.props.onClick === 'function' && textContent(element).includes(needle)) {
+    return element
   }
 
-  return findClickableWithText(node.props.children, needle)
+  return findClickableWithText(element.props.children, needle)
 }
 
 // Find the innermost element whose own (direct) text content includes the
@@ -88,7 +104,38 @@ const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactEl
   return textContent(node).includes(needle) ? node : null
 }
 
-const baseProps = {
+const findElementByTypeName = (node: ReactNodeLike, typeName: string): React.ReactElement<AnyElementProps> | null => {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return null
+  }
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findElementByTypeName(child, typeName)
+
+      if (found) {
+        return found
+      }
+    }
+
+    return null
+  }
+
+  if (!React.isValidElement(node)) {
+    return null
+  }
+
+  const element = node as React.ReactElement<AnyElementProps>
+  const elementType = element.type as { name?: string } | string
+
+  if (typeof elementType !== 'string' && elementType.name === typeName) {
+    return element
+  }
+
+  return findElementByTypeName(element.props.children, typeName)
+}
+
+const baseProps: StatusRulePropsForTest = {
   bgCount: 0,
   busy: false,
   cols: 100,
@@ -100,8 +147,34 @@ const baseProps = {
   statusColor: DEFAULT_THEME.color.ok,
   t: DEFAULT_THEME,
   turnStartedAt: null,
-  usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
+  usage: { ...ZERO, context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
   voiceLabel: ''
+}
+
+const renderStatusRuleText = (overrides: Partial<StatusRulePropsForTest>) => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  let output = ''
+
+  Object.assign(stdout, { columns: 120, isTTY: false, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(React.createElement(StatusRule, { ...baseProps, ...overrides }), {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
+
+  instance.unmount()
+  instance.cleanup()
+
+  return stripAnsi(output)
 }
 
 describe('StatusRule background-subagent indicator', () => {
@@ -165,8 +238,8 @@ describe('StatusRule background-subagent indicator', () => {
   })
 
   it('drops the subagent segment before the bg segment on a narrow terminal', () => {
-    // cols=44 is below the subagents breakpoint (92) but the bg breakpoint
-    // (88) too — both gone. Assert the lower-priority subagent indicator is
+    // cols=44 is below the subagents breakpoint (92) and the bg breakpoint
+    // (88), so both drop. Assert the lower-priority subagent indicator is
     // not shown when space is tight even with a live count.
     const element = StatusRule({
       ...baseProps,
@@ -179,8 +252,67 @@ describe('StatusRule background-subagent indicator', () => {
   })
 })
 
-describe('StatusRule session count click target', () => {
-  it('makes the live session count itself clickable', () => {
+describe('StatusRule busy indicator', () => {
+  it('renders the static working label with spinner, elapsed duration, model, and context', () => {
+    const text = renderStatusRuleText({
+      busy: true,
+      indicatorStyle: 'ascii',
+      turnStartedAt: Date.now() - 2500
+    })
+
+    expect(text).toContain('working')
+    expect(text).toMatch(/ · \d+s/)
+    expect(text).toContain('opus 4.8')
+    expect(text).toContain('50k')
+    expect(text).not.toMatch(/pondering|contemplating|reasoning|synthesizing/)
+  })
+
+  it('keeps unicode style textless while still showing spinner, duration, model, and context', () => {
+    const text = renderStatusRuleText({
+      busy: true,
+      indicatorStyle: 'unicode',
+      turnStartedAt: Date.now() - 2500
+    })
+
+    expect(text).not.toContain('working')
+    expect(text).toMatch(/ · \d+s/)
+    expect(text).toContain('opus 4.8')
+    expect(text).toContain('50k')
+  })
+
+  it('renders plain style as just the working label without a leading indicator glyph', () => {
+    const text = renderStatusRuleText({
+      busy: true,
+      indicatorStyle: 'plain',
+      turnStartedAt: Date.now() - 2500
+    })
+
+    expect(text).toMatch(/─ working · \d+s/)
+    expect(text).toContain('opus 4.8')
+    expect(text).toContain('50k')
+  })
+
+  it('renders the working word red while preserving the current shimmer glow colours', () => {
+    const element = StatusRule({
+      ...baseProps,
+      busy: true,
+      indicatorStyle: 'plain',
+      statusColor: DEFAULT_THEME.color.ok,
+      turnStartedAt: Date.now() - 2500
+    })
+
+    const ticker = findElementByTypeName(element, 'FaceTicker')
+
+    expect(ticker?.props.color).toBe(DEFAULT_THEME.color.ok)
+    expect(ticker?.props.busyTextColor).toBe(DEFAULT_THEME.color.error)
+    expect(ticker?.props.highlightColor).toBe(DEFAULT_THEME.color.accent)
+    expect(ticker?.props.softHighlightColor).toBe(DEFAULT_THEME.color.label)
+  })
+})
+
+
+describe('StatusRule live session count', () => {
+  it('hides the live session count from the status bar', () => {
     const openSwitcher = vi.fn()
 
     const element = StatusRule({
@@ -196,15 +328,16 @@ describe('StatusRule session count click target', () => {
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
       turnStartedAt: null,
-      usage: { total: 0 },
+      usage: ZERO,
       voiceLabel: ''
     })
 
+    const text = textContent(element)
     const clickableSessionCount = findClickableWithText(element, '1 session')
 
-    expect(clickableSessionCount).not.toBeNull()
-    clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
-    expect(openSwitcher).toHaveBeenCalledOnce()
+    expect(text).not.toContain('1 session')
+    expect(clickableSessionCount).toBeNull()
+    expect(openSwitcher).not.toHaveBeenCalled()
   })
 
   it('keeps status + model and drops the low-value tail on a narrow terminal', () => {
@@ -221,15 +354,7 @@ describe('StatusRule session count click target', () => {
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
       turnStartedAt: null,
-      usage: {
-        calls: 0,
-        context_max: 200_000,
-        context_percent: 25,
-        context_used: 50_000,
-        input: 0,
-        output: 0,
-        total: 50_000
-      },
+      usage: { ...ZERO, context_max: 200_000, context_percent: 25, context_used: 50_000, cost_usd: 0.5, total: 50_000 },
       voiceLabel: 'voice off'
     })
 
@@ -240,6 +365,48 @@ describe('StatusRule session count click target', () => {
     expect(rendered).toContain('opus 4.8')
     // … while the low-value tail (session count) is dropped, not truncated.
     expect(rendered).not.toContain('3 sessions')
+  })
+
+  it('filters status rule fields from config', () => {
+    const element = StatusRule({
+      bgCount: 2,
+      busy: false,
+      cols: 120,
+      cwdLabel: '~/repo',
+      fields: ['status', 'model', 'context', 'delegation', 'background', 'cwd'],
+      liveSessionCount: 3,
+      model: 'gpt-5.5',
+      sessionStartedAt: Date.now() - 60_000,
+      showCost: true,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: {
+        ...ZERO,
+        compressions: 2,
+        context_max: 20_000,
+        context_percent: 50,
+        context_used: 10_000,
+        cost_usd: 0.1234,
+        total: 12_000
+      },
+      voiceLabel: '◯ voice'
+    })
+
+    const text = textContent(element)
+
+    expect(text).toContain('ready')
+    expect(text).toContain('gpt 5.5')
+    expect(text).toContain('10k/20k')
+    expect(text).not.toContain('[█████░░░░░] 50%')
+    expect(text).not.toContain('50%')
+    expect(text).toContain('2 bg')
+    expect(text).toContain('~/repo')
+    expect(text).not.toContain('3 sessions')
+    expect(text).not.toContain('cmp 2')
+    expect(text).not.toContain('$0.1234')
+    expect(text).not.toContain('voice')
   })
 })
 

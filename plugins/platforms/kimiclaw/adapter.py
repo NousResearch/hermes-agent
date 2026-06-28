@@ -1476,7 +1476,7 @@ class KimiAdapter(BasePlatformAdapter):
             _raw_mode = "passthrough"
         self._output_mode: str = _raw_mode
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Open HTTP session, fetch bot identity, spawn channel loops.
 
         Returns ``True`` if at least one enabled channel is viable.

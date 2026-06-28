@@ -5163,6 +5163,30 @@ class PendingEnqueuedAtCleanupTests(unittest.IsolatedAsyncioTestCase):
             "connect should clear stale TTL state at session start"
         )
 
+    async def test_connect_accepts_is_reconnect_kwarg(self):
+        """connect() must honour the BasePlatformAdapter contract
+        (hermes-agent >= 0.17.0), which the gateway calls as
+        ``connect(is_reconnect=...)`` from the reconnect watcher. The kwarg
+        is keyword-only with a default, so the cold-boot call site is
+        unaffected; KimiClaw holds no durable server-side queue to preserve,
+        so it accepts and ignores the flag — mirroring the in-tree
+        yuanbao/weixin adapters. Pins the signature so a future edit can't
+        silently drop it: cold-boot tests call connect() with no args, so
+        only this test exercises the reconnect call site."""
+        adapter = KimiAdapter(_cfg())
+        from kimi_adapter import KimiAuthError
+        with patch.object(adapter, "_acquire_platform_lock", return_value=True), \
+             patch.object(adapter, "_rpc_unary", new=AsyncMock(side_effect=KimiAuthError("test"))), \
+             patch.object(adapter, "_cleanup_http", new=AsyncMock()), \
+             patch.object(adapter, "_release_platform_lock"):
+            # Behaviour is identical to cold boot (flag ignored): short-circuits
+            # False at GetMe. The point is that the keyword is accepted at the
+            # real call site without a TypeError.
+            result = await adapter.connect(is_reconnect=True)
+            self.assertFalse(result, "connect(is_reconnect=True) must be accepted")
+        if adapter._http_session is not None and not adapter._http_session.closed:
+            await adapter._http_session.close()
+
     async def test_handle_message_cleanup_runs_on_cancellation(self):
         """try/finally ensures the post-super cleanup runs on CancelledError,
         so a per-task cancellation outside of full adapter teardown doesn't

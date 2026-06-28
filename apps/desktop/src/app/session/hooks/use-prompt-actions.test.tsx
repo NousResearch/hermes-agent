@@ -53,6 +53,7 @@ function Harness({
   busyRef,
   onReady,
   onSeedState,
+  onUpdateSession,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -62,6 +63,7 @@ function Harness({
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
+  onUpdateSession?: (sessionId: string, state: Record<string, unknown>) => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
@@ -96,11 +98,12 @@ function Harness({
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
-    updateSessionState: (_sessionId, updater) => {
+    updateSessionState: (sessionId, updater) => {
       // Seed with interrupted:true so we can prove a fresh submit clears it.
       const next = updater(stateRef.current) as unknown as Record<string, unknown>
       stateRef.current = next as never
       onSeedState?.(next)
+      onUpdateSession?.(sessionId, next)
 
       return next as never
     }
@@ -969,6 +972,50 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+  })
+
+  it('re-seeds the optimistic user turn under the recovered runtime id (so the prompt is not orphaned)', async () => {
+    // The reply streams in tagged with the recovered runtime id, and the message
+    // stream keys strictly off that id — so the optimistic user message (first
+    // seeded under the stale id) must be migrated to recoveredId. Otherwise it
+    // stays stranded under the defunct session and disappears from the live
+    // transcript while only the assistant reply renders.
+    const updates: { messages: { id?: string; role?: string }[]; sessionId: string }[] = []
+    let submitAttempts = 0
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+        return {} as never
+      }
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateSession={(sessionId, state) =>
+          updates.push({ messages: (state.messages as { id?: string; role?: string }[]) ?? [], sessionId })
+        }
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('message after wake')).toBe(true)
+
+    // A session-state write keyed by the recovered id must carry the user turn.
+    const recoveredSeed = updates.find(
+      u => u.sessionId === RECOVERED_SESSION_ID && u.messages.some(m => m.role === 'user')
+    )
+    expect(recoveredSeed).toBeDefined()
   })
 
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {

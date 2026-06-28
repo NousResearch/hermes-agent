@@ -1830,6 +1830,47 @@ class TestReconnection:
 
         asyncio.run(_test())
 
+    def test_preflight_probe_skipped_for_initial_oauth_http_connect(self):
+        """OAuth HTTP servers must reach OAuth discovery before HTML preflight.
+
+        Some valid OAuth MCP endpoints return unauthenticated 302/HTML until
+        the OAuth auth provider performs protected-resource discovery. The
+        generic non-MCP HTML preflight must not reject those endpoints before
+        _run_http() has a chance to build the OAuth provider.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        target_server = None
+        probe = AsyncMock()
+
+        original_run_http = MCPServerTask._run_http
+
+        async def patched_run_http(self_srv, config):
+            if target_server is not self_srv:
+                return await original_run_http(self_srv, config)
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._ready.set()
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("oauth_http_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_http", patched_run_http), \
+                 patch.object(MCPServerTask, "_preflight_content_type", probe), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({
+                    "url": "https://example.com/mcp",
+                    "auth": "oauth",
+                })
+
+            assert probe.await_count == 0
+
+        asyncio.run(_test())
+
     def test_preflight_probe_skipped_when_already_ready(self):
         """The probe must NOT re-run on reconnect (_ready already set).
 

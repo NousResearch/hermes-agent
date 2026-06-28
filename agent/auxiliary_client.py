@@ -102,11 +102,29 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
+
+
+def _openai_http_client_kwargs(
+    base_url: Optional[str],
+    *,
+    async_mode: bool = False,
+) -> Dict[str, Any]:
+    """Inject keepalive httpx client with env-only proxy (not macOS system proxy)."""
+    client = build_keepalive_http_client(str(base_url or ""), async_mode=async_mode)
+    if client is None:
+        return {}
+    return {"http_client": client}
+
+
+def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
+    kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
+    return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 
 # ── Interrupt protection for atomic auxiliary tasks ──────────────────────
@@ -664,6 +682,28 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
         or fallback
     )
     return str(url or "").strip().rstrip("/")
+
+
+# Hostnames (lowercase, exact) that the auxiliary Anthropic path is allowed to
+# be pointed at via config.yaml model.base_url. Anything else falls back to the
+# Anthropic default — operators routing main-session traffic through a
+# non-Anthropic host (e.g. OpenRouter, OpenAI) with provider=anthropic in config
+# must NOT have that foreign host leak into the auxiliary client. See #52608.
+_ANTHROPIC_COMPATIBLE_HOSTS = frozenset({
+    "api.anthropic.com",
+})
+
+
+def _is_anthropic_compatible_host(url: str) -> bool:
+    """Return True if ``url``'s hostname is an Anthropic endpoint we trust for aux calls."""
+    if not url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").strip().lower().rstrip(".")
+        return host in _ANTHROPIC_COMPATIBLE_HOSTS
+    except Exception:
+        return False
 
 
 def _nous_min_key_ttl_seconds() -> int:
@@ -1592,7 +1632,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             _merged_aux = _apply_user_default_headers(extra.get("default_headers"))
             if _merged_aux:
                 extra["default_headers"] = _merged_aux
-            _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
+            _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
             _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
             return _client, model
 
@@ -1632,7 +1672,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         _merged_aux2 = _apply_user_default_headers(extra.get("default_headers"))
         if _merged_aux2:
             extra["default_headers"] = _merged_aux2
-        _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
+        _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
         _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
         return _client, model
 
@@ -1647,20 +1687,21 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
-        if not or_key:
-            _mark_provider_unhealthy("openrouter", ttl=60)
-            return None, None
-        base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
-        logger.debug("Auxiliary client: OpenRouter via pool")
-        return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+        if or_key:
+            base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+            logger.debug("Auxiliary client: OpenRouter via pool")
+            return _create_openai_client(api_key=or_key, base_url=base_url,
+                           default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+        # Pool exists but is exhausted (no usable runtime key) — fall through to
+        # the OPENROUTER_API_KEY env-var path rather than failing outright.
+        logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
-    return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
+    return _create_openai_client(api_key=or_key, base_url=OPENROUTER_BASE_URL,
                    default_headers=build_or_headers()), model or _OPENROUTER_MODEL
 
 
@@ -1753,7 +1794,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             return None, None
         base_url = str((nous or {}).get("inference_base_url") or _nous_base_url()).rstrip("/")
     return (
-        OpenAI(
+        _create_openai_client(
             api_key=api_key,
             base_url=base_url,
         ),
@@ -2030,7 +2071,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     if _custom_headers:
         _extra["default_headers"] = _custom_headers
     if custom_mode == "codex_responses":
-        real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
+        real_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
     if custom_mode == "anthropic_messages":
         # Third-party Anthropic-compatible gateway (MiniMax, Zhipu GLM,
@@ -2044,14 +2085,14 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
                 "Custom endpoint declares api_mode=anthropic_messages but the "
                 "anthropic SDK is not installed — falling back to OpenAI-wire."
             )
-            return OpenAI(api_key=custom_key, base_url=_clean_base, **_extra), model
+            return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
         return (
             AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
             model,
         )
     # URL-based anthropic detection for custom endpoints that didn't set
     # api_mode explicitly (e.g. kimi.com/coding reached via custom config).
-    _fallback_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
+    _fallback_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
     _fallback_client = _maybe_wrap_anthropic(
         _fallback_client, model, custom_key, custom_base, custom_mode,
     )
@@ -2080,7 +2121,7 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
         return None, None
     api_key, base_url = resolved
     logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
-    real_client = OpenAI(api_key=api_key, base_url=base_url)
+    real_client = _create_openai_client(api_key=api_key, base_url=base_url)
     return CodexAuxiliaryClient(real_client, model), model
 
 
@@ -2117,7 +2158,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
-    real_client = OpenAI(
+    real_client = _create_openai_client(
         api_key=codex_token,
         base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token),
@@ -2217,7 +2258,7 @@ def _try_azure_foundry(
     if _dq:
         extra["default_query"] = _dq
 
-    client = OpenAI(api_key=api_key, base_url=_clean_base, **extra)
+    client = _create_openai_client(api_key=api_key, base_url=_clean_base, **extra)
 
     if runtime_api_mode == "codex_responses":
         # GPT-5.x / o-series / codex models on Azure Foundry are
@@ -2256,9 +2297,16 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     if not token:
         return None, None
 
-    # Allow base URL override from config.yaml model.base_url, but only
-    # when the configured provider is anthropic — otherwise a non-Anthropic
-    # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
+    # Allow base URL override from config.yaml model.base_url, but only when:
+    #   1. the configured provider is anthropic (otherwise a non-Anthropic
+    #      base_url, e.g. Codex endpoint, would leak into Anthropic requests), AND
+    #   2. the override URL actually points at an Anthropic-compatible endpoint.
+    # Without gate (2), operators who route main-session traffic through a
+    # non-Anthropic provider that accepts Anthropic-format requests (e.g.
+    # OpenRouter at openrouter.ai/api/v1, with provider=anthropic in config.yaml)
+    # would have every auxiliary side-channel call (memory extractors,
+    # reflection, vision, title generation) 401 from the foreign host —
+    # see issue #52608.
     base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
     try:
         from hermes_cli.config import load_config
@@ -2268,7 +2316,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
             cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
             if cfg_provider == "anthropic":
                 cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-                if cfg_base_url:
+                if cfg_base_url and _is_anthropic_compatible_host(cfg_base_url):
                     base_url = cfg_base_url
     except Exception:
         pass
@@ -2752,6 +2800,25 @@ def _is_model_incompatible_error(exc: Exception) -> bool:
         "does not support this model",
         "unsupported model",
     ))
+
+
+def _is_invalid_aux_response_error(exc: Exception) -> bool:
+    """Detect provider responses that authenticated but cannot serve aux shape.
+
+    Some OpenAI-compatible routes return HTTP 200 with an empty/malformed
+    ChatCompletion instead of a normal provider error.  That is still a
+    provider/model capability failure for auxiliary tasks: downstream callers
+    need ``choices[0].message`` and should be able to continue through the
+    same fallback path as explicit model-incompatibility errors.
+    """
+    if not isinstance(exc, RuntimeError):
+        return False
+    msg = str(exc).lower()
+    return (
+        "auxiliary " in msg
+        and "llm returned invalid response" in msg
+        and "choices[0].message" in msg
+    )
 
 
 def _evict_cached_clients(provider: str) -> None:
@@ -3576,6 +3643,37 @@ def _resolve_auto(
     # config.yaml (auxiliary.<task>.provider) still win over this.
     main_provider = str(runtime_provider or _read_main_provider() or "")
     main_model = str(runtime_model or _read_main_model() or "")
+
+    # MoA virtual provider: the "model" is a preset name (e.g. "opus-gpt") and
+    # there is no real "moa" HTTP endpoint, so resolving an aux client against
+    # provider="moa"/model=<preset> sends the preset name as the model id and
+    # the provider 400s ("opus-gpt is not a valid model ID"). Auxiliary tasks
+    # (title generation, compression, vision, …) don't need the reference
+    # fan-out — they should run on the aggregator, which is the preset's acting
+    # model. Resolve the MoA preset to its aggregator slot and continue Step 1
+    # with that real provider+model. Mirrors the MoA context-length resolution.
+    if main_provider == "moa":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import resolve_moa_preset
+
+            _preset = resolve_moa_preset(load_config().get("moa") or {}, main_model)
+            _agg = _preset.get("aggregator") or {}
+            _agg_provider = str(_agg.get("provider") or "").strip()
+            _agg_model = str(_agg.get("model") or "").strip()
+            if _agg_provider and _agg_model and _agg_provider.lower() != "moa":
+                main_provider = _agg_provider
+                main_model = _agg_model
+                # The MoA virtual runtime carries a non-HTTP base_url
+                # ("moa://local") and a placeholder api_key; they belong to the
+                # facade, not the aggregator's real provider. Drop them so the
+                # aggregator resolves through its own provider credentials.
+                runtime_base_url = ""
+                runtime_api_key = ""
+                runtime_api_mode = ""
+        except Exception:
+            logger.debug("MoA aux resolution to aggregator failed", exc_info=True)
+
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
@@ -3722,6 +3820,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
+    async_kwargs = {
+        **_openai_http_client_kwargs(sync_base_url, async_mode=True),
+        **async_kwargs,
+    }
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -3932,7 +4034,7 @@ def resolve_provider_client(
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
             final_model = _normalize_resolved_model(model, provider)
-            raw_client = OpenAI(
+            raw_client = _create_openai_client(
                 api_key=codex_token,
                 base_url=_CODEX_AUX_BASE_URL,
                 default_headers=_codex_cloudflare_headers(codex_token),
@@ -4013,7 +4115,7 @@ def resolve_provider_client(
             _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
-            client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
+            client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
@@ -4117,7 +4219,7 @@ def resolve_provider_client(
                         _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
-                        client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
+                        client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
@@ -4126,7 +4228,7 @@ def resolve_provider_client(
                     if async_mode:
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
                     return sync_anthropic, final_model
-                client = OpenAI(api_key=custom_key, base_url=_clean_base2, **_extra2)
+                client = _create_openai_client(api_key=custom_key, base_url=_clean_base2, **_extra2)
                 # codex_responses or inherited auto-detect (via _wrap_if_needed).
                 # _wrap_if_needed reads the closed-over `api_mode` (the task-level
                 # override). Named-provider entry api_mode=codex_responses also
@@ -4268,7 +4370,7 @@ def resolve_provider_client(
         _merged_main = _apply_user_default_headers(headers)
         if _merged_main:
             headers = _merged_main
-        client = OpenAI(api_key=api_key, base_url=base_url,
+        client = _create_openai_client(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 
         # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
@@ -4804,7 +4906,7 @@ def _refresh_nous_auxiliary_client(
         return None, model
 
     fresh_key, fresh_base_url = runtime
-    sync_client = OpenAI(api_key=fresh_key, base_url=fresh_base_url)
+    sync_client = _create_openai_client(api_key=fresh_key, base_url=fresh_base_url)
     final_model = model
 
     current_loop = None
@@ -5445,6 +5547,9 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
         if not choices or not hasattr(choices[0], "message"):
             raise AttributeError("missing choices[0].message")
     except (AttributeError, TypeError, IndexError) as exc:
+        recovered = _recover_aux_response_message(response)
+        if recovered is not None:
+            return recovered
         response_type = type(response).__name__
         response_preview = str(response)[:120]
         raise RuntimeError(
@@ -5454,6 +5559,64 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
             f"adapter or custom endpoint compatibility."
         ) from exc
     return response
+
+
+def _recover_aux_response_message(response: Any) -> Optional[Any]:
+    """Synthesize chat-completions shape from Responses-style text fields.
+
+    Auxiliary callers consume ``choices[0].message``.  Some compatible
+    endpoints return text outside ``choices`` (for example ``output_text`` or
+    ``output`` items).  Preserve that response before declaring it malformed.
+    """
+    text = _extract_aux_response_text(response)
+    if not text:
+        return None
+
+    choice = SimpleNamespace(
+        message=SimpleNamespace(content=text),
+        finish_reason=getattr(response, "finish_reason", None) or "stop",
+    )
+    try:
+        response.choices = [choice]
+        return response
+    except Exception:
+        return SimpleNamespace(
+            id=getattr(response, "id", ""),
+            model=getattr(response, "model", ""),
+            object=getattr(response, "object", "chat.completion"),
+            choices=[choice],
+            usage=getattr(response, "usage", None),
+        )
+
+
+def _extract_aux_response_text(response: Any) -> str:
+    output_text = _obj_get(response, "output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    output = _obj_get(response, "output")
+    if not isinstance(output, list):
+        return ""
+
+    parts: List[str] = []
+    for item in output:
+        item_type = _obj_get(item, "type")
+        if item_type and item_type != "message":
+            continue
+        for part in (_obj_get(item, "content") or []):
+            part_type = _obj_get(part, "type")
+            if part_type in {"output_text", "text", None}:
+                text = _obj_get(part, "text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+    return "\n".join(parts).strip()
+
+
+def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
+    value = getattr(obj, key, default)
+    if value is default and isinstance(obj, dict):
+        value = obj.get(key, default)
+    return value
 
 
 def call_llm(
@@ -5853,11 +6016,21 @@ def call_llm(
         # When the provider returns a 429 rate-limit (not billing), fall
         # back to an alternative provider instead of exhausting retries
         # against the same rate-limited endpoint.
+        #
+        # ── Auth error fallback (#21165) ─────────────────────────────
+        # When the resolved provider returns 401 and neither the Nous
+        # refresh path nor explicit provider credential refresh applies,
+        # fall back to an alternative provider instead of dropping the
+        # auxiliary task on the floor (silent compression failure /
+        # message loss). Auth is NOT a capacity error: it only bypasses
+        # the explicit-provider gate when the user is in auto mode.
         should_fallback = (
-            _is_payment_error(first_err)
+            _is_auth_error(first_err)
+            or _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_invalid_aux_response_error(first_err)
         )
         # Respect explicit provider choice for transient errors (auth, request
         # validation, etc.) but allow fallback when the provider clearly cannot
@@ -5880,9 +6053,12 @@ def call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_invalid_aux_response_error(first_err)
         )
         if should_fallback and (is_auto or is_capacity_error):
-            if _is_payment_error(first_err):
+            if _is_auth_error(first_err):
+                reason = "auth error"
+            elif _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
                 # "auto"; the client's base_url tells us which backend got the
@@ -5895,6 +6071,8 @@ def call_llm(
                 reason = "rate limit"
             elif _is_model_incompatible_error(first_err):
                 reason = "model incompatible with route"
+            elif _is_invalid_aux_response_error(first_err):
+                reason = "invalid provider response"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -6329,11 +6507,17 @@ async def async_call_llm(
                         raise
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
+        # Auth error fallback (#21165): a 401 that survived the refresh path
+        # falls back in auto mode just like the sync call_llm() path. Auth is
+        # NOT a capacity error, so on an explicit provider it still respects
+        # the user's choice (handled by the is_auto/is_capacity_error gate).
         should_fallback = (
-            _is_payment_error(first_err)
+            _is_auth_error(first_err)
+            or _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_invalid_aux_response_error(first_err)
         )
         # Capacity errors (payment/quota/connection/rate-limit) bypass the
         # explicit-provider gate — the provider cannot serve the request
@@ -6348,9 +6532,12 @@ async def async_call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_invalid_aux_response_error(first_err)
         )
         if should_fallback and (is_auto or is_capacity_error):
-            if _is_payment_error(first_err):
+            if _is_auth_error(first_err):
+                reason = "auth error"
+            elif _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(
                     _recoverable_pool_provider(resolved_provider, client) or resolved_provider
@@ -6359,6 +6546,8 @@ async def async_call_llm(
                 reason = "rate limit"
             elif _is_model_incompatible_error(first_err):
                 reason = "model incompatible with route"
+            elif _is_invalid_aux_response_error(first_err):
+                reason = "invalid provider response"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

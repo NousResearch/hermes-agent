@@ -1,5 +1,6 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -56,6 +57,61 @@ def test_agent_disabled_toolsets_with_explicit_platform_config():
     assert "memory" not in enabled
     assert "web" in enabled
     assert "terminal" in enabled
+
+
+def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
+    """#38798: an explicit platform config whose toolset names are all invalid
+    (e.g. 'hermes' instead of 'hermes-cli') must warn at resolve time so an
+    already-corrupted config is caught at runtime, not just during migration."""
+    import hermes_cli.tools_config as _tc
+    # The runtime warning fires once per platform per process; clear the guard
+    # so this test is deterministic regardless of prior resolutions.
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+    config = {"platform_toolsets": {"cli": ["hermes"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("#38798" in m and "hermes" in m for m in warnings), warnings
+
+
+def test_invalid_platform_toolsets_runtime_warning_fires_once(caplog):
+    """The runtime warning is deduped per platform — a persistently-corrupt
+    config must not spam an identical warning on every tool resolution."""
+    import hermes_cli.tools_config as _tc
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+    config = {"platform_toolsets": {"cli": ["hermes"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+        _get_platform_tools(config, "cli")
+        _get_platform_tools(config, "cli")
+
+    hits = [r for r in caplog.records if "#38798" in r.getMessage()]
+    assert len(hits) == 1, f"expected exactly one warning, got {len(hits)}"
+
+
+def test_valid_platform_toolsets_no_runtime_warning(caplog):
+    """A correctly-configured platform must not emit the #38798 warning."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
+def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
+    """When at least one configured toolset is valid, tools still resolve, so
+    the runtime zero-tools warning must not fire (the migration-time check still
+    flags the individual bad name)."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "bogus"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
 def test_agent_disabled_toolsets_empty_list_is_noop():
@@ -1540,5 +1596,83 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'vision' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
+
+
+def test_vision_picker_writes_provider_and_model(tmp_path, monkeypatch):
+    """Picking a provider+model persists auxiliary.vision.{provider,model}.
+
+    Vision must not force OpenRouter — it offers the same any-provider surface
+    as ``hermes model`` and writes the selection to the auxiliary config keys
+    the resolver reads.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+    from hermes_cli.config import load_config
+
+    fake_providers = [
+        {"slug": "anthropic", "name": "Anthropic", "total_models": 2,
+         "models": ["claude-sonnet-4.6", "claude-opus-4.6"]},
+        {"slug": "openai", "name": "OpenAI", "total_models": 1,
+         "models": ["gpt-5.4"]},
+    ]
+    # Top-level choice 1 (pick provider+model) → provider idx 0 (anthropic)
+    # → model idx 1 (claude-opus-4.6).
+    seq = iter([1, 0, 1])
+    with patch("hermes_cli.model_switch.list_authenticated_providers",
+               return_value=fake_providers), \
+         patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
+         patch.object(tc, "_toolset_has_keys", return_value=False):
+        tc._configure_vision_backend()
+
+    v = load_config().get("auxiliary", {}).get("vision", {})
+    assert v.get("provider") == "anthropic"
+    assert v.get("model") == "claude-opus-4.6"
+    # Provider selection must not leave a stale custom endpoint.
+    assert not v.get("base_url")
+
+
+def test_vision_picker_auto_clears_override(tmp_path, monkeypatch):
+    """Choosing Auto clears any pinned provider/model so resolution auto-detects."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg.setdefault("auxiliary", {})["vision"] = {
+        "provider": "openrouter", "model": "google/gemini-2.5-flash"}
+    save_config(cfg)
+
+    seq = iter([0])  # Auto
+    with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
+         patch.object(tc, "_toolset_has_keys", return_value=False):
+        tc._configure_vision_backend()
+
+    v = load_config().get("auxiliary", {}).get("vision", {})
+    # Cleared back to the "auto" sentinel (DEFAULT_CONFIG default) — no pinned
+    # real provider/model survive.
+    assert v.get("provider") in (None, "", "auto")
+    assert not v.get("model")
+
+
+def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
+    """Custom endpoint writes base_url+model to config and the key to env."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+    from hermes_cli.config import load_config
+
+    seq = iter([2])  # Custom OpenAI-compatible endpoint
+    prompts = iter(["https://my.endpoint/v1", "sk-secret", "my-vision-model"])
+    with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
+         patch.object(tc, "_prompt", side_effect=lambda *a, **k: next(prompts)), \
+         patch.object(tc, "save_env_value") as save_env, \
+         patch.object(tc, "_toolset_has_keys", return_value=False):
+        tc._configure_vision_backend()
+
+    v = load_config().get("auxiliary", {}).get("vision", {})
+    assert v.get("base_url") == "https://my.endpoint/v1"
+    assert v.get("model") == "my-vision-model"
+    # provider pinned to "custom" so the resolver routes through base_url.
+    assert v.get("provider") == "custom"
+    save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
 
 

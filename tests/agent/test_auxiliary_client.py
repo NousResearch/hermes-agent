@@ -27,6 +27,9 @@ from agent.auxiliary_client import (
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
+    _try_openrouter,
+    _OPENROUTER_MODEL,
+    OPENROUTER_BASE_URL,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
@@ -918,6 +921,35 @@ class TestExplicitProviderRouting:
             "OPENROUTER_API_KEY not set" in record.message
             for record in caplog.records
         )
+
+    def test_try_openrouter_pool_exhausted_falls_back_to_env(self, monkeypatch):
+        """Pool present but exhausted → fall through to OPENROUTER_API_KEY env var."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env-fallback")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock(name="openrouter_client")
+            mock_openai.return_value = mock_client
+
+            client, model = _try_openrouter()
+
+        assert client is mock_client
+        assert model == _OPENROUTER_MODEL
+        mock_openai.assert_called_once()
+        assert mock_openai.call_args.kwargs["api_key"] == "sk-or-env-fallback"
+        assert mock_openai.call_args.kwargs["base_url"] == OPENROUTER_BASE_URL
+
+    def test_try_openrouter_pool_exhausted_no_env_marks_unhealthy(self, monkeypatch):
+        """Pool exhausted AND no env var → final failure marks provider unhealthy."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
+             patch("agent.auxiliary_client._mark_provider_unhealthy") as mock_mark, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _try_openrouter()
+
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+        mock_mark.assert_called_once_with("openrouter", ttl=60)
 
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
@@ -1842,6 +1874,62 @@ class TestCallLlmPaymentFallback:
         # Fallback client should have been used
         assert fallback_client.chat.completions.create.called
 
+    def test_401_auth_error_triggers_fallback_in_auto_mode(self, monkeypatch):
+        """401 auth errors should trigger fallback in auto mode (#21165).
+
+        When refresh is unavailable/fails and the user is on the auto chain,
+        a 401 must fall back instead of silently dropping the aux task
+        (which caused compression message loss).
+        """
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.base_url = "https://api.minimax.chat/v1"
+        primary_client.chat.completions.create.side_effect = _AuxAuth401("expired key")
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = _DummyResponse("fallback auth response")
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "minimax/minimax-m2.7")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "minimax/minimax-m2.7", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(fallback_client, "fallback-model", "openrouter")) as mock_fb:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "fallback auth response"
+        assert fallback_client.chat.completions.create.called
+        # Labelled as an auth error, not mis-tagged as a connection error.
+        assert mock_fb.call_args.kwargs.get("reason") == "auth error"
+
+    def test_401_auth_error_no_fallback_with_explicit_provider(self, monkeypatch):
+        """401 on an explicitly-configured provider must NOT silently switch.
+
+        Auth is not a capacity error: the explicit-provider gate means a 401
+        respects the user's choice and raises instead of falling back. This
+        guards the deliberate design at the should_fallback/is_capacity gate.
+        """
+        primary_client = MagicMock()
+        primary_client.base_url = "https://api.minimax.chat/v1"
+        primary_client.chat.completions.create.side_effect = _AuxAuth401("expired key")
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "minimax/minimax-m2.7")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("minimax", "minimax/minimax-m2.7", None, None, None)), \
+             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False), \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_fb:
+            with pytest.raises(_AuxAuth401):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+        mock_fb.assert_not_called()
+
 
 class TestAuxiliaryFallbackLayering:
     """Explicit-provider users get layered fallback: configured_chain → main agent → warn."""
@@ -1850,6 +1938,120 @@ class TestAuxiliaryFallbackLayering:
         exc = Exception("Payment Required: insufficient credits")
         exc.status_code = 402
         return exc
+
+    def test_empty_choices_with_output_text_is_recovered_before_fallback(self, monkeypatch):
+        """Responses-style output_text should be used before provider fallback."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[],
+            output_text="recovered title",
+            model="minimaxai/minimax-m3",
+        )
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "minimaxai/minimax-m3")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("nvidia", "minimaxai/minimax-m3", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "recovered title"
+        mock_chain.assert_not_called()
+
+    def test_empty_choices_with_output_items_is_recovered_before_fallback(self, monkeypatch):
+        """Responses-style output message items should be normalized for aux callers."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[],
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[
+                        SimpleNamespace(type="output_text", text="part one"),
+                        {"type": "text", "text": "part two"},
+                    ],
+                )
+            ],
+            model="minimaxai/minimax-m3",
+        )
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "minimaxai/minimax-m3")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("nvidia", "minimaxai/minimax-m3", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "part one\npart two"
+        mock_chain.assert_not_called()
+
+    def test_invalid_empty_choices_response_triggers_fallback(self, monkeypatch):
+        """HTTP-200 malformed chat completions should not abort aux fallback."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.return_value = MagicMock(choices=[])
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from fallback chain"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "minimaxai/minimax-m3")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("nvidia", "minimaxai/minimax-m3", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "gpt-5.4-mini", "fallback_chain[0](openai-codex)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "from fallback chain"
+        mock_chain.assert_called_once_with(
+            "title_generation",
+            "nvidia",
+            reason="invalid provider response",
+        )
+        mock_main.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_invalid_empty_choices_response_triggers_fallback(self, monkeypatch):
+        """Async aux calls use the same malformed-response fallback path."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(return_value=MagicMock(choices=[]))
+
+        fallback_client = MagicMock()
+        async_fallback_client = MagicMock()
+        async_fallback_client.chat.completions.create = AsyncMock(return_value=MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from async fallback"))
+        ]))
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "minimaxai/minimax-m3")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("nvidia", "minimaxai/minimax-m3", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "gpt-5.4-mini", "fallback_chain[0](openai-codex)")) as mock_chain, \
+             patch("agent.auxiliary_client._to_async_client",
+                   return_value=(async_fallback_client, "gpt-5.4-mini")):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "from async fallback"
+        mock_chain.assert_called_once_with(
+            "compression",
+            "nvidia",
+            reason="invalid provider response",
+        )
 
     def test_auto_provider_uses_task_then_main_chain_before_builtin_chain(self, monkeypatch):
         """Auto aux call failures try per-task then top-level fallback before built-ins."""

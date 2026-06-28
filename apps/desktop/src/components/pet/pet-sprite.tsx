@@ -9,6 +9,7 @@ const DEFAULT_LOOP_MS = 1100
 // Mirrors agent.pet.constants.DEFAULT_SCALE — fallback only; the gateway sends
 // the configured scale.
 const DEFAULT_SCALE = 0.33
+
 // Mirrors agent.pet.constants.CODEX_STATE_ROWS (Petdex current taxonomy).
 const DEFAULT_STATE_ROWS = [
   'idle',
@@ -117,7 +118,9 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
       return
     }
 
-    const ctx = canvas.getContext('2d')
+    // willReadFrequently: the pop-out overlay samples this canvas's alpha under
+    // the cursor (per-pixel click-through), so opt into the CPU-readback path.
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
 
     if (!ctx) {
       return
@@ -141,10 +144,12 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     const rowIndexForState = (s: PetState): number => {
       for (const key of STATE_ALIASES[s] ?? [s]) {
         const idx = rows.indexOf(key)
+
         if (idx >= 0) {
           return idx
         }
       }
+
       return 0
     }
 
@@ -164,10 +169,12 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     const resolveRow = (rowName: string): { row: number; count: number } => {
       const row = rows.indexOf(rowName)
       const state = ROW_TO_STATE[rowName]
+
       const count = Math.max(
         1,
         framesByRow?.[rowName] ?? framesByState?.[rowName] ?? (state ? framesByState?.[state] : 0) ?? frames
       )
+
       return { row: row >= 0 ? row : rowIndexForState(state ?? 'idle'), count }
     }
 

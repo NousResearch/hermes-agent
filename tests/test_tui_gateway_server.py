@@ -703,6 +703,19 @@ def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
     assert server._load_enabled_toolsets() == ["plugin_demo"]
 
 
+def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
+    # Focus-mode coding posture returns before the config fallback, but it's
+    # still a GUI-only resolver — `project` must come along so the desktop keeps
+    # the project tools while sitting in a repo.
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
+
+    assert server._load_enabled_toolsets() == ["coding", "figma", "project"]
+
+
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
     monkeypatch.setitem(
@@ -722,10 +735,10 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    # Sorted: ["kanban", "memory"]. `kanban` is auto-recovered by
-    # _get_platform_tools because it's a non-configurable platform toolset
-    # whose tools live in hermes-cli's universe (see toolsets.py).
-    assert server._load_enabled_toolsets() == ["kanban", "memory"]
+    # Sorted: ["kanban", "memory", "project"]. `kanban` is auto-recovered by
+    # _get_platform_tools (a non-configurable platform toolset in hermes-cli's
+    # universe); `project` is GUI-only, folded in by _load_enabled_toolsets.
+    assert server._load_enabled_toolsets() == ["kanban", "memory", "project"]
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -746,7 +759,7 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    assert server._load_enabled_toolsets() == ["kanban", "memory"]
+    assert server._load_enabled_toolsets() == ["kanban", "memory", "project"]
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
@@ -942,6 +955,14 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     monkeypatch.setattr(
         server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
     )
+    # This resume takes the deferred (non-eager) path, which fires a 50ms
+    # background Timer (`_schedule_agent_build`) that later calls whatever
+    # `server._make_agent` is patched in AT THAT MOMENT. Left un-stubbed, that
+    # timer outlives this test and lands in the *next* test's `_make_agent`
+    # mock, racily corrupting its captured state (the `assert 'tip' ==
+    # 'cont_tip'` flake in test_session_resume_follows_compression_tip). Neuter
+    # the pre-warm here — this test only asserts the returned display history.
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
 
     resp = server.handle_request(
         {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
@@ -969,10 +990,16 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     base = int(time.time()) - 10_000
     db.create_session("parent_root", source="tui")
-    db.append_message("parent_root", role="user", content="pre-compression turn")
+    db.append_message(
+        "parent_root", role="user", content="pre-compression turn",
+        timestamp=base + 10,
+    )
     db.end_session("parent_root", "compression")
     db.create_session("cont_tip", source="tui", parent_session_id="parent_root")
-    db.append_message("cont_tip", role="assistant", content="post-compression reply")
+    db.append_message(
+        "cont_tip", role="assistant", content="post-compression reply",
+        timestamp=base + 110,
+    )
     conn = db._conn
     assert conn is not None
     conn.execute(
@@ -985,7 +1012,10 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     captured = {}
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
-        captured["agent_session_id"] = session_id
+        # Record only the FIRST (synchronous, eager) build. A stray background
+        # build leaked from an earlier test's deferred resume could otherwise
+        # overwrite this with its own session_id and corrupt the assertion.
+        captured.setdefault("agent_session_id", session_id)
         return types.SimpleNamespace(model="test", provider="test")
 
     monkeypatch.setattr(server, "_get_db", lambda: db)
@@ -1172,7 +1202,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     captured = {}
 
     class ProfileDB:
-        def update_session_cwd(self, session_id, cwd):
+        def update_session_cwd(self, session_id, cwd, git_branch=None, git_repo_root=None):
             captured["profile_update"] = (session_id, cwd)
 
         def close(self):
@@ -2009,7 +2039,7 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -2028,7 +2058,7 @@ def test_ensure_session_db_row_persists_session_source(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -2049,7 +2079,7 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -2076,7 +2106,7 @@ def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append(
                 {"key": key, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -2108,7 +2138,7 @@ def test_ensure_session_db_row_no_override_uses_global(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append({"model": model, "model_config": model_config})
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -3651,11 +3681,11 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
             "Model: anthropic/claude-sonnet-4.6\nProvider: anthropic"
         )
         assert agent._cached_system_prompt == db.system_prompt
-        assert session["history"][-1]["role"] == "system"
+        assert session["history"][-1]["role"] == "user"
         assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
         assert db.messages[-1] == {
             "session_id": "session-key",
-            "role": "system",
+            "role": "user",
             "content": session["history"][-1]["content"],
         }
         # ...and the shared process env was NOT touched.
@@ -4888,6 +4918,140 @@ def test_interrupt_clears_multiple_own_pending():
             server._answers.pop(key, None)
 
 
+def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
+    """_run_prompt_submit must expose the actual turn thread to session.interrupt.
+
+    prompt.submit's outer wrapper only waits for agent initialization, then
+    _run_prompt_submit starts the real conversation thread. If the session keeps
+    the wrapper thread handle, stop/esc sees a dead thread and never calls
+    agent.interrupt() on the live turn.
+    """
+    calls = {"interrupted": False, "started": False}
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+
+        def start(self):
+            calls["started"] = True
+
+        def is_alive(self):
+            return True
+
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupted", True),
+        run_conversation=lambda *args, **kwargs: {},
+    )
+    session = _session(agent=agent, running=True)
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+        server._run_prompt_submit("1", "sid", session, "hello")
+
+        assert session.get("_run_thread") is not None
+        resp = server.handle_request(
+            {"id": "2", "method": "session.interrupt", "params": {"session_id": "sid"}}
+        )
+
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert calls["interrupted"] is True
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_interrupt_drops_queued_prompt_for_session():
+    """Explicit stop cancels a queued next turn instead of auto-draining it."""
+    calls = {"interrupted": False}
+
+    class _LiveThread:
+        def is_alive(self):
+            return True
+
+    session = _session(
+        agent=types.SimpleNamespace(
+            interrupt=lambda: calls.__setitem__("interrupted", True)
+        ),
+        running=True,
+        queued_prompt={"text": "next prompt", "transport": None},
+        _run_thread=_LiveThread(),
+    )
+    server._sessions["sid"] = session
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.interrupt", "params": {"session_id": "sid"}}
+        )
+
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert calls["interrupted"] is True
+        assert session.get("queued_prompt") is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
+    """Stop during lazy agent startup must not start the turn after init finishes."""
+    threads = []
+    calls = {"run_prompt": 0}
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            threads.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    session = _session()
+    session["agent"] = None
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda *args, **kwargs: calls.__setitem__(
+                "run_prompt", calls["run_prompt"] + 1
+            ),
+        )
+
+        submit = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            }
+        )
+        assert submit.get("result"), f"got error: {submit.get('error')}"
+        assert session["running"] is True
+        assert len(threads) == 1
+
+        stop = server.handle_request(
+            {"id": "2", "method": "session.interrupt", "params": {"session_id": "sid"}}
+        )
+        assert stop.get("result"), f"got error: {stop.get('error')}"
+
+        threads[0].target()
+
+        assert calls["run_prompt"] == 0
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_clear_pending_without_sid_clears_all():
     """_clear_pending(None) is the shutdown path — must still release
     every pending prompt regardless of owning session."""
@@ -6087,7 +6251,7 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     """Drops `tool` rows like session.list does, returns the first hit."""
 
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200):
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
             return [
                 {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
                 {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
@@ -6106,7 +6270,7 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
 
 def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200):
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
             return [{"id": "tool-1", "source": "tool", "started_at": 1}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -6124,7 +6288,7 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     'no answer' (Copilot review on #17130)."""
 
     class _BrokenDB:
-        def list_sessions_rich(self, *, source=None, limit=200):
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
             raise RuntimeError("db locked")
 
     monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
@@ -8160,3 +8324,143 @@ def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
     assert saved["model"]["provider"] == "anthropic"
     # Stale custom base_url must be cleared (null coalesces to absent on read).
     assert not saved["model"].get("base_url"), saved["model"].get("base_url")
+
+
+# ---------------------------------------------------------------------------
+# _resolve_runtime_with_fallback — init-time provider fallback
+# ---------------------------------------------------------------------------
+
+class TestResolveRuntimeWithFallback:
+    """Tests for _resolve_runtime_with_fallback(): init-time provider
+    fallback when the primary provider raises AuthError."""
+
+    def test_primary_success_returns_runtime(self, monkeypatch):
+        """When primary resolve succeeds, return its result directly."""
+        expected = {"provider": "openai", "api_key": "tok"}
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kw: expected,
+        )
+        result = server._resolve_runtime_with_fallback({"requested": "openai"})
+        assert result == expected
+
+    def test_auth_error_tries_fallback_chain(self, monkeypatch):
+        """On AuthError from primary, walk fallback_providers chain."""
+        from hermes_cli.auth import AuthError
+
+        fallback_runtime = {"provider": "deepseek", "api_key": "fb-tok"}
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            return fallback_runtime
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
+        )
+        result = server._resolve_runtime_with_fallback(
+            {"requested": "openai-codex"},
+        )
+        assert result == fallback_runtime
+
+    def test_auth_error_all_fallbacks_fail_raises(self, monkeypatch):
+        """When all fallbacks also fail, re-raise the original AuthError."""
+        from hermes_cli.auth import AuthError
+
+        def fake_resolve(**kwargs):
+            raise AuthError("No credentials for " + str(kwargs.get("requested")))
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
+        )
+        import pytest
+
+        with pytest.raises(AuthError, match="No credentials for openai-codex"):
+            server._resolve_runtime_with_fallback(
+                {"requested": "openai-codex"},
+            )
+
+    def test_auth_error_skips_non_dict_entries(self, monkeypatch):
+        """Fallback chain entries that are not dicts are skipped."""
+        from hermes_cli.auth import AuthError
+
+        fallback_runtime = {"provider": "anthropic", "api_key": "ant-tok"}
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            return fallback_runtime
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [
+                "invalid-string-entry",
+                {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+            ],
+        )
+        result = server._resolve_runtime_with_fallback(
+            {"requested": "openai-codex"},
+        )
+        assert result == fallback_runtime
+
+    def test_make_agent_uses_fallback_on_auth_error(self, monkeypatch):
+        """Integration: _make_agent falls back to configured fallback
+        provider when the primary provider raises AuthError."""
+        import types
+
+        from hermes_cli.auth import AuthError
+
+        captured = {}
+        fallback_runtime = {"provider": "deepseek", "api_key": "fb-tok"}
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            return fallback_runtime
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(model=kwargs.get("model"))
+
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+        monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+        monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+        monkeypatch.setattr(
+            server,
+            "_load_cfg",
+            lambda: {
+                "model": {"default": "gpt-5.5", "provider": "openai-codex"},
+                "fallback_providers": [
+                    {"provider": "deepseek", "model": "deepseek-v4-pro"},
+                ],
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+        monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+
+        agent = server._make_agent("sid", "session-key")
+
+        assert agent.model == "gpt-5.5"
+        assert captured["provider"] == "deepseek"

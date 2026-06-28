@@ -66,7 +66,14 @@ export function PetGenerateOverlay() {
   const working = status === 'generating' || status === 'hatching'
   const errored = status === 'error' && drafts.length === 0
   const stepOne = status === 'idle' || status === 'ready'
-  const banner = errored ? error || copy.genericError : working ? copy.backgroundHint : stepOne ? copy.slowProviderHint : undefined
+
+  const banner = errored
+    ? error || copy.genericError
+    : working
+      ? copy.backgroundHint
+      : stepOne
+        ? copy.slowProviderHint
+        : undefined
 
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>

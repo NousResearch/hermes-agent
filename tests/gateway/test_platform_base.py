@@ -1174,6 +1174,69 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(env_file)) is None
 
+    def test_profile_scoped_cache_delivers_under_symlinked_root(self, tmp_path, monkeypatch):
+        """Reopened #31733: a profile gateway whose HERMES_HOME is symlinked
+        under a denied prefix (e.g. /opt/data -> /root/.hermes) emits
+        profile-scoped paths (``<root>/profiles/<name>/cache/images/x.png``)
+        that resolve under ``/root``. ``$HOME`` is NOT that prefix, so the
+        root-home exception doesn't fire, and the top-level cache allowlist
+        doesn't cover the profile subdir — the file was silently dropped.
+        Per-profile cache roots must be allowlisted so it delivers.
+        """
+        self._patch_roots(monkeypatch)  # strict on, zero top-level cache roots
+
+        # Stand-in for the literal /root deny prefix in the deployment.
+        denied_root = tmp_path / "root"
+        hermes_root = denied_root / ".hermes"
+        prof_cache = hermes_root / "profiles" / "myprof" / "cache" / "images"
+        prof_cache.mkdir(parents=True)
+        image = prof_cache / "gen.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        # $HOME is NOT the denied prefix (mirrors HOME=/opt/data/home).
+        fake_home = tmp_path / "opt" / "data" / "home"
+        fake_home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(denied_root),),
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_ROOT", hermes_root
+        )
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(str(image))
+            == str(image.resolve())
+        )
+
+    def test_profile_scoped_credential_still_blocked_under_root(self, tmp_path, monkeypatch):
+        """The profile-cache allowlist must not un-block a credential sitting
+        directly in the profile dir (``profiles/<name>/auth.json``): it's not
+        under a cache subdir, so the credential denylist still rejects it.
+        """
+        self._patch_roots(monkeypatch)
+
+        denied_root = tmp_path / "root"
+        hermes_root = denied_root / ".hermes"
+        prof_dir = hermes_root / "profiles" / "myprof"
+        prof_dir.mkdir(parents=True)
+        cred = prof_dir / "auth.json"
+        cred.write_text("{}")
+
+        fake_home = tmp_path / "opt" / "data" / "home"
+        fake_home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(denied_root),),
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_ROOT", hermes_root
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(cred)) is None
+
     def test_other_users_home_still_blocked_for_nonroot(self, tmp_path, monkeypatch):
         """The exception only un-blocks the *running user's own* home. A
         non-root gateway ($HOME=/home/me) must not deliver another user's home
@@ -1276,7 +1339,7 @@ class TestTruncateMessage:
         """Create a minimal adapter instance for testing static/instance methods."""
 
         class StubAdapter(BasePlatformAdapter):
-            async def connect(self):
+            async def connect(self, *, is_reconnect: bool = False):
                 return True
 
             async def disconnect(self):

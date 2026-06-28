@@ -285,7 +285,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // it, queue a scroll, then clear the one-shot focus so re-opening cron
   // normally doesn't re-trigger it.
   useEffect(() => {
-    if (!focusJobId) {return}
+    if (!focusJobId) {
+      return
+    }
 
     const match = jobs.find(job => job.id === focusJobId || jobName(job) === focusJobId)
 
@@ -313,7 +315,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   useEffect(() => {
     const target = pendingScrollRef.current
 
-    if (!target || selectedJob?.id !== target) {return}
+    if (!target || selectedJob?.id !== target) {
+      return
+    }
 
     pendingScrollRef.current = null
     requestAnimationFrame(() => {
@@ -460,30 +464,30 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
       <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
 
-        <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>{c.deleteTitle}</DialogTitle>
-              <DialogDescription>
-                {pendingDelete ? (
-                  <>
-                    {c.deleteDescPrefix}
-                    <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>
-                    {c.deleteDescSuffix}
-                  </>
-                ) : null}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-                {t.common.cancel}
-              </Button>
-              <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-                {deleting ? c.deleting : t.common.delete}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{c.deleteTitle}</DialogTitle>
+            <DialogDescription>
+              {pendingDelete ? (
+                <>
+                  {c.deleteDescPrefix}
+                  <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>
+                  {c.deleteDescSuffix}
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
+              {t.common.cancel}
+            </Button>
+            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
+              {deleting ? c.deleting : t.common.delete}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </OverlayView>
   )
 }
@@ -646,20 +650,28 @@ function CronJobRuns({
     const load = () =>
       getCronJobRuns(jobId)
         .then(result => {
-          if (!cancelled) {setRuns(result)}
+          if (!cancelled) {
+            setRuns(result)
+          }
         })
         .catch(() => {
-          if (!cancelled) {setRuns(prev => prev ?? [])}
+          if (!cancelled) {
+            setRuns(prev => prev ?? [])
+          }
         })
 
     void load()
 
     const intervalId = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {void load()}
+      if (document.visibilityState === 'visible') {
+        void load()
+      }
     }, RUNS_POLL_INTERVAL_MS)
 
     const onVisible = () => {
-      if (document.visibilityState === 'visible') {void load()}
+      if (document.visibilityState === 'visible') {
+        void load()
+      }
     }
 
     document.addEventListener('visibilitychange', onVisible)

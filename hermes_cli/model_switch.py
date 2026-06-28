@@ -44,6 +44,11 @@ from agent.models_dev import (
     list_provider_models,
 )
 
+# Providers whose picker model list should NOT be capped by max_models.
+# OpenCode Zen / Go are aggregators whose full catalogs (70+ models each) must
+# be visible so users can pick any model they have access to.
+_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go"})
+
 logger = logging.getLogger(__name__)
 
 
@@ -1650,7 +1655,10 @@ def list_authenticated_providers(
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models] if max_models is not None else model_ids
+        if hermes_id in _UNCAPPED_PICKER_PROVIDERS:
+            top = model_ids  # Aggregator: show full catalog regardless of max_models
+        else:
+            top = model_ids[:max_models] if max_models is not None else model_ids
 
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
@@ -1813,7 +1821,10 @@ def list_authenticated_providers(
                 if hermes_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models] if max_models is not None else model_ids
+        if hermes_slug in _UNCAPPED_PICKER_PROVIDERS:
+            top = model_ids  # Aggregator: show full catalog regardless of max_models
+        else:
+            top = model_ids[:max_models] if max_models is not None else model_ids
 
         results.append({
             "slug": hermes_slug,
@@ -2253,10 +2264,48 @@ def list_authenticated_providers(
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 
+    # Surface a custom / uncurated model the user selected via the CLI.
+    # Each row's model list is its curated/live catalog, so a model the user set
+    # with `/model <provider>/<uncurated-name>` would otherwise be invisible in
+    # every picker — the main model picker AND the MoA reference/aggregator slot
+    # pickers, which read these same rows. Inject it at the front of the current
+    # provider's row (matched by slug) so it is selectable and shown. Done as a
+    # post-pass so it covers every provider section uniformly, regardless of
+    # which branch emitted the row.
+    if current_model:
+        for _row in results:
+            if not _row.get("is_current"):
+                continue
+            _models = _row.get("models") or []
+            if current_model not in _models:
+                _row["models"] = [current_model, *_models]
+                _row["total_models"] = _row.get("total_models", len(_models)) + 1
+            break
+
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
+
+
+def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = "") -> List[dict]:
+    """Add the virtual MoA provider row used by interactive model pickers.
+
+    ``list_authenticated_providers()`` only returns real/auth-backed providers.
+    The CLI model inventory adds MoA separately so named presets appear next to
+    normal providers; gateway pickers call ``list_picker_providers()`` directly,
+    so they need the same virtual row here. Reuse the inventory's single row
+    builder so the row shape stays defined in one place.
+    """
+    try:
+        from hermes_cli.inventory import _moa_provider_row
+
+        moa_row = _moa_provider_row(current_provider)
+        if moa_row is None:
+            return providers
+        return [moa_row] + [p for p in providers if str(p.get("slug", "")).lower() != "moa"]
+    except Exception:
+        return providers
 
 
 def list_picker_providers(
@@ -2266,6 +2315,7 @@ def list_picker_providers(
     custom_providers: list | None = None,
     max_models: int | None = None,
     current_model: str = "",
+    include_moa: bool = False,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -2296,6 +2346,8 @@ def list_picker_providers(
         max_models=max_models,
         current_model=current_model,
     )
+    if include_moa:
+        providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
     filtered: List[dict] = []
     for p in providers:

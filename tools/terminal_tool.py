@@ -2290,14 +2290,27 @@ def terminal_tool(
                 "EOF."
             )
 
+        # Claim the (shared "default") terminal env for the session driving this
+        # command. File tools read env.cwd_owner to decide whether the env's live
+        # cwd is THIS session's `cd` or a different worktree session's — without
+        # it, two open worktree sessions sharing the env route each other's edits
+        # to the wrong checkout. get_current_session_key()'s contextvar doesn't
+        # cross tool-worker threads, so fall back to the raw task_id (which IS the
+        # session_key for the top-level agent) — a stable, thread-safe anchor.
+        from tools.approval import get_current_session_key
+
+        session_key = get_current_session_key(default="") or (task_id or "")
+        try:
+            env.cwd_owner = session_key
+        except Exception:
+            pass
+
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
-            from tools.approval import get_current_session_key
             from tools.process_registry import process_registry
 
-            session_key = get_current_session_key(default="")
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
                 env=env,
@@ -2643,9 +2656,17 @@ def terminal_tool(
             from tools.ansi_strip import strip_ansi
             output = strip_ansi(output)
 
-            # Redact secrets from command output (catches env/printenv leaking keys)
-            from agent.redact import redact_sensitive_text
-            output = redact_sensitive_text(output.strip()) if output else ""
+            # Redact secrets from command output. For source/config dumps
+            # (MAX_TOKENS=100, "apiKey": "x" fixtures, postgresql:// f-string
+            # templates) the ENV/JSON/template passes are skipped to avoid
+            # false positives (code_file=True). But for env-dump commands
+            # (env/printenv/set/export/declare) the output IS a KEY=value
+            # credential dump, so redact_terminal_output runs the ENV pass
+            # (code_file=False) to mask opaque tokens with no vendor prefix.
+            # Real prefixes, auth headers, JWTs, private keys are masked in
+            # both modes. See issue #43025.
+            from agent.redact import redact_terminal_output
+            output = redact_terminal_output(output.strip(), command) if output else ""
 
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")

@@ -55,7 +55,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Keep in sync with apps/desktop/scripts/write-build-stamp.cjs (fromApexNodesPin).
-DEFAULT_COMMIT="2bd1977d8fad185c9b4be47884f7e87f1add0ce3"
+DEFAULT_COMMIT="9c6d001b6b49bb915025ea42dee591741243f221"
 DEFAULT_TARGETS="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-pc-windows-msvc"
 
 COMMIT="$DEFAULT_COMMIT"

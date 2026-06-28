@@ -1,4 +1,4 @@
-import type * as React from 'react'
+﻿import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
@@ -15,11 +15,13 @@ import { SanitizedInput } from '@/components/ui/sanitized-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
+  createProfile,
   deleteProfile,
   getProfiles,
   getProfileSetupCommand,
   getProfileSoul,
   type ProfileInfo,
+  renameProfile,
   updateProfileSoul
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -32,11 +34,12 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
-import { CreateProfileDialog } from './create-profile-dialog'
-import { RenameProfileDialog } from './rename-profile-dialog'
+const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
-// Three-state affordance shared by every save/create/rename/delete button:
-// spinner while pending, a check on success, then back to the idle icon+label.
+function isValidProfileName(name: string): boolean {
+  return PROFILE_NAME_RE.test(name.trim())
+}
+
 interface ProfilesViewProps {
   onClose: () => void
 }
@@ -79,6 +82,42 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
     return profiles.find(p => p.name === selectedName) ?? profiles[0] ?? null
   }, [profiles, selectedName])
+
+  const handleCreate = useCallback(
+    async (name: string, cloneFrom: null | string) => {
+      const trimmed = name.trim()
+
+      if (!isValidProfileName(trimmed)) {
+        throw new Error(p.nameHint)
+      }
+
+      await createProfile({ name: trimmed, clone_from: cloneFrom })
+      notify({ kind: 'success', title: p.created, message: trimmed })
+      setSelectedName(trimmed)
+      await refresh()
+    },
+    [p, refresh]
+  )
+
+  const handleRename = useCallback(
+    async (from: string, to: string): Promise<void> => {
+      const target = to.trim()
+
+      if (target === from) {
+        return
+      }
+
+      if (!isValidProfileName(target)) {
+        throw new Error(p.nameHint)
+      }
+
+      await renameProfile(from, target)
+      notify({ kind: 'success', title: p.renamed, message: `${from} 竊・${target}` })
+      setSelectedName(target)
+      await refresh()
+    },
+    [p, refresh]
+  )
 
   const handleConfirmDelete = useCallback(async () => {
     if (!pendingDelete) {
@@ -126,10 +165,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
               <ProfileDetail
                 key={selected.name}
                 onDelete={() => setPendingDelete(selected)}
-                onRenamed={async newName => {
-                  setSelectedName(newName)
-                  await refresh()
-                }}
+                onRename={newName => handleRename(selected.name, newName)}
                 profile={selected}
               />
             ) : (
@@ -200,7 +236,7 @@ function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: 
       </span>
       <span className="text-[0.66rem] text-muted-foreground">
         {p.skills(profile.skill_count)}
-        {profile.has_env ? ` · ${p.env}` : ''}
+        {profile.has_env ? ` ﾂｷ ${p.env}` : ''}
       </span>
     </button>
   )
@@ -208,11 +244,11 @@ function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: 
 
 function ProfileDetail({
   onDelete,
-  onRenamed,
+  onRename,
   profile
 }: {
   onDelete: () => void
-  onRenamed: (newName: string) => Promise<void>
+  onRename: (newName: string) => Promise<void>
   profile: ProfileInfo
 }) {
   const { t } = useI18n()
@@ -288,7 +324,7 @@ function ProfileDetail({
                 {profile.model ? (
                   <>
                     <span className="font-mono">{profile.model}</span>
-                    {profile.provider && <span className="text-muted-foreground"> · {profile.provider}</span>}
+                    {profile.provider && <span className="text-muted-foreground"> ﾂｷ {profile.provider}</span>}
                   </>
                 ) : (
                   <span className="text-muted-foreground">{p.notSet}</span>
@@ -305,8 +341,8 @@ function ProfileDetail({
       <RenameProfileDialog
         currentName={profile.name}
         onClose={() => setRenameOpen(false)}
-        onRenamed={async newName => {
-          await onRenamed(newName)
+        onRename={async newName => {
+          await onRename(newName)
           setRenameOpen(false)
         }}
         open={renameOpen}

@@ -153,6 +153,48 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[1]["_empty_recovery_synthetic"] is True
 
+    def test_convert_messages_strips_stale_cache_control_for_strict_provider(self, transport):
+        """Strict OpenAI-compatible providers reject Anthropic cache markers
+        on nested text parts. Fallback replay must strip stale markers before
+        Cerebras/Groq/etc. see the payload.
+        """
+        msgs = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}],
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+        result = transport.convert_messages(msgs, model="gpt-oss-120b")
+        assert "cache_control" not in result[0]["content"][0]
+        assert "cache_control" not in result[1]["content"][0]
+        assert "cache_control" not in result[1]
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert msgs[1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_convert_messages_preserves_cache_control_when_route_supports_it(self, transport):
+        """OpenRouter Claude/Qwen-like cache-aware routes intentionally keep
+        cache markers; strict-provider stripping must not break that path.
+        """
+        msgs = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}],
+            }
+        ]
+        result = transport.convert_messages(
+            msgs,
+            model="anthropic/claude-sonnet-4.6",
+            preserve_cache_control=True,
+        )
+        assert result is msgs
+        assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
     def test_convert_messages_clean_list_is_identity(self, transport):
         """A list with no internal/codex keys is returned as-is (no copy)."""
         msgs = [

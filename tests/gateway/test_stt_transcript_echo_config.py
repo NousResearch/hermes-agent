@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 from gateway.config import GatewayConfig
@@ -39,3 +40,19 @@ def test_gateway_runner_uses_stt_echo_transcripts_flag():
 
     runner.config = SimpleNamespace()
     assert runner._should_echo_stt_transcripts() is True
+
+
+def test_all_gateway_transcript_echo_sends_are_gated():
+    source = Path(__file__).resolve().parents[2] / "gateway" / "run.py"
+    lines = source.read_text().splitlines()
+
+    echo_send_lines = [
+        index
+        for index, line in enumerate(lines)
+        if "f'🎙️" in line or 'f"🎙️' in line
+    ]
+
+    assert echo_send_lines
+    for index in echo_send_lines:
+        context = "\n".join(lines[max(0, index - 12): index + 1])
+        assert "_should_echo_stt_transcripts()" in context

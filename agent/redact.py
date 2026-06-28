@@ -402,7 +402,40 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
+def _mask_token_nonreusable(token: str) -> str:
+    """Redact a prefix-matched credential to a NON-REUSABLE sentinel.
+
+    Unlike :func:`_mask_token` (which keeps head/tail chars — fine for logs
+    that are never fed back into a config), this emits a marker that:
+
+    * cannot be mistaken for a usable-but-truncated key, so an agent that
+      reads it from a config file and writes it back does NOT corrupt the
+      stored credential into a dead 13-char string (issue #35519); and
+    * still does not leak the secret material (no head/tail chars).
+
+    The vendor prefix label is preserved for debuggability so the agent can
+    still tell *which* credential is present (e.g. a GitHub PAT vs an OpenAI
+    key) without seeing any of its bytes.
+    """
+    if not token:
+        return "«redacted-secret»"
+    # Preserve only the recognizable vendor prefix label (e.g. "ghp_", "sk-"),
+    # never any of the random secret body.
+    label = ""
+    for sub in _PREFIX_SUBSTRINGS:
+        if token.startswith(sub):
+            label = sub
+            break
+    return f"«redacted:{label}…»" if label else "«redacted-secret»"
+
+
+def redact_sensitive_text(
+    text: str,
+    *,
+    force: bool = False,
+    code_file: bool = False,
+    file_read: bool = False,
+) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
@@ -414,6 +447,17 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
     constants, "apiKey": "test" fixtures). Prefix patterns, auth headers,
     private keys, DB connstrings, JWTs, and URL secrets are still redacted.
+
+    Set file_read=True for file *content* returned to the agent (read_file /
+    search_files / cat). Secrets are STILL redacted — they are never exposed —
+    but prefix-matched credentials are replaced with a non-reusable sentinel
+    (``«redacted:ghp_…»``) instead of a head/tail-preserving mask
+    (``ghp_S1...Pn2T``). The old mask looked like a real-but-truncated key, so
+    an agent reading it from config.yaml and writing it back silently corrupted
+    the stored credential into a dead 13-char value → 401 (issue #35519). The
+    sentinel is syntactically invalid as a token, so it can't be mistaken for a
+    usable key or written back as one. Implies code_file=True (config/data
+    files shouldn't trigger the source-code ENV/JSON false-positive paths).
 
     Performance: each regex pattern is gated behind a cheap substring
     pre-check (e.g. ``"=" in text`` for ENV assignments, ``"://" in text``
@@ -433,9 +477,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not (force or _REDACT_ENABLED):
         return text
 
+    # file_read content shouldn't hit the source-code ENV/JSON false-positive
+    # paths either (it's config/data, not log lines).
+    if file_read:
+        code_file = True
+
     # Known prefixes (sk-, ghp_, etc.) — gate on substring presence
     if _has_known_prefix_substring(text):
-        text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
+        _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
+        text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
     # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
     if not code_file:

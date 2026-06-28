@@ -891,6 +891,42 @@ class ShellFileOperations(FileOperations):
                 line = line[:max_line_length] + "... [truncated]"
             numbered.append(f"{i}|{line}")
         return '\n'.join(numbered)
+
+    def _windows_bash_path_style(self) -> str:
+        """Return the Windows bash path style for the attached terminal backend."""
+        return getattr(self.env, "_bash_path_style", "msys")
+
+    def _normalize_windows_path_for_bash(self, path: str) -> str:
+        """Convert Windows drive paths to the path dialect used by bash."""
+        if not path or os.name != "nt":
+            return path
+
+        value = str(path).replace("\\", "/")
+        style = self._windows_bash_path_style()
+
+        if len(value) >= 2 and value[1] == ":" and value[0].isalpha():
+            drive = value[0].lower()
+            rest = value[2:].lstrip("/")
+            prefix = f"/mnt/{drive}" if style == "wsl" else f"/{drive}"
+            return f"{prefix}/{rest}" if rest else prefix
+
+        m = re.match(r"^/mnt/([a-zA-Z])(?:/(.*))?$", value)
+        if m:
+            drive = m.group(1).lower()
+            rest = (m.group(2) or "").strip("/")
+            if style == "msys":
+                return f"/{drive}/{rest}" if rest else f"/{drive}"
+            return f"/mnt/{drive}/{rest}" if rest else f"/mnt/{drive}"
+
+        m = re.match(r"^/([a-zA-Z])(?:/(.*))?$", value)
+        if m:
+            drive = m.group(1).lower()
+            rest = (m.group(2) or "").strip("/")
+            if style == "wsl":
+                return f"/mnt/{drive}/{rest}" if rest else f"/mnt/{drive}"
+            return f"/{drive}/{rest}" if rest else f"/{drive}"
+
+        return value
     
     def _expand_path(self, path: str) -> str:
         """
@@ -927,7 +963,7 @@ class ShellFileOperations(FileOperations):
                         suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
                         return user_home + suffix
         
-        return path
+        return self._normalize_windows_path_for_bash(path)
     
     def _escape_shell_arg(self, arg: str) -> str:
         """Escape a string for safe use in shell commands."""

@@ -853,6 +853,87 @@ class TestLocalEnvironmentPathInjectionGated:
         assert _append_missing_sane_path_entries(path) == path
 
 
+class TestWindowsBashPathDialects:
+    """Windows-hosted terminal state must be normalized per bash dialect."""
+
+    def test_msys_and_wsl_mounts_roundtrip_to_native_windows(self, monkeypatch):
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert local_mod._msys_to_windows_path("/c/Users/NUC") == r"C:\Users\NUC"
+        assert local_mod._msys_to_windows_path("/mnt/c/Users/NUC") == r"C:\Users\NUC"
+        assert local_mod._msys_to_windows_path(r"C:\Users\NUC") == r"C:\Users\NUC"
+
+    def test_system32_bash_is_wsl_dialect(self, monkeypatch):
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        assert local_mod._windows_bash_path_style_for(
+            r"C:\Windows\System32\bash.exe"
+        ) == "wsl"
+        assert local_mod._windows_bash_path_style_for(
+            r"C:\Program Files\Git\bin\bash.exe"
+        ) == "msys"
+
+    def test_base_environment_cd_uses_selected_windows_bash_dialect(self, monkeypatch):
+        from tools.environments import base as base_mod
+        from tools.environments.base import BaseEnvironment
+
+        class DummyEnvironment(BaseEnvironment):
+            def _run_bash(self, *args, **kwargs):
+                raise AssertionError("not used")
+
+            def cleanup(self):
+                pass
+
+        monkeypatch.setattr(base_mod.os, "name", "nt")
+        env = DummyEnvironment(cwd=r"C:\Users\NUC", timeout=1)
+
+        env._bash_path_style = "msys"
+        assert env._quote_cwd_for_cd(r"C:\Users\NUC") == "/c/Users/NUC"
+        assert env._quote_cwd_for_cd("/mnt/c/Users/NUC") == "/c/Users/NUC"
+        assert "builtin cd -- /c/Users/NUC" in env._wrap_command(
+            "pwd", r"C:\Users\NUC"
+        )
+
+        env._bash_path_style = "wsl"
+        assert env._quote_cwd_for_cd(r"C:\Users\NUC") == "/mnt/c/Users/NUC"
+        assert env._quote_cwd_for_cd("/c/Users/NUC") == "/mnt/c/Users/NUC"
+        assert "builtin cd -- /mnt/c/Users/NUC" in env._wrap_command(
+            "pwd", r"C:\Users\NUC"
+        )
+
+    def test_file_operations_paths_follow_attached_bash_dialect(self, monkeypatch):
+        from tools import file_operations as fops_mod
+        from tools.file_operations import ShellFileOperations
+
+        monkeypatch.setattr(fops_mod.os, "name", "nt")
+
+        class DummyEnv:
+            cwd = r"C:\Users\NUC"
+            _bash_path_style = "msys"
+
+            def execute(self, command, cwd=None, **kwargs):
+                return {"output": "", "returncode": 0}
+
+        ops = ShellFileOperations(DummyEnv())
+        assert (
+            ops._expand_path(r"C:\Users\NUC\.hermes\skill.md")
+            == "/c/Users/NUC/.hermes/skill.md"
+        )
+
+        ops.env._bash_path_style = "wsl"
+        assert (
+            ops._expand_path(r"C:\Users\NUC\.hermes\skill.md")
+            == "/mnt/c/Users/NUC/.hermes/skill.md"
+        )
+        assert (
+            ops._expand_path("/c/Users/NUC/.hermes/skill.md")
+            == "/mnt/c/Users/NUC/.hermes/skill.md"
+        )
+
+
 # ---------------------------------------------------------------------------
 # cli.py git path normalization
 # ---------------------------------------------------------------------------

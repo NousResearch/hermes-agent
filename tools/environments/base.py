@@ -10,6 +10,7 @@ import codecs
 import json
 import logging
 import os
+import re
 import select
 import shlex
 import subprocess
@@ -361,7 +362,7 @@ class BaseEnvironment(ABC):
         # Restore configured cwd after login shell profile scripts, which may
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
-        _quoted_cwd = shlex.quote(self.cwd)
+        _quoted_cwd = self._quote_cwd_for_cd(self.cwd)
         # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
         # ``C:/Users/...``-shaped paths without glob-splitting the colon or
         # tripping on drive letters.  On POSIX this is a no-op (no colons /
@@ -369,8 +370,8 @@ class BaseEnvironment(ABC):
         # caused ``C:/Users/.../hermes-snap-*.sh: No such file or directory``
         # errors on Windows, leaking via stderr (merged into stdout on Linux
         # backends) into every terminal-tool response.
-        _quoted_snap = shlex.quote(self._snapshot_path)
-        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        _quoted_snap = self._quote_shell_path(self._snapshot_path)
+        _quoted_cwd_file = self._quote_shell_path(self._cwd_file)
         # Use atomic file replacement: assemble the snapshot in a temp file,
         # then mv it over the final path.  This prevents concurrent source()
         # calls from reading a half-written snapshot when another terminal
@@ -388,7 +389,7 @@ class BaseEnvironment(ABC):
         # and is genuinely unique per writer, which closes the race.  The
         # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
         # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"export -p > {_snap_tmp}\n"
             f"declare -f | grep -vE '^_[^_]' >> {_snap_tmp}\n"
@@ -426,9 +427,49 @@ class BaseEnvironment(ABC):
     # Command wrapping
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _quote_cwd_for_cd(cwd: str) -> str:
+    def _windows_bash_path_style(self) -> str:
+        """Return the Windows bash path style for this backend."""
+        return getattr(self, "_bash_path_style", "msys")
+
+    def _normalize_cwd_for_bash_cd(self, cwd: str) -> str:
+        """Convert Windows drive paths to the path dialect used by this bash."""
+        if not cwd:
+            return cwd
+
+        value = str(cwd)
+        if os.name != "nt":
+            return value
+
+        value = value.replace("\\", "/")
+        style = self._windows_bash_path_style()
+
+        if len(value) >= 2 and value[1] == ":" and value[0].isalpha():
+            drive = value[0].lower()
+            rest = value[2:].lstrip("/")
+            prefix = f"/mnt/{drive}" if style == "wsl" else f"/{drive}"
+            return f"{prefix}/{rest}" if rest else prefix
+
+        m = re.match(r"^/mnt/([a-zA-Z])(?:/(.*))?$", value)
+        if m:
+            drive = m.group(1).lower()
+            rest = (m.group(2) or "").strip("/")
+            if style == "msys":
+                return f"/{drive}/{rest}" if rest else f"/{drive}"
+            return f"/mnt/{drive}/{rest}" if rest else f"/mnt/{drive}"
+
+        m = re.match(r"^/([a-zA-Z])(?:/(.*))?$", value)
+        if m:
+            drive = m.group(1).lower()
+            rest = (m.group(2) or "").strip("/")
+            if style == "wsl":
+                return f"/mnt/{drive}/{rest}" if rest else f"/mnt/{drive}"
+            return f"/{drive}/{rest}" if rest else f"/{drive}"
+
+        return value
+
+    def _quote_cwd_for_cd(self, cwd: str) -> str:
         """Quote a ``cd`` target while preserving ``~`` expansion."""
+        cwd = self._normalize_cwd_for_bash_cd(cwd)
         if cwd == "~":
             return cwd
         if cwd == "~/":
@@ -436,6 +477,10 @@ class BaseEnvironment(ABC):
         if cwd.startswith("~/"):
             return f"$HOME/{shlex.quote(cwd[2:])}"
         return shlex.quote(cwd)
+
+    def _quote_shell_path(self, path: str) -> str:
+        """Quote an internal shell path using the same path dialect as cwd."""
+        return shlex.quote(self._normalize_cwd_for_bash_cd(path))
 
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
@@ -446,8 +491,8 @@ class BaseEnvironment(ABC):
         # ``C:/Users/...``-shaped paths without glob-splitting the colon or
         # tripping on drive letters.  POSIX paths are unaffected.  See
         # :meth:`init_session` for the same fix on the bootstrap block.
-        _quoted_snap = shlex.quote(self._snapshot_path)
-        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        _quoted_snap = self._quote_shell_path(self._snapshot_path)
+        _quoted_cwd_file = self._quote_shell_path(self._cwd_file)
         # Use atomic file replacement for env snapshot updates (issue #38249).
         # Assemble into a per-writer-unique temp file, then mv to atomically
         # replace the snapshot so concurrent source() calls never read a
@@ -455,7 +500,7 @@ class BaseEnvironment(ABC):
         # subshell PID — unique per concurrent ``&``-launched writer — so two
         # writers never share a temp name and clobber each other before the mv.
         # Static path shlex-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
 
         parts = []
 

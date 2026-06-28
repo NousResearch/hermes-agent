@@ -31,13 +31,19 @@ def _msys_to_windows_path(cwd: str) -> str:
     """
     if not _IS_WINDOWS or not cwd:
         return cwd
+    # Match WSL's view of Windows drives: "/mnt/<letter>[/...]".
+    m = re.match(r'^/mnt/([a-zA-Z])(?:/(.*))?$', cwd)
+    if m:
+        drive = m.group(1).upper()
+        tail = (m.group(2) or "").replace('/', '\\')
+        return f"{drive}:{chr(92)}{tail}" if tail else f"{drive}:{chr(92)}"
     # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
-    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
+    m = re.match(r'^/([a-zA-Z])(?:/(.*))?$', cwd)
     if not m:
         return cwd
     drive = m.group(1).upper()
     tail = (m.group(2) or "").replace('/', '\\')
-    return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+    return f"{drive}:{chr(92)}{tail}" if tail else f"{drive}:{chr(92)}"
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -397,6 +403,18 @@ def _find_bash() -> str:
     )
 
 
+def _windows_bash_path_style_for(bash: str) -> str:
+    """Return the POSIX path dialect expected by the selected Windows bash."""
+    if not _IS_WINDOWS:
+        return "posix"
+
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    system_bash = os.path.join(system_root, "System32", "bash.exe")
+    if os.path.normcase(bash) == os.path.normcase(system_bash):
+        return "wsl"
+    return "msys"
+
+
 # POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``
 # invocation spawn_local uses. $SHELL values outside this set (fish, csh/tcsh,
 # nushell, elvish, xonsh, …) would error on that syntax, so _find_shell falls
@@ -738,6 +756,8 @@ class LocalEnvironment(BaseEnvironment):
         if cwd:
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        self._bash_path = _find_bash()
+        self._bash_path_style = _windows_bash_path_style_for(self._bash_path)
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -791,7 +811,7 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        bash = _find_bash()
+        bash = getattr(self, "_bash_path", None) or _find_bash()
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
         # custom init files so tools registered outside bash_profile
@@ -802,7 +822,18 @@ class LocalEnvironment(BaseEnvironment):
             init_files = _resolve_shell_init_files()
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+        if _IS_WINDOWS and os.path.basename(bash).lower() == "bash.exe":
+            system_root = os.environ.get("SystemRoot", r"C:\Windows")
+            system_bash = os.path.join(system_root, "System32", "bash.exe")
+            wsl = os.path.join(system_root, "System32", "wsl.exe")
+            if os.path.isfile(wsl) and os.path.normcase(bash) == os.path.normcase(system_bash):
+                # Legacy bash.exe mangles shell variables in -c scripts. Use
+                # wsl.exe --exec so bash receives Hermes' wrapper unchanged.
+                args = [wsl, "--exec", "bash", "-lc" if login else "-c", cmd_string]
+            else:
+                args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+        else:
+            args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by

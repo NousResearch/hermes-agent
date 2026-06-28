@@ -12205,9 +12205,30 @@ async def pty_ws(ws: WebSocket) -> None:
     reader_task = asyncio.create_task(pump_pty_to_ws())
 
     # --- writer loop: WebSocket → PTY master ----------------------------
+    #
+    # Race ``ws.receive()`` against ``reader_task`` so the loop exits
+    # promptly when the PTY closes or the WebSocket send side dies.
+    # Without this, a silently-dropped connection leaves ``ws.receive()``
+    # blocking forever and the ``finally`` block (which calls
+    # ``bridge.close()``) never runs — leaking the PTY file descriptors.
+    # See issue #54028.
     try:
         while True:
-            msg = await ws.receive()
+            receive_fut: asyncio.Future = asyncio.ensure_future(ws.receive())
+            done, _ = await asyncio.wait(
+                {receive_fut, reader_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if reader_task in done:
+                # Reader exited (PTY EOF or WS send failure) — drain the
+                # pending receive future and leave the loop so cleanup runs.
+                receive_fut.cancel()
+                try:
+                    await receive_fut
+                except (asyncio.CancelledError, Exception):
+                    pass
+                break
+            msg = receive_fut.result()
             msg_type = msg.get("type")
             if msg_type == "websocket.disconnect":
                 break

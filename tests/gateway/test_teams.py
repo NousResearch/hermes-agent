@@ -749,6 +749,49 @@ class TestTeamsMessageHandling:
 
         assert adapter.handle_message.await_count == 1
 
+    @pytest.mark.anyio
+    async def test_unauthorized_user_dropped_before_event_dispatch(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "aad-allowed")
+        monkeypatch.delenv("TEAMS_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(from_aad_id="aad-denied", from_id="teams-id")
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_unauthorized_user_dropped_before_attachment_download(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "aad-allowed")
+        monkeypatch.delenv("TEAMS_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
+
+        activity = self._make_activity(
+            from_aad_id="aad-denied",
+            attachments=[TestTeamsAttachmentClassification()._file_download_attachment()],
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter._fetch_attachment_bytes.assert_not_awaited()
+        adapter.handle_message.assert_not_awaited()
+
 
 class TestTeamsAttachmentClassification:
     """Document attachments must set MessageType.DOCUMENT so run.py's

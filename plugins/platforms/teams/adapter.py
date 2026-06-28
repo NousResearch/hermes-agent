@@ -124,6 +124,57 @@ def _coerce_port(value: Any, *, default: int = _DEFAULT_PORT) -> int:
         return default
 
 
+def _is_truthy_env(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _teams_user_authorized(activity: Any) -> bool:
+    """Mirror the gateway's Teams allowlist gate before side effects occur.
+
+    The gateway's canonical authorization check runs after adapter dispatch, but
+    the Teams adapter downloads and caches attachments before calling
+    ``handle_message``. That let unauthorized senders force remote downloads and
+    local cache writes even though the gateway would reject them later.
+
+    Teams has no pairing path here, so the pre-dispatch mirror only needs the
+    explicit env-based gates the operator can configure:
+
+    1. ``TEAMS_ALLOW_ALL_USERS``
+    2. ``TEAMS_ALLOWED_USERS``
+    3. ``GATEWAY_ALLOW_ALL_USERS``
+    4. ``GATEWAY_ALLOWED_USERS``
+
+    With none configured, defer to the gateway runner's canonical authz path.
+    The adapter-side precheck exists only to prevent side effects before the
+    runner rejects a sender under an explicit allowlist policy.
+    """
+    if _is_truthy_env(os.getenv("TEAMS_ALLOW_ALL_USERS")):
+        return True
+    if _is_truthy_env(os.getenv("GATEWAY_ALLOW_ALL_USERS")):
+        return True
+
+    from_account = getattr(activity, "from_", None)
+    user_id = (
+        getattr(from_account, "aad_object_id", None)
+        or getattr(from_account, "id", None)
+        or ""
+    )
+    user_id = str(user_id).strip()
+
+    def _parse_csv(name: str) -> set[str]:
+        raw = os.getenv(name, "")
+        return {part.strip() for part in raw.split(",") if part.strip()}
+
+    saw_explicit_policy = False
+    for env_name in ("TEAMS_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"):
+        allowed = _parse_csv(env_name)
+        if allowed:
+            saw_explicit_policy = True
+            return bool(user_id) and ("*" in allowed or user_id in allowed)
+
+    return not saw_explicit_policy
+
+
 class _StaticAccessTokenProvider:
     """Minimal token-provider shim so outbound Graph delivery can reuse the shared client."""
 
@@ -843,6 +894,16 @@ class TeamsAdapter(BasePlatformAdapter):
         conv_id = getattr(activity.conversation, "id", None)
         if conv_id:
             self._conv_refs[conv_id] = ctx.conversation_ref
+
+        if not _teams_user_authorized(activity):
+            logger.warning(
+                "[teams] Unauthorized inbound dropped before event construction: user=%s conversation=%s",
+                getattr(getattr(activity, "from_", None), "aad_object_id", None)
+                or getattr(getattr(activity, "from_", None), "id", None)
+                or "",
+                conv_id or "",
+            )
+            return
 
         # Extract text — strip bot @mentions
         text = ""

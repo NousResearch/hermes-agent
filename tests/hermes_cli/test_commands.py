@@ -861,6 +861,26 @@ class TestSubcommandCompletion:
         assert "none" in texts
         assert len(texts) > 1
 
+    def test_learn_completes_update_flag(self):
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/learn ")}
+        assert "--update" in texts
+
+    def test_learn_completes_skills_after_update(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.skills_tool._find_all_skills",
+            lambda *args, **kwargs: [
+                {"name": "test-skill-one", "description": "Desc 1"},
+                {"name": "other-skill", "description": "Desc 2"},
+            ]
+        )
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/learn --update ")}
+        assert "test-skill-one" in texts
+        assert "other-skill" in texts
+
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/learn --update test-s")}
+        assert "test-skill-one" in texts
+        assert "other-skill" not in texts
+
 
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────
 

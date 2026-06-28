@@ -186,7 +186,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("hatch", "Generate a new petdex pet from a description",
                "Tools & Skills", cli_only=True, aliases=("generate-pet",), args_hint="[description]"),
     CommandDef("learn", "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
-               "Tools & Skills", args_hint="<what to learn from>"),
+               "Tools & Skills", args_hint="[--update <skill>] <what to learn from>", subcommands=("--update",)),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
@@ -1863,6 +1863,54 @@ class SlashCommandCompleter(Completer):
         except Exception:
             pass
 
+    @staticmethod
+    def _learn_completions(sub_text: str, sub_lower: str):
+        """Yield completions for /learn — subcommand (--update) and skill name.
+
+        Handles:
+        - ``/learn <tab>`` -> suggests ``--update``
+        - ``/learn --update <tab>`` -> suggests available skill names from local skills catalog.
+        """
+        parts = sub_text.split()
+        trailing_space = sub_text.endswith(" ")
+
+        # Subcommand stage: zero words typed, or completing the first word.
+        if len(parts) == 0 or (len(parts) == 1 and not trailing_space):
+            partial = sub_text if not trailing_space else ""
+            if "--update".startswith(partial.lower()) and "--update" != partial.lower():
+                yield Completion(
+                    "--update",
+                    start_position=-len(partial),
+                    display="--update",
+                    display_meta="update an existing skill",
+                )
+            return
+
+        subcommand = parts[0].lower()
+        if subcommand != "--update":
+            return
+
+        partial = "" if trailing_space else parts[-1]
+        partial_lower = partial.lower()
+        already = set(parts[1:] if trailing_space else parts[1:-1])
+
+        # Suggest skill names
+        try:
+            from tools.skills_tool import _find_all_skills
+            skills = _find_all_skills()
+            for s in skills:
+                name = s["name"]
+                if name in already or not name.startswith(partial_lower):
+                    continue
+                yield Completion(
+                    name,
+                    start_position=-len(partial),
+                    display=name,
+                    display_meta=s.get("description", "") or "skill name",
+                )
+        except Exception:
+            return
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
@@ -1902,6 +1950,10 @@ class SlashCommandCompleter(Completer):
 
             if base_cmd == "/handoff":
                 yield from self._handoff_completions(sub_text, sub_lower)
+                return
+
+            if base_cmd == "/learn":
+                yield from self._learn_completions(sub_text, sub_lower)
                 return
 
             # Static subcommand completions

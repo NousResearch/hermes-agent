@@ -6,7 +6,11 @@ builds a standards-guided prompt that the live agent runs as a normal turn, so
 these are the load-bearing behavior contracts.
 """
 
-from agent.learn_prompt import build_learn_prompt, _AUTHORING_STANDARDS
+from agent.learn_prompt import (
+    build_learn_prompt,
+    parse_learn_request,
+    _AUTHORING_STANDARDS,
+)
 
 
 class TestBuildLearnPrompt:
@@ -65,6 +69,82 @@ class TestBuildLearnPrompt:
         assert "scripts/" in _AUTHORING_STANDARDS
 
 
+class TestParseLearnRequest:
+    def test_plain_request_is_not_update_mode(self):
+        # No --update flag → (None, stripped_request); create path untouched.
+        assert parse_learn_request("the REST client in ~/proj") == (
+            None,
+            "the REST client in ~/proj",
+        )
+
+    def test_empty_is_not_update_mode(self):
+        assert parse_learn_request("") == (None, "")
+        assert parse_learn_request("   \n ") == (None, "")
+
+    def test_update_with_skill_and_notes(self):
+        assert parse_learn_request("--update arxiv-search add the ID lookup") == (
+            "arxiv-search",
+            "add the ID lookup",
+        )
+
+    def test_update_with_skill_only(self):
+        assert parse_learn_request("--update arxiv-search") == ("arxiv-search", "")
+
+    def test_update_without_skill_is_still_update_mode(self):
+        # Bare --update routes to update mode with an empty target — it must
+        # never fall through to create.
+        assert parse_learn_request("--update") == ("", "")
+
+    def test_update_only_when_flag_leads(self):
+        # --update mid-string is ordinary free text, not the flag.
+        assert parse_learn_request("learn how --update works") == (
+            None,
+            "learn how --update works",
+        )
+
+
+class TestBuildUpdatePrompt:
+    def test_targets_the_named_skill(self):
+        prompt = build_learn_prompt("--update arxiv-search")
+        assert "arxiv-search" in prompt
+        assert "skill_view" in prompt
+
+    def test_uses_patch_and_edit_not_create(self):
+        prompt = build_learn_prompt("--update arxiv-search fix a flag")
+        assert 'action="patch"' in prompt
+        assert 'action="edit"' in prompt
+        # Update mode must never instruct the create action.
+        assert 'action="create"' not in prompt
+        # And must not carry the create-path's authoring instruction.
+        assert "Author ONE SKILL.md" not in prompt
+
+    def test_carries_the_authoring_standards(self):
+        # An edited skill must still match house style.
+        assert _AUTHORING_STANDARDS in build_learn_prompt("--update arxiv-search")
+
+    def test_embeds_the_change_notes_verbatim(self):
+        prompt = build_learn_prompt("--update arxiv-search add ID lookup section")
+        assert "add ID lookup section" in prompt
+
+    def test_bare_update_does_not_create(self):
+        prompt = build_learn_prompt("--update")
+        assert 'action="create"' not in prompt
+        assert "Author ONE SKILL.md" not in prompt
+        assert "skills_list" in prompt
+
+
+class TestCreatePathUnchanged:
+    def test_plain_request_still_uses_create(self):
+        prompt = build_learn_prompt("the REST client in ~/projects/acme-sdk")
+        assert 'action="create"' in prompt
+        assert "Author ONE SKILL.md" in prompt
+
+    def test_empty_request_still_falls_back_to_conversation(self):
+        prompt = build_learn_prompt("")
+        assert "conversation" in prompt.lower()
+        assert 'action="create"' in prompt
+
+
 class TestLearnRegistryWiring:
     def test_learn_is_registered_and_resolves(self):
         from hermes_cli.commands import resolve_command
@@ -89,3 +169,46 @@ class TestLearnRegistryWiring:
         from hermes_cli.commands import resolve_command
 
         assert not resolve_command("learn").cli_only
+
+    def test_learn_args_hint_and_subcommands(self):
+        from hermes_cli.commands import resolve_command
+
+        cmd = resolve_command("learn")
+        assert "--update" in cmd.args_hint
+        assert "--update" in cmd.subcommands
+
+
+class TestLearnCommandCompleter:
+    def test_learn_autocomplete_suggests_update_flag(self):
+        from hermes_cli.commands import SlashCommandCompleter
+        from prompt_toolkit.document import Document
+
+        completer = SlashCommandCompleter()
+        doc = Document("/learn ", cursor_position=len("/learn "))
+        completions = list(completer.get_completions(doc, None))
+        assert any(c.text == "--update" for c in completions)
+
+    def test_learn_autocomplete_suggests_skills(self, monkeypatch):
+        from hermes_cli.commands import SlashCommandCompleter
+        from prompt_toolkit.document import Document
+
+        monkeypatch.setattr(
+            "tools.skills_tool._find_all_skills",
+            lambda *args, **kwargs: [
+                {"name": "test-skill-one", "description": "Desc 1"},
+                {"name": "other-skill", "description": "Desc 2"},
+            ]
+        )
+
+        completer = SlashCommandCompleter()
+        doc = Document("/learn --update ", cursor_position=len("/learn --update "))
+        completions = list(completer.get_completions(doc, None))
+        suggested = [c.text for c in completions]
+        assert "test-skill-one" in suggested
+        assert "other-skill" in suggested
+
+        doc = Document("/learn --update test-s", cursor_position=len("/learn --update test-s"))
+        completions = list(completer.get_completions(doc, None))
+        suggested = [c.text for c in completions]
+        assert "test-skill-one" in suggested
+        assert "other-skill" not in suggested

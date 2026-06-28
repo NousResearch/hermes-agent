@@ -357,7 +357,11 @@ def test_allows_safe_storage_non_read_methods(cdp_server, method):
     "expression",
     [
         "document.cookie",
+        "document?.cookie",
+        "document ?. cookie",
         "document['cookie']",
+        "document?.[\"cookie\"]",
+        "document ?. ['cookie']",
         "document['co' + 'okie']",
         "JSON.stringify(window.localStorage)",
         "JSON.stringify(window['localStorage'])",
@@ -397,6 +401,8 @@ def test_blocks_runtime_evaluate_storage_expressions_before_cdp_dispatch(
     "function_declaration",
     [
         "function(){ return document.cookie }",
+        "function(){ return document?.cookie }",
+        "function(){ return document?.[\"cookie\"] }",
         "function(){ return window['local' + 'Storage'].getItem('token') }",
         "function(){ return globalThis.sessionStorage.length }",
     ],

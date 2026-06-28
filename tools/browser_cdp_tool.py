@@ -42,8 +42,8 @@ _SENSITIVE_CDP_METHODS = {
     "storage.getcookies",
 }
 _SENSITIVE_RUNTIME_EVALUATE_PATTERNS = (
-    re.compile(r"\bdocument\s*\.\s*cookie\b", re.IGNORECASE),
-    re.compile(r"\bdocument\s*\[\s*['\"]cookie['\"]\s*\]", re.IGNORECASE),
+    re.compile(r"\bdocument\s*(?:\?\s*)?\.\s*cookie\b", re.IGNORECASE),
+    re.compile(r"\bdocument\s*(?:\?\s*\.)?\s*\[\s*['\"]cookie['\"]\s*\]", re.IGNORECASE),
     re.compile(
         r"\b(?:window\s*\.\s*|globalThis\s*\.\s*)?(?:localStorage|sessionStorage)\b",
         re.IGNORECASE,

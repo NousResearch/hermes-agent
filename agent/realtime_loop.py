@@ -50,6 +50,11 @@ DEFAULT_TALKER_PROMPT = (
 )
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+_WORK_INTENT_RE = re.compile(
+    r"\b(check|look up|lookup|find|search|read|review|open|send|write|"
+    r"email|mail|calendar|invoice|research|summarize)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -211,19 +216,36 @@ class RealtimeLoop:
         started = time.perf_counter()
         from agent.auxiliary_client import async_call_llm
 
-        response = await async_call_llm(
-            task="realtime_talker",
-            provider=provider,
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            extra_body=extra_body,
-        )
+        timeout_seconds = max(0.25, float(timeout or 3.0))
+        degraded_error = ""
+        try:
+            response = await asyncio.wait_for(
+                async_call_llm(
+                    task="realtime_talker",
+                    provider=provider,
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=timeout_seconds,
+                    extra_body=extra_body,
+                ),
+                timeout=timeout_seconds,
+            )
+            text = _extract_response_text(response)
+            decision = _parse_decision(text)
+        except Exception as exc:
+            degraded_error = f"{type(exc).__name__}: {exc}"
+            decision = _fallback_decision(user_text)
+            self.store.publish_event(
+                session_key,
+                "turn.degraded",
+                {
+                    "reason": _short_error(degraded_error),
+                    "fallback": decision,
+                },
+            )
         elapsed = time.perf_counter() - started
-        text = _extract_response_text(response)
-        decision = _parse_decision(text)
         patch = decision.get("context_patch")
         if isinstance(patch, dict) and patch:
             context = self.store.patch_context(session_key, patch)
@@ -243,6 +265,7 @@ class RealtimeLoop:
             "context": context,
             "task": task.to_public_dict() if task else None,
             "latency_seconds": round(elapsed, 3),
+            "degraded": bool(degraded_error),
         }
         self.store.publish_event(session_key, "turn.completed", result)
         return result
@@ -276,6 +299,28 @@ def _extract_response_text(response: Any) -> str:
     if isinstance(response, str):
         return response
     return str(response or "")
+
+
+def _fallback_decision(user_text: str) -> Dict[str, Any]:
+    """Return a phone-safe response when the optional talker model is unavailable."""
+    needs_work = bool(_WORK_INTENT_RE.search(user_text or ""))
+    if needs_work:
+        return {
+            "say": "I am checking that now. This may take a moment, and I will keep you updated.",
+            "action": "start_task",
+            "action_request": user_text.strip(),
+            "context_patch": {"current_user_need": user_text.strip()},
+        }
+    return {
+        "say": "I heard you. Give me a moment to make sure I handle that correctly.",
+        "action": "none",
+        "action_request": "",
+        "context_patch": {"current_user_need": user_text.strip()},
+    }
+
+
+def _short_error(text: str, limit: int = 240) -> str:
+    return re.sub(r"[\r\n\t]+", " ", text).strip()[:limit]
 
 
 def _parse_decision(text: str) -> Dict[str, Any]:

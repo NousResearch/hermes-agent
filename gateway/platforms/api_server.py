@@ -596,6 +596,12 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _redact_api_error_text(exc: BaseException, *, max_len: int = 400) -> str:
+    """Return a compact error string without multiline trace or control characters."""
+    text = str(exc) or exc.__class__.__name__
+    return re.sub(r"[\r\n\t]+", " ", text).strip()[:max_len]
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):

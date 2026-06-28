@@ -52,6 +52,26 @@ async def test_realtime_loop_updates_context_and_creates_task():
     assert tasks[0]["status"] == "queued"
 
 
+@pytest.mark.asyncio
+async def test_realtime_loop_falls_back_when_talker_unavailable():
+    loop = RealtimeLoop(LiveContextStore())
+
+    with patch(
+        "agent.auxiliary_client.async_call_llm",
+        side_effect=RuntimeError("No LLM provider configured"),
+    ):
+        result = await loop.handle_turn(
+            session_key="voice:test",
+            user_text="Can you check my latest email?",
+            timeout=0.5,
+        )
+
+    assert result["degraded"] is True
+    assert result["action"] == "start_task"
+    assert "checking" in result["say"].lower()
+    assert result["task"]["request"] == "Can you check my latest email?"
+
+
 def _create_realtime_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application()
     app["api_server_adapter"] = adapter

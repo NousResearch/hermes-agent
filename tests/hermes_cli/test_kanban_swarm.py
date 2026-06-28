@@ -115,3 +115,55 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert kb.get_task(conn, created.synthesizer_id).status == "ready"
     finally:
         conn.close()
+
+
+def test_create_swarm_honors_custom_and_disabled_stage_skills(tmp_path):
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        default = create_swarm(
+            conn,
+            goal="Use default stage skills.",
+            workers=[SwarmWorkerSpec(profile="worker", title="Worker", body="Do work")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+        )
+        custom = create_swarm(
+            conn,
+            goal="Use custom stage skills.",
+            workers=[SwarmWorkerSpec(profile="worker", title="Worker", body="Do work")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            verifier_skills=["qa-reviewer"],
+            synthesizer_skills=["writer"],
+        )
+        disabled = create_swarm(
+            conn,
+            goal="Disable default stage skills.",
+            workers=[SwarmWorkerSpec(profile="worker", title="Worker", body="Do work")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            verifier_skills=[],
+            synthesizer_skills=[],
+        )
+
+        default_verifier = kb.get_task(conn, default.verifier_id)
+        default_synthesizer = kb.get_task(conn, default.synthesizer_id)
+        custom_verifier = kb.get_task(conn, custom.verifier_id)
+        custom_synthesizer = kb.get_task(conn, custom.synthesizer_id)
+        disabled_verifier = kb.get_task(conn, disabled.verifier_id)
+        disabled_synthesizer = kb.get_task(conn, disabled.synthesizer_id)
+
+        assert default_verifier is not None
+        assert default_synthesizer is not None
+        assert custom_verifier is not None
+        assert custom_synthesizer is not None
+        assert disabled_verifier is not None
+        assert disabled_synthesizer is not None
+        assert default_verifier.skills == ["requesting-code-review"]
+        assert default_synthesizer.skills == ["humanizer"]
+        assert custom_verifier.skills == ["qa-reviewer"]
+        assert custom_synthesizer.skills == ["writer"]
+        assert disabled_verifier.skills == []
+        assert disabled_synthesizer.skills == []
+    finally:
+        conn.close()

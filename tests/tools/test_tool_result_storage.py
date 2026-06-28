@@ -492,6 +492,54 @@ class TestEnforceTurnBudget:
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
 
+    def test_multimodal_list_content_counts_real_size(self):
+        """A multimodal content list (image_url) must be measured by its real
+        character size, not by its block count. A large base64 image alongside
+        a smaller string must push the turn over budget and spill the string."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        big_image_url = "data:image/png;base64," + ("A" * 180_000)
+        msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": "t1",
+                "content": [
+                    {"type": "text", "text": "screenshot captured"},
+                    {"type": "image_url", "image_url": {"url": big_image_url}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "t2", "content": "x" * 50_000},
+        ]
+        # ~180K image + 50K string > 200K budget. With len(list)==2 the old
+        # code measured the image as ~2 chars and never triggered.
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        # The image list is left inline (not spillable)...
+        assert isinstance(msgs[0]["content"], list)
+        # ...and the string result is spilled to bring the turn under budget.
+        assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
+
+    def test_multimodal_list_not_selected_as_spill_candidate(self):
+        """A multimodal list result is never passed to the string-only
+        persistence path, even when it is the largest content in the turn."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        big_image_url = "data:image/png;base64," + ("A" * 260_000)
+        msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": "t1",
+                "content": [
+                    {"type": "text", "text": "huge screenshot"},
+                    {"type": "image_url", "image_url": {"url": big_image_url}},
+                ],
+            },
+        ]
+        # Over budget, but the only result is a list — nothing safe to spill.
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        # Content stays an intact list; no string-write was attempted on it.
+        assert isinstance(msgs[0]["content"], list)
+        env.execute.assert_not_called()
+
 
 # ── Per-tool threshold integration ────────────────────────────────────
 

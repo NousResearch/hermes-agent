@@ -1,0 +1,20 @@
+name: PR Runtime Leak Guard
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check-pr-runtime-leaks:
+    name: Check PR runtime leaks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Check PR diff for local runtime paths
+        run: python scripts/check_pr_runtime_leaks.py --base-ref "origin/${{ github.base_ref }}" --head-ref HEAD

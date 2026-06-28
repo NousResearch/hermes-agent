@@ -88,6 +88,12 @@ jobs:
     if: needs.detect.outputs.event_name == 'pull_request'
     uses: ./.github/workflows/history-check.yml
 
+  runtime-leak-guard:
+    name: PR runtime leak guard
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request'
+    uses: ./.github/workflows/pr-runtime-leak-guard.yml
+
   contributor-check:
     name: Check contributors
     needs: detect
@@ -142,6 +148,7 @@ jobs:
       - typecheck
       - docs-site
       - history-check
+      - runtime-leak-guard
       - contributor-check
       - uv-lockfile
       - docker-lint

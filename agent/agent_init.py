@@ -182,6 +182,37 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _merge_model_extra_body(agent, model_cfg: Dict[str, Any]) -> None:
+    """Forward the main ``model.extra_body`` config block into request overrides.
+
+    First-class providers (DeepSeek, etc.) build their own ``extra_body`` in the
+    transport, but nothing previously read a user's top-level
+    ``model.extra_body`` (e.g. ``frequency_penalty``, ``presence_penalty``) — so
+    it was silently dropped for every built-in provider (GitHub #336). Only the
+    ``custom_providers`` path carried an ``extra_body`` through.
+
+    We deliver it via the same ``request_overrides['extra_body']`` channel that
+    the chat-completions transport already merges *last* (so it wins over the
+    provider profile's own keys, e.g. DeepSeek's ``thinking`` block). Precedence
+    is ``caller > custom_providers > model.extra_body``: ``model.extra_body`` is
+    the base and any value already present in ``request_overrides`` (caller +
+    custom provider) wins on a key conflict. Sibling keys merge cleanly.
+    """
+    if not isinstance(model_cfg, dict):
+        return
+    extra_body = model_cfg.get("extra_body")
+    if not isinstance(extra_body, dict) or not extra_body:
+        return
+
+    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    merged_extra_body = dict(extra_body)
+    existing_extra_body = overrides.get("extra_body")
+    if isinstance(existing_extra_body, dict):
+        merged_extra_body.update(existing_extra_body)
+    overrides["extra_body"] = merged_extra_body
+    agent.request_overrides = overrides
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1508,6 +1539,10 @@ def init_agent(
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    # Main `model.extra_body` (frequency_penalty, presence_penalty, …) applies
+    # to built-in providers too; merge it after the custom-provider block so a
+    # custom_providers entry still wins on key conflicts (GitHub #336).
+    _merge_model_extra_body(agent, _model_cfg)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:

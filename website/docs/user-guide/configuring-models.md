@@ -108,7 +108,19 @@ model:
   default: anthropic/claude-opus-4.7
   base_url: ''        # cleared on provider switch
   api_mode: chat_completions
+  extra_body:         # optional — forwarded verbatim as request-body fields
+    frequency_penalty: 0.15
+    presence_penalty: 0.1
 ```
+
+`model.extra_body` is an optional mapping forwarded verbatim onto every
+chat-completions request for the main model (the same mechanism already
+available under `auxiliary.<task>.extra_body` and `custom_providers`). Use it
+for OpenAI-compatible sampling knobs a provider supports but Hermes has no
+dedicated key for — e.g. `frequency_penalty`, `presence_penalty`, `top_p`. It
+applies to **built-in providers too** (DeepSeek, etc.), and overrides keys the
+provider profile sets itself. Keys reach the wire unchanged, so a strict
+provider may reject (HTTP 400) an unsupported field.
 
 **Auxiliary override (example — vision on gemini-flash):**
 ```yaml

@@ -94,7 +94,17 @@ model:
   default: anthropic/claude-opus-4.7
   base_url: ''        # cleared on provider switch
   api_mode: chat_completions
+  extra_body:         # 可选——逐字转发为请求体字段
+    frequency_penalty: 0.15
+    presence_penalty: 0.1
 ```
+
+`model.extra_body` 是可选映射，会逐字转发到主模型的每次 chat-completions 请求
+（与 `auxiliary.<task>.extra_body`、`custom_providers` 已有的机制一致）。用于
+provider 支持、但 Hermes 没有专用配置键的 OpenAI 兼容采样参数——如
+`frequency_penalty`、`presence_penalty`、`top_p`。它对**内建 provider 同样生效**
+（DeepSeek 等），并会覆盖 provider profile 自身设置的同名键。键原样上线，所以严格的
+provider 可能因不支持的字段返回 HTTP 400。
 
 **辅助覆盖示例（视觉任务使用 gemini-flash）：**
 ```yaml

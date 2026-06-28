@@ -82,6 +82,7 @@ AUTHOR_MAP = {
     "w.a.t.s.o.n.mk10@gmail.com": "natehale",  # PR #48678 salvage (typing indicator lingers after final reply)
     "0x0sec@gmail.com": "kn8-codes",  # PR #48422 salvage (rich messages opt-in default off)
     "liaoshiwu@gmail.com": "de1tydev",  # PR #10158 salvage (poll read-only for notify_on_complete watcher; #10156)
+    "kurlyk@kurlyks-Mac-mini.local": "skabartem",  # PR #32867 salvage (atomic check-and-replace in _ensure_primary_openai_client; #32846)
     "szzhoujiarui@gmail.com": "szzhoujiarui-sketch",  # cron model.default salvage co-author (#45550)
     "rayjun0412@gmail.com": "rayjun",  # cron model.default salvage co-author (#43952)
     "96944678+sweetcornna@users.noreply.github.com": "sweetcornna",  # cron ticker-liveness salvage co-author (#33849)

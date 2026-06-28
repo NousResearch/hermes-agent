@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import concurrent.futures
 import hashlib
 import hmac
 import itertools
@@ -1431,16 +1430,6 @@ class FeishuAdapter(BasePlatformAdapter):
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
         self._client: Optional[Any] = None
-        # Adapter-owned thread pool for blocking Feishu SDK calls. Routing SDK
-        # work through this pool (instead of asyncio's shared default executor)
-        # means a torn-down default executor can no longer wedge sends with
-        # "Executor shutdown has been called" — the pool is recreated on demand
-        # if it has been shut down. See issue #10849.
-        self._sdk_executor_lock = threading.Lock()
-        self._sdk_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        # Set on disconnect/shutdown so a real teardown can't be resurrected
-        # by the recreate-on-shutdown path; cleared on connect for reconnects.
-        self._sdk_executor_closing = False
         self._ws_client: Optional[Any] = None
         self._ws_future: Optional[asyncio.Future] = None
         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1652,56 +1641,8 @@ class FeishuAdapter(BasePlatformAdapter):
             .build()
         )
 
-    def _get_sdk_executor(self) -> concurrent.futures.ThreadPoolExecutor:
-        """Return the adapter-owned executor for blocking Feishu SDK calls.
-
-        Recreates the pool if it was never built or was shut down by an
-        *external* teardown of the loop's default executor, so that can no
-        longer permanently wedge sends (#10849). Refuses to resurrect once
-        the adapter itself is closing — a real disconnect/shutdown stays shut.
-        """
-        lock = getattr(self, "_sdk_executor_lock", None)
-        if lock is None:
-            lock = threading.Lock()
-            self._sdk_executor_lock = lock
-        with lock:
-            if getattr(self, "_sdk_executor_closing", False):
-                raise RuntimeError("Feishu adapter is shutting down; SDK executor unavailable")
-            executor = getattr(self, "_sdk_executor", None)
-            if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=10,
-                    thread_name_prefix="hermes-feishu-sdk",
-                )
-                self._sdk_executor = executor
-            return executor
-
-    async def _run_blocking(self, func, *args):
-        """Run a blocking Feishu SDK call on the adapter-owned thread pool."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._get_sdk_executor(), func, *args)
-
-    def _shutdown_sdk_executor(self) -> None:
-        """Stop the adapter-owned SDK executor without touching the loop default."""
-        lock = getattr(self, "_sdk_executor_lock", None)
-        if lock is None:
-            return
-        with lock:
-            self._sdk_executor_closing = True
-            executor = getattr(self, "_sdk_executor", None)
-            self._sdk_executor = None
-        if executor is None:
-            return
-        try:
-            executor.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            executor.shutdown(wait=False)
-
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Feishu/Lark."""
-        # A fresh connect (or reconnect) re-arms the SDK executor after a prior
-        # disconnect set the closing flag.
-        self._sdk_executor_closing = False
         if not FEISHU_AVAILABLE:
             logger.error("[Feishu] lark-oapi not installed")
             return False
@@ -1789,7 +1730,6 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_thread_loop = None
         self._loop = None
         self._event_handler = None
-        self._shutdown_sdk_executor()
         self._persist_seen_message_ids()
         await self._release_app_lock()
 
@@ -1842,6 +1782,12 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send a Feishu message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
+        # Get chat info and add to metadata for topic group detection
+        chat_info = await self.get_chat_info(chat_id)
+        if metadata is None:
+            metadata = {}
+        metadata["chat_info"] = chat_info
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1906,7 +1852,7 @@ class FeishuAdapter(BasePlatformAdapter):
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
-            response = await self._run_blocking(self._client.im.v1.message.update, request)
+            response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
@@ -1915,7 +1861,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
                 )
                 fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
-                fallback_response = await self._run_blocking(self._client.im.v1.message.update, fallback_request)
+                fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
                 result = self._finalize_send_result(fallback_response, "update failed")
             if result.success:
                 result.message_id = message_id
@@ -2188,7 +2134,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 image=image_file,
             )
             request = self._build_image_upload_request(body)
-            upload_response = await self._run_blocking(self._client.im.v1.image.create, request)
+            upload_response = await asyncio.to_thread(self._client.im.v1.image.create, request)
             image_key = self._extract_response_field(upload_response, "image_key")
             if not image_key:
                 return self._response_error_result(
@@ -2304,7 +2250,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             request = self._build_get_chat_request(chat_id)
-            response = await self._run_blocking(self._client.im.v1.chat.get, request)
+            response = await asyncio.to_thread(self._client.im.v1.chat.get, request)
             if not response or getattr(response, "success", lambda: False)() is False:
                 code = getattr(response, "code", "unknown")
                 msg = getattr(response, "msg", "chat lookup failed")
@@ -2313,11 +2259,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
             data = getattr(response, "data", None)
             raw_chat_type = str(getattr(data, "chat_type", "") or "").strip().lower()
+            chat_mode = str(getattr(data, "chat_mode", "") or "").strip().lower()
             info = {
                 "chat_id": chat_id,
                 "name": str(getattr(data, "name", None) or chat_id),
                 "type": self._map_chat_type(raw_chat_type),
                 "raw_type": raw_chat_type or None,
+                "chat_mode": chat_mode or None,
             }
             self._chat_info_cache[chat_id] = info
             return dict(info)
@@ -2849,7 +2797,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Fetch the target message to verify it was sent by us and to obtain chat context.
         try:
             request = self._build_get_message_request(message_id)
-            response = await self._run_blocking(self._client.im.v1.message.get, request)
+            response = await asyncio.to_thread(self._client.im.v1.message.get, request)
             if not response or not getattr(response, "success", lambda: False)():
                 return
             items = getattr(getattr(response, "data", None), "items", None) or []
@@ -3027,7 +2975,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 .request_body(body)
                 .build()
             )
-            response = await self._run_blocking(self._client.im.v1.message_reaction.create, request)
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.create, request)
             if response and getattr(response, "success", lambda: False)():
                 data = getattr(response, "data", None)
                 return getattr(data, "reaction_id", None)
@@ -3058,7 +3006,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 .reaction_id(reaction_id)
                 .build()
             )
-            response = await self._run_blocking(self._client.im.v1.message_reaction.delete, request)
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
             if response and getattr(response, "success", lambda: False)():
                 return True
             logger.debug(
@@ -3773,7 +3721,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 file_key=image_key,
                 resource_type="image",
             )
-            response = await self._run_blocking(self._client.im.v1.message_resource.get, request)
+            response = await asyncio.to_thread(self._client.im.v1.message_resource.get, request)
             if not response or not response.success():
                 logger.warning(
                     "[Feishu] Failed to download image %s: %s %s",
@@ -3817,7 +3765,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     file_key=file_key,
                     resource_type=request_type,
                 )
-                response = await self._run_blocking(self._client.im.v1.message_resource.get, request)
+                response = await asyncio.to_thread(self._client.im.v1.message_resource.get, request)
                 if not response or not response.success():
                     logger.debug(
                         "[Feishu] Resource download failed for %s/%s via type=%s: %s %s",
@@ -4035,7 +3983,7 @@ class FeishuAdapter(BasePlatformAdapter):
             else:
                 id_type = "user_id"
             request = GetUserRequest.builder().user_id(trimmed).user_id_type(id_type).build()
-            response = await self._run_blocking(self._client.contact.v3.user.get, request)
+            response = await asyncio.to_thread(self._client.contact.v3.user.get, request)
             if not response or not response.success():
                 return None
             user = getattr(getattr(response, "data", None), "user", None)
@@ -4066,7 +4014,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 .token_types({AccessTokenType.TENANT})
                 .build()
             )
-            resp = await self._run_blocking(self._client.request, req)
+            resp = await asyncio.to_thread(self._client.request, req)
             content = getattr(getattr(resp, "raw", None), "content", None)
             if not content:
                 return None
@@ -4091,7 +4039,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._message_text_cache[message_id]
         try:
             request = self._build_get_message_request(message_id)
-            response = await self._run_blocking(self._client.im.v1.message.get, request)
+            response = await asyncio.to_thread(self._client.im.v1.message.get, request)
             if not response or getattr(response, "success", lambda: False)() is False:
                 code = getattr(response, "code", "unknown")
                 msg = getattr(response, "msg", "message lookup failed")
@@ -4315,7 +4263,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 .token_types({AccessTokenType.TENANT})
                 .build()
             )
-            resp = await self._run_blocking(self._client.request, req)
+            resp = await asyncio.to_thread(self._client.request, req)
             content = getattr(getattr(resp, "raw", None), "content", None)
             if content:
                 payload = json.loads(content)
@@ -4347,7 +4295,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         try:
             request = self._build_get_application_request(app_id=self._app_id, lang="en_us")
-            response = await self._run_blocking(self._client.application.v6.application.get, request)
+            response = await asyncio.to_thread(self._client.application.v6.application.get, request)
             if not response or not response.success():
                 code = getattr(response, "code", None)
                 if code == 99991672:
@@ -4446,6 +4394,41 @@ class FeishuAdapter(BasePlatformAdapter):
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 
+    @staticmethod
+    def _get_audio_duration_ms(file_path: str) -> int:
+        """Extract OGG/Opus audio duration in milliseconds (pure Python, no deps).
+
+        Parses the OGG container to find the last granule position and divides
+        by the Opus sample rate (48000 Hz). Returns 0 for non-OGG files or on error.
+        """
+        import struct
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+            pos = 0
+            last_granule = 0
+            while pos < len(data) - 27:
+                idx = data.find(b"OggS", pos)
+                if idx == -1:
+                    break
+                pos = idx
+                if pos + 27 > len(data):
+                    break
+                granule = struct.unpack_from("<q", data, pos + 6)[0]
+                num_segments = data[pos + 26]
+                if granule > 0:
+                    last_granule = granule
+                segment_end = pos + 27 + num_segments
+                if segment_end > len(data):
+                    break
+                page_size = num_segments
+                for i in range(num_segments):
+                    page_size += data[pos + 27 + i]
+                pos += page_size
+            return int(last_granule / 48000 * 1000) if last_granule > 0 else 0
+        except Exception:
+            return 0
+
     async def _send_uploaded_file_message(
         self,
         *,
@@ -4468,14 +4451,18 @@ class FeishuAdapter(BasePlatformAdapter):
             requested_message_type=outbound_message_type,
         )
         try:
+            duration_ms = 0
+            if upload_file_type == "opus":
+                duration_ms = self._get_audio_duration_ms(file_path)
             with open(file_path, "rb") as file_obj:
                 body = self._build_file_upload_body(
                     file_type=upload_file_type,
                     file_name=display_name,
                     file=file_obj,
+                    duration=duration_ms,
                 )
                 request = self._build_file_upload_request(body)
-                upload_response = await self._run_blocking(self._client.im.v1.file.create, request)
+                upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
             file_key = self._extract_response_field(upload_response, "file_key")
             if not file_key:
                 return self._response_error_result(
@@ -4505,10 +4492,76 @@ class FeishuAdapter(BasePlatformAdapter):
                     reply_to=reply_to,
                     metadata=metadata,
                 )
+                # Audio messages may fail with 99992402 when using thread_id routing.
+                # Try replying to the last message in the thread, then fall back to chat_id.
+                if (not self._response_succeeded(message_response)
+                        and getattr(message_response, "code", None) == 99992402
+                        and resolved_message_type == "audio"
+                        and (metadata or {}).get("thread_id")):
+                    # Try reply API with thread_id as reply anchor
+                    thread_msg_id = (metadata or {}).get("reply_to_message_id")
+                    if not thread_msg_id:
+                        thread_msg_id = await self._fetch_last_message_in_thread(
+                            (metadata or {}).get("thread_id")
+                        )
+                    if thread_msg_id:
+                        logger.info("[Feishu] Audio: retrying via reply API in thread")
+                        message_response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=resolved_message_type,
+                            payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
+                            reply_to=thread_msg_id,
+                            metadata=metadata,
+                        )
+                    if not self._response_succeeded(message_response):
+                        logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
+                        message_response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=resolved_message_type,
+                            payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
+                            reply_to=None,
+                            metadata=None,
+                        )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _fetch_last_message_in_thread(self, thread_id: str) -> Optional[str]:
+        """Fetch the last message_id in a thread for reply-based routing."""
+        if not self._client or not thread_id:
+            return None
+        try:
+            from lark_oapi.api.im.v1 import ListMessageRequest
+            request = (
+                ListMessageRequest.builder()
+                .container_id_type("thread")
+                .container_id(thread_id)
+                .page_size(1)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message.list, request)
+            logger.info("[Feishu] Fetch last message in thread %s: success=%s, code=%s, msg=%s",
+                      thread_id,
+                      getattr(response, "success", lambda: False)(),
+                      getattr(response, "code", "unknown"),
+                      getattr(response, "msg", ""))
+            if response and getattr(response, "success", lambda: False)():
+                items = getattr(getattr(response, "data", None), "items", None)
+                if items and len(items) > 0:
+                    msg_id = getattr(items[0], "message_id", None)
+                    logger.info("[Feishu] Found last message in thread %s: %s", thread_id, msg_id)
+                    return msg_id
+                else:
+                    logger.warning("[Feishu] Thread %s has no messages", thread_id)
+            else:
+                logger.warning("[Feishu] Failed to fetch thread %s: [%s] %s",
+                             thread_id,
+                             getattr(response, "code", "unknown"),
+                             getattr(response, "msg", ""))
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to fetch last message in thread %s: %s", thread_id, exc)
+        return None
 
     async def _send_raw_message(
         self,
@@ -4531,13 +4584,37 @@ class FeishuAdapter(BasePlatformAdapter):
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
-            return await self._run_blocking(self._client.im.v1.message.reply, request)
+            return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
         # For topic/thread messages that fell back from reply→create, use
         # thread_id as receive_id so the message lands in the topic instead of
         # the main chat.
         _thread_id = (metadata or {}).get("thread_id")
         if _thread_id:
+            # Check if this is a topic group (chat_mode == "topic")
+            # If so, we need to use reply API with the last message in the thread
+            chat_info = metadata.get("chat_info") or {}
+            is_topic_group = chat_info.get("chat_mode") == "topic"
+            
+            if is_topic_group:
+                # For topic groups, we must use reply API
+                # Try to find the last message in the thread to reply to
+                last_msg_id = await self._fetch_last_message_in_thread(_thread_id)
+                if last_msg_id:
+                    body = self._build_reply_message_body(
+                        content=payload,
+                        msg_type=msg_type,
+                        reply_in_thread=True,
+                        uuid_value=str(uuid.uuid4()),
+                    )
+                    request = self._build_reply_message_request(last_msg_id, body)
+                    return await asyncio.to_thread(self._client.im.v1.message.reply, request) if self._client else None
+                else:
+                    # Fallback: use chat_id with thread_id in metadata
+                    # This may still fail, but it's the best we can do
+                    logger.warning("[Feishu] Topic group but no last message found in thread %s", _thread_id)
+            
+            # For non-topic groups or fallback, use thread_id as receive_id
             body = self._build_create_message_body(
                 receive_id=_thread_id,
                 msg_type=msg_type,
@@ -4561,7 +4638,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_create_message_request(receive_id_type, body)
-        return await self._run_blocking(self._client.im.v1.message.create, request)
+        return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod
     def _response_succeeded(response: Any) -> bool:
@@ -4892,16 +4969,18 @@ class FeishuAdapter(BasePlatformAdapter):
         return SimpleNamespace(request_body=request_body)
 
     @staticmethod
-    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any) -> Any:
+    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any, duration: int = 0) -> Any:
         if "CreateFileRequestBody" in globals():
-            return (
+            builder = (
                 CreateFileRequestBody.builder()
                 .file_type(file_type)
                 .file_name(file_name)
                 .file(file)
-                .build()
             )
-        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+            if duration > 0:
+                builder = builder.duration(duration)
+            return builder.build()
+        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file, duration=duration)
 
     @staticmethod
     def _build_file_upload_request(request_body: Any) -> Any:

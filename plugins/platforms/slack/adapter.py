@@ -4417,8 +4417,13 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     existing env-driven model and owns the YAML→env translation here, next to
     the adapter that consumes it. Env vars take precedence over YAML — every
     assignment is guarded by ``not os.getenv(...)`` so explicit env vars
-    survive a config.yaml update. Returns ``None`` because no extras are
-    seeded into ``PlatformConfig.extra`` directly (everything flows through env).
+    survive a config.yaml update.
+
+    Returns a dict of keys to bridge into ``PlatformConfig.extra`` (or None
+    when no extras apply). Currently bridges ``markdown_blocks`` — the
+    documented opt-out is read by ``_markdown_blocks_enabled()`` from
+    ``config.extra``, not from an env var, so it must be returned here to
+    take effect (#53893).
     """
     if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
         os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
@@ -4438,7 +4443,17 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
-    return None  # all settings flow through env; nothing to merge into extras
+    # Bridge the documented ``markdown_blocks`` opt-out into
+    # ``PlatformConfig.extra`` so ``_markdown_blocks_enabled()`` honours it.
+    # The adapter reads its runtime enable/disable state via
+    # ``config.extra.get("markdown_blocks")`` (see ``_markdown_blocks_enabled``),
+    # not via an env var, so the YAML keys above (which only seed SLACK_* env)
+    # leave the flag silently dropped — returning None here makes the documented
+    # config opt-out a no-op (#53893 item 1, tw0316 review).
+    extras: dict = {}
+    if "markdown_blocks" in slack_cfg:
+        extras["markdown_blocks"] = slack_cfg["markdown_blocks"]
+    return extras or None  # type: ignore[return-value]
 
 
 def _is_connected(config) -> bool:

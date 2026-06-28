@@ -146,7 +146,7 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return _BOOL_WORDS.get(value.strip().lower()) if isinstance(value, str) else None
 
 
-def _normalize_reference_images(value: Any) -> Optional[List[str]]:
+def _normalize_url_list(value: Any) -> Optional[List[str]]:
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, (list, tuple)):
@@ -154,10 +154,83 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()] or None
 
 
+_REFERENCE_CAPABILITY_KEYS = {
+    "reference_video_urls": "max_reference_videos",
+    "reference_audio_urls": "max_reference_audios",
+    "first_frame_url": "supports_first_frame",
+    "last_frame_url": "supports_last_frame",
+}
+
+_REFERENCE_INPUT_PROPERTIES: Dict[str, Dict[str, Any]] = {
+    "reference_video_urls": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "Optional reference video URLs for motion, camera, or style guidance."
+        ),
+    },
+    "reference_audio_urls": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "Optional reference audio URLs for rhythm, music, or voice guidance."
+        ),
+    },
+    "first_frame_url": {
+        "type": "string",
+        "description": "Optional image URL to pin the video's first frame.",
+    },
+    "last_frame_url": {
+        "type": "string",
+        "description": "Optional image URL to pin the video's last frame.",
+    },
+}
+
+
+def _capabilities_for_model(provider: Any, model: Optional[str]) -> Dict[str, Any]:
+    """Provider capabilities with model-specific metadata applied."""
+    try:
+        capabilities = dict(provider.capabilities() or {})
+    except Exception:
+        capabilities = {}
+
+    try:
+        models = provider.list_models() or []
+    except Exception:
+        models = []
+    model_meta = next(
+        (
+            item
+            for item in models
+            if isinstance(item, dict) and item.get("id") == model
+        ),
+        {},
+    )
+    model_capabilities = {
+        "max_reference_images",
+        *_REFERENCE_CAPABILITY_KEYS.values(),
+    }
+    for capability in model_capabilities:
+        if capability in model_meta:
+            capabilities[capability] = model_meta[capability]
+    return capabilities
+
+
+def _supports_reference_input(capabilities: Dict[str, Any], field: str) -> bool:
+    value = capabilities.get(_REFERENCE_CAPABILITY_KEYS[field])
+    if field in {"reference_video_urls", "reference_audio_urls"}:
+        return isinstance(value, int) and not isinstance(value, bool) and value > 0
+    return value is True
+
+
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
-    reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
+    reference_image_urls = _normalize_url_list(args.get("reference_image_urls"))
+    reference_video_urls = _normalize_url_list(args.get("reference_video_urls"))
+    reference_audio_urls = _normalize_url_list(args.get("reference_audio_urls"))
+    first_frame_url = (args.get("first_frame_url") or "").strip() or None
+    last_frame_url = (args.get("last_frame_url") or "").strip() or None
     task_id = _kw.get("task_id")
 
     # Confinement chokepoint (mirrors image_generate): non-local backends hand providers data: URLs.
@@ -166,6 +239,17 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         image_url, reference_image_urls, task_id)
     if confine_error is not None:
         return confine_error
+    if first_frame_url or last_frame_url:
+        first_frame_url, last_frames, confine_error = _confine_source_images(
+            first_frame_url, [last_frame_url] if last_frame_url else None, task_id)
+        if confine_error is not None:
+            return confine_error
+        last_frame_url = (last_frames or [None])[0]
+    if reference_video_urls:
+        _, reference_video_urls, confine_error = _confine_source_images(
+            None, reference_video_urls, task_id, permitted=("video",))
+        if confine_error is not None:
+            return confine_error
     # Coerced BEFORE validation (ordering parity: a bad value raises before a missing prompt).
     optional = {
         "duration": _coerce_int(args.get("duration")),
@@ -190,11 +274,31 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
     # Config, then provider default; a ``model`` in args is ignored (models do not choose models).
     model = _read_configured_video_model() or provider.default_model()
+
+    capabilities = _capabilities_for_model(provider, model)
+    pname = getattr(provider, "name", "?")
+    reference_inputs = {
+        "reference_video_urls": reference_video_urls,
+        "reference_audio_urls": reference_audio_urls,
+        "first_frame_url": first_frame_url,
+        "last_frame_url": last_frame_url,
+    }
+    unsupported = [
+        field
+        for field, value in reference_inputs.items()
+        if value and not _supports_reference_input(capabilities, field)
+    ]
+    if unsupported:
+        return tool_error(
+            f"Provider '{pname}' model '{model or 'default'}' does not support: "
+            f"{', '.join(unsupported)}")
+
     kwargs: Dict[str, Any] = {
-        "model": model, "image_url": image_url, "reference_image_urls": reference_image_urls, **optional}
+        "model": model, "image_url": image_url, "reference_image_urls": reference_image_urls,
+        "reference_video_urls": reference_video_urls, "reference_audio_urls": reference_audio_urls,
+        "first_frame_url": first_frame_url, "last_frame_url": last_frame_url, **optional}
     # Drop None entries so providers see clean defaults.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
-    pname = getattr(provider, "name", "?")
 
     def _err(error: str, error_type: str) -> str:
         return json.dumps(error_response(
@@ -289,6 +393,7 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     caps = _provider_call(provider, "capabilities", {})
     models = _provider_call(provider, "list_models", [])
     active_model = configured_model or provider.default_model()
+    caps = _capabilities_for_model(provider, active_model)
     model_meta = next((m for m in models if isinstance(m, dict) and m.get("id") == active_model), {})
 
     # Model caveats surface only what differs from the backend's overall capabilities.
@@ -339,6 +444,14 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
                 "description": (
                     f"Up to {max_refs} public HTTPS reference image URLs "
                     "(style or character refs).")}
+    for field, capability in _REFERENCE_CAPABILITY_KEYS.items():
+        if not _supports_reference_input(caps, field):
+            continue
+        definition = dict(_REFERENCE_INPUT_PROPERTIES[field])
+        limit = caps.get(capability)
+        if definition.get("type") == "array" and isinstance(limit, int) and not isinstance(limit, bool):
+            definition["maxItems"] = limit
+        properties[field] = definition
     min_duration = model_meta.get("min_duration", caps.get("min_duration"))
     max_duration = model_meta.get("max_duration", caps.get("max_duration"))
     duration_param = dict(static_props["duration"])
@@ -359,6 +472,18 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     for flag, key, param in _CAPABILITY_PARAMS:
         if caps.get(flag):
             properties[key] = param
+    max_reference_videos = caps.get("max_reference_videos") or 0
+    if max_reference_videos:
+        parts.append(f"- reference_video_urls: up to {max_reference_videos} videos")
+    max_reference_audios = caps.get("max_reference_audios") or 0
+    if max_reference_audios:
+        parts.append(
+            f"- reference_audio_urls: up to {max_reference_audios} audio files")
+    if caps.get("supports_first_frame") and caps.get("supports_last_frame"):
+        parts.append(
+            "- first_frame_url / last_frame_url: start/end frame control supported")
+    elif caps.get("supports_first_frame"):
+        parts.append("- first_frame_url: start-frame control supported")
     if caps.get("audio_always_on") and not caps.get("supports_audio"):
         parts.append(
             "- audio: native stereo audio is generated with every video "

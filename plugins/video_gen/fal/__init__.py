@@ -55,7 +55,10 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
                       duration_suffix="s", audio=True, negative=True, seed=True),  # wants "4s" not "4"
     "seedance-2.0": _family("Seedance 2.0", "~60-120s", "premium", "ByteDance. Cinematic, synchronized audio + lip-sync, 4-15s.",  # no "auto" aspect, no `seed`
                             "bytedance/seedance-2.0/text-to-video", "bytedance/seedance-2.0/image-to-video", aspect_ratios=_SIX_ASPECTS,
-                            resolutions=("480p", "720p", "1080p"), durations=(4, 15), audio=True),
+                            resolutions=("480p", "720p", "1080p"), durations=(4, 15), audio=True,
+                            reference_endpoint="bytedance/seedance-2.0/reference-to-video",
+                            max_reference_images=9, max_reference_videos=3, max_reference_audios=3,
+                            supports_first_frame=True, supports_last_frame=True),
     "seedance-2.5": _family("Seedance 2.5", "~60-180s", "premium", "ByteDance flagship. Native 30s single-pass, audio in the same latent space, lip-sync.",
                             "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/image-to-video", aspect_ratios=_SIX_ASPECTS,
                             image_drop_keys=("aspect_ratio",), resolutions=("480p", "720p"), durations=(4, 30), audio=True),  # i2v aspect is "auto" only
@@ -178,13 +181,16 @@ def _resolve_family(explicit: Optional[str]) -> Tuple[str, Dict[str, Any]]:
 
 
 def _build_payload(family: Dict[str, Any], *, prompt: str, image_url: Optional[str], duration: Optional[int], aspect_ratio: str,
-                   resolution: str, negative_prompt: Optional[str], audio: Optional[bool], seed: Optional[int]) -> Dict[str, Any]:
+                   resolution: str, negative_prompt: Optional[str], audio: Optional[bool], seed: Optional[int],
+                   reference_image_urls: Optional[List[str]] = None, reference_video_urls: Optional[List[str]] = None,
+                   reference_audio_urls: Optional[List[str]] = None, last_frame_url: Optional[str] = None,
+                   reference_mode: bool = False) -> Dict[str, Any]:
     """Build a family-specific payload, dropping keys the family doesn't declare (unsupported enums → endpoint default)."""
     resolved = (family.get("resolution_aliases") or {}).get((resolution or "").lower(), resolution)
     clamped = _clamp_duration(family, duration, resolved) if family["durations"] else None
     payload: Dict[str, Any] = {key: value for ok, key, value in (
         (prompt, "prompt", prompt),
-        (image_url, family.get("image_param_key") or "image_url", image_url),
+        (not reference_mode and image_url, family.get("image_param_key") or "image_url", image_url),
         # Newer endpoints declare no `seed` and the managed gateway forwards whatever we send — gate on the family.
         (seed is not None and family.get("seed", True), "seed", seed),
         (family["aspect_ratios"] and aspect_ratio in family["aspect_ratios"], "aspect_ratio", aspect_ratio),
@@ -194,6 +200,19 @@ def _build_payload(family: Dict[str, Any], *, prompt: str, image_url: Optional[s
         (family["audio"] and audio is not None, family.get("audio_param_key") or "generate_audio", bool(audio)),  # Wan 3.0 calls it `audio`
         (family["negative"] and negative_prompt, "negative_prompt", negative_prompt),
     ) if ok}
+    if reference_mode:
+        # The Seedance reference-to-video endpoint takes the media as plural URL lists.
+        image_urls = list(reference_image_urls or [])
+        if image_url and image_url not in image_urls:
+            image_urls.insert(0, image_url)
+        if image_urls:
+            payload["image_urls"] = image_urls
+        if reference_video_urls:
+            payload["video_urls"] = list(reference_video_urls)
+        if reference_audio_urls:
+            payload["audio_urls"] = list(reference_audio_urls)
+    elif image_url and last_frame_url:
+        payload["end_image_url"] = last_frame_url
     for key in family.get("image_drop_keys", ()) if image_url else ():  # keys the i2v endpoint rejects outright
         payload.pop(key, None)
     for key, value in (family.get("static_payload") or {}).items():  # constants the endpoint always requires
@@ -324,6 +343,7 @@ _NO_BACKEND_MSG = ("No FAL backend available. Either set FAL_KEY (run `hermes to
 _MODALITY_MISSING_MSG = {
     "image": "FAL family {fid} has no image-to-video endpoint. Pick a family with image-to-video support via `hermes tools` → Video Generation.",
     "text": "FAL family {fid} has no text-to-video endpoint. Pass an image_url to use its image-to-video endpoint, or pick a different family.",
+    "reference": "FAL family {fid} has no reference-to-video endpoint. Pick a family with reference media support via `hermes tools` → Video Generation.",
 }
 
 
@@ -345,7 +365,10 @@ class FALVideoGenProvider(VideoGenProvider):
             return False
 
     def list_models(self) -> List[Dict[str, Any]]:
+        ref_keys = ("max_reference_images", "max_reference_videos", "max_reference_audios",
+                    "supports_first_frame", "supports_last_frame")
         return [{"id": fid, **{k: meta[k] for k in ("display", "speed", "strengths", "price", "tier")}, "modalities": _modalities(meta),
+                 **{k: meta.get(k, 0 if k.startswith("max_") else False) for k in ref_keys},
                  **({"min_duration": min(d), "max_duration": max(d)} if (d := meta["durations"]) else {})}
                 for fid, meta in FAL_FAMILIES.items()]
 
@@ -370,14 +393,21 @@ class FALVideoGenProvider(VideoGenProvider):
                     "resolutions": list(family["resolutions"] or []), "max_duration": max(durations), "min_duration": min(durations),
                     "supports_audio": bool(family["audio"]), "audio_always_on": bool(family.get("audio_native")),  # no toggle: description only
                     "supports_negative_prompt": bool(family["negative"]), "supports_seed": bool(family["seed"]),
-                    "supports_upscale": True, "max_reference_images": 0}  # SeedVR chains for any family
+                    "supports_upscale": True, "max_reference_images": family.get("max_reference_images", 0),  # SeedVR chains for any family
+                    "max_reference_videos": family.get("max_reference_videos", 0),
+                    "max_reference_audios": family.get("max_reference_audios", 0),
+                    "supports_first_frame": family.get("supports_first_frame", False),
+                    "supports_last_frame": family.get("supports_last_frame", False)}
         spans = [m["durations"] for m in FAL_FAMILIES.values() if m["durations"]]
         return {"modalities": ["text", "image"], "aspect_ratios": ["16:9", "9:16", "1:1"], "resolutions": ["360p", "540p", "720p", "1080p"],
                 "max_duration": max([1] + [max(d) for d in spans]), "min_duration": min([min(d) for d in spans], default=1),
-                "supports_audio": True, "supports_negative_prompt": True, "supports_seed": True, "supports_upscale": True, "max_reference_images": 0}
+                "supports_audio": True, "supports_negative_prompt": True, "supports_seed": True, "supports_upscale": True, "max_reference_images": 0,
+                "max_reference_videos": 0, "max_reference_audios": 0, "supports_first_frame": False, "supports_last_frame": False}
 
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
+        reference_video_urls: Optional[List[str]] = None, reference_audio_urls: Optional[List[str]] = None,
+        first_frame_url: Optional[str] = None, last_frame_url: Optional[str] = None,
         duration: Optional[int] = None, aspect_ratio: str = "16:9", resolution: str = "720p", negative_prompt: Optional[str] = None,
         audio: Optional[bool] = None, seed: Optional[int] = None, upscale: Optional[bool] = None, **kwargs: Any,
     ) -> Dict[str, Any]:
@@ -392,15 +422,29 @@ class FALVideoGenProvider(VideoGenProvider):
             return _fal_error("fal_client Python package not installed (pip install fal-client)", "missing_dependency", prompt)
         prompt = (prompt or "").strip()
         family_id, family = _resolve_family(model)
-        image_url_norm = (image_url or "").strip() or None
-        modality_used = "image" if image_url_norm else "text"  # routes to the i2v vs t2v endpoint
-        endpoint = family[f"{modality_used}_endpoint"]
+        image_url_norm = (first_frame_url or image_url or "").strip() or None
+        reference_mode = bool(reference_image_urls or reference_video_urls or reference_audio_urls)
+        if reference_mode and (first_frame_url or last_frame_url):
+            return _fal_error(
+                "Seedance reference media cannot be combined with explicit first/last frame controls in one request.",
+                "unsupported_combination", prompt, model=family_id)
+        if reference_mode:
+            modality_used = "reference"  # routes to the reference-to-video endpoint
+            endpoint = family.get("reference_endpoint")
+        else:
+            modality_used = "image" if image_url_norm else "text"  # routes to the i2v vs t2v endpoint
+            endpoint = family[f"{modality_used}_endpoint"]
         if not endpoint:
             return _fal_error(_MODALITY_MISSING_MSG[modality_used].format(fid=family_id), "modality_unsupported", prompt, model=family_id)
+        if last_frame_url and not image_url_norm:
+            return _fal_error("last_frame_url requires image_url or first_frame_url.", "missing_first_frame", prompt, model=family_id)
         if not prompt:
             return _fal_error("prompt is required.", "missing_prompt", prompt, model=family_id)
         payload = _build_payload(family, prompt=prompt, image_url=image_url_norm, duration=duration, aspect_ratio=aspect_ratio,
-                                 resolution=resolution, negative_prompt=negative_prompt, audio=audio, seed=seed)
+                                 resolution=resolution, negative_prompt=negative_prompt, audio=audio, seed=seed,
+                                 reference_image_urls=reference_image_urls, reference_video_urls=reference_video_urls,
+                                 reference_audio_urls=reference_audio_urls, last_frame_url=last_frame_url,
+                                 reference_mode=reference_mode)
         try:
             handle = _submit_fal_video_request(endpoint, payload)
             source_request_id = getattr(handle, "request_id", None)

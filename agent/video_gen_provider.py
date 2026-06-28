@@ -53,6 +53,8 @@ class VideoGenProvider(CatalogProviderBase):
             "resolutions": list(COMMON_RESOLUTIONS), "max_duration": 10, "min_duration": 1,
             "supports_audio": False, "supports_negative_prompt": False, "supports_seed": False,
             "supports_upscale": False, "max_reference_images": 0,
+            "max_reference_videos": 0, "max_reference_audios": 0,
+            "supports_first_frame": False, "supports_last_frame": False,
         }
 
     @abc.abstractmethod

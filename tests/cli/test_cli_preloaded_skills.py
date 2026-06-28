@@ -106,6 +106,33 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
         cli_mod.main(skills="missing-skill", list_tools=True)
 
 
+def test_main_warns_for_unknown_skill_in_kanban_worker(monkeypatch):
+    """#54088: Kanban workers should warn and continue when a skill is missing."""
+    import cli as cli_mod
+
+    created = {}
+
+    def fake_cli(**kwargs):
+        created["cli"] = _DummyCLI(**kwargs)
+        return created["cli"]
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+    monkeypatch.setattr(
+        cli_mod,
+        "build_preloaded_skills_prompt",
+        lambda skills, task_id=None: ("loaded prompt", ["good-skill"], ["missing-skill"]),
+    )
+    monkeypatch.setenv("HERMES_KANBAN_DB", "/tmp/fake-kanban.db")
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(skills="good-skill,missing-skill", list_tools=True)
+
+    cli_obj = created["cli"]
+    # Must NOT raise — should warn and continue with available skills
+    assert cli_obj.system_prompt == "base prompt\n\nloaded prompt"
+    assert cli_obj.preloaded_skills == ["good-skill"]
+
+
 def test_show_banner_does_not_print_skills():
     """show_banner() no longer prints the activated skills line — it moved to run()."""
     cli_obj = _make_real_cli(compact=False)

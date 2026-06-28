@@ -18689,11 +18689,21 @@ def main():
             data = yaml.safe_load(f) or {}
             config = GatewayConfig.from_dict(data)
     
-    # Run the gateway - exit with code 1 if no platforms connected,
-    # so systemd Restart=on-failure will retry on transient errors (e.g. DNS)
+    # start_gateway() already performs graceful teardown before returning.
+    # Force-exit afterwards so a wedged non-daemon worker thread cannot block
+    # interpreter finalization and strand the gateway half-shut down.
     success = asyncio.run(start_gateway(config))
-    if not success:
-        sys.exit(1)
+    _exit_after_graceful_shutdown(success)
+
+
+def _exit_after_graceful_shutdown(success: bool) -> None:
+    """Flush stdio and terminate immediately after graceful shutdown."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    os._exit(0 if success else 1)
 
 
 if __name__ == "__main__":

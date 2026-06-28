@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
+from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
@@ -2755,6 +2756,27 @@ class SessionDB:
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
 
+        # Defence-in-depth: redact credentials before persisting to state.db.
+        # Mirrors the existing redaction in run_agent._save_session_log so the
+        # always-on SQLite store gets the same protection as optional JSON
+        # snapshots.  redact_sensitive_text is a no-op when
+        # HERMES_REDACT_SECRETS is disabled.
+        if isinstance(stored_content, str):
+            stored_content = redact_sensitive_text(stored_content)
+        if tool_calls_json is not None:
+            tool_calls_json = redact_sensitive_text(tool_calls_json)
+        reasoning = redact_sensitive_text(reasoning) if reasoning else reasoning
+        reasoning_content = (
+            redact_sensitive_text(reasoning_content)
+            if reasoning_content else reasoning_content
+        )
+        if reasoning_details_json is not None:
+            reasoning_details_json = redact_sensitive_text(reasoning_details_json)
+        if codex_items_json is not None:
+            codex_items_json = redact_sensitive_text(codex_items_json)
+        if codex_message_items_json is not None:
+            codex_message_items_json = redact_sensitive_text(codex_message_items_json)
+
         message_timestamp = time.time()
         if timestamp is not None:
             try:
@@ -2862,6 +2884,27 @@ class SessionDB:
                 msg.get("platform_message_id") or msg.get("message_id")
             )
 
+            # Defence-in-depth: redact credentials before persisting to state.db.
+            encoded_content = self._encode_content(msg.get("content"))
+            if isinstance(encoded_content, str):
+                encoded_content = redact_sensitive_text(encoded_content)
+            if tool_calls_json is not None:
+                tool_calls_json = redact_sensitive_text(tool_calls_json)
+            msg_reasoning = (
+                redact_sensitive_text(msg["reasoning"])
+                if role == "assistant" and msg.get("reasoning") else None
+            )
+            msg_reasoning_content = (
+                redact_sensitive_text(msg["reasoning_content"])
+                if role == "assistant" and msg.get("reasoning_content") else None
+            )
+            if reasoning_details_json is not None:
+                reasoning_details_json = redact_sensitive_text(reasoning_details_json)
+            if codex_items_json is not None:
+                codex_items_json = redact_sensitive_text(codex_items_json)
+            if codex_message_items_json is not None:
+                codex_message_items_json = redact_sensitive_text(codex_message_items_json)
+
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
@@ -2871,15 +2914,15 @@ class SessionDB:
                 (
                     session_id,
                     role,
-                    self._encode_content(msg.get("content")),
+                    encoded_content,
                     msg.get("tool_call_id"),
                     tool_calls_json,
                     msg.get("tool_name"),
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
-                    msg.get("reasoning") if role == "assistant" else None,
-                    msg.get("reasoning_content") if role == "assistant" else None,
+                    msg_reasoning,
+                    msg_reasoning_content,
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,

@@ -1088,6 +1088,65 @@ class TestMessageStorage:
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
 
 
+
+    def test_append_message_redacts_secrets_in_content(self, db):
+        """Credentials in message content must be redacted before persisting
+        to state.db, matching the existing redaction in run_agent._save_session_log.
+
+        Regression test for issue #54027.
+        """
+        db.create_session(session_id="s_redact", source="cli")
+
+        # Token must match sk-[A-Za-z0-9_-]{10,} (no dots) and be >=18 chars
+        # for _mask_token's floor=18 threshold.  Build from parts to avoid
+        # terminal-tool redaction in CI logs.
+        secret = "sk-" + "abcde" + "fghij" + "klmnopq"
+        assert len(secret) >= 18
+
+        db.append_message(
+            "s_redact",
+            role="user",
+            content="Here is my key: " + secret,
+        )
+        db.append_message(
+            "s_redact",
+            role="assistant",
+            content="I see your key.",
+            reasoning="User pasted " + secret,
+        )
+
+        # Read raw from DB to verify redaction happened at storage level
+        import sqlite3
+        conn = sqlite3.connect(str(db.db_path))
+        rows = conn.execute(
+            "SELECT content, reasoning FROM messages WHERE session_id = 's_redact'"
+        ).fetchall()
+        conn.close()
+
+        # The original token must NOT appear in stored content.
+        # _mask_token redacts to "head...tail" format (sk-abc...nopq).
+        assert secret not in rows[0][0], "user content stored raw secret in state.db"
+        assert secret not in rows[1][1], "assistant reasoning stored raw secret in state.db"
+
+    def test_append_message_redaction_noop_when_disabled(self, db, monkeypatch):
+        """When redact_sensitive_text is a no-op, content passes through unchanged."""
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "redact_sensitive_text", lambda text, **kw: text)
+
+        db.create_session(session_id="s_noredact", source="cli")
+        secret = "sk-" + "abcde" + "fghij" + "klmnopq"
+        db.append_message("s_noredact", role="user", content="Key: " + secret)
+
+        import sqlite3
+        conn = sqlite3.connect(str(db.db_path))
+        row = conn.execute(
+            "SELECT content FROM messages WHERE session_id = 's_noredact'"
+        ).fetchone()
+        conn.close()
+
+        assert secret in row[0], "secret should be preserved when redaction is disabled"
+
 # =========================================================================
 # FTS5 search
 # =========================================================================

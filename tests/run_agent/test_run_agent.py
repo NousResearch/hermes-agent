@@ -22,6 +22,7 @@ from agent.codex_responses_adapter import _normalize_codex_response
 
 import run_agent
 from run_agent import AIAgent
+from agent.conversation_loop import _iteration_budget_pressure_message
 from agent.error_classifier import FailoverReason
 from agent.memory_manager import MemoryManager
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
@@ -53,6 +54,26 @@ def test_is_destructive_command_treats_cp_as_mutating():
 
 def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
+
+
+def test_iteration_budget_pressure_message_thresholds():
+    assert _iteration_budget_pressure_message(6, 10) is None
+
+    caution = _iteration_budget_pressure_message(7, 10)
+    assert caution is not None
+    assert "budget caution" in caution
+    assert "API call 7/10" in caution
+    assert "3 iterations remain" in caution
+
+    warning = _iteration_budget_pressure_message(9, 10)
+    assert warning is not None
+    assert "budget warning" in warning
+    assert "MUST prepare the final answer now" in warning
+
+
+def test_iteration_budget_pressure_message_ignores_invalid_counts():
+    assert _iteration_budget_pressure_message(0, 10) is None
+    assert _iteration_budget_pressure_message(1, 0) is None
 
 
 @pytest.fixture()

@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import type { DesktopMarketplaceThemeResult } from '@/global'
 
 import { luminance } from './color'
-import { buildThemeFromMarketplace } from './install'
+import { buildThemeFromMarketplace, installHermesThemeFromText } from './install'
+import { $userThemes } from './user-themes'
 
 const themeJson = (type: 'light' | 'dark', background: string, foreground: string) =>
   JSON.stringify({ type, colors: { 'editor.background': background, 'editor.foreground': foreground } })
@@ -128,5 +129,57 @@ describe('buildThemeFromMarketplace', () => {
     expect(() => buildThemeFromMarketplace({ extensionId: 'x.y', displayName: 'X', themes: [] })).toThrow(
       /does not contribute/i
     )
+  })
+})
+
+const hermesTheme = (name: string) => ({
+  name,
+  label: name,
+  description: 'Hermes native theme',
+  colors: {
+    background: '#101010',
+    foreground: '#f0f0f0',
+    card: '#161616',
+    cardForeground: '#f0f0f0',
+    muted: '#202020',
+    mutedForeground: '#a0a0a0',
+    popover: '#181818',
+    popoverForeground: '#f0f0f0',
+    primary: '#d0d0d0',
+    primaryForeground: '#101010',
+    secondary: '#242424',
+    secondaryForeground: '#d0d0d0',
+    accent: '#282828',
+    accentForeground: '#f0f0f0',
+    border: '#303030',
+    input: '#303030',
+    ring: '#9a9a9a',
+    destructive: '#cc6666',
+    destructiveForeground: '#101010'
+  }
+})
+
+describe('installHermesThemeFromText', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $userThemes.set({})
+  })
+
+  it('imports a single Hermes-native theme JSON object', () => {
+    const installed = installHermesThemeFromText(JSON.stringify(hermesTheme('quiet')))
+
+    expect(installed.map(theme => theme.name)).toEqual(['quiet'])
+    expect(window.localStorage.getItem('hermes-desktop-user-themes-v1')).toContain('quiet')
+  })
+
+  it('imports a Hermes-native theme pack JSON object', () => {
+    const installed = installHermesThemeFromText(JSON.stringify({ themes: [hermesTheme('quiet'), hermesTheme('warm')] }))
+
+    expect(installed.map(theme => theme.name)).toEqual(['quiet', 'warm'])
+    expect(window.localStorage.getItem('hermes-desktop-user-themes-v1')).toContain('warm')
+  })
+
+  it('rejects JSON without a theme or theme pack', () => {
+    expect(() => installHermesThemeFromText(JSON.stringify({ nope: true }))).toThrow(/theme/i)
   })
 })

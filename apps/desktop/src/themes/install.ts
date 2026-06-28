@@ -24,6 +24,35 @@ export function installVscodeThemeFromText(text: string, opts?: { label?: string
   return installUserTheme(theme)
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function themePayloads(parsed: unknown): unknown[] {
+  if (isRecord(parsed) && Array.isArray(parsed.themes)) {
+    return parsed.themes
+  }
+
+  if (isRecord(parsed) && typeof parsed.name === 'string' && isRecord(parsed.colors)) {
+    return [parsed]
+  }
+
+  throw new Error('Expected a Hermes theme JSON object or { "themes": [...] } theme pack.')
+}
+
+/** Parse and install Hermes-native DesktopTheme JSON (single theme or pack). */
+export function installHermesThemeFromText(text: string): DesktopTheme[] {
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error('Theme file is not valid JSON.')
+  }
+
+  return themePayloads(parsed).map(theme => installUserTheme(theme as DesktopTheme))
+}
+
 /**
  * Fold every color theme an extension contributes into ONE desktop theme family.
  *

@@ -1281,3 +1281,51 @@ class TestCuratorConsolidationDeleteGuard:
             rec = skill_usage.get_record("narrow")
         # Record kept (not forgotten) and marked archived.
         assert rec.get("state") == skill_usage.STATE_ARCHIVED
+
+
+class TestFindSkillSymlinkedExternalDir:
+    """_find_skill must discover skills installed as directory symlinks
+    in external skill dirs, matching the os.walk(followlinks=True)
+    behaviour that skills_list and skill_view already use."""
+
+    def test_find_skill_through_symlink(self, tmp_path):
+        """A skill whose directory is a symlink in an external dir
+        should be discoverable by _find_skill."""
+        from tools.skill_manager_tool import _find_skill
+
+        # Create a real skill directory elsewhere (simulating a project tree)
+        real_source = tmp_path / "project" / "skills" / "my-symlinked-skill"
+        real_source.mkdir(parents=True)
+        (real_source / "SKILL.md").write_text(
+            "---\nname: my-symlinked-skill\ndescription: test\n---\n\nBody.\n"
+        )
+
+        # Create an external skills dir with a symlink to the real dir
+        external_skills = tmp_path / "external_skills"
+        external_skills.mkdir()
+        symlink = external_skills / "my-symlinked-skill"
+        symlink.symlink_to(real_source, target_is_directory=True)
+
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[external_skills]):
+            result = _find_skill("my-symlinked-skill")
+
+        assert result is not None
+        assert result["path"].name == "my-symlinked-skill"
+
+    def test_find_skill_direct_dir_still_works(self, tmp_path):
+        """Non-symlink skill dirs must still be found after the fix."""
+        from tools.skill_manager_tool import _find_skill
+
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "direct-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: direct-skill\ndescription: test\n---\n\nBody.\n"
+        )
+
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            result = _find_skill("direct-skill")
+
+        assert result is not None
+        assert result["path"].name == "direct-skill"
+

@@ -137,10 +137,13 @@ def test_browser_install_timeout_stays_interruptible() -> None:
     text = INSTALL_SH.read_text()
 
     # GNU-flag probe + the guarded invocation must both be present.
-    assert "timeout --foreground -k 10 1 true" in text
-    assert 'timeout --foreground -k 10 "$timeout_seconds" "$@"' in text
+    # GNU-flag probe + the guarded invocation must both be present. The binary
+    # is resolved into $timeout_bin (GNU `timeout` on Linux, `gtimeout` on
+    # macOS-Homebrew) so the probe + call are parameterized rather than literal.
+    assert '"$timeout_bin" --foreground -k 10 1 true' in text
+    assert '"$timeout_bin" --foreground -k 10 "$timeout_seconds" "$@"' in text
     # Plain-timeout fallback preserved for BusyBox/non-GNU.
-    assert 'timeout "$timeout_seconds" "$@"' in text
+    assert '"$timeout_bin" "$timeout_seconds" "$@"' in text
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +165,7 @@ def _run_install_fn(distro: str, version: str, *, native_fails: bool,
     """
     # Extract the functions we need so we don't execute the whole installer.
     fn_names = [
+        "run_with_timeout",
         "run_browser_install_with_timeout",
         "playwright_host_unrecognized",
         "playwright_fallback_platform",

@@ -257,12 +257,13 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                   effFast
                 )
 
-                const meta = [
+                // Fast / reasoning-effort surface as discrete badges beside the
+                // name — not appended to it — so "High" reads as the model's
+                // reasoning setting, not part of a differently-named model. (#51833)
+                const metaTags = [
                   fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
                   (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort) || copy.medium : null
-                ]
-                  .filter(Boolean)
-                  .join(' ')
+                ].filter((tag): tag is string => Boolean(tag))
 
                 // Every row is a hover-Edit submenu trigger. Activating it
                 // (pointer or keyboard) switches to the family's base model and
@@ -292,9 +293,16 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                         }
                       }}
                     >
-                      <span className="min-w-0 flex-1 truncate">
-                        {name}
-                        {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                        <span className="min-w-0 truncate">{name}</span>
+                        {metaTags.map(tag => (
+                          <span
+                            className="shrink-0 rounded-sm border border-(--ui-stroke-secondary) bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] font-medium uppercase leading-none tracking-wide text-(--ui-text-tertiary)"
+                            key={tag}
+                          >
+                            {tag}
+                          </span>
+                        ))}
                       </span>
                       {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
                     </DropdownMenuSubTrigger>

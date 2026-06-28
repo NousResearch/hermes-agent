@@ -109,6 +109,8 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
             out["base_url"] = rt["base_url"]
         if rt.get("api_key"):
             out["api_key"] = rt["api_key"]
+        if rt.get("api_mode"):
+            out["api_mode"] = rt["api_mode"]
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
     return out

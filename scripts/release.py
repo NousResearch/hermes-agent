@@ -45,8 +45,10 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "prathamesh290504@gmail.com": "PRATHAMESH75",  # PR #37550 salvage (ExecStopPost cgroup-orphan reaper to unblock systemd restart; #37454)
     "der@konsi.org": "konsisumer",  # PR #19608 salvage (read-modify-write merge in write_credential_pool to preserve concurrently-added credentials; #19566)
     "linyubin@users.noreply.github.com": "linyubin",  # PR #50228 salvage (eager fallback on persistent transport timeout/overloaded; #22277)
+    "65363919+coygeek@users.noreply.github.com": "coygeek",  # PR #37951 salvage (fail closed when provider env blocklist import fails; #37950)
     "5261694+djstunami@users.noreply.github.com": "djstunami",  # PR #5316 salvage / co-author (suppress transient check_fn flakes so subagents keep file/terminal tools; #21658 / #5304)
     "jmmaloney4@gmail.com": "jmmaloney4",  # PR #25206 salvage (re-select credential pool on primary runtime restore; #25205)
     "dale@dalenguyen.me": "dalenguyen",  # PR #53678 salvage (strip VIRTUAL_ENV/CONDA_PREFIX from terminal subprocess env; #23473)
@@ -59,6 +61,7 @@ AUTHOR_MAP = {
     "267614622+agt-user@users.noreply.github.com": "agt-user",  # PR #48496 salvage (telegram CLOSE-WAIT polling heartbeat, #48495)
     "80915+DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",  # PR #52272 salvage (route reasoning-model thinking-timeouts to timeout not context_overflow + reasoning-specific guidance; #52271)
     "66773372+Tranquil-Flow@users.noreply.github.com": "Tranquil-Flow",  # PR #52623 salvage (auxiliary Anthropic base_url host validation; #52608)
+    "65363919+coygeek@users.noreply.github.com": "coygeek",  # PR #37735 salvage (redact provider error text at api-server HTTP boundary; #37733)
     "moonsong@nousresearch.local": "Tranquil-Flow",  # PR #52623 salvage (auxiliary Anthropic base_url host validation; #52608)
     "140971685+Dr1985@users.noreply.github.com": "Dr1985",  # PR #42567 salvage (launchd supervision detection + status reporting; #42524)
     "8180647+herbalizer404@users.noreply.github.com": "herbalizer404",  # PR #49076 + #51835 salvage (auxiliary compression fallback: 403/session-usage payment errors + honor fallback chain when aux provider auth unavailable)

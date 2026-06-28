@@ -16,6 +16,7 @@ export type AppView =
   | 'command-center'
   | 'cron'
   | 'messaging'
+  | 'plugin'
   | 'profiles'
   | 'settings'
   | 'skills'
@@ -65,8 +66,12 @@ export function isNewChatRoute(pathname: string): boolean {
   return pathname === NEW_CHAT_ROUTE
 }
 
-export function routeSessionId(pathname: string): string | null {
-  if (!pathname.startsWith(SESSION_ROUTE_PREFIX) || RESERVED_PATHS.has(pathname)) {
+export function routeSessionId(pathname: string, extraReservedPaths?: ReadonlySet<string>): string | null {
+  if (
+    !pathname.startsWith(SESSION_ROUTE_PREFIX) ||
+    RESERVED_PATHS.has(pathname) ||
+    Boolean(extraReservedPaths?.has(pathname))
+  ) {
     return null
   }
 
@@ -79,10 +84,39 @@ export function sessionRoute(sessionId: string): string {
   return `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
 }
 
-export function appViewForPath(pathname: string): AppView {
-  if (isNewChatRoute(pathname) || routeSessionId(pathname)) {
+export function appViewForPath(pathname: string, extraReservedPaths?: ReadonlySet<string>): AppView {
+  if (extraReservedPaths?.has(pathname)) {
+    return 'plugin'
+  }
+
+  if (isNewChatRoute(pathname) || routeSessionId(pathname, extraReservedPaths)) {
     return 'chat'
   }
 
   return APP_VIEW_BY_PATH.get(pathname) ?? 'chat'
+}
+
+// Dashboard plugin icons are declared as web/lucide names (e.g. "Package") in
+// the manifest, but the desktop sidebar renders the codicon font. Map the names
+// kanban + the bundled plugins use to codicon glyphs; unknown names fall back to
+// a neutral "extensions" puzzle-piece glyph so a new plugin still gets an icon.
+const PLUGIN_ICON_CODICON: Record<string, string> = {
+  Package: 'package',
+  LayoutGrid: 'layout',
+  Kanban: 'project',
+  Columns: 'layout',
+  Boxes: 'package',
+  Box: 'package',
+  Activity: 'pulse',
+  Zap: 'zap',
+  Heart: 'heart',
+  Star: 'star-full',
+  Code: 'code',
+  Eye: 'eye',
+  Puzzle: 'extensions'
+}
+
+/** Resolve a plugin manifest icon name to a codicon glyph for the sidebar. */
+export function pluginIconCodicon(name: string | undefined): string {
+  return (name && PLUGIN_ICON_CODICON[name]) || 'extensions'
 }

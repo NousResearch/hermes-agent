@@ -132,6 +132,22 @@ export interface SidebarNavItem {
   action?: 'new-session'
 }
 
+/** A dashboard-plugin tab rendered as a sidebar nav row (kanban, …). Distinct
+ *  from SidebarNavItem so plugin ids/labels stay free-form (not the built-in
+ *  SidebarNavId union) while reusing the same nav render + navigate(route) path. */
+export interface PluginNavItem {
+  /** Plugin name (manifest.name) — used as the React key and registry lookup. */
+  id: string
+  /** Display label (manifest.label), shown when the sidebar is expanded. */
+  label: string
+  /** Codicon glyph name resolved from manifest.icon. */
+  iconName: string
+  /** Absolute in-app route (manifest.tab.path, e.g. "/kanban"). */
+  route: string
+  /** Placement hint (manifest.tab.position): "end" | "after:<seg>" | "before:<seg>". */
+  position?: string
+}
+
 export interface ClientSessionState {
   storedSessionId: string | null
   messages: ChatMessage[]

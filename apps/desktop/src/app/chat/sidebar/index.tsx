@@ -115,7 +115,7 @@ import {
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
-import type { SidebarNavItem } from '../../types'
+import type { PluginNavItem, SidebarNavItem } from '../../types'
 
 import { countLabel, SidebarCount } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
@@ -171,6 +171,22 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 
+// Normalized render descriptor for a sidebar nav row — built-in tab or plugin
+// tab. Lets the nav render loop treat both uniformly.
+interface SidebarNavRow {
+  key: string
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  isInteractive: boolean
+  isNewSession: boolean
+  active: boolean
+  onActivate: () => void
+}
+
+const WORKSPACE_PAGE = 5
+// ALL-profiles view: show only the latest N per profile up front to keep the
+// unified list scannable, then reveal/fetch more in N-sized steps on demand.
+const PROFILE_INITIAL_PAGE = 5
 // Two modes via the `compact` height variant (styles.css):
 //   tall    → each section is shrink-0, capped, its own scroller; Sessions is flex-1.
 //   compact → COMPACT_FLAT drops the caps so the whole stack scrolls as one.
@@ -345,6 +361,10 @@ function useSortableBindings(id: string) {
 
 interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   currentView: AppView
+  /** Dashboard plugin tabs (kanban, …) to render as sidebar nav rows. */
+  pluginNav?: PluginNavItem[]
+  /** Current non-session route path, used to highlight an active plugin tab. */
+  activePluginPath?: string | null
   onNavigate: (item: SidebarNavItem) => void
   onLoadMoreSessions: () => Promise<void> | void
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
@@ -360,6 +380,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
 
 export function ChatSidebar({
   currentView,
+  pluginNav,
+  activePluginPath,
   onNavigate,
   onLoadMoreSessions,
   onLoadMoreProfileSessions,
@@ -1173,6 +1195,66 @@ export function ChatSidebar({
       })
     )
 
+  // Merge built-in nav with dashboard-plugin tabs (kanban, …) into one ordered
+  // render list. Plugin rows honor their `position` hint ("after:skills" → right
+  // after the Skills tab) so they slot in like the web sidebar; unknown/`end`
+  // positions append. Each row is normalized to a common shape so the single
+  // render loop below handles built-ins and plugins identically.
+  const navRows = useMemo<SidebarNavRow[]>(() => {
+    const rows: SidebarNavRow[] = SIDEBAR_NAV.map(item => ({
+      key: item.id,
+      label: s.nav[item.id] ?? item.label,
+      icon: item.icon,
+      isInteractive: Boolean(item.action) || Boolean(item.route),
+      isNewSession: item.id === 'new-session',
+      active:
+        (item.id === 'skills' && currentView === 'skills') ||
+        (item.id === 'messaging' && currentView === 'messaging') ||
+        (item.id === 'artifacts' && currentView === 'artifacts'),
+      onActivate: () => {
+        // A plain new session lands in whatever profile the live gateway is on
+        // (= the active switcher context). null → no swap.
+        if (item.id === 'new-session') {
+          $newChatProfile.set(null)
+        }
+
+        onNavigate(item)
+      }
+    }))
+
+    for (const plugin of pluginNav ?? []) {
+      const PluginIcon = ({ className }: { className?: string }) => <Codicon className={className} name={plugin.iconName} />
+
+      const row: SidebarNavRow = {
+        key: `plugin:${plugin.id}`,
+        label: plugin.label,
+        icon: PluginIcon,
+        isInteractive: true,
+        isNewSession: false,
+        active: activePluginPath === plugin.route,
+        // selectSidebarItem only reads action/route, so a minimal nav item with
+        // the plugin's path routes to the <PluginPage> registered in the router.
+        // (id/icon are unused by navigation; reuse the plugin's own icon + a
+        // built-in id so the SidebarNavItem type is satisfied.)
+        onActivate: () => onNavigate({ id: 'artifacts', label: plugin.label, icon: PluginIcon, route: plugin.route })
+      }
+
+      const pos = plugin.position ?? 'end'
+
+      if (pos.startsWith('after:')) {
+        const idx = rows.findIndex(r => r.key === pos.slice(6))
+        rows.splice(idx >= 0 ? idx + 1 : rows.length, 0, row)
+      } else if (pos.startsWith('before:')) {
+        const idx = rows.findIndex(r => r.key === pos.slice(7))
+        rows.splice(idx >= 0 ? idx : rows.length, 0, row)
+      } else {
+        rows.push(row)
+      }
+    }
+
+    return rows
+  }, [activePluginPath, currentView, onNavigate, pluginNav, s.nav])
+
   return (
     <Sidebar
       className={cn(
@@ -1192,20 +1274,13 @@ export function ChatSidebar({
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
-              {SIDEBAR_NAV.map(item => {
-                const isInteractive = Boolean(item.action) || Boolean(item.route)
-
-                const active =
-                  (item.id === 'skills' && currentView === 'skills') ||
-                  (item.id === 'messaging' && currentView === 'messaging') ||
-                  (item.id === 'artifacts' && currentView === 'artifacts')
-
-                const isNewSession = item.id === 'new-session'
+              {navRows.map(item => {
+                const RowIcon = item.icon
 
                 return (
-                  <SidebarMenuItem key={item.id}>
+                  <SidebarMenuItem key={item.key}>
                     <SidebarMenuButton
-                      aria-disabled={!isInteractive}
+                      aria-disabled={!item.isInteractive}
                       className={cn(
                         // no-drag: these rows sit directly under the titlebar's
                         // [-webkit-app-region:drag] strips (app-shell.tsx), with only
@@ -1215,30 +1290,20 @@ export function ChatSidebar({
                         // top rows. Same carve-out as USER_BUBBLE_BASE_CLASS in
                         // thread.tsx.
                         'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
-                        active &&
+                        item.active &&
                           'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
-                        !isInteractive &&
+                        !item.isInteractive &&
                           'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
                       )}
-                      onClick={() => {
-                        // A plain new session lands in whatever profile the live
-                        // gateway is on (= the active switcher context). null →
-                        // no swap. The switcher header is the single place to
-                        // change which profile that is.
-                        if (isNewSession) {
-                          $newChatProfile.set(null)
-                        }
-
-                        onNavigate(item)
-                      }}
-                      tooltip={s.nav[item.id] ?? item.label}
+                      onClick={item.onActivate}
+                      tooltip={item.label}
                       type="button"
                     >
-                      <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
+                      <RowIcon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
                       {contentVisible && (
                         <>
-                          <span className="min-w-0 flex-1 truncate">{s.nav[item.id] ?? item.label}</span>
-                          {isNewSession && (
+                          <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                          {item.isNewSession && (
                             <KbdGroup
                               className={cn('ml-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
                               keys={[...NEW_SESSION_KBD]}

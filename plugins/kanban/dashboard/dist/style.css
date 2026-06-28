@@ -340,6 +340,13 @@
   height: 100dvh;
   max-height: 100dvh;
   background: var(--color-card);
+  /* The drawer is a body-level fixed overlay, so it escapes the host pane's
+     text-color context and would otherwise inherit document.body's ambient
+     color (light-brown in light themes) under the desktop's file:// load.
+     Anchor it to the readable foreground token so bare comment-body text is
+     legible in both light and dark; the -author / -ago / muted-label rules
+     keep their own explicit colors. */
+  color: var(--color-foreground);
   border-left: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;

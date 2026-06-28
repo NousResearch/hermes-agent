@@ -2238,7 +2238,7 @@
     const handleDrop = function (e) {
       e.preventDefault();
       setDragOver(false);
-      const taskId = e.dataTransfer.getData(MIME_TASK);
+      const taskId = e.dataTransfer.getData(MIME_TASK) || e.dataTransfer.getData("text/plain");
       if (!taskId) return;
       if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1) {
         if (window.confirm(tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: props.selectedIds.size }))) {
@@ -2342,7 +2342,7 @@
     const handleDrop = function (e) {
       e.preventDefault();
       setDragOver(false);
-      const taskId = e.dataTransfer.getData(MIME_TASK);
+      const taskId = e.dataTransfer.getData(MIME_TASK) || e.dataTransfer.getData("text/plain");
       if (!taskId) return;
       if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1) {
         if (props.onMoveSelected) props.onMoveSelected(props.column.name);
@@ -2488,6 +2488,12 @@
 
     const handleDragStart = function (e) {
       e.dataTransfer.setData(MIME_TASK, t.id);
+      // Also carry the id on the standard text/plain type. Chromium sanitizes
+      // non-standard (text/x-*) dataTransfer types under the file:// origin the
+      // Electron desktop loads from, so the custom MIME arrives empty at the
+      // drop handler there; text/plain survives. Web (http://) keeps using
+      // MIME_TASK. Drop handlers read MIME_TASK first, then fall back.
+      e.dataTransfer.setData("text/plain", t.id);
       e.dataTransfer.effectAllowed = "move";
       const selectedCards = document.querySelectorAll(".hermes-kanban-card--selected");
       if (selectedCards.length > 1 && props.selected) {

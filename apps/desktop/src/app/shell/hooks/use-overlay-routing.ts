@@ -6,11 +6,11 @@ import { AGENTS_ROUTE, appViewForPath, COMMAND_CENTER_ROUTE, isOverlayView, NEW_
 
 const SECTIONS = ['sessions', 'system', 'usage'] as const
 
-export function useOverlayRouting() {
+export function useOverlayRouting(extraReservedPaths?: ReadonlySet<string>) {
   const location = useLocation()
   const navigate = useNavigate()
 
-  const currentView = appViewForPath(location.pathname)
+  const currentView = appViewForPath(location.pathname, extraReservedPaths)
   const settingsOpen = currentView === 'settings'
   const commandCenterOpen = currentView === 'command-center'
   const agentsOpen = currentView === 'agents'

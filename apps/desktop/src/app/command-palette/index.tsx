@@ -375,6 +375,13 @@ export function CommandPalette() {
             run: go(ARTIFACTS_ROUTE)
           },
           {
+            icon: Package,
+            id: 'nav-kanban',
+            keywords: ['kanban', 'board', 'tasks', 'cards'],
+            label: 'Kanban',
+            run: go('/kanban')
+          },
+          {
             action: 'nav.cron',
             icon: Clock,
             id: 'nav-cron',

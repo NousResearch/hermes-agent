@@ -6200,6 +6200,32 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if chat_id_str in self._telegram_free_response_chats():
             return True
+        # ── TELEGRAM_ALLOW_BOTS ─────────────────────────────────────
+        # Filter bot-to-bot messages. Three modes (matching DISCORD_ALLOW_BOTS):
+        #   "none"     — ignore all other bot messages (default)
+        #   "mentions" — accept bot messages only when they @mention us
+        #   "all"      — accept all bot messages
+        # Configure via config.yaml: telegram.extra.telegram_allow_bots
+        # or env var TELEGRAM_ALLOW_BOTS.
+        # Must run BEFORE _is_reply_to_bot so reply-chains between bots
+        # don't accidentally bypass the gate.  (#54370)
+        sender = getattr(message, "from_user", None)
+        if sender and getattr(sender, "is_bot", False):
+            allow_bots = self.config.extra.get(
+                "telegram_allow_bots",
+                os.getenv("TELEGRAM_ALLOW_BOTS", "none"),
+            )
+            if isinstance(allow_bots, str):
+                allow_bots = allow_bots.strip().lower()
+            if allow_bots in ("none", "false", "0"):
+                return False
+            if allow_bots == "mentions":
+                # Accept if explicitly @-mentioned, or if replying to
+                # this bot's message (legitimate reply-chain interaction).
+                # Do NOT accept for mere quote-replies to other users.
+                if not (self._message_mentions_bot(message) or self._is_reply_to_bot(message)):
+                    return False
+        # ─────────────────────────────────────────────────────────────
         if not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):

@@ -26,6 +26,7 @@ from hermes_constants import (
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
+from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
 from tui_gateway.transport import (
     StdioTransport,
@@ -5381,13 +5382,17 @@ def _(rid, params: dict) -> dict:
         _enable_gateway_prompts()
         try:
             db.reopen_session(target)
-            history = db.get_messages_as_conversation(target)
+            raw_history = db.get_messages_as_conversation(target)
             display_history = db.get_messages_as_conversation(target, include_ancestors=True)
         except Exception as e:
             if lease is not None:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
-        prefix = display_history[: max(0, len(display_history) - len(history))]
+        # Display keeps the full transcript; the model-fed history drops a
+        # dangling/interrupted tool-call tail so a session killed mid-loop does
+        # not replay the unanswered call forever (#29086).
+        prefix = display_history[: max(0, len(display_history) - len(raw_history))]
+        history = sanitize_replay_history(raw_history)
         # Restore the model/provider/reasoning/tier this chat last used so the
         # deferred build (and the info below) match the eager path — without them
         # the build drops the provider ("No LLM provider configured").
@@ -5448,13 +5453,21 @@ def _(rid, params: dict) -> dict:
     )
     try:
         db.reopen_session(target)
-        history = db.get_messages_as_conversation(target)
+        raw_history = db.get_messages_as_conversation(target)
         display_history = db.get_messages_as_conversation(
             target, include_ancestors=True
         )
+        # The display transcript keeps every row so the user still sees their
+        # full history.  The model-fed history is sanitized: a session whose
+        # last turn died mid-tool-loop persists a dangling assistant(tool_calls)
+        # (or interrupted assistant→tool) tail; replaying it makes the model
+        # re-issue the unanswered call forever — the permanent-"thinking" stuck
+        # session in #29086.  The messaging gateway already strips this; this is
+        # the WebUI/TUI resume path picking up the same cleanup.
         display_history_prefix = display_history[
-            : max(0, len(display_history) - len(history))
+            : max(0, len(display_history) - len(raw_history))
         ]
+        history = sanitize_replay_history(raw_history)
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:

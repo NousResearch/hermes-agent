@@ -1910,6 +1910,169 @@ async def fs_default_cwd():
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}
 
 
+# ---------------------------------------------------------------------------
+# Git ops — the remote half of the desktop coding rail + review pane.
+#
+# The desktop runs these as Electron-local git on the user's machine; over a
+# remote gateway that's the wrong filesystem, so we mirror them here (same auth
+# gate + path hardening as /api/fs). Logic lives in ``hermes_cli.web_git``;
+# these are thin, executor-offloaded wrappers (git/gh can block).
+# ---------------------------------------------------------------------------
+
+from hermes_cli import web_git as _web_git  # noqa: E402
+
+
+async def _git_op(fn, *args):
+    """Run a (blocking) git op off the event loop; map a failed mutation to 400."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, fn, *args)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "git operation failed")
+
+
+def _git_path(path: str) -> str:
+    return str(_fs_path(path))
+
+
+class GitPathBody(BaseModel):
+    path: str
+
+
+class GitFileBody(BaseModel):
+    path: str
+    file: Optional[str] = None
+
+
+class GitCommitBody(BaseModel):
+    path: str
+    message: str
+    push: bool = False
+
+
+class GitWorktreeAddBody(BaseModel):
+    path: str
+    name: Optional[str] = None
+    branch: Optional[str] = None
+    base: Optional[str] = None
+    existingBranch: Optional[str] = None
+
+
+class GitWorktreeRemoveBody(BaseModel):
+    path: str
+    worktreePath: str
+    force: bool = False
+
+
+class GitBranchSwitchBody(BaseModel):
+    path: str
+    branch: str
+
+
+@app.get("/api/git/status")
+async def git_status_route(path: str):
+    return await _git_op(_web_git.repo_status, _git_path(path))
+
+
+@app.get("/api/git/worktrees")
+async def git_worktrees_route(path: str):
+    return {"worktrees": await _git_op(_web_git.worktree_list, _git_path(path))}
+
+
+@app.get("/api/git/branches")
+async def git_branches_route(path: str):
+    return {"branches": await _git_op(_web_git.branch_list, _git_path(path))}
+
+
+@app.get("/api/git/review/list")
+async def git_review_list_route(path: str, scope: str = "uncommitted", base: Optional[str] = None):
+    return await _git_op(_web_git.review_list, _git_path(path), scope, base)
+
+
+@app.get("/api/git/review/diff")
+async def git_review_diff_route(
+    path: str, file: str, scope: str = "uncommitted", base: Optional[str] = None, staged: bool = False
+):
+    return {"diff": await _git_op(_web_git.review_diff, _git_path(path), file, scope, base, staged)}
+
+
+@app.get("/api/git/file-diff")
+async def git_file_diff_route(path: str, file: str):
+    return {"diff": await _git_op(_web_git.file_diff_vs_head, _git_path(path), file)}
+
+
+@app.get("/api/git/review/commit-context")
+async def git_commit_context_route(path: str):
+    return await _git_op(_web_git.review_commit_context, _git_path(path))
+
+
+@app.get("/api/git/review/rev-parse")
+async def git_rev_parse_route(path: str, ref: Optional[str] = None):
+    return {"sha": await _git_op(_web_git.review_rev_parse, _git_path(path), ref)}
+
+
+@app.get("/api/git/review/ship-info")
+async def git_ship_info_route(path: str):
+    return await _git_op(_web_git.review_ship_info, _git_path(path))
+
+
+@app.post("/api/git/review/stage")
+async def git_stage_route(body: GitFileBody):
+    return await _git_op(_web_git.review_stage, _git_path(body.path), body.file)
+
+
+@app.post("/api/git/review/unstage")
+async def git_unstage_route(body: GitFileBody):
+    return await _git_op(_web_git.review_unstage, _git_path(body.path), body.file)
+
+
+@app.post("/api/git/review/revert")
+async def git_revert_route(body: GitFileBody):
+    return await _git_op(_web_git.review_revert, _git_path(body.path), body.file)
+
+
+@app.post("/api/git/review/commit")
+async def git_commit_route(body: GitCommitBody):
+    return await _git_op(_web_git.review_commit, _git_path(body.path), body.message, body.push)
+
+
+@app.post("/api/git/review/push")
+async def git_push_route(body: GitPathBody):
+    return await _git_op(_web_git.review_push, _git_path(body.path))
+
+
+@app.post("/api/git/review/create-pr")
+async def git_create_pr_route(body: GitPathBody):
+    return await _git_op(_web_git.review_create_pr, _git_path(body.path))
+
+
+@app.post("/api/git/worktree/add")
+async def git_worktree_add_route(body: GitWorktreeAddBody):
+    options = {
+        key: value
+        for key, value in {
+            "name": body.name,
+            "branch": body.branch,
+            "base": body.base,
+            "existingBranch": body.existingBranch,
+        }.items()
+        if value
+    }
+    return await _git_op(_web_git.worktree_add, _git_path(body.path), options)
+
+
+@app.post("/api/git/worktree/remove")
+async def git_worktree_remove_route(body: GitWorktreeRemoveBody):
+    return await _git_op(
+        _web_git.worktree_remove, _git_path(body.path), _git_path(body.worktreePath), body.force
+    )
+
+
+@app.post("/api/git/branch/switch")
+async def git_branch_switch_route(body: GitBranchSwitchBody):
+    return await _git_op(_web_git.branch_switch, _git_path(body.path), body.branch)
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -12188,26 +12351,54 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # --- reader task: PTY master → WebSocket ----------------------------
     async def pump_pty_to_ws() -> None:
-        while True:
-            chunk = await loop.run_in_executor(
-                None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
-            )
-            if chunk is None:  # EOF
-                return
-            if not chunk:  # no data this tick; yield control and retry
-                await asyncio.sleep(0)
-                continue
+        try:
+            while True:
+                chunk = await loop.run_in_executor(
+                    None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
+                )
+                if chunk is None:  # EOF
+                    return
+                if not chunk:  # no data this tick; yield control and retry
+                    await asyncio.sleep(0)
+                    continue
+                try:
+                    await ws.send_bytes(chunk)
+                except Exception:
+                    return
+        finally:
+            # The child has exited (EOF) or the send side broke.  Close the
+            # WebSocket so the writer loop's ``ws.receive()`` returns instead
+            # of blocking forever — otherwise, when the browser's socket is
+            # half-open (no FIN delivered, common on macOS/launchd) the
+            # handler never reaches its ``finally`` and the PTY's fds leak.
+            # With dashboard auto-reconnect (#52962) every dropped socket then
+            # stacks a fresh PTY on top of the orphaned one, exhausting fds.
+            #
+            # Reap the bridge here too (close() is idempotent): on child EOF the
+            # writer loop's ``finally`` is the usual closer, but if the handler
+            # task is cancelled the instant we close the WS, that ``finally``
+            # can be skipped, leaking the PTY. Closing from the EOF path makes
+            # the reap independent of that cancellation race (#54028).
             try:
-                await ws.send_bytes(chunk)
+                await asyncio.to_thread(bridge.close)
             except Exception:
-                return
+                pass
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     reader_task = asyncio.create_task(pump_pty_to_ws())
 
     # --- writer loop: WebSocket → PTY master ----------------------------
     try:
         while True:
-            msg = await ws.receive()
+            try:
+                msg = await ws.receive()
+            except RuntimeError:
+                # Raised when ws.receive() is called after the socket is
+                # already disconnected (e.g. closed by the reader task above).
+                break
             msg_type = msg.get("type")
             if msg_type == "websocket.disconnect":
                 break
@@ -13685,6 +13876,19 @@ def start_server(
             print(f"HERMES_DASHBOARD_READY port={actual_port}", flush=True)
             print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)
+
+            # Collapse the peer-hangup teardown flood (#50005). When the Desktop
+            # forcibly closes its WebSocket mid-write, asyncio logs a full
+            # traceback per pending connection-lost callback — 50+ identical
+            # WinError 10054 (ConnectionResetError) lines per disconnect on
+            # Windows. This filter downgrades exactly that class to one debug
+            # line and passes every other loop error through unchanged.
+            try:
+                from tui_gateway.loop_noise import install_loop_noise_filter
+
+                install_loop_noise_filter(asyncio.get_running_loop())
+            except Exception as exc:  # pragma: no cover - best-effort
+                _log.debug("loop noise filter install skipped: %s", exc)
 
             await server.main_loop()
             if server.started:

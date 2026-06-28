@@ -880,7 +880,38 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         _print_info(f"    {label} cua-driver...")
     driver_cmd = _cua_driver_cmd()
     try:
-        result = subprocess.run(install_cmd, shell=use_shell, timeout=300, env=_cua_driver_env())
+        # When not verbose (e.g. `hermes update`'s refresh), capture the
+        # installer's chatty "Next steps" wall instead of dumping it to the
+        # terminal. The combined output is logged so a failure stays
+        # debuggable. Verbose installs (interactive `computer-use install`)
+        # keep streaming live.
+        if verbose:
+            result = subprocess.run(install_cmd, shell=use_shell, timeout=300, env=_cua_driver_env())
+        else:
+            result = subprocess.run(
+                install_cmd, shell=use_shell, timeout=300, env=_cua_driver_env(),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+            )
+            # Preserve the full installer output. During `hermes update`,
+            # sys.stdout is the mirroring _UpdateOutputStream whose `_log`
+            # handle is ~/.hermes/logs/update.log — write straight to it so
+            # the captured "Next steps" wall is kept in full (success AND
+            # failure), without echoing it to the terminal.
+            if result.stdout:
+                _update_log = getattr(sys.stdout, "_log", None)
+                if _update_log is not None:
+                    try:
+                        _update_log.write(
+                            "\n--- cua-driver installer output ---\n"
+                            + result.stdout
+                            + "\n"
+                        )
+                        _update_log.flush()
+                    except Exception:
+                        pass
+                if result.returncode != 0:
+                    logger.debug("cua-driver installer output:\n%s", result.stdout)
         if result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
@@ -1704,6 +1735,32 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     if plugin_keys:
         config.setdefault("known_plugin_toolsets", {})
         config["known_plugin_toolsets"][platform] = sorted(plugin_keys)
+
+    # Reconcile with agent.disabled_toolsets. _get_platform_tools() applies
+    # that list as a final override AFTER reading platform_toolsets.<platform>,
+    # so a toolset listed there stays permanently OFF no matter what this
+    # function writes — the toggle "saves" but silently can't ever take
+    # effect. Blank Slate installs pre-populate this list with ~27 toolsets,
+    # making most of the desktop Toolsets UI unusable for re-enabling
+    # anything (issue #49995).
+    #
+    # Only toolsets the user just explicitly enabled FOR THIS PLATFORM are
+    # cleared from the global disabled list — toolsets the user did not
+    # touch (still unchecked) or that remain disabled on other platforms
+    # are left alone, so agent.disabled_toolsets keeps working as a
+    # cross-platform suppression list for anything not actively re-enabled.
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        disabled_toolsets = agent_cfg.get("disabled_toolsets")
+        if isinstance(disabled_toolsets, list) and disabled_toolsets:
+            newly_enabled = enabled_toolset_keys - preserved_entries
+            if newly_enabled:
+                remaining = [
+                    ts for ts in disabled_toolsets
+                    if str(ts) not in newly_enabled
+                ]
+                if remaining != disabled_toolsets:
+                    agent_cfg["disabled_toolsets"] = remaining
 
     save_config(config)
 

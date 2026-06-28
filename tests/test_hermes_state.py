@@ -4191,6 +4191,96 @@ class TestApplyWalProbe:
             "set-pragma must fire on a fresh (non-WAL) connection"
         )
 
+    def test_macos_checkpoint_fullsync_barrier_applied(self, tmp_path, monkeypatch):
+        """On Darwin, apply_wal_with_fallback sets checkpoint_fullfsync=1 (issue #30636)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        db_path = tmp_path / "macos_fresh.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("checkpoint_fullfsync=1" in sql for sql in conn.executed), (
+            "checkpoint_fullfsync barrier must be applied on macOS"
+        )
+
+    def test_macos_barrier_applied_when_already_wal(self, tmp_path, monkeypatch):
+        """The Darwin barrier fires on the already-WAL early-return path too."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "macos_wal.db"
+        with sqlite3.connect(str(db_path)) as seed:
+            seed.execute("PRAGMA journal_mode=WAL")
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("checkpoint_fullfsync=1" in sql for sql in conn.executed), (
+            "checkpoint_fullfsync barrier must fire on the already-WAL path"
+        )
+
+    def test_checkpoint_fullsync_barrier_skipped_off_darwin(self, tmp_path, monkeypatch):
+        """Non-macOS platforms must NOT issue the macOS-only PRAGMA."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "linux")
+
+        db_path = tmp_path / "linux_fresh.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert not any("checkpoint_fullfsync" in sql for sql in conn.executed), (
+            "checkpoint_fullfsync must not be issued off macOS"
+        )
+
     def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
         """20 threads calling connect() on the same DB must not see disk I/O error."""
         import sys

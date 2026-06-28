@@ -44,6 +44,11 @@ from agent.models_dev import (
     list_provider_models,
 )
 
+# Providers whose picker model list should NOT be capped by max_models.
+# OpenCode Zen / Go are aggregators whose full catalogs (70+ models each) must
+# be visible so users can pick any model they have access to.
+_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go"})
+
 logger = logging.getLogger(__name__)
 
 
@@ -1668,7 +1673,10 @@ def list_authenticated_providers(
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models] if max_models is not None else model_ids
+        if hermes_id in _UNCAPPED_PICKER_PROVIDERS:
+            top = model_ids  # Aggregator: show full catalog regardless of max_models
+        else:
+            top = model_ids[:max_models] if max_models is not None else model_ids
 
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
@@ -1831,7 +1839,10 @@ def list_authenticated_providers(
                 if hermes_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models] if max_models is not None else model_ids
+        if hermes_slug in _UNCAPPED_PICKER_PROVIDERS:
+            top = model_ids  # Aggregator: show full catalog regardless of max_models
+        else:
+            top = model_ids[:max_models] if max_models is not None else model_ids
 
         results.append({
             "slug": hermes_slug,

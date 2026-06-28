@@ -1362,7 +1362,7 @@ class GatewaySlashCommandsMixin:
                                 if result.base_url:
                                     _persist_model_cfg["base_url"] = result.base_url
                                 if str(result.target_provider or "").strip().lower() != "custom":
-                                    clear_model_endpoint_credentials(_persist_model_cfg)
+                                    clear_model_endpoint_credentials(_persist_model_cfg, clear_base_url=True)
                                 from hermes_cli.config import save_config
                                 save_config(_persist_cfg)
                             except Exception as e:
@@ -1600,7 +1600,7 @@ class GatewaySlashCommandsMixin:
                     if result.base_url:
                         model_cfg["base_url"] = result.base_url
                     if str(result.target_provider or "").strip().lower() != "custom":
-                        clear_model_endpoint_credentials(model_cfg)
+                        clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
                     from hermes_cli.config import save_config
                     save_config(cfg)
                 except Exception as e:

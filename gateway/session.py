@@ -847,7 +847,58 @@ class SessionStore:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
         self._loaded = True
-    
+
+        # Prune any sessions.json entries that point to sessions already ended
+        # in state.db. A hard gateway crash (exit code 1) skips the graceful
+        # shutdown path, so sessions.json is never cleared and is left pointing
+        # at ended sessions. On the next startup those stale entries act as live
+        # routing keys, but get_or_create_session() reuses them as long as the
+        # time/policy reset checks pass — it never consults end_reason — so every
+        # incoming message is silently routed into a closed session. Pruning here
+        # (lock already held) is cheap: one lookup per routing key, once at
+        # startup, and self-heals into a fresh session on the next message.
+        self._prune_stale_sessions_locked()
+
+    def _prune_stale_sessions_locked(self) -> None:
+        """Remove sessions.json entries whose session has ended in state.db.
+
+        Called once during startup (from ``_ensure_loaded_locked``, lock held).
+        A ``session_id`` is stale when state.db reports ``end_reason IS NOT
+        NULL`` for it. Sessions absent from the DB (never persisted / pre-SQLite
+        legacy) are left alone, and a ``None`` DB handle (SQLite unavailable) is
+        a no-op. DB errors are non-fatal — startup must never fail here.
+        """
+        db = getattr(self, "_db", None)
+        if not db or not self._entries:
+            return
+
+        stale_keys: list = []
+        try:
+            for key, entry in self._entries.items():
+                row = db.get_session(entry.session_id)
+                # row is None        -> not in DB (legacy / pre-SQLite) — keep
+                # end_reason is None  -> session alive — keep
+                # end_reason not None -> session ended — prune
+                if row is not None and row.get("end_reason") is not None:
+                    logger.warning(
+                        "gateway.session: pruning stale sessions.json entry "
+                        "%r -> %s (end_reason=%r); left by a crashed gateway",
+                        key, entry.session_id, row["end_reason"],
+                    )
+                    stale_keys.append(key)
+        except Exception as exc:
+            logger.warning(
+                "gateway.session: stale-entry pruning skipped due to DB error: %s",
+                exc,
+            )
+            return
+
+        for key in stale_keys:
+            del self._entries[key]
+
+        if stale_keys:
+            self._save()
+
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
         import tempfile
@@ -924,6 +975,10 @@ class SessionStore:
         """
         if self._has_active_processes_fn:
             if self._has_active_processes_fn(entry.session_key):
+                logger.debug(
+                    "Session %s not expired — active background processes",
+                    entry.session_key,
+                )
                 return False
 
         policy = self.config.get_reset_policy(
@@ -965,6 +1020,10 @@ class SessionStore:
         if self._has_active_processes_fn:
             session_key = self._generate_session_key(source)
             if self._has_active_processes_fn(session_key):
+                logger.debug(
+                    "Session reset skipped for %s — active background processes",
+                    session_key,
+                )
                 return None
 
         policy = self.config.get_reset_policy(

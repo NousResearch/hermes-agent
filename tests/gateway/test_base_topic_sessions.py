@@ -197,6 +197,24 @@ class TestBasePlatformTopicSessions:
         ]
 
     @pytest.mark.asyncio
+    async def test_process_message_background_suppresses_exception_notice_in_group(self):
+        adapter = DummyTelegramAdapter()
+
+        async def handler(_event):
+            raise RuntimeError("boom")
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.sent == []
+
+    @pytest.mark.asyncio
     async def test_process_message_background_marks_cancellation_unsuccessful(self):
         adapter = DummyTelegramAdapter()
         release = asyncio.Event()

@@ -17,13 +17,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     SendResult,
 )
 from gateway.session import SessionSource, build_session_key
+from gateway.run import GatewayRunner
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +37,7 @@ class StubAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="fake"), Platform.DISCORD)
         self.sent = []
+        self.voice_sent = []
 
     async def connect(self, *, is_reconnect: bool = False):
         return True
@@ -49,6 +51,18 @@ class StubAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id, metadata=None):
         pass
+
+    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, metadata=None, **kwargs):
+        self.voice_sent.append(
+            {
+                "chat_id": chat_id,
+                "audio_path": audio_path,
+                "caption": caption,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="voice1")
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
@@ -354,6 +368,42 @@ class TestQueuedMessageAlreadyStreamed:
         )
 
         assert _already_streamed is True
+
+    @pytest.mark.asyncio
+    async def test_queued_first_response_delivers_media_before_followup(self):
+        """Queued follow-ups must not bypass MEDIA attachment delivery."""
+        runner = GatewayRunner(GatewayConfig())
+        adapter = StubAdapter()
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="c1",
+            chat_type="dm",
+            user_id="u1",
+        )
+        event = MessageEvent(
+            text="next",
+            source=source,
+            message_id="m1",
+        )
+
+        await runner._send_response_before_queued_followup(
+            adapter=adapter,
+            source=source,
+            event=event,
+            first_response="听我说\n[[audio_as_voice]]\nMEDIA:/tmp/voice.ogg",
+            metadata={"notify": True},
+        )
+
+        assert adapter.sent == [{"chat_id": "c1", "content": "听我说"}]
+        assert adapter.voice_sent == [
+            {
+                "chat_id": "c1",
+                "audio_path": "/tmp/voice.ogg",
+                "caption": None,
+                "reply_to": None,
+                "metadata": None,
+            }
+        ]
 
     def test_queued_path_sends_when_not_streamed(self):
         """Nothing was streamed — first response should be sent before

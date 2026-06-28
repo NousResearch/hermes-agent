@@ -1,0 +1,11 @@
+name: napcat-platform
+kind: platform
+version: 1.0.0
+description: >
+  NapCat QQ gateway adapter for Hermes Agent.
+  Connects to a NapCat WebSocket server and relays messages between QQ
+  and the Hermes agent natively.
+author: HeavenWistful
+requires_env:
+  - NAPCAT_WS_URL
+  - NAPCAT_TOKEN

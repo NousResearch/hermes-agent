@@ -1,0 +1,12 @@
+name: milky-platform
+kind: platform
+version: 0.1.0
+description: >
+  Milky QQ gateway adapter for Hermes Agent.
+  Connects to an LLBot/Milky event WebSocket and sends through the Milky HTTP API.
+author: HeavenWistful
+requires_env:
+  - MILKY_HTTP_URL
+optional_env:
+  - MILKY_EVENT_WS_URL
+  - MILKY_TOKEN

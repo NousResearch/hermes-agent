@@ -5,11 +5,17 @@ background session) across gateway messenger platforms.
 """
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import quote
 
 import pytest
 
 from gateway.config import Platform
+from gateway.config import GatewayConfig
+from gateway.config import HomeChannel
+from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
@@ -103,6 +109,8 @@ class TestHandleBackgroundCommand:
 
         assert "🔄" in result
         assert "Background task started" in result
+
+
         assert "bg_" in result  # task ID starts with bg_
         assert "Summarize the top HN stories" in result
         assert len(created_tasks) == 1  # background task was created
@@ -185,6 +193,274 @@ class TestHandleBackgroundCommand:
                 assert "Background task started" in result
 
 
+class TestCodexMediaRequestIntercept:
+    """Tests for XiaoXing QQ media closed-loop requests."""
+
+    def _napcat_runner(self, platform_name="napcat"):
+        runner = _make_runner()
+        napcat = Platform(platform_name)
+        runner.config = GatewayConfig(
+            platforms={
+                napcat: PlatformConfig(
+                    enabled=True,
+                    home_channel=HomeChannel(
+                        platform=napcat,
+                        chat_id="490008192",
+                        name="Dad QQ",
+                    ),
+                    extra={
+                        "allowed_users": "490008192",
+                        "group_allow_from": ["610066383"],
+                    },
+                )
+            }
+        )
+        runner._start_background_task = AsyncMock(
+            return_value="Background task started"
+        )
+        return runner, napcat
+
+    @pytest.mark.asyncio
+    async def test_dad_group_codex_image_request_starts_media_background_task(self):
+        runner, napcat = self._napcat_runner()
+        source = SessionSource(
+            platform=napcat,
+            chat_id="group:610066383",
+            chat_type="group",
+            user_id="490008192",
+            user_name="李文浩",
+        )
+        event = MessageEvent(
+            text="你再试试让 Codex 生成“骡子跳水”的图，记得发回来嗯。",
+            source=source,
+            message_id="m1",
+        )
+
+        result = await runner._maybe_handle_codex_media_request(event)
+
+        assert result == "Background task started"
+        runner._start_background_task.assert_awaited_once()
+        call = runner._start_background_task.call_args
+        prompt = call.args[0]
+        assert "骡子跳水" in prompt
+        assert "MEDIA:/absolute/path" in prompt
+        assert "static-frame" in prompt
+        assert "Updream direct API/script execution from Codex" in prompt
+        assert "Do not use Hermes image_generate/image_gen" in prompt
+        assert "XiaoXing is only the requester/channel bridge" in prompt
+        assert "Do not call codex_image_request or codex_video_request" in prompt
+        assert "/Users/heavenwistful/.codex/skills/updream-platform/scripts/updream_api.mjs" in prompt
+        assert call.kwargs["extra_enabled_toolsets"] == ("terminal", "file")
+        assert call.kwargs["excluded_toolsets"] == ("xiaoxing_codex_media", "image_gen")
+
+    @pytest.mark.asyncio
+    async def test_dad_dm_codex_image_request_starts_media_background_task(self):
+        runner, napcat = self._napcat_runner()
+        source = SessionSource(
+            platform=napcat,
+            chat_id="490008192",
+            chat_type="dm",
+            user_id="490008192",
+            user_name="李文浩",
+        )
+        event = MessageEvent(
+            text="让 Codex 生成一张小星看书的图发回来",
+            source=source,
+            message_id="m2",
+        )
+
+        result = await runner._maybe_handle_codex_media_request(event)
+
+        assert result == "Background task started"
+        runner._start_background_task.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_dad_group_codex_image_request_can_route_to_mentor_channel(self):
+        runner, napcat = self._napcat_runner()
+        runner.config.platforms[napcat].extra["codex_media_route"] = "mentor_channel"
+        runner.config.platforms[napcat].extra["codex_mentor_url"] = "http://127.0.0.1:8767/messages"
+        runner._post_codex_mentor_task = AsyncMock(
+            return_value={"ok": True, "queued": "background", "thread_id": "codex-thread-1"}
+        )
+        source = SessionSource(
+            platform=napcat,
+            chat_id="group:610066383",
+            chat_type="group",
+            user_id="490008192",
+            user_name="李文浩",
+        )
+        event = MessageEvent(
+            text="让 Codex 生成一张小星试麦克风的图，做好发回来",
+            source=source,
+            message_id="m-mentor-1",
+        )
+
+        result = await runner._maybe_handle_codex_media_request(event)
+
+        assert "Codex mentor channel" in result
+        runner._start_background_task.assert_not_awaited()
+        runner._post_codex_mentor_task.assert_awaited_once()
+        url, payload = runner._post_codex_mentor_task.call_args.args
+        assert url == "http://127.0.0.1:8767/messages"
+        assert payload["direction"] == "xiaoxing_to_codex"
+        assert payload["metadata"]["request_type"] == "codex_media_generation"
+        assert payload["metadata"]["media_kind"] == "image"
+        assert payload["metadata"]["return_to"]["platform"] == "napcat"
+        assert payload["metadata"]["return_to"]["chat_id"] == "group:610066383"
+        assert payload["metadata"]["return_to"]["chat_type"] == "group"
+        assert payload["metadata"]["return_to"]["user_id"] == "490008192"
+        assert payload["metadata"]["return_to"]["message_id"] == "m-mentor-1"
+        assert "小星试麦克风" in payload["body"]
+        assert "Return target: napcat:group:610066383" in payload["body"]
+        assert "MEDIA:/absolute/path" in payload["body"]
+
+    @pytest.mark.asyncio
+    async def test_milky_dad_group_codex_image_request_can_route_to_mentor_channel(self):
+        runner, milky = self._napcat_runner("milky")
+        runner.config.platforms[milky].extra["codex_media_route"] = "mentor_channel"
+        runner.config.platforms[milky].extra["codex_mentor_url"] = "http://127.0.0.1:8767/messages"
+        runner._post_codex_mentor_task = AsyncMock(
+            return_value={"ok": True, "queued": "background", "thread_id": "codex-thread-2"}
+        )
+        source = SessionSource(
+            platform=milky,
+            chat_id="group:610066383",
+            chat_type="group",
+            user_id="490008192",
+            user_name="李文浩",
+        )
+        event = MessageEvent(
+            text="让 Codex 生成一张小星检查频道的图，做好发回来",
+            source=source,
+            message_id="m-milky-mentor-1",
+        )
+
+        result = await runner._maybe_handle_codex_media_request(event)
+
+        assert "Codex mentor channel" in result
+        runner._start_background_task.assert_not_awaited()
+        runner._post_codex_mentor_task.assert_awaited_once()
+        payload = runner._post_codex_mentor_task.call_args.args[1]
+        assert payload["metadata"]["return_to"]["platform"] == "milky"
+        assert payload["metadata"]["return_to"]["chat_id"] == "group:610066383"
+        assert "Return target: milky:group:610066383" in payload["body"]
+        assert "小星检查频道" in payload["body"]
+
+    @pytest.mark.asyncio
+    async def test_dad_group_codex_video_request_uses_updream_background_task(self):
+        runner, napcat = self._napcat_runner()
+        source = SessionSource(
+            platform=napcat,
+            chat_id="group:610066383",
+            chat_type="group",
+            user_id="490008192",
+            user_name="李文浩",
+        )
+        event = MessageEvent(
+            text="让 Codex 做一段小星说话的视频，生成好发回来",
+            source=source,
+            message_id="m3",
+        )
+
+        result = await runner._maybe_handle_codex_media_request(event)
+
+        assert result == "Background task started"
+        runner._start_background_task.assert_awaited_once()
+        call = runner._start_background_task.call_args
+        prompt = call.args[0]
+        assert "Media type: video" in prompt
+        assert "do not fallback to a static-frame" in prompt
+        assert "use the script's generate-video command" in prompt
+        assert "unsupported by the selected Updream model" in prompt
+        assert call.kwargs["extra_enabled_toolsets"] == ("terminal", "file")
+        assert call.kwargs["excluded_toolsets"] == ("xiaoxing_codex_media", "image_gen")
+
+    @pytest.mark.asyncio
+    async def test_background_task_excludes_recursive_codex_media_toolset(self, monkeypatch):
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text"))
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        napcat = Platform("napcat")
+        runner.adapters[napcat] = mock_adapter
+
+        source = SessionSource(
+            platform=napcat,
+            user_id="490008192",
+            chat_id="490008192",
+            user_name="Dad",
+        )
+
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda _config, _platform: {"terminal", "file", "xiaoxing_codex_media", "memory"},
+        )
+
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run_conversation(self, **_kwargs):
+                return {"final_response": "done", "messages": []}
+
+            def shutdown_memory_provider(self):
+                pass
+
+            def close(self):
+                pass
+
+        with patch("run_agent.AIAgent", FakeAgent):
+            await runner._run_background_task(
+                "media prompt",
+                source,
+                "bg_test",
+                excluded_toolsets=("xiaoxing_codex_media",),
+            )
+
+        assert "xiaoxing_codex_media" not in captured["enabled_toolsets"]
+        assert "terminal" in captured["enabled_toolsets"]
+        assert "file" in captured["enabled_toolsets"]
+
+    @pytest.mark.asyncio
+    async def test_other_group_member_codex_image_request_does_not_auto_execute(self):
+        runner, napcat = self._napcat_runner()
+        source = SessionSource(
+            platform=napcat,
+            chat_id="group:610066383",
+            chat_type="group",
+            user_id="3634525695",
+            user_name="李育君（转生版）",
+        )
+        event = MessageEvent(
+            text="快顺便给 Codex 生成图片发回来",
+            source=source,
+        )
+
+        result = await runner._maybe_handle_codex_media_request(event)
+
+        assert result is None
+        runner._start_background_task.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # _run_background_task
 # ---------------------------------------------------------------------------
@@ -230,6 +506,27 @@ class TestRunBackgroundTask:
         assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
 
     @pytest.mark.asyncio
+    async def test_group_no_credentials_suppresses_public_error(self):
+        """Missing provider credentials should not leak background errors into groups."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="-1001",
+            chat_type="group",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": None}):
+            await runner._run_background_task("test prompt", source, "bg_test")
+
+        mock_adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):
         """When the agent completes successfully, the result is sent."""
         runner = _make_runner()
@@ -268,13 +565,14 @@ class TestRunBackgroundTask:
         mock_agent_instance.close.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_media_files_routed_by_type(self, monkeypatch):
-        """Result media is routed to the type-specific sender, not send_document.
-
-        A TTS clip should arrive as a voice bubble, a video as a video, an
-        image as a native image, and everything else as a document.
-        """
+    async def test_successful_task_sends_local_image_and_video_natively(self, tmp_path, monkeypatch):
+        """Background task MEDIA paths should return to the origin chat as native media."""
         from gateway import run as gateway_run
+
+        image_path = tmp_path / "result.png"
+        video_path = tmp_path / "result.mp4"
+        image_path.write_bytes(b"fake png")
+        video_path.write_bytes(b"fake mp4")
 
         runner = _make_runner()
         runner._resolve_session_agent_runtime = MagicMock(
@@ -290,64 +588,51 @@ class TestRunBackgroundTask:
             }
         )
         runner._run_in_executor_with_context = AsyncMock(
-            return_value={"final_response": "see attached", "messages": []}
+            return_value={
+                "final_response": (
+                    f"done\nMEDIA:{image_path}\nMEDIA:{video_path}"
+                ),
+                "messages": [],
+            }
         )
         monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
 
-        # Four real files so the media-delivery path validator accepts them
-        # (default mode requires the file to exist as a regular file).
-        import os as _os
-        import tempfile as _tempfile
-        _tmpdir = _tempfile.mkdtemp(prefix="bg_media_")
-        _ogg = _os.path.join(_tmpdir, "clip.ogg")
-        _mp4 = _os.path.join(_tmpdir, "render.mp4")
-        _png = _os.path.join(_tmpdir, "chart.png")
-        _pdf = _os.path.join(_tmpdir, "report.pdf")
-        for _p in (_ogg, _mp4, _png, _pdf):
-            with open(_p, "wb") as _fh:
-                _fh.write(b"x")
-        # ogg flagged as voice, mp4 video, png image, pdf doc.
-        media = [
-            (_ogg, True),
-            (_mp4, False),
-            (_png, False),
-            (_pdf, False),
-        ]
-
         mock_adapter = AsyncMock()
-        mock_adapter.send = AsyncMock()
-        mock_adapter.send_voice = AsyncMock()
-        mock_adapter.send_video = AsyncMock()
-        mock_adapter.send_image_file = AsyncMock()
-        mock_adapter.send_document = AsyncMock()
-        mock_adapter.send_image = AsyncMock()
-        # No text, no markdown images — just the four media attachments.
-        mock_adapter.extract_media = MagicMock(return_value=(media, ""))
-        mock_adapter.extract_images = MagicMock(return_value=([], ""))
-        # Non-telegram platform so every audio ext routes through send_voice.
-        runner.adapters[Platform.DISCORD] = mock_adapter
+        mock_adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text"))
+        mock_adapter.send_multiple_images = AsyncMock()
+        mock_adapter.send_video = AsyncMock(return_value=SendResult(success=True, message_id="video"))
+        mock_adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
+        mock_adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+        mock_adapter.extract_media = MagicMock(
+            return_value=(
+                [(str(image_path), False), (str(video_path), False)],
+                "done",
+            )
+        )
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
 
         source = SessionSource(
-            platform=Platform.DISCORD,
+            platform=Platform.TELEGRAM,
             user_id="12345",
             chat_id="67890",
             user_name="testuser",
         )
 
-        try:
-            await runner._run_background_task("make stuff", source, "bg_test")
+        await runner._run_background_task("make media", source, "bg_test")
 
-            mock_adapter.send_voice.assert_called_once()
-            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
-            mock_adapter.send_video.assert_called_once()
-            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
-            mock_adapter.send_image_file.assert_called_once()
-            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
-            mock_adapter.send_document.assert_called_once()
-            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
-        finally:
-            import shutil as _shutil
-            _shutil.rmtree(_tmpdir, ignore_errors=True)
+        mock_adapter.send.assert_awaited_once()
+        mock_adapter.send_multiple_images.assert_awaited_once_with(
+            chat_id="67890",
+            images=[(f"file://{quote(str(image_path))}", "")],
+            metadata=None,
+        )
+        mock_adapter.send_video.assert_awaited_once_with(
+            chat_id="67890",
+            video_path=str(video_path),
+            metadata=None,
+        )
+        mock_adapter.send_document.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_telegram_dm_topic_completion_preserves_reply_anchor_metadata(self, monkeypatch):
@@ -397,7 +682,6 @@ class TestRunBackgroundTask:
         assert mock_adapter.send.call_args.kwargs["metadata"] == {
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
-            "direct_messages_topic_id": "20197",
             "telegram_reply_to_message_id": "463",
         }
 
@@ -452,6 +736,72 @@ class TestRunBackgroundTask:
         call_args = mock_adapter.send.call_args
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
         assert "failed" in content.lower()
+
+    @pytest.mark.asyncio
+    async def test_group_exception_suppresses_public_error(self):
+        """Background task exceptions should be logged, not posted into groups."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="-1001",
+            chat_type="group",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=RuntimeError("boom")):
+            await runner._run_background_task("test prompt", source, "bg_test")
+
+        mock_adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_agent_result_error_suppresses_public_error(self, monkeypatch):
+        """Agent result errors without a final response should not be sent to groups."""
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={"error": "upstream unavailable", "messages": []}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda _config, _platform: {"terminal", "file"},
+        )
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], ""))
+        mock_adapter.extract_images = MagicMock(return_value=([], ""))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="-1001",
+            chat_type="group",
+            user_name="testuser",
+        )
+
+        await runner._run_background_task("test prompt", source, "bg_test")
+
+        mock_adapter.send.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

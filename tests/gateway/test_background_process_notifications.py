@@ -65,6 +65,28 @@ def _watcher_dict(session_id="proc_test", thread_id=""):
     return d
 
 
+def _watcher_dict_napcat_group(session_id="proc_test"):
+    return {
+        "session_id": session_id,
+        "check_interval": 0,
+        "platform": "napcat",
+        "chat_id": "610066383",
+        "chat_type": "group",
+        "session_key": "agent:main:napcat:group:610066383",
+    }
+
+
+def _watcher_dict_napcat_dm(session_id="proc_test"):
+    return {
+        "session_id": session_id,
+        "check_interval": 0,
+        "platform": "napcat",
+        "chat_id": "490008192",
+        "chat_type": "dm",
+        "session_key": "agent:main:napcat:dm:490008192",
+    }
+
+
 # ---------------------------------------------------------------------------
 # _load_background_notifications_mode unit tests
 # ---------------------------------------------------------------------------
@@ -246,6 +268,52 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_process_watcher_suppresses_napcat_group_system_notifications(
+    monkeypatch, tmp_path
+):
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="traceback\n", exited=True, exit_code=1)]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    napcat = Platform("napcat")
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[napcat] = adapter
+
+    await runner._run_process_watcher(_watcher_dict_napcat_group())
+
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_process_watcher_allows_napcat_private_system_notifications(
+    monkeypatch, tmp_path
+):
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="traceback\n", exited=True, exit_code=1)]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    napcat = Platform("napcat")
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[napcat] = adapter
+
+    await runner._run_process_watcher(_watcher_dict_napcat_dm())
+
+    adapter.send.assert_awaited_once()
 
 
 @pytest.mark.asyncio

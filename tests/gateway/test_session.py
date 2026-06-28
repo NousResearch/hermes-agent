@@ -409,6 +409,190 @@ class TestBuildSessionContextPrompt:
         assert "[sender name]" in prompt
         assert "**User:** Alice" not in prompt
 
+    def test_shared_group_prompt_resolves_known_sender_alias(self, monkeypatch):
+        monkeypatch.setenv(
+            "XIAOXING_PERSON_ALIASES",
+            json.dumps([
+                {
+                    "platform": "napcat",
+                    "external_id": "qq-alice",
+                    "person_id": "alice",
+                    "person_name": "Alice Real",
+                },
+            ]),
+        )
+        napcat = Platform("napcat")
+        config = GatewayConfig(
+            platforms={
+                napcat: PlatformConfig(
+                    enabled=True,
+                    extra={"group_sessions_per_user": False},
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=napcat,
+            chat_id="group-1",
+            chat_name="Family Group",
+            chat_type="group",
+            user_id="qq-alice",
+            user_name="Alice Card",
+        )
+        ctx = build_session_context(source, config)
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**Known current sender:** Alice Real (`alice`)" in prompt
+        assert "same real person across channels" in prompt
+        assert "current sender only" in prompt
+
+    def test_shared_group_prompt_includes_sender_identity_key_without_alias(self, monkeypatch):
+        monkeypatch.delenv("XIAOXING_PERSON_ALIASES", raising=False)
+        napcat = Platform("napcat")
+        config = GatewayConfig(
+            platforms={
+                napcat: PlatformConfig(
+                    enabled=True,
+                    extra={"group_sessions_per_user": False},
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=napcat,
+            chat_id="group-1",
+            chat_name="Family Group",
+            chat_type="group",
+            user_id="qq-bob",
+            user_name="Bob Card",
+        )
+        ctx = build_session_context(source, config)
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**Current sender identity key:** Bob Card (`napcat:qq-bob`)" in prompt
+        assert "connect group/private messages from the same account" in prompt
+        assert "quoted/replied content may be from someone else" in prompt
+
+    def test_napcat_prompt_requires_tool_for_cross_chat_messages(self):
+        napcat = Platform("napcat")
+        config = GatewayConfig(
+            platforms={
+                napcat: PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=napcat,
+            chat_id="490008192",
+            chat_name="Dad Private",
+            chat_type="dm",
+            user_id="qq-dad",
+            user_name="Dad",
+        )
+        ctx = build_session_context(source, config)
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "message another QQ/Weixin private chat or group" in prompt
+        assert "qq_send_message" in prompt
+        assert "must use this tool" in prompt
+        assert "same chat media" in prompt
+        assert "never claim a cross-chat message was sent unless the tool succeeded" in prompt
+        assert "text-only" not in prompt
+
+    def test_milky_prompt_uses_qq_notes_and_codex_task_tool(self):
+        milky = Platform("milky")
+        config = GatewayConfig(
+            platforms={
+                milky: PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=milky,
+            chat_id="group-1",
+            chat_name="Dad Test Group",
+            chat_type="group",
+            user_id="qq-dad",
+            user_name="Dad",
+        )
+        ctx = build_session_context(source, config)
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "You are already responding inside a QQ chat" in prompt
+        assert "qq_send_message" in prompt
+        assert "`codex_image_request` or `codex_video_request`" in prompt
+        assert "classify by the underlying deliverable first" in prompt
+        assert "sending a video script/brief to Codex" in prompt
+        assert "use `codex_task_request`" in prompt
+        assert "do not merely promise to tell Codex" in prompt
+        assert "Never roleplay a Codex handoff" in prompt
+        assert "taking a horn" in prompt
+        assert "XiaoXing should usually receive `SKIP`" in prompt
+
+    def test_codex_xiaoxing_channel_prompt_requires_return_target_delivery(self):
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        platform_registry.register(
+            PlatformEntry(
+                name="codex-xiaoxing-channel",
+                label="Codex XiaoXing Channel",
+                adapter_factory=lambda cfg: MagicMock(),
+                check_fn=lambda: True,
+                source="plugin",
+            )
+        )
+        codex_channel = Platform("codex-xiaoxing-channel")
+        config = GatewayConfig(
+            platforms={
+                codex_channel: PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=codex_channel,
+            chat_id="codex-mentor",
+            chat_name="Codex mentor channel",
+            chat_type="dm",
+            user_id="Codex",
+            user_name="Codex",
+        )
+        ctx = build_session_context(source, config)
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "private Codex mentor channel" in prompt
+        assert "Return target: milky:<id>" in prompt
+        assert "explicit cross-chat delivery instruction" in prompt
+        assert "Use `qq_send_message`" in prompt
+        assert "Do not only reply inside the mentor channel" in prompt
+        assert "unless `qq_send_message` succeeded" in prompt
+        assert "target_type='direct'" in prompt
+        assert "media delivery should use" in prompt
+
+    def test_napcat_prompt_requires_tts_for_explicit_same_chat_voice_requests(self):
+        napcat = Platform("napcat")
+        config = GatewayConfig(
+            platforms={
+                napcat: PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=napcat,
+            chat_id="group-1",
+            chat_name="Dad Test Group",
+            chat_type="group",
+            user_id="qq-dad",
+            user_name="Dad",
+        )
+        ctx = build_session_context(source, config)
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "explicitly asks for a voice message" in prompt
+        assert "text_to_speech" in prompt
+        assert "return only `MEDIA:/absolute/path`" in prompt
+        assert "Do not answer with SKIP" in prompt
+        assert "Do not use `qq_send_message` for same-chat voice" in prompt
+
     def test_dm_thread_shows_user_not_multi(self):
         """DM threads are single-user and should show User, not multi-user note."""
         config = GatewayConfig(
@@ -787,6 +971,35 @@ class TestWhatsAppSessionKeyConsistency:
 
         assert first_entry.session_key == "agent:main:discord:group:guild-123"
         assert second_entry.session_key == "agent:main:discord:group:guild-123"
+        assert first_entry.session_id == second_entry.session_id
+
+    def test_store_uses_platform_group_session_override(self, store):
+        napcat = Platform("napcat")
+        store.config.platforms[napcat] = PlatformConfig(
+            enabled=True,
+            extra={"group_sessions_per_user": False},
+        )
+
+        first = SessionSource(
+            platform=napcat,
+            chat_id="group:610066383",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+        second = SessionSource(
+            platform=napcat,
+            chat_id="group:610066383",
+            chat_type="group",
+            user_id="bob",
+            user_name="Bob",
+        )
+
+        first_entry = store.get_or_create_session(first)
+        second_entry = store.get_or_create_session(second)
+
+        assert first_entry.session_key == "agent:main:napcat:group:group:610066383"
+        assert second_entry.session_key == "agent:main:napcat:group:group:610066383"
         assert first_entry.session_id == second_entry.session_id
 
     def test_telegram_dm_includes_chat_id(self):

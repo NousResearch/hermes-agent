@@ -8,6 +8,7 @@ Covers:
 import pytest
 from unittest.mock import MagicMock, patch
 
+from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations, _parse_search_context_line
 
 
@@ -278,6 +279,8 @@ class TestPaginationBounds:
 
         def fake_exec(command, *args, **kwargs):
             commands.append(command)
+            if command.startswith("test -d"):
+                return MagicMock(exit_code=1, stdout="")
             if command.startswith("wc -c"):
                 return MagicMock(exit_code=0, stdout="12")
             if command.startswith("head -c"):
@@ -318,6 +321,44 @@ class TestPaginationBounds:
         rg_commands = [cmd for cmd in commands if cmd.startswith("rg --files")]
         assert rg_commands
         assert "| head -n 1" in rg_commands[0]
+
+
+# =========================================================================
+# File listing diagnostics
+# =========================================================================
+
+
+class TestFileListingDiagnostics:
+    """Directory reads and stem-based file search should not look missing."""
+
+    def test_read_file_directory_reports_directory_not_missing(self, tmp_path):
+        target_dir = tmp_path / "private_delivery"
+        target_dir.mkdir()
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+
+        result = ops.read_file(str(target_dir))
+
+        assert result.error
+        assert "directory" in result.error.lower()
+        assert "File not found" not in result.error
+        assert result.similar_files == []
+
+    def test_file_search_bare_stem_matches_extension_suffix(self, tmp_path):
+        target_dir = tmp_path / "private_delivery" / "trial"
+        target_dir.mkdir(parents=True)
+        target = target_dir / "fathers_day_private_trial_video_20260621_i2v.mp4"
+        target.write_text("video placeholder", encoding="utf-8")
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+
+        result = ops.search(
+            "fathers_day_private_trial_video_20260621_i2v",
+            path=str(tmp_path),
+            target="files",
+            limit=10,
+        )
+
+        assert result.error is None
+        assert str(target) in result.files
 
 
 # =========================================================================

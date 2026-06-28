@@ -19,6 +19,7 @@ import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { currentPickerSelection, displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import { filterPickerProviders } from '@/lib/provider-allowlist'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
@@ -100,7 +101,13 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
       : String(modelOptions.error)
     : null
 
-  const providers = modelOptions.data?.providers
+  // China-first: only the APEX-NODES.COM managed relay (+ custom BYOK endpoints)
+  // and domestic providers are shown; foreign providers are hidden even when
+  // configured (see filterPickerProviders).
+  const providers = useMemo(
+    () => (modelOptions.data?.providers ? filterPickerProviders(modelOptions.data.providers) : undefined),
+    [modelOptions.data?.providers]
+  )
 
   const effectiveVisibleModels = useMemo(
     () => effectiveVisibleKeys(visibleModels, providers ?? []),

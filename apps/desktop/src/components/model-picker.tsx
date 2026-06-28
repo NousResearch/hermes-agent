@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { currentPickerSelection, managedModelDisplayName } from '@/lib/model-status-label'
+import { filterPickerProviders } from '@/lib/provider-allowlist'
 import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
@@ -66,7 +67,10 @@ export function ModelPickerDialog({
     enabled: open
   })
 
-  const providers = modelOptions.data?.providers ?? []
+  // China-first: only the APEX-NODES.COM managed relay (+ custom BYOK endpoints)
+  // and domestic providers are shown; foreign providers are hidden even when
+  // configured (see filterPickerProviders).
+  const providers = filterPickerProviders(modelOptions.data?.providers ?? [])
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
     !!sessionId,

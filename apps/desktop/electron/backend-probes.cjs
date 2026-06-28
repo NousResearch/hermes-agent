@@ -37,7 +37,18 @@ const { execFileSync } = require('node:child_process')
 const PROBE_TIMEOUT_MS = 5000
 
 /**
- * Return true iff `python -c "import hermes_cli"` exits 0.
+ * Return the Python snippet used to verify Hermes can import far enough to
+ * launch the CLI. Kept exported for tests so dependency regressions are
+ * caught without needing a real broken venv fixture.
+ *
+ * @returns {string}
+ */
+function hermesRuntimeImportProbe() {
+  return 'import yaml; import hermes_cli.config'
+}
+
+/**
+ * Return true iff the Hermes runtime import probe exits 0.
  *
  * Used to gate the "fallback to system Python with hermes_cli installed"
  * rung of resolveHermesBackend. Without this, a system Python 3.11-3.13
@@ -46,13 +57,20 @@ const PROBE_TIMEOUT_MS = 5000
  * site-packages -- and the resolver returns a backend that immediately
  * dies on spawn.
  *
+ * The probe intentionally imports hermes_cli.config, not just the top-level
+ * package: a broken/empty Windows launcher venv can still see the source tree
+ * through PYTHONPATH but lack PyYAML, then die on the first real CLI import.
+ *
  * @param {string} pythonPath - Absolute path to a python.exe / python.
+ * @param {object} [opts]
+ * @param {object} [opts.env] - Additional environment for the probe.
  * @returns {boolean}
  */
-function canImportHermesCli(pythonPath) {
+function canImportHermesCli(pythonPath, opts = {}) {
   if (!pythonPath) return false
   try {
-    execFileSync(pythonPath, ['-c', 'import hermes_cli'], {
+    execFileSync(pythonPath, ['-c', hermesRuntimeImportProbe()], {
+      env: { ...process.env, ...(opts.env || {}) },
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
       windowsHide: true
@@ -101,6 +119,7 @@ function verifyHermesCli(hermesCommand, opts = {}) {
 
 module.exports = {
   canImportHermesCli,
+  hermesRuntimeImportProbe,
   verifyHermesCli,
   PROBE_TIMEOUT_MS
 }

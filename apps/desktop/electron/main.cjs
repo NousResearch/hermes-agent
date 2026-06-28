@@ -2608,6 +2608,24 @@ function readBootstrapMarker() {
   return readJson(BOOTSTRAP_COMPLETE_MARKER)
 }
 
+// Marker-independent: is the canonical install at ACTIVE_HERMES_ROOT actually
+// runnable right now? A complete CLI install (`install.sh --include-desktop`)
+// or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
+// ever having written the bootstrap marker -- so we must be able to recognise
+// "already installed" off the filesystem alone, not just the marker.
+function isActiveRuntimeUsable() {
+  const venvPython = getVenvPython(VENV_ROOT)
+  return (
+    isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
+    fileExists(venvPython) &&
+    canImportHermesCli(venvPython, {
+      env: {
+        PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+      }
+    })
+  )
+}
+
 function isBootstrapComplete() {
   const marker = readBootstrapMarker()
   if (!marker || typeof marker !== 'object') return false
@@ -2620,7 +2638,7 @@ function isBootstrapComplete() {
   // a runnable venv: an interrupted or split-home install can leave the marker
   // + checkout without a venv, and trusting that spawns a dead backend
   // ("gateway offline") instead of re-running bootstrap to repair it.
-  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
+  return isActiveRuntimeUsable()
 }
 
 function writeBootstrapMarker(payload) {

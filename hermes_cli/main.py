@@ -5374,6 +5374,49 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
+def _restore_desktop_backup(desktop_dir: Path) -> bool:
+    """Restore the pre-rebuild unpacked app backup on build failure.
+
+    ``before-pack.cjs`` renames ``release/<appOutDir>`` into
+    ``release/.rebuild-backup/<appOutDir>`` before electron-builder stages a
+    new tree. When the build ultimately fails after all retries
+    (corrupt-download → purge → mirror), this function puts the backup back
+    so the desktop shortcut keeps working — no manual rename needed.
+
+    Best-effort: never raises. Returns ``True`` when a backup was restored.
+    """
+    release_dir = desktop_dir / "release"
+    backup_root = release_dir / ".rebuild-backup"
+    if not backup_root.is_dir():
+        return False
+
+    restored_any = False
+    for backup in sorted(backup_root.iterdir()):
+        if not backup.is_dir():
+            continue
+        original = release_dir / backup.name
+        try:
+            # Discard the partial tree left by the failed build (if any) so the
+            # rename can succeed. A partial tree is a pure build artifact that
+            # the next pack will wipe anyway — restoring the known-good backup
+            # is always the right move.
+            if original.exists():
+                shutil.rmtree(original, ignore_errors=True)
+            backup.rename(original)
+            restored_any = True
+        except OSError:
+            continue
+
+    # Remove the backup root if it's now empty.
+    if restored_any:
+        try:
+            backup_root.rmdir()
+        except OSError:
+            pass
+
+    return restored_any
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
 
@@ -5612,6 +5655,7 @@ def cmd_gui(args: argparse.Namespace):
                 _stop_desktop_processes_locking_build(desktop_dir)
                 build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
+                _restore_desktop_backup(desktop_dir)
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":

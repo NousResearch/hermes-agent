@@ -1,17 +1,19 @@
 /**
  * after-pack.cjs — electron-builder afterPack hook.
  *
- * 1. Cleans up the `.bak` backup directory left by before-pack.cjs — the
- *    build succeeded so the backup is no longer needed.
+ * 1. Cleans up the nested backup directory under
+ *    `release/.rebuild-backup/<dirname>` left by before-pack.cjs — the build
+ *    succeeded so the backup is no longer needed. Also removes the empty
+ *    `.rebuild-backup/` parent when possible.
  * 2. Stamps the Hermes icon + identity onto the packed Windows Hermes.exe via
  *    rcedit (delegated to set-exe-identity.cjs).
  *
  * WHY THE BACKUP CLEANUP IS HERE
  * ------------------------------
- * before-pack.cjs renames the old `appOutDir` to `<appOutDir>.bak` to
- * preserve a fallback exe when the build fails. This hook runs only after
- * electron-builder has staged a fresh, complete tree — so it is now safe to
- * discard the backup.
+ * before-pack.cjs renames the old `appOutDir` into
+ * `release/.rebuild-backup/<dirname>` to preserve a fallback exe when the
+ * build fails. This hook runs only after electron-builder has staged a fresh,
+ * complete tree — so it is now safe to discard the backup.
  *
  * Best-effort: a cleanup failure must never fail an otherwise-good build
  * (worst case is disk waste, not a broken app), so we log and resolve.
@@ -25,11 +27,11 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
-const { staleBackupPath } = require('./before-pack.cjs')
+const { staleBackupPath, REBUILD_BACKUP_DIRNAME } = require('./before-pack.cjs')
 const { stampExeIdentity } = require('./set-exe-identity.cjs')
 
 /**
- * Remove the `.bak` backup directory left by before-pack.cjs.
+ * Remove the nested backup directory left by before-pack.cjs.
  * Best-effort: never throws.
  *
  * @param {string} appOutDir
@@ -50,6 +52,16 @@ function cleanStaleBackupDir(appOutDir) {
       `[after-pack] could not remove backup ${backupDir} (${err.message}); ` +
         `safe to delete manually`
     )
+    return  // don't try to rmdir parent if child removal failed
+  }
+
+  // Remove the .rebuild-backup/ parent if it's now empty.
+  const parentDir = path.dirname(backupDir)
+  try {
+    fs.rmdirSync(parentDir)
+  } catch (_) {
+    // Directory not empty (other platform backups may still exist), or
+    // permissions — ignore; the empty dir is harmless.
   }
 }
 

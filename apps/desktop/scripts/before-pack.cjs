@@ -3,9 +3,10 @@
 /**
  * before-pack.cjs — electron-builder beforePack hook.
  *
- * Moves any stale unpacked app directory (`appOutDir`) aside into a `.bak`
- * backup before electron-builder stages the Electron binaries into it. The
- * backup is cleaned up by after-pack.cjs on success.
+ * Moves any stale unpacked app directory (`appOutDir`) aside into a nested
+ * backup under `release/.rebuild-backup/<dirname>` before electron-builder
+ * stages the Electron binaries into it. The backup is cleaned up by
+ * after-pack.cjs on success, and restored by the CLI build wrapper on failure.
  *
  * WHY RENAME INSTEAD OF DELETE
  * ----------------------------
@@ -16,14 +17,22 @@
  * tree was gone, and the new one never materialised. Result: Hermes.exe
  * vanished until a successful rebuild.
  *
- * Renaming to `<appOutDir>.bak` preserves the last-known-good build so:
- *  - A build failure leaves the `.bak` intact — the user can keep working
- *    with `Hermes.exe.bak` or rename it back manually.
- *  - The `hermes desktop` / `--update` path can detect the `.bak` as a
- *    fallback exe and recover automatically (future follow-up).
- *  - The `after-pack.cjs` hook removes the `.bak` only after the new build
- *    completes, which is safe because `appOutDir` now holds a fresh, complete
- *    Electron tree (stamped + identity-applied).
+ * Renaming preserves the last-known-good build so:
+ *  - `hermes_cli/main.py` can restore the backup automatically on build
+ *    failure — the desktop shortcut keeps working without user intervention.
+ *  - `after-pack.cjs` removes the backup only after the new build completes.
+ *
+ * WHY NESTED UNDER `.rebuild-backup/`
+ * -----------------------------------
+ * Sibling renames (e.g. `win-unpacked.bak`) risk being matched by:
+ *  - `_purge_electron_build_cache`'s `release/*-unpacked` glob
+ *  - `_desktop_packaged_executable`'s macOS `mac*` glob, which would treat
+ *    `mac-arm64.bak/Hermes.app/...` as a candidate executable and skip the
+ *    corrupt-download retry that `_cmd_desktop` needs to perform.
+ *
+ * Nesting under `release/.rebuild-backup/` (a dot-directory) avoids both
+ * globs: the `*-unpacked` glob won't enter the dot-directory, and the `mac*`
+ * glob won't match a path starting with `.rebuild-backup`.
  *
  * Cross-platform: rename(2) on the same filesystem is atomic on Linux/macOS
  * and near-atomic on NTFS. All platforms benefit; this path runs for every
@@ -41,17 +50,28 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
+/** Subdirectory under ``release/`` where backups are parked. */
+const REBUILD_BACKUP_DIRNAME = '.rebuild-backup'
+
 /**
- * Derive the backup directory path from the app output directory.
+ * Derive the nested backup directory path from the app output directory.
+ *
+ * ``appOutDir`` is e.g. ``/build/release/win-unpacked``.
+ * Returns ``/build/release/.rebuild-backup/win-unpacked``.
+ *
  * @param {string} appOutDir
  * @returns {string}
  */
 function staleBackupPath(appOutDir) {
-  return `${appOutDir}.bak`
+  return path.join(
+    path.dirname(appOutDir),
+    REBUILD_BACKUP_DIRNAME,
+    path.basename(appOutDir)
+  )
 }
 
 /**
- * Move the stale unpacked directory aside into a `.bak` backup.
+ * Move the stale unpacked directory aside into the nested backup.
  * Falls back to rmSync if rename is impossible (cross-device, permissions).
  *
  * @param {string} appOutDir
@@ -67,7 +87,7 @@ function cleanStaleAppOutDir(appOutDir) {
 
   const backupDir = staleBackupPath(appOutDir)
 
-  // Remove a leftover .bak from a *previous* failed build so we can rename
+  // Remove a leftover backup from a *previous* failed build so we can rename
   // the current directory cleanly.
   if (fs.existsSync(backupDir)) {
     try {
@@ -75,6 +95,13 @@ function cleanStaleAppOutDir(appOutDir) {
     } catch (_) {
       // If we can't even clean the old backup, fall through to rmSync below.
     }
+  }
+
+  // Ensure the parent .rebuild-backup/ directory exists.
+  try {
+    fs.mkdirSync(path.dirname(backupDir), { recursive: true })
+  } catch (_) {
+    // Best-effort; renameSync will fail with its own error if parent missing.
   }
 
   // Try rename first (non-destructive, preserves the last good build).
@@ -98,6 +125,7 @@ function cleanStaleAppOutDir(appOutDir) {
   }
 }
 
+exports.REBUILD_BACKUP_DIRNAME = REBUILD_BACKUP_DIRNAME
 exports.staleBackupPath = staleBackupPath
 exports.cleanStaleAppOutDir = cleanStaleAppOutDir
 

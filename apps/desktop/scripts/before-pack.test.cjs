@@ -6,7 +6,7 @@ const test = require('node:test')
 
 const { cleanStaleAppOutDir, staleBackupPath } = require('../scripts/before-pack.cjs')
 
-test('cleanStaleAppOutDir renames a populated unpacked directory to .bak', () => {
+test('cleanStaleAppOutDir renames a populated unpacked directory into nested backup', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
   try {
     const appOutDir = path.join(tempRoot, 'linux-unpacked')
@@ -24,7 +24,7 @@ test('cleanStaleAppOutDir renames a populated unpacked directory to .bak', () =>
     assert.equal(backedUp, true)
     // Original directory must be gone.
     assert.equal(fs.existsSync(appOutDir), false)
-    // Backup must exist with the original files.
+    // Backup must exist under .rebuild-backup/ with the original files.
     const backupDir = staleBackupPath(appOutDir)
     assert.equal(fs.existsSync(backupDir), true)
     assert.equal(fs.existsSync(path.join(backupDir, 'LICENSE.electron.txt')), true)
@@ -34,13 +34,13 @@ test('cleanStaleAppOutDir renames a populated unpacked directory to .bak', () =>
   }
 })
 
-test('cleanStaleAppOutDir replaces an existing .bak with a fresh rename', () => {
+test('cleanStaleAppOutDir replaces an existing backup with a fresh rename', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
   try {
     const appOutDir = path.join(tempRoot, 'linux-unpacked')
     const backupDir = staleBackupPath(appOutDir)
 
-    // Create a stale .bak from a previous failed build.
+    // Create a stale backup from a previous failed build.
     fs.mkdirSync(backupDir, { recursive: true })
     fs.writeFileSync(path.join(backupDir, 'OLD'), 'stale', 'utf8')
 
@@ -53,7 +53,7 @@ test('cleanStaleAppOutDir replaces an existing .bak with a fresh rename', () => 
     assert.equal(removed, true)
     assert.equal(backedUp, true)
     assert.equal(fs.existsSync(appOutDir), false)
-    // The old .bak should have been replaced — the stale 'OLD' file must not survive.
+    // The old backup should have been replaced — the stale 'OLD' file must not survive.
     assert.equal(fs.existsSync(path.join(backupDir, 'OLD')), false)
     // The new backup should have the current build's files.
     assert.equal(fs.existsSync(path.join(backupDir, 'LICENSE.electron.txt')), true)
@@ -82,10 +82,10 @@ test('cleanStaleAppOutDir ignores empty or invalid input', () => {
   }
 })
 
-test('staleBackupPath appends .bak suffix', () => {
+test('staleBackupPath nests under .rebuild-backup/', () => {
   assert.equal(
     staleBackupPath('/build/release/win-unpacked'),
-    '/build/release/win-unpacked.bak'
+    path.join('/build/release', '.rebuild-backup', 'win-unpacked')
   )
 })
 

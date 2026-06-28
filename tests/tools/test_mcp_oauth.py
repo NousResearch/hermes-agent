@@ -999,3 +999,59 @@ class TestOAuthCallbackServer:
             pytest.fail("Port not released after close()")
         finally:
             s.close()
+
+
+# ---------------------------------------------------------------------------
+# OAuthCallbackServer — path filtering (integration tests)
+# ---------------------------------------------------------------------------
+
+class TestOAuthCallbackServerPathFiltering:
+    """Only /callback is processed; other paths get 404 and don't consume the slot."""
+
+    def test_callback_path_accepted(self):
+        """/callback?code=... returns 200 and sets result."""
+        from tools.mcp_oauth import OAuthCallbackServer
+        import urllib.request
+        import time
+
+        server = OAuthCallbackServer(port=0)
+        server.start()
+        try:
+            resp = urllib.request.urlopen(
+                f"http://127.0.0.1:{server.port}/callback?code=abc&state=xyz",
+                timeout=5,
+            )
+            assert resp.status == 200
+            time.sleep(0.3)  # let handler write result
+            assert server._result["auth_code"] == "abc"
+            assert server._result["state"] == "xyz"
+        finally:
+            server.close()
+
+    def test_non_callback_path_rejected(self):
+        """/favicon.ico returns 404 and does NOT consume the handler slot."""
+        from tools.mcp_oauth import OAuthCallbackServer
+        import urllib.request
+        import urllib.error
+        import time
+
+        server = OAuthCallbackServer(port=0)
+        server.start()
+        try:
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.port}/favicon.ico",
+                    timeout=5,
+                )
+            assert exc_info.value.code == 404
+
+            # Server must still be alive — favicon didn't consume the slot
+            resp = urllib.request.urlopen(
+                f"http://127.0.0.1:{server.port}/callback?code=test",
+                timeout=5,
+            )
+            assert resp.status == 200
+            time.sleep(0.3)
+            assert server._result["auth_code"] == "test"
+        finally:
+            server.close()

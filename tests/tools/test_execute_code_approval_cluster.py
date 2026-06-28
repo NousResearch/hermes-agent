@@ -116,16 +116,20 @@ def gw_session(monkeypatch):
 
     session_key = "cluster-test-session"
     token = A.set_current_session_key(session_key)
+    A.clear_session(session_key)
     with A._lock:
         A._gateway_queues.pop(session_key, None)
         A._gateway_notify_cbs.pop(session_key, None)
+        A._permanent_approved.discard("execute_code")
     try:
         yield session_key
     finally:
+        A.clear_session(session_key)
         A.reset_current_session_key(token)
         with A._lock:
             A._gateway_queues.pop(session_key, None)
             A._gateway_notify_cbs.pop(session_key, None)
+            A._permanent_approved.discard("execute_code")
 
 
 def _register_resolver(session_key: str, result):

@@ -422,6 +422,87 @@ class TestTelegramApprovalCallback:
         assert runner.last_source.chat_id == "12345"
 
     @pytest.mark.asyncio
+    async def test_action_inbox_callback_uses_profile_home_and_async_subprocess(self, tmp_path):
+        adapter = _make_adapter()
+        script_dir = tmp_path / "scripts"
+        script_dir.mkdir()
+        action_script = script_dir / "action_inbox.py"
+        action_script.write_text("# test script\n", encoding="utf-8")
+
+        query = AsyncMock()
+        query.data = "ai:approve:item-123"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 12345
+        query.from_user.first_name = "Alice_Bob"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+                with patch(
+                    "plugins.platforms.telegram.adapter.asyncio.create_subprocess_exec",
+                    new_callable=AsyncMock,
+                    return_value=proc,
+                ) as mock_exec:
+                    await adapter._handle_callback_query(update, context)
+
+        mock_exec.assert_awaited_once()
+        args = mock_exec.await_args.args
+        assert args[:4] == (
+            sys.executable,
+            str(action_script),
+            "approve",
+            "item-123",
+        )
+        query.answer.assert_called_once()
+        assert "APPROVED" in query.answer.call_args.kwargs["text"]
+        query.edit_message_text.assert_called_once()
+        assert "Alice\\_Bob" in query.edit_message_text.call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_action_inbox_callback_rejects_unauthorized_user_before_script(self):
+        adapter = _make_adapter()
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+
+        query = AsyncMock()
+        query.data = "ai:dismiss:item-123"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch(
+            "plugins.platforms.telegram.adapter.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            await adapter._handle_callback_query(update, context)
+
+        mock_exec.assert_not_awaited()
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args.kwargs["text"].lower()
+        query.edit_message_text.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_already_resolved(self):
         adapter = _make_adapter()
         # No state for approval_id 99 — already resolved

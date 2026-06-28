@@ -522,6 +522,66 @@ class TestMarkJobRun:
         updated = get_job(job["id"])
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "timeout"
+        assert updated["consecutive_failures"] == 1
+
+    def test_repeated_failures_auto_quarantine_job(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_FAILURE_QUARANTINE_THRESHOLD", "2")
+        monkeypatch.setenv("HERMES_CRON_FAILURE_QUARANTINE_MINUTES", "30")
+
+        job = create_job(prompt="Fail", schedule="every 1h")
+        mark_job_run(job["id"], success=False, error="model timeout")
+        first = get_job(job["id"])
+        assert first["enabled"] is True
+        assert first["consecutive_failures"] == 1
+
+        mark_job_run(job["id"], success=False, error="model timeout")
+        updated = get_job(job["id"])
+        assert updated["enabled"] is False
+        assert updated["state"] == "paused"
+        assert updated["next_run_at"] is None
+        assert updated["consecutive_failures"] == 2
+        assert "Auto-quarantined after 2 consecutive failures" in updated["paused_reason"]
+        assert updated["quarantined_until"]
+
+    def test_expired_failure_quarantine_auto_resumes_recurring_job(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_FAILURE_QUARANTINE_THRESHOLD", "1")
+        monkeypatch.setenv("HERMES_CRON_FAILURE_QUARANTINE_MINUTES", "30")
+
+        job = create_job(prompt="Fail", schedule="every 1h")
+        mark_job_run(job["id"], success=False, error="model timeout")
+        paused = get_job(job["id"])
+        assert paused["enabled"] is False
+        assert paused["quarantined_until"]
+
+        jobs = load_jobs()
+        jobs[0]["quarantined_until"] = (
+            datetime.now().astimezone() - timedelta(minutes=1)
+        ).isoformat()
+        save_jobs(jobs)
+
+        assert get_due_jobs() == []
+
+        resumed = get_job(job["id"])
+        assert resumed["enabled"] is True
+        assert resumed["state"] == "scheduled"
+        assert resumed["consecutive_failures"] == 0
+        assert resumed["quarantined_until"] is None
+        assert resumed["quarantine_reason"] is None
+        assert resumed["next_run_at"]
+
+    def test_resume_clears_failure_quarantine(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_FAILURE_QUARANTINE_THRESHOLD", "1")
+
+        job = create_job(prompt="Fail", schedule="every 1h")
+        mark_job_run(job["id"], success=False, error="model timeout")
+        assert get_job(job["id"])["state"] == "paused"
+
+        resumed = resume_job(job["id"])
+        assert resumed["enabled"] is True
+        assert resumed["state"] == "scheduled"
+        assert resumed["consecutive_failures"] == 0
+        assert resumed["quarantined_until"] is None
+        assert resumed["quarantine_reason"] is None
 
     def test_delivery_error_tracked_separately(self, tmp_cron_dir):
         """Agent succeeds but delivery fails — both tracked independently."""

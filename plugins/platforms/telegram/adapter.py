@@ -8,6 +8,7 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import contextlib
 import dataclasses
 import inspect
 import json
@@ -4431,6 +4432,90 @@ class TelegramAdapter(BasePlatformAdapter):
                 # button click.
                 if count and query_chat_id is not None:
                     self.resume_typing_for_chat(str(query_chat_id))
+            return
+
+        # --- Action Inbox callbacks (ai:verb:item_id) ---
+        if data.startswith("ai:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid action-inbox data.")
+                return
+            verb, item_id = parts[1], parts[2]
+            if verb not in {"approve", "dismiss", "snooze"}:
+                await query.answer(text="Invalid action-inbox action.")
+                return
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to resolve action cards.")
+                return
+
+            from hermes_constants import get_hermes_home
+
+            action_script = get_hermes_home() / "scripts" / "action_inbox.py"
+            if not action_script.exists():
+                await query.answer(text="Action script missing. Check Hermes logs.")
+                logger.error("[%s] action-inbox script missing: %s", self.name, action_script)
+                return
+            if verb == "approve":
+                cmd = [sys.executable, str(action_script), "approve", item_id, "--note", "approved by Telegram button"]
+                label = "🟢 APPROVED"
+            elif verb == "dismiss":
+                cmd = [sys.executable, str(action_script), "dismiss", item_id, "--reason", "dismissed by Telegram button"]
+                label = "🔴 DENIED"
+            else:
+                cmd = [sys.executable, str(action_script), "snooze", item_id, "1d"]
+                label = "⏸ Snoozed 1d"
+
+            proc = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=20,
+                )
+            except asyncio.TimeoutError:
+                if proc is not None:
+                    with contextlib.suppress(Exception):
+                        proc.kill()
+                    with contextlib.suppress(Exception):
+                        await proc.wait()
+                logger.error("[%s] action-inbox callback timed out: %s", self.name, cmd)
+                await query.answer(text="Action timed out. Check Hermes logs.")
+                return
+            except Exception as exc:
+                logger.error("Action Inbox callback failed: %s", exc, exc_info=True)
+                await query.answer(text="Action failed. Check Hermes logs.")
+                return
+
+            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            if proc.returncode != 0:
+                err = (stderr or stdout or "action failed").strip()[:180]
+                await query.answer(text=err)
+                return
+
+            await query.answer(text=label)
+            user_display = getattr(query.from_user, "first_name", "User")
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(
+                        f"{label} by {user_display}\n\nQueue status only — no outbound/send/spend executed."
+                    ),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
             return
 
         # --- Slash-confirm callbacks (sc:choice:confirm_id) ---

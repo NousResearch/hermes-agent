@@ -18,7 +18,9 @@ import pytest
 from tests.tools.conftest import register_all_web_providers
 
 
-def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None, text_sleep=None):
+def _install_fake_ddgs(
+    monkeypatch, *, text_results=None, text_raises=None, text_sleep=None, calls=None
+):
     """Install a stub ``ddgs`` module in sys.modules for the duration of a test.
 
     ``text_results``: iterable of dicts to yield from DDGS().text(...).
@@ -39,7 +41,9 @@ def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None, text
             return self
         def __exit__(self, *_a):
             return False
-        def text(self, query, max_results=5):
+        def text(self, query, max_results=5, **kwargs):
+            if calls is not None:
+                calls.append({"query": query, "max_results": max_results, **kwargs})
             if text_sleep is not None:
                 _time.sleep(text_sleep)
             if text_raises is not None:
@@ -213,6 +217,24 @@ class TestDDGSProviderSearch:
         assert result["success"] is True
         assert result["data"]["web"][0]["url"] == "https://e.com"
         assert result["data"]["web"][0]["title"] == "T"
+
+    def test_configured_package_backend_is_passed_to_ddgs(self, monkeypatch):
+        calls = []
+        _install_fake_ddgs(
+            monkeypatch,
+            text_results=[{"title": "T", "href": "https://e.com", "body": "B"}],
+            calls=calls,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"web": {"ddgs_backend": "html"}},
+        )
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+        result = DDGSWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is True
+        assert calls[0]["backend"] == "html"
 
 
 # ---------------------------------------------------------------------------

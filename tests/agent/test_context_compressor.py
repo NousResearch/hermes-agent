@@ -24,6 +24,16 @@ def compressor():
         return c
 
 
+@pytest.fixture(autouse=True)
+def no_live_summary_llm():
+    """Keep these unit tests from discovering real auxiliary credentials."""
+    with patch(
+        "agent.context_compressor.call_llm",
+        side_effect=RuntimeError("no provider"),
+    ):
+        yield
+
+
 class TestShouldCompress:
     def test_below_threshold(self, compressor):
         compressor.last_prompt_tokens = 50000

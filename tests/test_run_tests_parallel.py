@@ -20,6 +20,7 @@ POSIX-only: Windows has its own grandchild lifecycle (no shared session,
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -61,6 +62,34 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _load_runner_module():
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("hermes_run_tests_parallel", runner)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_known_slow_file_gets_targeted_timeout_floor() -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = _load_runner_module()
+    slow_file = repo_root / "tests" / "run_agent" / "test_run_agent.py"
+
+    assert runner._effective_file_timeout(slow_file, repo_root, 140.0) == 240.0
+    assert runner._effective_file_timeout(slow_file, repo_root, 300.0) == 300.0
+
+
+def test_unlisted_file_uses_requested_file_timeout() -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = _load_runner_module()
+    ordinary_file = repo_root / "tests" / "test_example.py"
+
+    assert runner._effective_file_timeout(ordinary_file, repo_root, 140.0) == 140.0
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only probe")

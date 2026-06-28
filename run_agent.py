@@ -3685,16 +3685,28 @@ class AIAgent:
             client = getattr(self, "client", None)
             if client is not None and not self._is_openai_client_closed(client):
                 return client
+            old_client = client
+            try:
+                new_client = self._create_openai_client(
+                    self._client_kwargs, reason=reason, shared=True
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to recreate closed OpenAI client (%s) %s error=%s",
+                    reason,
+                    self._client_log_context(),
+                    exc,
+                )
+                raise RuntimeError("Failed to recreate closed OpenAI client") from exc
+            self.client = new_client
 
         logger.warning(
-            "Detected closed shared OpenAI client; recreating before use (%s) %s",
+            "Detected closed shared OpenAI client; recreated before use (%s) %s",
             reason,
             self._client_log_context(),
         )
-        if not self._replace_primary_openai_client(reason=f"recreate_closed:{reason}"):
-            raise RuntimeError("Failed to recreate closed OpenAI client")
-        with self._openai_client_lock():
-            return self.client
+        self._close_openai_client(old_client, reason=f"replace:{reason}", shared=True)
+        return new_client
 
     def _cleanup_dead_connections(self) -> bool:
         """Forwarder — see ``agent.agent_runtime_helpers.cleanup_dead_connections``."""

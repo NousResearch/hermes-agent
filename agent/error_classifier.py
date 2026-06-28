@@ -355,6 +355,14 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = [
     # echo back; the underscore form is provider-specific enough.
     "content_filter",
     "responsibleaipolicyviolation",
+    # MiniMax output-layer safety filter. The error string is surfaced
+    # verbatim by MiniMax SDK / OpenAI-compatible endpoints, usually in the
+    # form "output new_sensitive (1027)" when the model's *output* (often a
+    # large tool-call argument block) trips the upstream safety filter and
+    # the SSE stream is truncated mid-flight. ``new_sensitive`` is the
+    # filter name and is narrow enough that billing / format / auth error
+    # strings will not collide. See #32421.
+    "new_sensitive",
 ]
 
 # Auth patterns (non-status-code signals)

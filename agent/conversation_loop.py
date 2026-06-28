@@ -2259,6 +2259,15 @@ def run_conversation(
                     # "unknown variant `image_url`, expected `text`".
                     "unknown variant `image_url`, expected `text`",
                     "unknown variant image_url, expected text",
+                    # OpenRouter routes a request to upstream endpoints and,
+                    # when none of the candidate endpoints for the model accept
+                    # image input, returns HTTP 404 "No endpoints found that
+                    # support image input". Without this phrase the agent never
+                    # strips the images, the retry loop re-sends the same
+                    # rejected request until exhaustion, and the gateway leaves
+                    # every subsequent message queued behind the stuck turn —
+                    # the P1 in issue #21160. The 404 passes the 4xx gate below.
+                    "no endpoints found that support image input",
                 )
                 _err_lower = _err_body.lower()
                 _looks_like_image_rejection = any(

@@ -1,0 +1,8 @@
+# ทะเบียน project ที่อยู่ใต้มาตรฐานกลาง Hermes (1 path ต่อบรรทัด)
+# hermes_rollout.py อ่านไฟล์นี้แล้วแจก/อัปเดตให้ทุกตัวทีเดียว
+# บรรทัดขึ้นต้น # = คอมเมนต์ · รองรับ ~ (home)
+#
+# ตัวอย่าง (เอา # ออกแล้วใส่ path จริงของเครื่องนั้น):
+# ~/Documents/Viber Project/Tech Tools/Hermes Agent
+# /srv/projects/contentfactory
+# /home/linux-nat/.worktree/master-webengine/nat

@@ -28,6 +28,7 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
+from utils import is_truthy_value
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
     is_browser_debug_ready,
@@ -2345,7 +2346,7 @@ class CLICommandsMixin:
 
         cfg = load_config() or {}
         footer_cfg = ((cfg.get("display") or {}).get("runtime_footer") or {})
-        current = bool(footer_cfg.get("enabled", False))
+        current = is_truthy_value(footer_cfg.get("enabled", False))
         fields = footer_cfg.get("fields") or ["model", "context_pct", "cwd"]
 
         if arg in {"status", "?"}:

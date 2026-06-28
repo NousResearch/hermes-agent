@@ -1126,7 +1126,7 @@ def init_agent(
     try:
         from hermes_cli.config import load_config as _load_sess_cfg
         _sess_cfg = (_load_sess_cfg().get("sessions") or {})
-        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
+        agent._session_json_enabled = is_truthy_value(_sess_cfg.get("write_json_snapshots", False))
     except Exception:
         pass
     # logs_dir is retained unconditionally for request_dump_*.json (debug
@@ -1322,19 +1322,19 @@ def init_agent(
     # as a separate flag from tool_use_enforcement because the guidance
     # applies to ALL models, not just the model families enforcement
     # targets.
-    agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
+    agent._task_completion_guidance = is_truthy_value(_agent_section.get("task_completion_guidance", True))
 
     # Universal parallel-tool-call guidance toggle.  Default True.  Separate
     # flag from task_completion_guidance because a user may want one but not
     # the other.  Steers the model to batch independent tool calls into a
     # single turn; the runtime already executes such batches concurrently.
-    agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
+    agent._parallel_tool_call_guidance = is_truthy_value(_agent_section.get("parallel_tool_call_guidance", True))
 
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics
     # are noisy.
-    agent._environment_probe = bool(_agent_section.get("environment_probe", True))
+    agent._environment_probe = is_truthy_value(_agent_section.get("environment_probe", True))
 
     # Per-platform prompt-hint overrides (config.yaml → platform_hints).
     # Lets an enterprise admin append to or replace Hermes' built-in

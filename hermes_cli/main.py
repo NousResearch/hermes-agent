@@ -255,6 +255,7 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import shlex
 import shutil
 import stat
 import subprocess
@@ -5520,6 +5521,44 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     return True
 
 
+def _desktop_launch_options() -> tuple[list[str], str]:
+    """Read `desktop.*` launch options from config.yaml.
+
+    Returns ``(electron_flags, disable_gpu)`` where ``electron_flags`` is a list
+    of extra Electron CLI flags and ``disable_gpu`` is one of "auto"/"1"/"0"
+    (normalized for the HERMES_DESKTOP_DISABLE_GPU env var the Electron app
+    reads). Best-effort: any config error yields the safe defaults
+    ``([], "auto")`` so a malformed config never blocks the launch.
+    """
+    flags: list[str] = []
+    disable_gpu = "auto"
+    try:
+        from hermes_cli.config import load_config
+
+        desktop_cfg = (load_config() or {}).get("desktop") or {}
+    except Exception:
+        return flags, disable_gpu
+
+    raw_flags = desktop_cfg.get("electron_flags")
+    if isinstance(raw_flags, str):
+        flags = shlex.split(raw_flags, posix=(os.name != "nt"))
+    elif isinstance(raw_flags, (list, tuple)):
+        flags = [str(f) for f in raw_flags if str(f).strip()]
+
+    raw_gpu = desktop_cfg.get("disable_gpu", "auto")
+    if isinstance(raw_gpu, bool):
+        disable_gpu = "1" if raw_gpu else "0"
+    elif isinstance(raw_gpu, str):
+        low = raw_gpu.strip().lower()
+        if low in ("1", "true", "yes", "on"):
+            disable_gpu = "1"
+        elif low in ("0", "false", "no", "off"):
+            disable_gpu = "0"
+        else:
+            disable_gpu = "auto"
+    return flags, disable_gpu
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
@@ -5545,6 +5584,14 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
     if getattr(args, "cwd", None):
         env["HERMES_DESKTOP_CWD"] = str(Path(args.cwd).expanduser().resolve())
+
+    # Desktop launch options from config.yaml (`desktop.electron_flags`,
+    # `desktop.disable_gpu`). The GPU policy is bridged to the env var the
+    # Electron app already reads; an explicit env var still wins over config so
+    # `HERMES_DESKTOP_DISABLE_GPU=... hermes desktop` keeps working.
+    config_electron_flags, config_disable_gpu = _desktop_launch_options()
+    if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
+        env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
 
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
@@ -5726,6 +5773,7 @@ def cmd_gui(args: argparse.Namespace):
         else:
             sys.exit(1)
 
+    launch_command.extend(config_electron_flags)
     print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
     launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)

@@ -986,11 +986,17 @@ class TestAnthropicStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
 
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_stream_parser_valueerror_retries_before_delivery(
-        self, mock_replace, monkeypatch,
+        self, mock_replace, mock_rebuild, monkeypatch,
     ):
-        """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None."""
+        """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None.
+
+        On the Anthropic-native path the stream-retry cleanup must close + rebuild the
+        Anthropic client, NOT the OpenAI primary client (which would fail with
+        Missing-credentials and leave the wedged stream open). See #28161.
+        """
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -1035,7 +1041,11 @@ class TestAnthropicStreamCallbacks:
 
         assert response is final_message
         assert agent._anthropic_client.messages.stream.call_count == 2
-        assert mock_replace.call_count == 1
+        # Anthropic-native cleanup: close + rebuild the Anthropic client, never
+        # the OpenAI primary client.
+        assert mock_replace.call_count == 0
+        assert mock_rebuild.call_count == 1
+        assert agent._anthropic_client.close.call_count == 1
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(

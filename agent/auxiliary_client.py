@@ -1669,13 +1669,14 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
-        if not or_key:
-            _mark_provider_unhealthy("openrouter", ttl=60)
-            return None, None
-        base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
-        logger.debug("Auxiliary client: OpenRouter via pool")
-        return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+        if or_key:
+            base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+            logger.debug("Auxiliary client: OpenRouter via pool")
+            return OpenAI(api_key=or_key, base_url=base_url,
+                           default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+        # Pool exists but is exhausted (no usable runtime key) — fall through to
+        # the OPENROUTER_API_KEY env-var path rather than failing outright.
+        logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
@@ -5993,8 +5994,17 @@ def call_llm(
         # When the provider returns a 429 rate-limit (not billing), fall
         # back to an alternative provider instead of exhausting retries
         # against the same rate-limited endpoint.
+        #
+        # ── Auth error fallback (#21165) ─────────────────────────────
+        # When the resolved provider returns 401 and neither the Nous
+        # refresh path nor explicit provider credential refresh applies,
+        # fall back to an alternative provider instead of dropping the
+        # auxiliary task on the floor (silent compression failure /
+        # message loss). Auth is NOT a capacity error: it only bypasses
+        # the explicit-provider gate when the user is in auto mode.
         should_fallback = (
-            _is_payment_error(first_err)
+            _is_auth_error(first_err)
+            or _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
@@ -6024,7 +6034,9 @@ def call_llm(
             or _is_invalid_aux_response_error(first_err)
         )
         if should_fallback and (is_auto or is_capacity_error):
-            if _is_payment_error(first_err):
+            if _is_auth_error(first_err):
+                reason = "auth error"
+            elif _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
                 # "auto"; the client's base_url tells us which backend got the
@@ -6473,8 +6485,13 @@ async def async_call_llm(
                         raise
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
+        # Auth error fallback (#21165): a 401 that survived the refresh path
+        # falls back in auto mode just like the sync call_llm() path. Auth is
+        # NOT a capacity error, so on an explicit provider it still respects
+        # the user's choice (handled by the is_auto/is_capacity_error gate).
         should_fallback = (
-            _is_payment_error(first_err)
+            _is_auth_error(first_err)
+            or _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
@@ -6496,7 +6513,9 @@ async def async_call_llm(
             or _is_invalid_aux_response_error(first_err)
         )
         if should_fallback and (is_auto or is_capacity_error):
-            if _is_payment_error(first_err):
+            if _is_auth_error(first_err):
+                reason = "auth error"
+            elif _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(
                     _recoverable_pool_provider(resolved_provider, client) or resolved_provider

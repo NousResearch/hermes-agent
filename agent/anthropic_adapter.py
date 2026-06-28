@@ -673,6 +673,9 @@ def _build_anthropic_client_with_bearer_hook(
     kwargs = {
         "timeout": timeout_obj,
         "http_client": http_client,
+        # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
+        # default max_retries=2 ignores it and double-retries. (#26293)
+        "max_retries": 0,
         # The SDK requires *something* for api_key/auth_token. Our
         # event hook overrides Authorization per request so this value
         # is never sent. The sentinel string makes accidental leaks
@@ -757,6 +760,12 @@ def build_anthropic_client(
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
+        # Delegate all rate-limit / 5xx retry to hermes's outer conversation
+        # loop, which honors Retry-After. The SDK default (max_retries=2) uses
+        # its own 1-2s backoff that ignores Retry-After and double-retries
+        # inside our loop — burning request slots against a bucket that won't
+        # refill for minutes. (#26293)
+        "max_retries": 0,
     }
     if normalized_base_url:
         # Azure Anthropic endpoints require an ``api-version`` query parameter.
@@ -852,6 +861,9 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
+        # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
+        # default max_retries=2 ignores it and double-retries. (#26293)
+        max_retries=0,
         default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
     )
 
@@ -914,44 +926,72 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     return None
 
 
+def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
+    """Read Claude Code OAuth credentials from ~/.claude/.credentials.json.
+
+    Returns dict with {accessToken, refreshToken?, expiresAt?, source} or None.
+    """
+    cred_path = Path.home() / ".claude" / ".credentials.json"
+    if not cred_path.exists():
+        return None
+    try:
+        data = json.loads(cred_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, IOError) as e:
+        logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+        return None
+
+    oauth_data = data.get("claudeAiOauth")
+    if not (oauth_data and isinstance(oauth_data, dict)):
+        return None
+    access_token = oauth_data.get("accessToken", "")
+    if not access_token:
+        return None
+    return {
+        "accessToken": access_token,
+        "refreshToken": oauth_data.get("refreshToken", ""),
+        "expiresAt": oauth_data.get("expiresAt", 0),
+        "source": "claude_code_credentials_file",
+    }
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
 
-    Checks two sources in order:
+    Reads from two possible sources and reconciles them:
       1. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
       2. ~/.claude/.credentials.json file
+
+    Selection rules when both are present:
+      - If exactly one is non-expired, prefer that one. (Handles the case
+        where Claude Code refreshes one source but not the other — observed
+        in the wild on Claude Code 2.1.x.)
+      - Otherwise, prefer the source with the later ``expiresAt`` so that
+        any subsequent refresh uses the most recent ``refreshToken``.
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
     subscription flow is OAuth/setup-token based with refreshable credentials,
     and native direct Anthropic provider usage should follow that path rather
     than auto-detecting Claude's first-party managed key.
 
-    Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
+    Returns dict with {accessToken, refreshToken?, expiresAt?, source} or None.
     """
-    # Try macOS Keychain first (covers Claude Code >=2.1.114)
     kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
-        return kc_creds
+    file_creds = _read_claude_code_credentials_from_file()
 
-    # Fall back to JSON file
-    cred_path = Path.home() / ".claude" / ".credentials.json"
-    if cred_path.exists():
-        try:
-            data = json.loads(cred_path.read_text(encoding="utf-8"))
-            oauth_data = data.get("claudeAiOauth")
-            if oauth_data and isinstance(oauth_data, dict):
-                access_token = oauth_data.get("accessToken", "")
-                if access_token:
-                    return {
-                        "accessToken": access_token,
-                        "refreshToken": oauth_data.get("refreshToken", ""),
-                        "expiresAt": oauth_data.get("expiresAt", 0),
-                        "source": "claude_code_credentials_file",
-                    }
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+    if kc_creds and file_creds:
+        kc_valid = is_claude_code_token_valid(kc_creds)
+        file_valid = is_claude_code_token_valid(file_creds)
+        if kc_valid and not file_valid:
+            return kc_creds
+        if file_valid and not kc_valid:
+            return file_creds
+        # Both valid or both expired: prefer the later expiresAt so the
+        # downstream refresh path uses the freshest refresh_token.
+        kc_exp = kc_creds.get("expiresAt", 0) or 0
+        file_exp = file_creds.get("expiresAt", 0) or 0
+        return kc_creds if kc_exp >= file_exp else file_creds
 
-    return None
+    return kc_creds or file_creds
 
 
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
@@ -1034,8 +1074,40 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
 
 
 def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
-    """Attempt to refresh an expired Claude Code OAuth token."""
-    refresh_token = creds.get("refreshToken", "")
+    """Attempt to refresh an expired Claude Code OAuth token.
+
+    Claude Code's OAuth refresh tokens are single-use: a successful refresh
+    rotates the pair and invalidates the old refresh token. Claude Code itself
+    also refreshes on its own schedule (IDE/CLI activity), so by the time
+    Hermes notices an expired token, Claude Code may have already rotated it.
+    POSTing our now-stale refresh token in that window races Claude Code and
+    fails with ``invalid_grant``.
+
+    So before refreshing, re-read the live credential sources. If Claude Code
+    has already produced a valid token, adopt it and skip the POST entirely.
+    Only fall back to refreshing ourselves when no fresh credential is found.
+    """
+    # Claude Code may have already refreshed — adopt its token rather than
+    # racing it with our (possibly already-rotated) refresh token. Only adopt
+    # when the live re-read produced a DIFFERENT token with a real future
+    # expiry: re-adopting the same credential we were just handed would be a
+    # no-op, and a 0/absent ``expiresAt`` means "managed key / unknown expiry"
+    # (see is_claude_code_token_valid) which must NOT be treated as a fresh
+    # refresh here.
+    current = read_claude_code_credentials()
+    if current:
+        current_token = current.get("accessToken", "")
+        current_exp = current.get("expiresAt", 0) or 0
+        if (
+            current_token
+            and current_token != creds.get("accessToken", "")
+            and current_exp > 0
+            and is_claude_code_token_valid(current)
+        ):
+            logger.debug("Adopted Claude Code's already-refreshed OAuth token")
+            return current_token
+
+    refresh_token = (current or {}).get("refreshToken", "") or creds.get("refreshToken", "")
     if not refresh_token:
         logger.debug("No refresh token available — cannot refresh")
         return None

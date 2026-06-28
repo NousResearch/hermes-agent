@@ -1358,6 +1358,7 @@ AUTHOR_MAP = {
     "nouseman666@gmail.com": "nouseman666",  # PR #19088
     "ginwu05@gmail.com": "GinWU05",  # PR #19093
     "shashwatgokhe2@gmail.com": "shashwatgokhe",  # PR #19196
+    "74935762+cypres0099@users.noreply.github.com": "cypres0099",  # PR #25935 salvage (mixed-attachment image routing)
     "stevenchou.ai@gmail.com": "stevenchouai",  # PR #19221
     "leo.gong@phizchat.com": "agilejava",  # PR #19346
     "acc001k@pm.me": "acc001k",  # PR #19358
@@ -1508,6 +1509,7 @@ AUTHOR_MAP = {
     "david@loadmagic.ai": "davidcampbelldc",  # PR #26834 (web_server proxy_headers=False)
     "165905879+davidcampbelldc@users.noreply.github.com": "davidcampbelldc",
     "chazmaniandinkle@gmail.com": "chazmaniandinkle",  # PR #43888 (launchd /restart detection)
+    "sksmsghkdud1@gmail.com": "nodejun",  # PR #21112 (anthropic keychain/file credential desync)
     "hoangv.pham0803@gmail.com": "hehehe0803",  # PR #26212 salvage (codex kanban writable root)
     "26063003+hehehe0803@users.noreply.github.com": "hehehe0803",
     "kasunvinod@users.noreply.github.com": "kasunvinod",  # PR #24126 salvage (codex timeout propagation)

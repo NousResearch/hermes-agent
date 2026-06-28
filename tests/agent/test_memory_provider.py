@@ -45,7 +45,7 @@ class FakeMemoryProvider(MemoryProvider):
     def system_prompt_block(self) -> str:
         return self._prompt_block
 
-    def prefetch(self, query, *, session_id=""):
+    def prefetch(self, query, *, session_id="", user_id=""):
         self.prefetch_queries.append(query)
         return self._prefetch_result
 
@@ -1248,3 +1248,4 @@ class TestContextEngineToolsetGate:
         """Gate is moot without a context_compressor."""
         tools, names, engine_names = self._run_context_engine_injection(None, None)
         assert tools == []
+

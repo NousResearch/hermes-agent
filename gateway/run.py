@@ -16363,6 +16363,14 @@ class GatewayRunner:
                             except KeyError:
                                 pass
                         self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                        # Refresh caller identity — source may differ from the prior turn
+                        # in shared-thread sessions (thread_sessions_per_user=False).
+                        agent._user_id = source.user_id or ''
+                        agent._user_name = source.user_name or ''
+                        agent._chat_id = source.chat_id or ''
+                        agent._chat_name = source.chat_name or ''
+                        agent._chat_type = source.chat_type or ''
+                        agent._thread_id = source.thread_id or ''
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:

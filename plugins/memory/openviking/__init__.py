@@ -518,7 +518,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "viking_remember, viking_add_resource."
             )
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
+    def prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> str:
         """Return prefetched results from the background thread."""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)

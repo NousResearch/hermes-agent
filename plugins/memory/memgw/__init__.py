@@ -143,6 +143,7 @@ class MemGatewayProvider(MemoryProvider):
         self._prefetch_method = 'recall'
         self._user_id = ''
         self._prefetch_result = ''
+        self._prefetch_result_user: str = ''
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: threading.Thread | None = None
         # Monotonic generation: only the latest queued prefetch may store its
@@ -284,12 +285,17 @@ class MemGatewayProvider(MemoryProvider):
                 lines.append(f'- {snippet}')
         return '\n'.join(lines)
 
-    def prefetch(self, query: str, *, session_id: str = '') -> str:
+    def prefetch(self, query: str, *, session_id: str = '', user_id: str = '') -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
+            # Discard a result queued for a different user to prevent cross-user leak.
+            if user_id and self._prefetch_result_user and self._prefetch_result_user != user_id:
+                self._prefetch_result = ''
+                self._prefetch_result_user = ''
             result = self._prefetch_result
             self._prefetch_result = ''
+            self._prefetch_result_user = ''
         if not result:
             return ''
         return f'## Memory Gateway\n{result}'
@@ -299,6 +305,7 @@ class MemGatewayProvider(MemoryProvider):
         # its cached result, so the new session can't be fed stale context.
         with self._prefetch_lock:
             self._prefetch_result = ''
+            self._prefetch_result_user = ''
             self._prefetch_gen += 1
 
     def queue_prefetch(self, query: str, *, session_id: str = '', user_id: str = '') -> None:
@@ -329,6 +336,7 @@ class MemGatewayProvider(MemoryProvider):
                     with self._prefetch_lock:
                         if my_gen == self._prefetch_gen:
                             self._prefetch_result = text
+                            self._prefetch_result_user = user_id
                 self._record_success()
             except Exception as e:
                 self._record_failure()

@@ -203,7 +203,7 @@ class HolographicMemoryProvider(MemoryProvider):
             f"Use fact_feedback to rate facts after using them (trains trust scores)."
         )
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
+    def prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> str:
         if not self._retriever or not query:
             return ""
         try:

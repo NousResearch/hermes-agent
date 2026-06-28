@@ -234,7 +234,7 @@ class Mem0MemoryProvider(MemoryProvider):
             "mem0_profile for a full overview."
         )
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
+    def prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
@@ -274,6 +274,8 @@ class Mem0MemoryProvider(MemoryProvider):
         if self._is_breaker_open():
             return
 
+        effective_user_id = user_id or self._user_id
+
         def _sync():
             try:
                 client = self._get_client()
@@ -281,7 +283,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                client.add(messages, **self._write_filters())
+                client.add(messages, user_id=effective_user_id, agent_id=self._agent_id)
                 self._record_success()
             except Exception as e:
                 self._record_failure()

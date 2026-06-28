@@ -594,7 +594,7 @@ class RetainDBMemoryProvider(MemoryProvider):
             return "medium"
         return "high"
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
+    def prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> str:
         """Consume prefetched results and return them as a context block."""
         with self._lock:
             context = self._context_result

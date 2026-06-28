@@ -544,7 +544,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         return header
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
+    def prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> str:
         """Return base context (representation + card) plus dialectic supplement.
 
         Assembles two layers:

@@ -212,7 +212,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
             "important facts, brv_status to check state."
         )
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
+    def prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> str:
         """Run brv query synchronously before the agent's first LLM call.
 
         Blocks until the query completes (up to _QUERY_TIMEOUT seconds), ensuring

@@ -63,6 +63,28 @@ platforms:
         - '(?<![\w@])@?amos\b[,:\-]?'
 ```
 
+#### Optional: Group history backfill
+
+With `require_mention: true`, the agent never sees the group messages that were
+sent *between* mentions, so it answers a mention with no idea what the group was
+discussing. Enable `history_backfill` to prepend the messages sent since the
+agent last replied in that chat (mirrors Discord's `history_backfill`):
+
+```yaml
+platforms:
+  bluebubbles:
+    extra:
+      require_mention: true
+      history_backfill: true
+      history_backfill_limit: 25   # max recent messages to scan (default 25)
+```
+
+This is **off by default** — surfacing un-mentioned group chatter is opt-in.
+The agent's own messages, tapback reactions, and the triggering message are
+excluded, and a per-chat high-water mark prevents re-surfacing messages it has
+already seen. After a gateway restart the mark is primed from the agent's own
+last reply in the chat, so persisted sessions don't receive duplicate history.
+
 ### 4. Authorize Users
 
 Choose one approach:
@@ -117,6 +139,8 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | No | `false` | Allow all users |
 | `BLUEBUBBLES_REQUIRE_MENTION` | No | `false` | Require a mention pattern before responding in group chats |
 | `BLUEBUBBLES_MENTION_PATTERNS` | No | Hermes wake words | JSON array, newline-separated, or comma-separated regex patterns for group mention matching |
+| `BLUEBUBBLES_HISTORY_BACKFILL` | No | `false` | Prepend group messages sent since the agent last replied (context for mention-gated groups) |
+| `BLUEBUBBLES_HISTORY_BACKFILL_LIMIT` | No | `25` | Max recent group messages to scan for backfill |
 
 Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.hermes/config.yaml` (default: `true`). There is no corresponding environment variable.
 

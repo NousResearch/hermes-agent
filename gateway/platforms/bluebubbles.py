@@ -71,6 +71,7 @@ _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+_CONTEXT_SEEN_MAX = 500  # LRU cap for per-chat backfill high-water marks
 
 
 def _redact(text: str) -> str:
@@ -146,11 +147,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if "mention_patterns" in extra
             else os.getenv("BLUEBUBBLES_MENTION_PATTERNS")
         )
+        self.history_backfill = self._coerce_history_backfill(
+            extra.get("history_backfill"),
+            os.getenv("BLUEBUBBLES_HISTORY_BACKFILL"),
+        )
+        self.history_backfill_limit = self._coerce_history_backfill_limit(
+            extra.get("history_backfill_limit"),
+            os.getenv("BLUEBUBBLES_HISTORY_BACKFILL_LIMIT"),
+        )
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # Newest message dateCreated (ms) already surfaced to the agent per
+        # group chat — the high-water mark that drives missed-message backfill.
+        self._group_context_seen: OrderedDict[str, int] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -159,6 +171,120 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _api_url(self, path: str) -> str:
         sep = "&" if "?" in path else "?"
         return f"{self.server_url}{path}{sep}password={quote(self.password, safe='')}"
+
+    @staticmethod
+    def _coerce_history_backfill(extra_val: Any, env_val: Optional[str]) -> bool:
+        """Whether to backfill missed group messages on mention.
+
+        Defaults to **off**: surfacing un-mentioned iMessage group chatter to
+        the model is opt-in for privacy. (Discord's ``history_backfill``
+        defaults on, but iMessage groups are typically personal.)
+        """
+        raw = extra_val if extra_val is not None else env_val
+        if raw is None:
+            return False
+        return str(raw).strip().lower() in {"true", "1", "yes", "on"}
+
+    @staticmethod
+    def _coerce_history_backfill_limit(extra_val: Any, env_val: Optional[str]) -> int:
+        """Max recent group messages to scan for missed-message context."""
+        raw = extra_val if extra_val is not None else env_val
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            return 25
+        return n if n > 0 else 0
+
+    async def _fetch_recent_messages(
+        self, chat_guid: str, limit: int
+    ) -> List[Dict[str, Any]]:
+        """Fetch the most recent messages in a chat, returned oldest-first."""
+        try:
+            res = await self._api_get(
+                f"/api/v1/chat/{quote(chat_guid, safe='')}/message"
+                f"?limit={int(limit)}&offset=0&sort=DESC&with=handle"
+            )
+            msgs = [m for m in (res.get("data") or []) if isinstance(m, dict)]
+            msgs.sort(key=lambda m: m.get("dateCreated") or 0)
+            return msgs
+        except Exception:
+            logger.debug("[bluebubbles] history backfill fetch failed", exc_info=True)
+            return []
+
+    @staticmethod
+    def _summarize_message(m: Dict[str, Any], max_chars: int = 200) -> Optional[str]:
+        """Render one ``sender: text`` transcript line, or None if empty."""
+        body = (m.get("text") or "").strip()
+        if not body:
+            return None
+        if len(body) > max_chars:
+            body = body[:max_chars] + "…"
+        if m.get("isFromMe"):
+            sender = "you"
+        else:
+            handle = m.get("handle") or {}
+            sender = handle.get("address") or "participant"
+        return f"{sender}: {body}"
+
+    async def _build_group_backfill(
+        self, chat_guid: str, current_guid: Optional[str]
+    ) -> Optional[str]:
+        """Context block of group messages seen since the last surfaced one.
+
+        Uses a per-chat high-water mark (newest ``dateCreated`` already shown)
+        instead of scanning back to the bot's own last message, so messages
+        sent *between* two bot turns are never lost — cf. the Discord
+        ``_fetch_channel_context`` bot-message partition bug (issue #42079).
+        The bot's own messages, tapback reactions, and the triggering message
+        are excluded.
+        """
+        if self.history_backfill_limit <= 0:
+            return None
+        recent = await self._fetch_recent_messages(
+            chat_guid, self.history_backfill_limit
+        )
+        if not recent:
+            return None
+        high_water = self._group_context_seen.get(chat_guid)
+        if high_water is None:
+            # Cold start (first observation of this chat since gateway start):
+            # prime the mark from the bot's own newest message in the window.
+            # Session transcripts persist across restarts, so anything up to
+            # the bot's last reply was already seen — re-surfacing it would
+            # duplicate context. In a chat the bot has never spoken in, the
+            # mark stays 0 and the whole window (bounded by the fetch limit)
+            # is genuinely unseen.
+            high_water = max(
+                [0]
+                + [
+                    (m.get("dateCreated") or 0)
+                    for m in recent
+                    if m.get("isFromMe")
+                ]
+            )
+        tapback_codes = {**_TAPBACK_ADDED, **_TAPBACK_REMOVED}
+        missed = [
+            m
+            for m in recent
+            if not m.get("isFromMe")
+            and m.get("guid") != current_guid
+            and (m.get("dateCreated") or 0) > high_water
+            and not (
+                isinstance(m.get("associatedMessageType"), int)
+                and m.get("associatedMessageType") in tapback_codes
+            )
+        ]
+        # Advance the high-water mark to the newest message now observed.
+        self._group_context_seen[chat_guid] = max(
+            [high_water] + [(m.get("dateCreated") or 0) for m in recent]
+        )
+        self._group_context_seen.move_to_end(chat_guid)
+        while len(self._group_context_seen) > _CONTEXT_SEEN_MAX:
+            self._group_context_seen.popitem(last=False)
+        lines = [s for s in (self._summarize_message(m) for m in missed) if s]
+        if not lines:
+            return None
+        return "[group messages since you last replied:\n" + "\n".join(lines) + "\n]"
 
     @staticmethod
     def _compile_mention_patterns(raw: Any) -> List[re.Pattern]:
@@ -1003,6 +1129,20 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
                 return web.Response(text="ok")
             text = self._clean_mention_text(text)
+        # Mention gating drops un-mentioned group chatter, leaving the agent
+        # blind to conversation it is expected to know. When enabled, prepend
+        # the messages sent since the agent last replied here.
+        if is_group and self.history_backfill:
+            backfill = await self._build_group_backfill(
+                session_chat_id,
+                self._value(
+                    record.get("guid"),
+                    record.get("messageGuid"),
+                    record.get("id"),
+                ),
+            )
+            if backfill:
+                text = f"{backfill}\n{text}"
         source = self.build_source(
             chat_id=session_chat_id,
             chat_name=chat_identifier or sender,

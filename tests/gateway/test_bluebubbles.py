@@ -830,3 +830,162 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class TestBlueBubblesHistoryBackfill:
+    def test_backfill_disabled_by_default(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.history_backfill is False
+        assert adapter.history_backfill_limit == 25
+
+    def test_backfill_enabled_via_extra(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch, history_backfill=True, history_backfill_limit=10
+        )
+        assert adapter.history_backfill is True
+        assert adapter.history_backfill_limit == 10
+
+    def test_backfill_enabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_HISTORY_BACKFILL", "1")
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.history_backfill is True
+
+    def test_limit_invalid_falls_back_to_default(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, history_backfill_limit="not-a-number")
+        assert adapter.history_backfill_limit == 25
+
+    def test_summarize_message_formats_sender_and_text(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert (
+            adapter._summarize_message({"text": "hi", "handle": {"address": "+1555"}})
+            == "+1555: hi"
+        )
+        assert adapter._summarize_message({"text": "yo", "isFromMe": True}) == "you: yo"
+        assert adapter._summarize_message({"text": "   "}) is None
+
+    @pytest.mark.asyncio
+    async def test_backfill_includes_unseen_and_advances_high_water(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, history_backfill=True)
+        recent = [
+            {"guid": "m1", "text": "before bot", "dateCreated": 100, "handle": {"address": "+1"}},
+            {"guid": "bot", "text": "I replied", "dateCreated": 250, "isFromMe": True},
+            {"guid": "m2", "text": "after bot", "dateCreated": 260, "handle": {"address": "+2"}},
+            {"guid": "cur", "text": "@pookie", "dateCreated": 300, "handle": {"address": "+1"}},
+        ]
+
+        async def fake_fetch(chat_guid, limit):
+            return recent
+
+        monkeypatch.setattr(adapter, "_fetch_recent_messages", fake_fetch)
+        block = await adapter._build_group_backfill("chatA", current_guid="cur")
+        assert block is not None
+        assert "+2: after bot" in block
+        assert "I replied" not in block  # bot message excluded
+        assert "@pookie" not in block  # triggering message excluded
+        assert adapter._group_context_seen["chatA"] == 300  # advanced to newest
+
+    @pytest.mark.asyncio
+    async def test_backfill_cold_start_primes_from_bot_message(self, monkeypatch):
+        """Messages predating the bot's own last reply are not re-surfaced
+        after a gateway restart (session transcripts persist across restarts)."""
+        adapter = _make_adapter(monkeypatch, history_backfill=True)
+        recent = [
+            {"guid": "m1", "text": "old chatter", "dateCreated": 100, "handle": {"address": "+1"}},
+            {"guid": "bot", "text": "I replied", "dateCreated": 250, "isFromMe": True},
+            {"guid": "cur", "text": "@pookie", "dateCreated": 300, "handle": {"address": "+1"}},
+        ]
+
+        async def fake_fetch(chat_guid, limit):
+            return recent
+
+        monkeypatch.setattr(adapter, "_fetch_recent_messages", fake_fetch)
+        block = await adapter._build_group_backfill("chatA", current_guid="cur")
+        assert block is None  # nothing between the bot's last reply and the trigger
+
+    @pytest.mark.asyncio
+    async def test_backfill_cold_start_without_bot_message_includes_window(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, history_backfill=True)
+        recent = [
+            {"guid": "m1", "text": "hello", "dateCreated": 100, "handle": {"address": "+1"}},
+            {"guid": "cur", "text": "@pookie", "dateCreated": 300, "handle": {"address": "+1"}},
+        ]
+
+        async def fake_fetch(chat_guid, limit):
+            return recent
+
+        monkeypatch.setattr(adapter, "_fetch_recent_messages", fake_fetch)
+        block = await adapter._build_group_backfill("chatA", current_guid="cur")
+        assert block is not None and "+1: hello" in block
+
+    @pytest.mark.asyncio
+    async def test_backfill_excludes_tapback_reactions(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, history_backfill=True)
+        recent = [
+            {"guid": "m1", "text": "real message", "dateCreated": 100, "handle": {"address": "+1"}},
+            {
+                "guid": "tap",
+                "text": 'Laughed at "real message"',
+                "dateCreated": 150,
+                "handle": {"address": "+2"},
+                "associatedMessageType": 2003,
+            },
+            {"guid": "cur", "text": "@pookie", "dateCreated": 300, "handle": {"address": "+1"}},
+        ]
+
+        async def fake_fetch(chat_guid, limit):
+            return recent
+
+        monkeypatch.setattr(adapter, "_fetch_recent_messages", fake_fetch)
+        block = await adapter._build_group_backfill("chatA", current_guid="cur")
+        assert block is not None
+        assert "real message" in block
+        assert "Laughed at" not in block
+
+    @pytest.mark.asyncio
+    async def test_backfill_does_not_resurface_seen_messages(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, history_backfill=True)
+        recent = [
+            {"guid": "m1", "text": "old", "dateCreated": 100, "handle": {"address": "+1"}},
+        ]
+
+        async def fake_fetch(chat_guid, limit):
+            return recent
+
+        monkeypatch.setattr(adapter, "_fetch_recent_messages", fake_fetch)
+        adapter._group_context_seen["chatA"] = 150  # already past this message
+        block = await adapter._build_group_backfill("chatA", current_guid="cur")
+        assert block is None
+
+    @pytest.mark.asyncio
+    async def test_backfill_short_circuits_when_limit_zero(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch, history_backfill=True, history_backfill_limit=0
+        )
+        called = {"fetch": False}
+
+        async def fake_fetch(chat_guid, limit):
+            called["fetch"] = True
+            return []
+
+        monkeypatch.setattr(adapter, "_fetch_recent_messages", fake_fetch)
+        block = await adapter._build_group_backfill("chatA", "cur")
+        assert block is None
+        assert called["fetch"] is False  # never fetches when disabled
+
+    @pytest.mark.asyncio
+    async def test_backfill_high_water_cache_is_bounded(self, monkeypatch):
+        from gateway.platforms.bluebubbles import _CONTEXT_SEEN_MAX
+
+        adapter = _make_adapter(monkeypatch, history_backfill=True)
+
+        async def fake_fetch(chat_guid, limit):
+            return [{"guid": "m", "text": "x", "dateCreated": 1, "handle": {"address": "+1"}}]
+
+        monkeypatch.setattr(adapter, "_fetch_recent_messages", fake_fetch)
+        for i in range(_CONTEXT_SEEN_MAX + 25):
+            await adapter._build_group_backfill(f"chat{i}", None)
+        assert len(adapter._group_context_seen) <= _CONTEXT_SEEN_MAX

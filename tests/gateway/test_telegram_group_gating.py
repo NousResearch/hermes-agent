@@ -89,6 +89,7 @@ def _group_message(
     text="hello",
     *,
     chat_id=-100,
+    chat_type="group",
     from_user_id=111,
     from_user_name="Alice Example",
     thread_id=None,
@@ -108,7 +109,7 @@ def _group_message(
         caption_entities=caption_entities or [],
         message_thread_id=thread_id,
         is_topic_message=thread_id is not None,
-        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=thread_id is not None),
+        chat=SimpleNamespace(id=chat_id, type=chat_type, title="Test Group", is_forum=thread_id is not None),
         from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0]),
         reply_to_message=reply_to_message,
         date=None,
@@ -571,6 +572,17 @@ def test_guest_mode_defaults_to_false_for_allowed_chat_bypass():
         entities=[_mention_entity("hi @hermes_bot")],
     )
     assert adapter._should_process_message(mentioned) is False
+
+
+def test_channel_posts_respect_allowed_chats_gate():
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-200"])
+
+    assert adapter._should_process_message(
+        _group_message("public broadcast", chat_id=-201, chat_type="channel")
+    ) is False
+    assert adapter._should_process_message(
+        _group_message("approved broadcast", chat_id=-200, chat_type="channel")
+    ) is True
 
 
 def test_guest_mode_mention_dropped_in_ignored_thread():

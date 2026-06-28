@@ -2568,6 +2568,17 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
+                # Validate no circular dependencies (matching link_tasks guards).
+                for pid in parents:
+                    if pid == task_id:
+                        raise ValueError(
+                            f"task cannot depend on itself (parent {pid})"
+                        )
+                    if _would_cycle(conn, pid, task_id):
+                        raise ValueError(
+                            f"adding parent {pid} -> child {task_id} would create a cycle"
+                        )
+
                 # Project-linked worktree: a fresh worktree dir under the repo
                 # plus a deterministic branch (project slug + task id). Together
                 # these kill the random ``wt/<task-id>`` worker fallback and the

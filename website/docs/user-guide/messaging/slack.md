@@ -386,6 +386,33 @@ slack:
   reply_prefix: ""
 ```
 
+### Markdown Block Rendering
+
+```yaml
+slack:
+  # Use Slack's native `markdown` Block Kit block for message rendering
+  # instead of legacy `mrkdwn`. When enabled, standard CommonMark
+  # (including pipe tables, bold, links, code blocks, lists) renders
+  # natively in Slack clients. (default: true)
+  markdown_blocks: true
+```
+
+When `markdown_blocks: true` (the default), Hermes sends messages using
+Slack's [`markdown` block type](https://docs.slack.dev/reference/block-kit/blocks/markdown-block),
+which natively renders standard Markdown — including **tables**, bold, links,
+fenced code, and lists — without the lossy conversions of legacy `mrkdwn`.
+
+Set to `false` to revert to the legacy `mrkdwn` text path, which converts
+`**bold**` to `*bold*`, `[text](url)` to `<url|text>`, and strips tables.
+Useful for older workspaces that don't support the `markdown` block.
+
+:::note
+The `markdown` block has a 12,000-character cumulative limit per message
+and a 50-block maximum. Hermes automatically chunks messages that exceed
+these limits. Messages that can't be rendered as `markdown` blocks fall back
+to the legacy `mrkdwn` path.
+:::
+
 :::tip When to use `strict_mention`
 Set this to `true` in busy workspaces where Slack's default "the bot remembers this thread" behavior surprises users — for example, a long tech-support thread where the bot helped at the start and you'd rather it stay silent unless explicitly pinged again. DMs and active interactive sessions are unaffected.
 :::

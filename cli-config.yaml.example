@@ -771,6 +771,13 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#
+# Slack-specific settings (config.yaml top-level, not under platforms:):
+#
+# slack:
+#   require_mention: true             # Require @mention in channels (default: true)
+#   markdown_blocks: true             # Use Slack markdown Block Kit block for native rendering (default: true)
+#                                    # Set false to revert to legacy mrkdwn text path
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

@@ -98,8 +98,10 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
         # correct for ordinary OpenAI-compatible targets, but wrong for OAuth /
         # provider-backed targets whose provider branch adds auth refresh,
         # request metadata, or request-shape adapters. Keep those providers
-        # identified by name.
-        if resolved_provider in {"nous", "openai-codex", "xai-oauth"}:
+        # identified by name. The same applies to Bedrock: its api_key="aws-sdk"
+        # is a sentinel for IAM auth, not a bearer token for a generic custom
+        # endpoint.
+        if resolved_provider in {"nous", "openai-codex", "xai-oauth", "bedrock"}:
             return out
         # Pass the resolved endpoint through so call_llm builds the request for
         # the provider's actual API surface instead of auto-detecting. base_url

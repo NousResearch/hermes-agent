@@ -782,6 +782,52 @@ class TestWebServerEndpoints:
         messages = self.client.get("/api/sessions/worker-only/messages?profile=worker").json()
         assert [m["content"] for m in messages["messages"]] == ["worker"]
 
+    def test_session_stats_excludes_compression_children(self):
+        """Stats endpoint must exclude compression-continuation children so
+        the total matches the session list count (#54298)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            # Build a compression chain: root → child1 → child2 → tip
+            db.create_session(session_id="comp-root", source="cli")
+            db.append_message("comp-root", role="user", content="root")
+            db.end_session("comp-root", end_reason="compression")
+
+            db.create_session(
+                session_id="comp-child1", source="cli",
+                parent_session_id="comp-root",
+            )
+            db.append_message("comp-child1", role="user", content="child1")
+            db.end_session("comp-child1", end_reason="compression")
+
+            db.create_session(
+                session_id="comp-child2", source="cli",
+                parent_session_id="comp-child1",
+            )
+            db.append_message("comp-child2", role="user", content="child2")
+            db.end_session("comp-child2", end_reason="compression")
+
+            # Live tip — the only session the list should surface
+            db.create_session(
+                session_id="comp-tip", source="cli",
+                parent_session_id="comp-child2",
+            )
+            db.append_message("comp-tip", role="user", content="tip")
+
+            # An unrelated standalone session
+            db.create_session(session_id="standalone", source="cli")
+            db.append_message("standalone", role="user", content="solo")
+        finally:
+            db.close()
+
+        stats = self.client.get("/api/sessions/stats").json()
+        # 5 rows in DB but only 2 listable: comp-tip (chain collapsed) + standalone
+        assert stats["total"] == 2, (
+            f"Expected 2 listable sessions, got {stats['total']} "
+            "(compression children not excluded)"
+        )
+
     def test_analytics_endpoints_read_requested_profile(self):
         from hermes_state import SessionDB
         from hermes_cli import profiles as profiles_mod

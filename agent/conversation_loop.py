@@ -74,31 +74,48 @@ INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model r
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
-    """Extract a provider-reported image dimension ceiling, if present."""
-    parts = []
-    for value in (
-        error,
-        getattr(error, "message", None),
-        getattr(error, "body", None),
-    ):
-        if value:
-            try:
-                parts.append(str(value))
-            except Exception:
-                pass
-    text = " ".join(parts).lower()
-    if "image" not in text or "dimension" not in text or "max allowed size" not in text:
-        return None
+    """Extract a provider-reported image dimension ceiling, if present.
 
-    match = re.search(r"max allowed size(?:\s+for [^:]+)?:\s*(\d{3,5})\s*pixels?", text)
-    if not match:
-        return None
-    try:
-        max_dimension = int(match.group(1))
-    except ValueError:
-        return None
-    if 512 <= max_dimension <= 8000:
-        return max_dimension
+    Walks the ``__cause__``/``__context__`` chain so a ceiling carried on a
+    wrapped error is still found. classify_api_error already classifies such
+    wrapped errors as image_too_large (it walks the same chain since #53582);
+    without matching the walk here the helper returns None on a wrapped error
+    and the caller falls back to an 8000px cap, shrinking the image to the
+    wrong size so the provider re-rejects it.
+    """
+    current: Optional[BaseException] = error
+    for _ in range(5):  # Match _extract_status_code()/_extract_error_body() traversal depth.
+        if current is None:
+            break
+        # Evaluate each exception in the chain independently: the trigger terms
+        # and the pixel ceiling must come from the SAME error, so a generic
+        # wrapper and an unrelated cause can't be concatenated into a spurious
+        # match.
+        parts = []
+        for value in (
+            current,
+            getattr(current, "message", None),
+            getattr(current, "body", None),
+        ):
+            if value:
+                try:
+                    parts.append(str(value))
+                except Exception:
+                    pass
+        text = " ".join(parts).lower()
+        if "image" in text and "dimension" in text and "max allowed size" in text:
+            match = re.search(r"max allowed size(?:\s+for [^:]+)?:\s*(\d{3,5})\s*pixels?", text)
+            if match:
+                try:
+                    max_dimension = int(match.group(1))
+                except ValueError:
+                    max_dimension = None
+                if max_dimension is not None and 512 <= max_dimension <= 8000:
+                    return max_dimension
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
     return None
 
 

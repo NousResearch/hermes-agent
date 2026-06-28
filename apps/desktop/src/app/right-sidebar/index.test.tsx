@@ -10,6 +10,7 @@ import { RightSidebarPane } from './index'
 
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
 const selectPaths = vi.fn()
+const localFilesPolicy = vi.fn()
 
 function ok(entries: { name: string; path: string; isDirectory: boolean }[]): HermesReadDirResult {
   return { entries }
@@ -21,9 +22,10 @@ function installBridge() {
       hermesDesktop: {
         readDir: typeof readDir
         selectPaths: typeof selectPaths
+        localFilesPolicy: typeof localFilesPolicy
       }
     }
-  ).hermesDesktop = { readDir, selectPaths }
+  ).hermesDesktop = { readDir, selectPaths, localFilesPolicy }
 }
 
 describe('RightSidebarPane', () => {
@@ -33,8 +35,10 @@ describe('RightSidebarPane', () => {
     setCurrentCwd('/repo')
     readDir.mockReset()
     selectPaths.mockReset()
+    localFilesPolicy.mockReset()
     readDir.mockResolvedValue(ok([{ name: 'README.md', path: '/repo/README.md', isDirectory: false }]))
     selectPaths.mockResolvedValue(['/repo-next'])
+    localFilesPolicy.mockResolvedValue({ disabled: false, reason: null })
     installBridge()
   })
 
@@ -71,5 +75,22 @@ describe('RightSidebarPane', () => {
       })
     )
     await waitFor(() => expect(onChangeCwd).toHaveBeenCalledWith('/repo-next'))
+  })
+
+  it('blocks local file browsing in remote-only mode', async () => {
+    localFilesPolicy.mockResolvedValue({
+      disabled: true,
+      reason: 'Remote-only mode is enabled.'
+    })
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} onChangeCwd={vi.fn()} />)
+
+    // The disabled state replaces the local tree and locks the picker.
+    // getByText throws until the remote-only body renders, so waitFor settles on it.
+    await waitFor(() => screen.getByText(/Local file browsing is disabled/))
+    expect(screen.getByRole('button', { name: 'Open folder' }).hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder' }))
+    expect(selectPaths).not.toHaveBeenCalled()
   })
 })

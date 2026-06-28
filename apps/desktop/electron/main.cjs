@@ -91,6 +91,7 @@ const {
   resolveRequestedPathForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
+const { isLocalFilesDisabled, localFilesPolicy } = require('./local-files-policy.cjs')
 
 let nodePty = null
 let nodePtyDir = null
@@ -6173,7 +6174,17 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   }
 })
 
+ipcMain.handle('hermes:localFiles:policy', () => localFilesPolicy())
+
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
+  // Remote-only mode disables local file/folder attachment: never open the
+  // native picker, and return nothing (same shape as a cancelled dialog) so
+  // callers simply attach nothing. Any subsequent local read is hard-blocked by
+  // the hardening guard regardless.
+  if (isLocalFilesDisabled()) {
+    return []
+  }
+
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')
 

@@ -1688,6 +1688,8 @@ export const en: Translations = {
     couldNotPreview: path => `Could not preview ${path}`,
     noProjectTitle: 'No project',
     noProjectBody: 'Set a working directory from the status bar to browse files.',
+    remoteOnlyTitle: 'Remote-only mode',
+    remoteOnlyBody: 'Local file browsing is disabled. Only files exposed by the remote backend are shown.',
     unreadableTitle: 'Unreadable',
     unreadableBody: error => `Could not read this folder (${error}).`,
     emptyTitle: 'Empty',

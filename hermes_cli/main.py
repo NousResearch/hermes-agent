@@ -5467,6 +5467,11 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
     if getattr(args, "cwd", None):
         env["HERMES_DESKTOP_CWD"] = str(Path(args.cwd).expanduser().resolve())
+    # Remote-only mode is a hard boundary: the Electron main process refuses every
+    # local-filesystem IPC when this is set, so Desktop behaves as a pure remote
+    # client. Honour a pre-set env var too so launchers can pin it without --remote-only.
+    if getattr(args, "remote_only", False):
+        env["HERMES_DESKTOP_DISABLE_LOCAL_FILES"] = "1"
 
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)

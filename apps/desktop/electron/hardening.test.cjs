@@ -106,6 +106,24 @@ test('resolveRequestedPathForIpc resolves relative paths from the trimmed base d
   )
 })
 
+test('resolveRequestedPathForIpc refuses local paths in remote-only mode', () => {
+  const remoteOnlyEnv = { HERMES_DESKTOP_DISABLE_LOCAL_FILES: '1' }
+
+  assert.throws(
+    () => resolveRequestedPathForIpc('notes.txt', { baseDir: os.tmpdir(), env: remoteOnlyEnv, purpose: 'File preview' }),
+    error => {
+      assert.equal(error.code, 'local-files-disabled')
+      return true
+    }
+  )
+
+  // A non-remote-only env still resolves normally.
+  assert.equal(
+    resolveRequestedPathForIpc('notes.txt', { baseDir: os.tmpdir(), env: {}, purpose: 'File preview' }),
+    path.resolve(os.tmpdir(), 'notes.txt')
+  )
+})
+
 test('resolveRequestedPathForIpc expands ~ to the home directory', () => {
   assert.equal(resolveRequestedPathForIpc('~', { purpose: 'Directory read' }), path.resolve(os.homedir()))
   assert.equal(

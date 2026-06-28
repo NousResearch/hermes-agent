@@ -1323,6 +1323,8 @@ export interface Translations {
     couldNotPreview: (path: string) => string
     noProjectTitle: string
     noProjectBody: string
+    remoteOnlyTitle: string
+    remoteOnlyBody: string
     unreadableTitle: string
     unreadableBody: (error: string) => string
     emptyTitle: string

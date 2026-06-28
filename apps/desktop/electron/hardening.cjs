@@ -2,6 +2,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { fileURLToPath } = require('node:url')
+const { assertLocalFilesAllowed } = require('./local-files-policy.cjs')
 
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
@@ -143,6 +144,13 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
 
 function resolveRequestedPathForIpc(filePath, options = {}) {
   const purpose = String(options.purpose || 'File read')
+
+  // Remote-only mode: refuse every local-filesystem path before we touch the
+  // disk. resolveDirectoryForIpc/resolveReadableFileForIpc both flow through
+  // here, so this one guard covers directory listing, file/preview reads, git
+  // root detection, worktree lookup, and media streaming.
+  assertLocalFilesAllowed(purpose, { env: options.env })
+
   let raw = rejectUnsafePathSyntax(filePath, purpose)
 
   // Gateway-reported cwds (config `terminal.cwd`, remote sessions) routinely
@@ -215,7 +223,7 @@ function rejectSensitiveFilePath(filePath, purpose) {
 async function resolveDirectoryForIpc(dirPath, options = {}) {
   const purpose = String(options.purpose || 'Directory read')
   const fsImpl = options.fs || fs
-  const resolvedPath = resolveRequestedPathForIpc(dirPath, { baseDir: options.baseDir, purpose })
+  const resolvedPath = resolveRequestedPathForIpc(dirPath, { baseDir: options.baseDir, env: options.env, purpose })
   const stat = await statForIpc(fsImpl, resolvedPath, purpose, 'directory')
 
   if (!stat.isDirectory()) {
@@ -230,7 +238,7 @@ async function resolveDirectoryForIpc(dirPath, options = {}) {
 async function resolveReadableFileForIpc(filePath, options = {}) {
   const purpose = String(options.purpose || 'File read')
   const fsImpl = options.fs || fs
-  const resolvedPath = resolveRequestedPathForIpc(filePath, { baseDir: options.baseDir, purpose })
+  const resolvedPath = resolveRequestedPathForIpc(filePath, { baseDir: options.baseDir, env: options.env, purpose })
 
   if (options.blockSensitive !== false) {
     rejectSensitiveFilePath(resolvedPath, purpose)

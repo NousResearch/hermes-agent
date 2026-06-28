@@ -91,6 +91,10 @@ declare global {
       }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
+      // Remote-only mode (HERMES_DESKTOP_DISABLE_LOCAL_FILES / `--remote-only`).
+      // When `disabled` is true the local-filesystem IPC handlers refuse to
+      // browse, read, or open workstation files and the UI hides local sources.
+      localFilesPolicy?: () => Promise<HermesLocalFilesPolicy>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Resolve git-worktree identity for a batch of session cwds, reading git's
@@ -532,6 +536,13 @@ export interface HermesReadDirEntry {
 export interface HermesReadDirResult {
   entries: HermesReadDirEntry[]
   error?: string
+}
+
+export interface HermesLocalFilesPolicy {
+  /** True when remote-only mode is on and local file access is blocked. */
+  disabled: boolean
+  /** Human-readable explanation shown in the UI, or null when local files are allowed. */
+  reason: string | null
 }
 
 export interface HermesPreviewFileChanged {

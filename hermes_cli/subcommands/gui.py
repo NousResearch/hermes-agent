@@ -51,6 +51,14 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         help="Initial project directory for Desktop chat sessions (sets HERMES_DESKTOP_CWD)",
     )
     gui_parser.add_argument(
+        "--remote-only",
+        action="store_true",
+        help=(
+            "Remote-only mode: block all local workstation file browsing, preview, and "
+            "attachment in Desktop (sets HERMES_DESKTOP_DISABLE_LOCAL_FILES=1)"
+        ),
+    )
+    gui_parser.add_argument(
         "--skip-build",
         action="store_true",
         help="Skip npm install/package and launch the existing unpacked app from apps/desktop/release",

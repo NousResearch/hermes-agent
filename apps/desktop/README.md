@@ -87,6 +87,27 @@ Installers are built and uploaded to GitHub Releases manually. macOS/Windows sig
 
 The packaged app ships the Electron shell and a native React chat surface. On first launch it can install the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — the **same layout a CLI install uses**, so the two are interchangeable. Backend resolution first honours `HERMES_DESKTOP_HERMES_ROOT`, then a completed managed install, then a probed `hermes` on `PATH` (unless `HERMES_DESKTOP_IGNORE_EXISTING=1` is set), and finally an explicit `HERMES_DESKTOP_HERMES` command override for packagers/troubleshooting. The renderer (React, in `src/`) talks to a `hermes dashboard` backend over the `tui_gateway`/dashboard APIs and reuses the agent runtime rather than embedding `hermes --tui`. The install, backend-resolution, and self-update logic all live in `electron/main.cjs`.
 
+### Remote-only mode
+
+When Desktop is pointed at a remote gateway, operators may want a hard guarantee
+that the local workstation filesystem is never browsed, previewed, or attached —
+Desktop is still a native app, so its IPC surface can otherwise reach local
+files. Launch with **remote-only mode** to block that entirely:
+
+```bash
+hermes desktop --remote-only
+# or, equivalently, set the environment variable before launch:
+HERMES_DESKTOP_DISABLE_LOCAL_FILES=1 hermes desktop
+```
+
+When enabled, every local-filesystem IPC path (directory listing, file/preview
+reads, git-root and worktree detection, the native file picker) is refused in
+`electron/main.cjs` via `electron/local-files-policy.cjs`, and the file browser
+shows a clear *Remote-only mode* state instead of the local tree. Browsing files
+exposed by the **remote backend** is unaffected — that traffic goes over the
+gateway API, not the local handlers. The boundary is enforced in the main
+process, so it holds regardless of what the renderer requests.
+
 ### Verification
 
 Run before opening a PR (lint may surface pre-existing warnings but must exit cleanly):

@@ -1863,6 +1863,8 @@ export const zh: Translations = {
     couldNotPreview: path => `无法预览 ${path}`,
     noProjectTitle: '没有项目',
     noProjectBody: '从状态栏设置工作目录后即可浏览文件。',
+    remoteOnlyTitle: '仅远程模式',
+    remoteOnlyBody: '本地文件浏览已禁用。仅显示远程后端公开的文件。',
     unreadableTitle: '无法读取',
     unreadableBody: error => `无法读取此文件夹 (${error})。`,
     emptyTitle: '空文件夹',

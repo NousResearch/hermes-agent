@@ -38,6 +38,17 @@ describe('useProjectTree', () => {
     expect(readDir).not.toHaveBeenCalled()
   })
 
+  it('never reads the local filesystem when disabled (remote-only mode)', async () => {
+    readDir.mockResolvedValue(ok([{ name: 'README.md', path: '/p/README.md', isDirectory: false }]))
+
+    const { result } = renderHook(() => useProjectTree('/p', { disabled: true }))
+
+    await waitFor(() => expect(result.current.rootLoading).toBe(false))
+
+    expect(readDir).not.toHaveBeenCalled()
+    expect(result.current.data).toEqual([])
+  })
+
   it('loads root entries on mount and sorts folders before files', async () => {
     readDir.mockResolvedValueOnce(
       ok([

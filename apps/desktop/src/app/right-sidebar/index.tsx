@@ -7,7 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { selectDesktopPaths } from '@/lib/desktop-fs'
+import { isDesktopFsRemoteMode, selectDesktopPaths } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
@@ -19,6 +19,7 @@ import { SidebarPanelLabel } from '../shell/sidebar-label'
 
 import { RemoteFolderPicker } from './files/remote-picker'
 import { ProjectTree } from './files/tree'
+import { useLocalFilesPolicy } from './files/use-local-files-policy'
 import { useProjectTree } from './files/use-project-tree'
 
 interface RightSidebarPaneProps {
@@ -33,6 +34,11 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const panesFlipped = useStore($panesFlipped)
   const currentCwd = useStore($currentCwd).trim()
   const hasCwd = currentCwd.length > 0
+  // Remote-only mode blocks the local filesystem outright. When the displayed
+  // tree would be local (i.e. not a remote backend), surface a clear disabled
+  // state instead of an empty/error tree and lock the folder pickers.
+  const localFiles = useLocalFilesPolicy()
+  const localBrowsingBlocked = localFiles.disabled && !isDesktopFsRemoteMode()
 
   const {
     collapseAll,
@@ -45,7 +51,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     rootError,
     rootLoading,
     setNodeOpen
-  } = useProjectTree(currentCwd)
+  } = useProjectTree(currentCwd, { disabled: localBrowsingBlocked })
 
   const cwdName = hasCwd
     ? (effectiveCwd
@@ -57,6 +63,10 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const canCollapse = Object.values(openState).some(Boolean)
 
   const chooseFolder = async () => {
+    if (localBrowsingBlocked) {
+      return
+    }
+
     const selected = await selectDesktopPaths({
       defaultPath: hasCwd ? effectiveCwd : undefined,
       directories: true,
@@ -104,6 +114,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
         error={rootError}
         hasCwd={hasCwd}
         loading={rootLoading}
+        localBrowsingBlocked={localBrowsingBlocked}
         onActivateFile={onActivateFile}
         onActivateFolder={onActivateFolder}
         onChangeFolder={chooseFolder}
@@ -122,6 +133,7 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   canCollapse: boolean
   cwdName: string
   hasCwd: boolean
+  localBrowsingBlocked: boolean
   onChangeFolder: () => Promise<void> | void
   onCollapseAll: () => void
   onRefresh: () => void
@@ -142,6 +154,7 @@ function FilesystemTab({
   data,
   error,
   hasCwd,
+  localBrowsingBlocked,
   loading,
   onActivateFile,
   onActivateFolder,
@@ -161,18 +174,19 @@ function FilesystemTab({
       <RightSidebarSectionHeader>
         <div className="flex min-w-0 flex-1">
           <button
-            className="flex w-full min-w-0 items-center rounded-md text-left hover:text-(--ui-text-secondary)"
+            className="flex w-full min-w-0 items-center rounded-md text-left hover:text-(--ui-text-secondary) disabled:pointer-events-none"
+            disabled={localBrowsingBlocked}
             onClick={() => void onChangeFolder()}
             type="button"
           >
-            <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
+            <SidebarPanelLabel>{localBrowsingBlocked ? r.remoteOnlyTitle : cwdName}</SidebarPanelLabel>
           </button>
         </div>
         <Tip label={r.refreshTree} side="left">
           <Button
             aria-label={r.refreshTree}
             className={HEADER_ACTION_LABEL_REVEAL}
-            disabled={!hasCwd || loading}
+            disabled={!hasCwd || loading || localBrowsingBlocked}
             onClick={onRefresh}
             size="icon-xs"
             variant="ghost"
@@ -184,6 +198,7 @@ function FilesystemTab({
           <Button
             aria-label={r.openFolder}
             className={HEADER_ACTION_CLASS}
+            disabled={localBrowsingBlocked}
             onClick={() => void onChangeFolder()}
             size="icon-xs"
             variant="ghost"
@@ -194,8 +209,8 @@ function FilesystemTab({
         <Tip label={r.collapseAll} side="left">
           <Button
             aria-label={r.collapseAll}
-            className={cn(HEADER_ACTION_CLASS, !canCollapse && 'pointer-events-none opacity-0')}
-            disabled={!hasCwd || !canCollapse}
+            className={cn(HEADER_ACTION_CLASS, (!canCollapse || localBrowsingBlocked) && 'pointer-events-none opacity-0')}
+            disabled={!hasCwd || !canCollapse || localBrowsingBlocked}
             onClick={onCollapseAll}
             size="icon-xs"
             variant="ghost"
@@ -210,6 +225,7 @@ function FilesystemTab({
         data={data}
         error={error}
         loading={loading}
+        localBrowsingBlocked={localBrowsingBlocked}
         onActivateFile={onActivateFile}
         onActivateFolder={onActivateFolder}
         onLoadChildren={onLoadChildren}
@@ -231,6 +247,7 @@ interface FileTreeBodyProps {
   cwd: string
   data: ReturnType<typeof useProjectTree>['data']
   error: string | null
+  localBrowsingBlocked: boolean
   loading: boolean
   onActivateFile: (path: string) => void
   onActivateFolder: (path: string) => void
@@ -248,6 +265,7 @@ function FileTreeBody({
   cwd,
   data,
   error,
+  localBrowsingBlocked,
   loading,
   onActivateFile,
   onActivateFolder,
@@ -259,6 +277,12 @@ function FileTreeBody({
 }: FileTreeBodyProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
+
+  // Highest priority: remote-only mode never reveals the local workspace, even
+  // when a cwd is set or an error is pending.
+  if (localBrowsingBlocked) {
+    return <EmptyState body={r.remoteOnlyBody} title={r.remoteOnlyTitle} />
+  }
 
   if (!cwd) {
     return <EmptyState body={r.noProjectBody} title={r.noProjectTitle} />

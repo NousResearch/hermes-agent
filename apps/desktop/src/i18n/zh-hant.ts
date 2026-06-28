@@ -1758,6 +1758,8 @@ export const zhHant = defineLocale({
     couldNotPreview: path => `無法預覽 ${path}`,
     noProjectTitle: '沒有專案',
     noProjectBody: '從狀態列設定工作目錄後即可瀏覽檔案。',
+    remoteOnlyTitle: '僅遠端模式',
+    remoteOnlyBody: '本機檔案瀏覽已停用。僅顯示遠端後端公開的檔案。',
     unreadableTitle: '無法讀取',
     unreadableBody: error => `無法讀取此資料夾 (${error})。`,
     emptyTitle: '空資料夾',

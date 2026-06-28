@@ -1817,6 +1817,8 @@ export const ja = defineLocale({
     couldNotPreview: path => `${path} をプレビューできませんでした`,
     noProjectTitle: 'プロジェクトなし',
     noProjectBody: 'ステータスバーから作業ディレクトリを設定してファイルを閲覧してください。',
+    remoteOnlyTitle: 'リモート専用モード',
+    remoteOnlyBody: 'ローカルファイルの閲覧は無効です。リモートバックエンドが公開するファイルのみ表示されます。',
     unreadableTitle: '読み取り不可',
     unreadableBody: error => `このフォルダーを読み取れませんでした (${error})。`,
     emptyTitle: '空',

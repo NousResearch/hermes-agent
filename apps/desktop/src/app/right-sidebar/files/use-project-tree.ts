@@ -226,7 +226,8 @@ export function resetProjectTreeState() {
  * disclosure caret shows for unloaded folders. `refreshRoot` invalidates the
  * whole tree (used after cwd change or manual refresh).
  */
-export function useProjectTree(cwd: string): UseProjectTreeResult {
+export function useProjectTree(cwd: string, options: { disabled?: boolean } = {}): UseProjectTreeResult {
+  const disabled = Boolean(options.disabled)
   const state = useStore($projectTree)
   const connection = useStore($connection)
   const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
@@ -309,6 +310,15 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
   )
 
   useEffect(() => {
+    // Remote-only mode: never read the local filesystem. Drop any cached tree
+    // so a toggle into remote-only can't leave stale local entries on screen.
+    if (disabled) {
+      clearProjectTree()
+      clearProjectDirCache()
+
+      return
+    }
+
     const connectionChanged = lastConnectionKey !== '' && lastConnectionKey !== connectionKey
     lastConnectionKey = connectionKey
 
@@ -320,7 +330,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     }
 
     void loadRoot(cwd)
-  }, [connectionKey, cwd])
+  }, [connectionKey, cwd, disabled])
 
   // Self-heal: an errored root re-probes every few seconds while the tree is
   // mounted. Each attempt bumps requestId, so a persistent error re-arms the
@@ -362,21 +372,41 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
   }, [cwd, usingFallback])
 
   return useMemo(
-    () => ({
-      collapseAll,
-      collapseNonce: state.cwd === cwd ? state.collapseNonce : 0,
-      data: state.cwd === cwd ? state.data : [],
-      effectiveCwd: state.cwd === cwd && state.resolvedCwd ? state.resolvedCwd : cwd,
-      loadChildren,
-      openState: state.cwd === cwd ? state.openState : {},
-      refreshRoot,
-      rootError: state.cwd === cwd ? state.rootError : null,
-      rootLoading: state.cwd === cwd ? state.rootLoading : Boolean(cwd),
-      setNodeOpen
-    }),
+    () => {
+      // Remote-only mode never loads a local tree, so report a settled, empty
+      // state rather than a perpetual "loading" against a cwd we won't read.
+      if (disabled) {
+        return {
+          collapseAll,
+          collapseNonce: 0,
+          data: [],
+          effectiveCwd: cwd,
+          loadChildren,
+          openState: {},
+          refreshRoot,
+          rootError: null,
+          rootLoading: false,
+          setNodeOpen
+        }
+      }
+
+      return {
+        collapseAll,
+        collapseNonce: state.cwd === cwd ? state.collapseNonce : 0,
+        data: state.cwd === cwd ? state.data : [],
+        effectiveCwd: state.cwd === cwd && state.resolvedCwd ? state.resolvedCwd : cwd,
+        loadChildren,
+        openState: state.cwd === cwd ? state.openState : {},
+        refreshRoot,
+        rootError: state.cwd === cwd ? state.rootError : null,
+        rootLoading: state.cwd === cwd ? state.rootLoading : Boolean(cwd),
+        setNodeOpen
+      }
+    },
     [
       collapseAll,
       cwd,
+      disabled,
       loadChildren,
       refreshRoot,
       setNodeOpen,

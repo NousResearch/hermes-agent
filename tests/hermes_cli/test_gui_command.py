@@ -23,6 +23,7 @@ def _ns(**kw):
         ignore_existing=False,
         hermes_root=None,
         cwd=None,
+        remote_only=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -107,6 +108,28 @@ def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):
     assert launch_env["HERMES_DESKTOP_IGNORE_EXISTING"] == "1"
     assert launch_env["HERMES_DESKTOP_HERMES_ROOT"] == str(hermes_root)
     assert launch_env["HERMES_DESKTOP_CWD"] == str(cwd)
+    # --remote-only was not passed, so local files stay enabled.
+    assert "HERMES_DESKTOP_DISABLE_LOCAL_FILES" not in launch_env
+
+
+def test_gui_remote_only_disables_local_files(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(remote_only=True))
+
+    launch_env = mock_run.call_args_list[1].kwargs["env"]
+    assert launch_env["HERMES_DESKTOP_DISABLE_LOCAL_FILES"] == "1"
 
 
 def test_gui_exits_when_npm_missing(tmp_path, monkeypatch, capsys):

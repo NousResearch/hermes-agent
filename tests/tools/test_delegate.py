@@ -109,6 +109,24 @@ class TestDelegateRequirements(unittest.TestCase):
             self.assertNotIn("default 3", surface)
             self.assertNotIn("default 2", surface)
 
+
+    def test_schema_stays_compact_but_preserves_operational_guidance(self):
+        """delegate_task is always visible, so its schema must stay budget-conscious."""
+        import json
+        from tools.registry import registry
+        from agent.conversation_loop import _serialized_chars
+
+        defs = registry.get_definitions({"delegate_task"})
+        schema = defs[0]["function"]
+        schema_text = json.dumps(schema, ensure_ascii=False)
+
+        self.assertLess(_serialized_chars({"type": "function", "function": schema}), 5_000)
+        self.assertIn(f"up to {_get_max_concurrent_children()}", schema["description"])
+        self.assertIn(f"max_spawn_depth={MAX_DEPTH}", schema["description"])
+        self.assertIn("no parent history", schema_text.lower())
+        self.assertIn("verify", schema_text.lower())
+        self.assertIn("toolsets", schema["parameters"]["properties"])
+
     def test_schema_overrides_applied_via_get_definitions(self):
         """Registry.get_definitions() must apply dynamic_schema_overrides so
         the model API call sees current values, not the static import-time text.

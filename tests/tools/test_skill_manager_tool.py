@@ -1153,7 +1153,6 @@ class TestDeleteSkillRmtreeGuard:
         assert "skills root" in result["error"].lower()
         assert outside.exists()
 
-
 # ---------------------------------------------------------------------------
 # Curator consolidation-pass fail-closed delete guard (#29912)
 # ---------------------------------------------------------------------------
@@ -1281,3 +1280,18 @@ class TestCuratorConsolidationDeleteGuard:
             rec = skill_usage.get_record("narrow")
         # Record kept (not forgotten) and marked archived.
         assert rec.get("state") == skill_usage.STATE_ARCHIVED
+
+
+def test_skill_manage_schema_stays_compact_but_preserves_lifecycle_guidance():
+    import json
+    from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA
+
+    schema_text = json.dumps(SKILL_MANAGE_SCHEMA, ensure_ascii=False)
+
+    assert len(schema_text) < 3_000
+    desc = SKILL_MANAGE_SCHEMA["description"]
+    assert "absorbed_into" in schema_text
+    assert "Create when" in desc
+    assert "Update when" in desc
+    assert "Pinned skills" in desc
+    assert "skill_view" in desc

@@ -62,6 +62,28 @@ def _seed_modpack_sessions(db):
 # Schema invariants
 # =========================================================================
 
+def _seed_long_session(db):
+    db.create_session("s_long", source="cli")
+    db._conn.execute("UPDATE sessions SET title = ? WHERE id = ?", ("Long Session", "s_long"))
+    db.append_message("s_long", role="user", content="U" * 20_000)
+    db.append_message("s_long", role="assistant", content="A" * 20_000)
+    db._conn.commit()
+
+
+class TestContentBudget:
+    def test_read_shape_truncates_large_message_content_by_default(self, db):
+        _seed_long_session(db)
+        result = json.loads(session_search(session_id="s_long", db=db))
+        assert result["success"] is True
+        assert any(m.get("content_truncated_by_budget") for m in result["messages"])
+
+    def test_read_shape_max_content_chars_override(self, db):
+        _seed_long_session(db)
+        result = json.loads(session_search(session_id="s_long", db=db, max_content_chars=30_000))
+        assert result["success"] is True
+        assert not any(m.get("content_truncated_by_budget") for m in result["messages"])
+
+
 class TestSchema:
     def test_schema_has_required_params(self):
         params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
@@ -571,7 +593,6 @@ class TestCrossProfileRead:
             assert result["mode"] == "read"
             assert result["session_id"] == "s_other"
 
-
 # =========================================================================
 # Cron demotion in discover ranking (#19434)
 # =========================================================================
@@ -638,3 +659,18 @@ class TestCronDemotion:
         # Interactive rows first, in original relative order; cron last, in
         # original relative order.
         assert [r["id"] for r in ordered] == [2, 4, 5, 1, 3]
+
+
+def test_session_search_schema_stays_compact_but_preserves_safety_guidance():
+    from tools.session_search_tool import SESSION_SEARCH_SCHEMA
+
+    schema_text = str(SESSION_SEARCH_SCHEMA)
+
+    assert len(schema_text) < 4_500
+    assert "SOURCE-FIRST" in SESSION_SEARCH_SCHEMA["description"]
+    assert "DISCOVERY" in SESSION_SEARCH_SCHEMA["description"]
+    assert "SCROLL" in SESSION_SEARCH_SCHEMA["description"]
+    assert "READ" in SESSION_SEARCH_SCHEMA["description"]
+    assert "BROWSE" in SESSION_SEARCH_SCHEMA["description"]
+    assert "@session:<profile>/<id>" in SESSION_SEARCH_SCHEMA["description"]
+    assert "max_content_chars" in SESSION_SEARCH_SCHEMA["parameters"]["properties"]

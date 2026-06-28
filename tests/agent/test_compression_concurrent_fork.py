@@ -148,6 +148,36 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     )
 
 
+def test_stale_parent_after_lock_release_does_not_fork_session(tmp_path: Path) -> None:
+    """A late stale compressor must skip after the winner already rotated.
+
+    The per-session lock prevents simultaneous rotation. It is not enough on
+    its own: a delayed path can acquire the lock after the winner releases it
+    while still holding the old parent session_id. In that case the parent has
+    already been compression-ended and has a continuation child, so the stale
+    path must no-op instead of creating a second child.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "STALE_PARENT_AFTER_RELEASE"
+    db.create_session(parent_sid, source="discord")
+
+    winner = _build_agent_with_db(db, parent_sid)
+    stale = _build_agent_with_db(db, parent_sid)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    winner._compress_context(messages, "sys", approx_tokens=120_000)
+    assert _count_children(db, parent_sid) == 1
+    assert winner.session_id != parent_sid
+    assert db.get_compression_lock_holder(parent_sid) is None
+
+    returned, _sp = stale._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert returned is messages or returned == messages
+    assert stale.session_id == parent_sid
+    assert _count_children(db, parent_sid) == 1
+    stale.context_compressor.compress.assert_not_called()
+
+
 def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     """The loser of the lock race must return its input messages verbatim.
 

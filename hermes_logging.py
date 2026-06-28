@@ -495,6 +495,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         super().emit(record)
 
     def _open(self):
+        Path(self.baseFilename).parent.mkdir(parents=True, exist_ok=True)
         stream = super()._open()
         self._chmod_if_managed()
         return stream

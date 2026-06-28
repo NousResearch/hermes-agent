@@ -708,6 +708,15 @@ class TestBuildContextFilesPrompt:
         assert "Ruff for linting" in result
         assert "Project Context" in result
 
+    def test_agents_md_parent_dir_discovery(self, tmp_path):
+        """AGENTS.md is discovered from subdirectories up to the git root."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Root agent instructions.")
+        sub = tmp_path / "src" / "pkg"
+        sub.mkdir(parents=True)
+        result = build_context_files_prompt(cwd=str(sub))
+        assert "Root agent instructions" in result
+
     def test_loads_cursorrules(self, tmp_path):
         (tmp_path / ".cursorrules").write_text("Always use type hints.")
         result = build_context_files_prompt(cwd=str(tmp_path))
@@ -819,12 +828,24 @@ class TestBuildContextFilesPrompt:
         assert "BLOCKED" in result
 
     def test_hermes_md_beats_agents_md(self, tmp_path):
-        """When both exist, .hermes.md wins and AGENTS.md is not loaded."""
+        """When both exist, .hermes.md wins and AGENTS.md content is not loaded."""
         (tmp_path / "AGENTS.md").write_text("Agent guidelines here.")
         (tmp_path / ".hermes.md").write_text("Hermes project rules.")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Hermes project rules" in result
         assert "Agent guidelines" not in result
+
+    def test_skipped_context_files_are_manifested_without_content(self, tmp_path):
+        (tmp_path / ".hermes.md").write_text("Primary project rules.")
+        (tmp_path / "AGENTS.md").write_text("Secondary secret should not load.")
+        (tmp_path / "CLAUDE.md").write_text("Tertiary secret should not load.")
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "Primary project rules" in result
+        assert "Additional context files discovered" in result
+        assert "AGENTS.md" in result
+        assert "CLAUDE.md" in result
+        assert "Secondary secret should not load" not in result
+        assert "Tertiary secret should not load" not in result
 
     def test_agents_md_beats_claude_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Agent guidelines here.")

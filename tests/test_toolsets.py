@@ -253,3 +253,18 @@ class TestDefaultPlatformWebSearchCoverage:
 
     def test_hermes_api_server_toolset_includes_web_search(self):
         assert "web_search" in resolve_toolset("hermes-api-server")
+
+def test_tool_search_always_visible_subset_of_core():
+    """Narrow-waist direct tools must remain available in every platform core."""
+    from toolsets import _HERMES_CORE_TOOLS, _HERMES_TOOL_SEARCH_ALWAYS_VISIBLE_TOOLS
+    missing = set(_HERMES_TOOL_SEARCH_ALWAYS_VISIBLE_TOOLS) - set(_HERMES_CORE_TOOLS)
+    assert not missing
+
+
+def test_tool_search_always_visible_excludes_peripheral_large_schemas():
+    """Browser/media/cron tools stay in platform core but can defer behind Tool Search."""
+    from toolsets import _HERMES_CORE_TOOLS, _HERMES_TOOL_SEARCH_ALWAYS_VISIBLE_TOOLS
+    assert "browser_navigate" in _HERMES_CORE_TOOLS
+    assert "browser_navigate" not in _HERMES_TOOL_SEARCH_ALWAYS_VISIBLE_TOOLS
+    assert "cronjob" in _HERMES_CORE_TOOLS
+    assert "cronjob" not in _HERMES_TOOL_SEARCH_ALWAYS_VISIBLE_TOOLS

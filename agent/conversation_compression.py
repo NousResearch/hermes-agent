@@ -468,6 +468,32 @@ def compress_context(
                 _existing_sp = agent._build_system_prompt(system_message)
             return messages, _existing_sp
 
+        # A delayed stale path can acquire the lock after the real compressor
+        # already released it, while still holding the old parent session_id.
+        # In that case the parent has already been ended with reason
+        # "compression" and has a continuation child. Proceeding would create a
+        # second sibling child (the original transcript-fork incident), so no-op
+        # before invoking the compressor.
+        try:
+            _compression_tip = _lock_db.get_compression_tip(_lock_sid)
+        except Exception:
+            _compression_tip = _lock_sid
+        if _compression_tip and _compression_tip != _lock_sid:
+            logger.warning(
+                "compression skipped: session=%s already continued as %s — "
+                "returning messages unchanged to avoid session fork",
+                _lock_sid, _compression_tip,
+            )
+            try:
+                _lock_db.release_compression_lock(_lock_sid, _lock_holder)
+            except Exception as _rel_err:
+                logger.debug("compression lock release failed: %s", _rel_err)
+            _lock_holder = None
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+
     def _release_lock() -> None:
         """Release the lock keyed on the OLD session_id (before rotation)."""
         if _lock_db is not None and _lock_sid and _lock_holder:

@@ -457,6 +457,25 @@ class TestSkillView:
         assert "Current date: !`printf SHOULD_NOT_RUN`" in result["content"]
         assert "Current date: SHOULD_NOT_RUN" not in result["content"]
 
+    def test_skill_view_truncates_large_skill_content_by_default_budget(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "large-skill", body="A" * 70_000)
+            raw = skill_view("large-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["truncated_by_budget"] is True
+        assert result["budget_chars"] == 60_000
+        assert len(result["content"]) <= 60_000
+
+    def test_skill_view_max_chars_override_preserves_large_content(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "large-skill", body="B" * 70_000)
+            raw = skill_view("large-skill", max_chars=80_000)
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result.get("truncated_by_budget") is not True
+        assert len(result["content"]) > 69_000
+
     def test_view_nonexistent_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "other-skill")

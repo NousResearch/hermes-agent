@@ -45,6 +45,7 @@ class TestConfigParsing:
         cfg = ToolSearchConfig.from_raw(None)
         assert cfg.enabled == "auto"
         assert cfg.threshold_pct == 10.0
+        assert cfg.threshold_max_tokens == 10_000
 
     def test_bool_true_maps_to_auto(self):
         from tools.tool_search import ToolSearchConfig
@@ -73,6 +74,12 @@ class TestConfigParsing:
         cfg = ToolSearchConfig.from_raw({"threshold_pct": -5})
         assert cfg.threshold_pct == 0.0
 
+    def test_threshold_max_tokens_clamped_and_disable_cap(self):
+        from tools.tool_search import ToolSearchConfig
+        assert ToolSearchConfig.from_raw({"threshold_max_tokens": 5}).threshold_max_tokens == 1_000
+        assert ToolSearchConfig.from_raw({"threshold_max_tokens": 999_999}).threshold_max_tokens == 100_000
+        assert ToolSearchConfig.from_raw({"threshold_max_tokens": 0}).threshold_max_tokens == 0
+
     def test_search_limits_clamped(self):
         from tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw({
@@ -84,21 +91,32 @@ class TestConfigParsing:
 
 
 # ---------------------------------------------------------------------------
-# Classification — the hard invariant: core tools NEVER defer.
+# Classification — narrow always-visible core vs deferrable periphery.
 # ---------------------------------------------------------------------------
 
 
 class TestClassification:
-    def test_core_tools_never_defer(self):
-        """The critical invariant from the OpenClaw report."""
+    def test_always_visible_tools_never_defer(self):
+        """Runtime/discovery waist stays direct even when Tool Search activates."""
         from tools.tool_search import is_deferrable_tool_name
-        # Sample of core tools from _HERMES_CORE_TOOLS.
-        for core_name in ["terminal", "read_file", "write_file", "patch",
-                          "search_files", "todo", "memory", "browser_navigate",
-                          "web_search", "session_search", "clarify",
-                          "execute_code", "delegate_task", "send_message"]:
-            assert not is_deferrable_tool_name(core_name), (
-                f"Core tool '{core_name}' must NEVER be deferrable"
+        # Sample of _HERMES_TOOL_SEARCH_ALWAYS_VISIBLE_TOOLS plus one unknown
+        # historical name (unknowns must remain non-deferrable).
+        for visible_name in ["terminal", "read_file", "write_file", "patch",
+                             "search_files", "todo", "memory", "web_search",
+                             "session_search", "clarify", "execute_code",
+                             "delegate_task", "send_message"]:
+            assert not is_deferrable_tool_name(visible_name), (
+                f"Always-visible tool '{visible_name}' must not be deferrable"
+            )
+
+    def test_peripheral_builtin_tools_can_defer(self):
+        """Built-in browser/media/cron schemas are eligible for progressive disclosure."""
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import is_deferrable_tool_name
+        discover_builtin_tools()
+        for peripheral_name in ["browser_navigate", "vision_analyze", "image_generate", "text_to_speech", "cronjob"]:
+            assert is_deferrable_tool_name(peripheral_name), (
+                f"Peripheral built-in tool '{peripheral_name}' should be searchable/deferred"
             )
 
     def test_bridge_tools_never_defer(self):
@@ -152,21 +170,43 @@ class TestThresholdGate:
     def test_auto_below_threshold_does_not_activate(self):
         from tools.tool_search import ToolSearchConfig, should_activate
         cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
-        # 5% of 200K = below 10% threshold
-        assert not should_activate(cfg, deferrable_tokens=10_000, context_length=200_000)
+        # Default fixed cap is 10K, so stay below that.
+        assert not should_activate(cfg, deferrable_tokens=9_999, context_length=200_000)
 
     def test_auto_at_or_above_threshold_activates(self):
         from tools.tool_search import ToolSearchConfig, should_activate
         cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
-        assert should_activate(cfg, deferrable_tokens=20_000, context_length=200_000)
+        assert should_activate(cfg, deferrable_tokens=10_000, context_length=200_000)
         assert should_activate(cfg, deferrable_tokens=50_000, context_length=200_000)
 
+    def test_auto_caps_threshold_for_large_context_models(self):
+        """A 272K-context model must not carry ~16K schema tokens every turn.
+
+        The previous percentage-only gate set the threshold at ~27K here, so
+        MCP schemas around 15.9K stayed visible.  The default fixed cap flips
+        the decision at 10K instead.
+        """
+        from tools.tool_search import ToolSearchConfig, auto_threshold_tokens, should_activate
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+        assert auto_threshold_tokens(cfg, context_length=272_000) == 10_000
+        assert should_activate(cfg, deferrable_tokens=15_900, context_length=272_000)
+
+    def test_auto_can_disable_fixed_cap_for_legacy_percentage_gate(self):
+        from tools.tool_search import ToolSearchConfig, auto_threshold_tokens, should_activate
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto",
+            "threshold_pct": 10,
+            "threshold_max_tokens": 0,
+        })
+        assert auto_threshold_tokens(cfg, context_length=200_000) == 20_000
+        assert not should_activate(cfg, deferrable_tokens=10_000, context_length=200_000)
+
     def test_auto_without_context_length_uses_20k_cutoff(self):
-        """Fallback cutoff used when the active model is unknown."""
+        """Fallback cutoff uses the fixed cap when the active model is unknown."""
         from tools.tool_search import ToolSearchConfig, should_activate
         cfg = ToolSearchConfig.from_raw({"enabled": "auto"})
-        assert not should_activate(cfg, deferrable_tokens=10_000, context_length=0)
-        assert should_activate(cfg, deferrable_tokens=25_000, context_length=0)
+        assert not should_activate(cfg, deferrable_tokens=9_999, context_length=0)
+        assert should_activate(cfg, deferrable_tokens=10_000, context_length=0)
 
     def test_token_estimate_proportional_to_schema_size(self):
         from tools.tool_search import estimate_tokens_from_schemas
@@ -278,6 +318,25 @@ class TestAssembly:
         # activation happened; here it didn't).
         assert "tool_search" not in names
 
+    def test_peripheral_builtin_deferred_but_core_visible(self):
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        discover_builtin_tools()
+        defs = [
+            _td("terminal", "Run shell"),
+            _td("browser_navigate", "Navigate browser", {"url": {"type": "string"}}),
+        ]
+        result = assemble_tool_defs(
+            defs,
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert result.activated
+        names = {t["function"]["name"] for t in result.tool_defs}
+        assert "terminal" in names
+        assert "browser_navigate" not in names
+        assert {"tool_search", "tool_describe", "tool_call"}.issubset(names)
+
 
 # ---------------------------------------------------------------------------
 # Bridge dispatch
@@ -289,6 +348,18 @@ class TestBridgeDispatch:
         from tools.tool_search import dispatch_tool_search
         result = dispatch_tool_search({}, current_tool_defs=[])
         assert "error" in json.loads(result)
+
+    def test_tool_search_marks_builtin_source(self):
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import dispatch_tool_search
+        discover_builtin_tools()
+        result = dispatch_tool_search(
+            {"query": "browser navigate", "limit": 3},
+            current_tool_defs=[_td("browser_navigate", "Navigate browser")],
+        )
+        payload = json.loads(result)
+        assert payload["matches"]
+        assert payload["matches"][0]["source"] == "builtin"
 
     def test_tool_describe_requires_name(self):
         from tools.tool_search import dispatch_tool_describe

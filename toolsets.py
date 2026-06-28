@@ -78,6 +78,27 @@ _HERMES_CORE_TOOLS = [
     "computer_use",
 ]
 
+
+# Tool Search's "narrow waist": these built-in tools stay model-visible even
+# when progressive disclosure activates. They cover common discovery/action
+# loops and every agent-runtime-owned tool whose execution needs live AIAgent
+# state. Other built-in platform tools remain part of _HERMES_CORE_TOOLS for
+# backward-compatible platform composition, but may be deferred behind
+# tool_search/tool_describe/tool_call when their schema budget is large.
+_HERMES_TOOL_SEARCH_ALWAYS_VISIBLE_TOOLS = [
+    # Web + terminal + file are the common exploratory loop.
+    "web_search", "web_extract",
+    "terminal", "process",
+    "read_terminal",
+    "read_file", "write_file", "patch", "search_files",
+    # Skills are mandatory procedural memory and must be directly reachable.
+    "skills_list", "skill_view", "skill_manage",
+    # Agent-runtime-owned tools need live AIAgent state/callbacks.
+    "todo", "memory", "session_search", "clarify", "delegate_task",
+    # execute_code is the compact escape hatch for multi-tool scripts.
+    "execute_code",
+]
+
 # Webhook events may originate from untrusted third-party content (for example,
 # public PR titles/comments). Keep the default webhook toolset intentionally
 # constrained to avoid local file/system execution by prompt injection.

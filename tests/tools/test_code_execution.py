@@ -78,6 +78,21 @@ class TestSandboxRequirements(unittest.TestCase):
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["properties"])
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["required"])
 
+    def test_schema_stays_compact_but_preserves_usage_guidance(self):
+        schema = build_execute_code_schema()
+        schema_text = json.dumps(schema, ensure_ascii=False)
+        description = schema["description"]
+
+        self.assertLess(len(schema_text), 2_100)
+        self.assertIn("hermes_tools", description)
+        self.assertIn("3+ tool calls", description)
+        self.assertIn("50KB stdout", description)
+        self.assertIn("max 50 tool calls", description)
+        self.assertIn("json_parse", description)
+        self.assertIn("shell_quote", description)
+        self.assertIn("retry", description)
+        self.assertIn("Print final result", description)
+
 
 class TestHermesToolsGeneration(unittest.TestCase):
     def test_generates_all_allowed_tools(self):

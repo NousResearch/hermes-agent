@@ -202,14 +202,18 @@ def set_approval_callback(cb):
 
 def _get_sudo_password_cache_scope() -> str:
     """Return the cache scope for interactive sudo passwords."""
+    env_session_key = os.getenv("HERMES_SESSION_KEY", "")
     try:
         from gateway.session_context import get_session_env
 
-        session_key = get_session_env("HERMES_SESSION_KEY", "")
+        ctx_session_key = get_session_env("HERMES_SESSION_KEY", "")
     except Exception:
-        session_key = os.getenv("HERMES_SESSION_KEY", "")
-    if session_key:
-        return f"session:{session_key}"
+        ctx_session_key = ""
+    if env_session_key or ctx_session_key:
+        # Include both sources so a stale ContextVar cannot make a new
+        # HERMES_SESSION_KEY reuse another session's cached sudo password, and
+        # gateway ContextVars still scope sessions when no env key exists.
+        return f"session:{ctx_session_key or '-'}:{env_session_key or '-'}"
 
     callback = _get_sudo_password_callback()
     if callback is not None:
@@ -264,10 +268,22 @@ def _check_all_guards(command: str, env_type: str) -> dict:
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
-# Covers alphanumeric, path separators, Windows drive/UNC separators, tilde,
-# dot, hyphen, underscore, space, plus, at, equals, and comma.  Everything
-# else is rejected.
-_WORKDIR_SAFE_RE = re.compile(r'^[A-Za-z0-9/\\:_\-.~ +@=,]+$')
+# Covers Unicode letters/digits, path separators, Windows drive/UNC separators,
+# tilde, dot, hyphen, underscore, space, plus, at, equals, and comma.  Shell
+# metacharacters remain rejected.  This intentionally fixes the old ASCII-only
+# guard that blocked perfectly normal workdirs such as Chinese Obsidian vault
+# paths while preserving the injection boundary around command execution.
+_WORKDIR_SAFE_ASCII_CHARS = frozenset('/\\:_-.~ +@=,')
+
+
+def _is_safe_workdir_char(ch: str) -> bool:
+    if not ch:
+        return False
+    # Reject control characters (including newlines/tabs) and NUL bytes before
+    # considering Unicode categories.
+    if ord(ch) < 32 or ord(ch) == 127:
+        return False
+    return ch.isalnum() or ch in _WORKDIR_SAFE_ASCII_CHARS
 
 
 def _validate_workdir(workdir: str) -> str | None:
@@ -280,15 +296,12 @@ def _validate_workdir(workdir: str) -> str | None:
     """
     if not workdir:
         return None
-    if not _WORKDIR_SAFE_RE.match(workdir):
-        # Find the first offending character for a helpful message.
-        for ch in workdir:
-            if not _WORKDIR_SAFE_RE.match(ch):
-                return (
-                    f"Blocked: workdir contains disallowed character {repr(ch)}. "
-                    "Use a simple filesystem path without shell metacharacters."
-                )
-        return "Blocked: workdir contains disallowed characters."
+    for ch in workdir:
+        if not _is_safe_workdir_char(ch):
+            return (
+                f"Blocked: workdir contains disallowed character {repr(ch)}. "
+                "Use a simple filesystem path without shell metacharacters."
+            )
     return None
 
 
@@ -932,27 +945,11 @@ import sys
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
+TERMINAL_TOOL_DESCRIPTION = """Execute shell commands. Filesystem, current working directory, and exported environment variables persist between calls.
 
-Do NOT use cat/head/tail to read files — use read_file instead.
-Do NOT use grep/rg/find to search — use search_files instead.
-Do NOT use ls to list directories — use search_files(target='files') instead.
-Do NOT use sed/awk to edit files — use patch instead.
-Do NOT use echo/cat heredoc to create files — use write_file instead.
-Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
-Because exported environment state persists, activate a virtualenv or export setup variables once per session; do not re-source the same environment before every command unless a command proves the shell state was reset.
+Use specialized tools when possible: read_file not cat/head/tail; search_files not grep/rg/find/ls; patch not sed/awk; write_file not echo/heredoc. Reserve terminal for builds, installs, git, processes, scripts, network, package managers, servers, and shell-only tasks.
 
-Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
-Background: Set background=true to get a session_id. Almost always pair with notify_on_complete=true — bg without notify runs SILENTLY and you have no way to learn it finished short of calling process(action='poll') yourself. Two legitimate uses:
-  (1) Long-lived processes that never exit (servers, watchers, daemons) — silent is correct, there's no exit to notify on.
-  (2) Long-running bounded tasks (tests, builds, deploys, CI pollers, batch jobs) — MUST set notify_on_complete=true. Without it you'll either forget to poll or sit blocked waiting for the user to surface the result.
-For servers/watchers, do NOT use shell-level background wrappers (nohup/disown/setsid/trailing '&') in foreground mode. Use background=true so Hermes can track lifecycle and output.
-After starting a server, verify readiness with a health check or log signal, then run tests in a separate terminal() call. Avoid blind sleep loops.
-Use process(action="poll") for progress checks, process(action="wait") to block until done.
-Working directory: Use 'workdir' for per-command cwd.
-PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
-
-Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
+Because state persists, activate a virtualenv or export setup variables once per session; do not re-source the same environment before every command unless the shell was reset. Foreground commands finish as soon as done; set generous timeout for long builds. For background bounded work, use background=true with notify_on_complete=true. For long-lived servers/watchers, use background=true (not nohup/disown/&), wait for a readiness signal, then test separately. Use process(action="poll"/"wait") for progress. Set workdir per command. Use pty=true for interactive CLIs/REPLs; do not run vim/nano without pty.
 """
 
 # Global state for environment lifecycle management
@@ -2894,12 +2891,12 @@ TERMINAL_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
-                "description": "Run the command in the background. Almost always pair with notify_on_complete=true — without it, the process runs silently and you'll have no way to learn it finished short of calling process(action='poll') yourself (easy to forget, leading to silent blindness on long jobs). Two legitimate patterns: (1) Long-lived processes that never exit (servers, watchers, daemons) — these stay silent because there's no exit to notify on. (2) Long-running bounded tasks (tests, builds, deploys, CI pollers, batch jobs) — these MUST set notify_on_complete=true. For short commands, prefer foreground with a generous timeout instead.",
+                "description": "Run in background and return a session_id. For bounded jobs use notify_on_complete=true; for long-lived servers/watchers leave notify off and poll/read logs with process.",
                 "default": False
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
+                "description": f"Max seconds to wait (default 180, foreground max {FOREGROUND_MAX_TIMEOUT}). Finishes immediately when command exits; use background=true for longer jobs.",
                 "minimum": 1
             },
             "workdir": {
@@ -2908,18 +2905,18 @@ TERMINAL_SCHEMA = {
             },
             "pty": {
                 "type": "boolean",
-                "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
+                "description": "Use a PTY for interactive CLIs/REPLs (Codex, Claude Code, Python). Local/SSH only.",
                 "default": False
             },
             "notify_on_complete": {
                 "type": "boolean",
-                "description": "When true (and background=true), you'll be automatically notified exactly once when the process finishes. **This is the right choice for almost every long-running task** — tests, builds, deployments, multi-item batch jobs, anything that takes over a minute and has a defined end. Use this and keep working on other things; the system notifies you on exit. MUTUALLY EXCLUSIVE with watch_patterns — when both are set, watch_patterns is dropped.",
+                "description": "With background=true, notify exactly once when the process exits. Best for tests/builds/deploys/batch jobs. Mutually exclusive with watch_patterns; notify_on_complete wins.",
                 "default": False
             },
             "watch_patterns": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Strings to watch for in background process output. HARD RATE LIMIT: at most 1 notification per 15 seconds per process — matches arriving inside the cooldown are dropped. After 3 consecutive 15-second windows with dropped matches, watch_patterns is automatically disabled for that process and promoted to notify_on_complete behavior (one notification on exit, no more mid-process spam). USE ONLY for truly rare, one-shot mid-process signals on LONG-LIVED processes that will never exit on their own — e.g. ['Application startup complete'] on a server so you know when to hit its endpoint, or ['migration done'] on a daemon. DO NOT use for: (1) end-of-run markers like 'DONE'/'PASS' — use notify_on_complete instead; (2) error patterns like 'ERROR'/'Traceback' in loops or multi-item batch jobs — they fire on every iteration and you'll hit the strike limit fast; (3) anything you'd ever combine with notify_on_complete. When in doubt, choose notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both."
+                "description": "Rare one-shot output signals for long-lived background processes (e.g. server ready). Rate-limited; noisy matches are disabled. Do not use for PASS/DONE/errors or with notify_on_complete."
             }
         },
         "required": ["command"]

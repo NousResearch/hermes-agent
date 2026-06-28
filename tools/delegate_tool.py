@@ -2889,14 +2889,7 @@ def _load_config() -> dict:
 
 
 def _build_top_level_description() -> str:
-    """Compose the delegate_task tool description with current runtime limits.
-
-    The model needs to know its actual ceilings (not the framework defaults),
-    otherwise it self-caps at "default 3" / "default 2" even when the user has
-    raised delegation.max_concurrent_children / max_spawn_depth. Called both
-    at module import (to seed DELEGATE_TASK_SCHEMA) and on every
-    get_definitions() call via dynamic_schema_overrides.
-    """
+    """Compose the delegate_task tool description with current runtime limits."""
     try:
         max_children = _get_max_concurrent_children()
     except Exception:
@@ -2912,84 +2905,37 @@ def _build_top_level_description() -> str:
 
     if max_depth >= 2 and orchestrator_on:
         nesting_clause = (
-            f"Nested delegation IS enabled for this user "
-            f"(max_spawn_depth={max_depth}): pass role='orchestrator' on a "
-            f"child to let it spawn its own workers, up to {max_depth - 1} "
-            f"additional level(s) deep."
+            f"Nested delegation enabled (max_spawn_depth={max_depth}); "
+            "role='orchestrator' may spawn workers."
         )
     elif max_depth >= 2 and not orchestrator_on:
         nesting_clause = (
-            f"Nested delegation is DISABLED on this install "
-            f"(delegation.orchestrator_enabled=false), even though "
-            f"max_spawn_depth={max_depth}. role='orchestrator' is silently "
-            f"forced to 'leaf'."
+            f"Nested delegation disabled by delegation.orchestrator_enabled=false "
+            f"despite max_spawn_depth={max_depth}; orchestrator becomes leaf."
         )
     else:
         nesting_clause = (
-            f"Nested delegation is OFF for this user "
-            f"(max_spawn_depth={max_depth}): every child is a leaf and "
-            f"cannot delegate further. Raise delegation.max_spawn_depth in "
-            f"config.yaml to enable nesting."
+            f"Nested delegation OFF (max_spawn_depth={max_depth}); children are leaves."
         )
 
     return (
-        "Spawn one or more subagents to work on tasks in isolated contexts. "
-        "Each subagent gets its own conversation, terminal session, and toolset. "
-        "Only the final summary is returned -- intermediate tool results "
-        "never enter your context window.\n\n"
-        "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets).\n"
-        f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
-        f"items concurrently for this user (configured via "
-        f"delegation.max_concurrent_children in config.yaml). {nesting_clause}\n\n"
-        "BOTH MODES RUN IN THE BACKGROUND. delegate_task returns immediately — "
-        "you and the user keep working, and each subagent's full result "
-        "re-enters the conversation as its own new message when it finishes. A "
-        "batch is just N independent background subagents (N handles, each "
-        "completes on its own). Do NOT wait or poll; just continue with other "
-        "work after dispatching.\n\n"
-        "WHEN TO USE delegate_task:\n"
-        "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
-        "- Tasks that would flood your context with intermediate data\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
-        "WHEN NOT TO USE (use these instead):\n"
-        "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
-        "- Single tool call -> just call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot use clarify\n"
-        "- Durable long-running work that must outlive the current turn -> "
-        "use cronjob (action='create') or terminal(background=True, "
-        "notify_on_complete=True) instead. Background delegations are NOT "
-        "durable: if the parent session is closed (/new) or the process exits "
-        "before a subagent finishes, that subagent's work is discarded, and "
-        "/stop cancels every running background subagent.\n\n"
-        "IMPORTANT:\n"
-        "- Subagents have NO memory of your conversation. Pass all relevant "
-        "info (file paths, error messages, constraints) via the 'context' field.\n"
-        "- If the user is writing in a non-English language, or asked for "
-        "output in a specific language / tone / style, say so in 'context' "
-        "(e.g. \"respond in Chinese\", \"return output in Japanese\"). "
-        "Otherwise subagents default to English and their summaries will "
-        "contaminate your final reply with the wrong language.\n"
-        "- Subagent summaries are SELF-REPORTS, not verified facts. A subagent "
-        "that claims \"uploaded successfully\" or \"file written\" may be wrong. "
-        "For operations with external side-effects (HTTP POST/PUT, remote "
-        "writes, file creation at shared paths, publishing), require the "
-        "subagent to return a verifiable handle (URL, ID, absolute path, HTTP "
-        "status) and verify it yourself — fetch the URL, stat the file, read "
-        "back the content — before telling the user the operation succeeded.\n"
-        "- Leaf subagents (role='leaf', the default) CANNOT call: "
-        "delegate_task, clarify, memory, send_message, execute_code.\n"
-        "- Orchestrator subagents (role='orchestrator') retain "
-        "delegate_task so they can spawn their own workers, but still "
-        "cannot use clarify, memory, send_message, or execute_code. "
-        f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
-        f"user and can be disabled globally via "
-        "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
-        "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "Spawn background subagents in isolated contexts: no parent history, "
+        "own terminal session/toolsets, final summary only. Modes: single `goal`, "
+        f"or parallel `tasks` array with up to {max_children} children. "
+        f"{nesting_clause} Results re-enter this conversation asynchronously; "
+        "do not wait/poll. Not durable across /new, parent exit, or /stop.\n\n"
+        "Use for reasoning-heavy work, context-heavy debugging/review/research, or "
+        "parallel independent workstreams. Do not use for one tool call, simple "
+        "mechanical loops (use execute_code), user interaction (children cannot "
+        "clarify), or durable scheduled work (use cronjob/terminal background).\n\n"
+        "Pass all needed file paths/errors/constraints and requested language/tone "
+        "in context; subagents otherwise default to English. Treat summaries as "
+        "self-reports: for side effects require a handle (path/URL/id/status) and "
+        "verify it yourself before claiming success. Leaf children cannot call "
+        "delegate_task/clarify/memory/send_message/execute_code. Model is inherited "
+        "unless delegation.provider/model config pins all subagents. Returns an "
+        "array, one result per task."
     )
-
 
 def _build_tasks_param_description() -> str:
     """Compose the 'tasks' parameter description with current concurrency limit."""
@@ -2998,12 +2944,9 @@ def _build_tasks_param_description() -> str:
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
-        f"Batch mode: tasks to run in parallel (up to {max_children} for this "
-        f"user, set via delegation.max_concurrent_children). Each gets "
-        "its own subagent with isolated context and terminal session. "
-        "When provided, top-level goal/context/toolsets are ignored."
+        f"Batch mode: up to {max_children} independent subagents in parallel. "
+        "Each item needs goal; top-level goal/context/toolsets are ignored."
     )
-
 
 def _build_role_param_description() -> str:
     """Compose the 'role' parameter description with current spawn-depth limit."""
@@ -3017,30 +2960,13 @@ def _build_role_param_description() -> str:
         orchestrator_on = True
 
     if max_depth >= 2 and orchestrator_on:
-        nesting_note = (
-            f"Nesting IS enabled for this user (max_spawn_depth={max_depth}): "
-            f"orchestrator children can themselves delegate up to {max_depth - 1} "
-            "more level(s) deep."
-        )
+        nesting_note = f"orchestrator can delegate further (max_spawn_depth={max_depth})."
     elif max_depth >= 2 and not orchestrator_on:
-        nesting_note = (
-            "Nesting is currently disabled "
-            "(delegation.orchestrator_enabled=false); 'orchestrator' is "
-            "silently forced to 'leaf'."
-        )
+        nesting_note = "orchestrator is forced to leaf by delegation.orchestrator_enabled=false."
     else:
-        nesting_note = (
-            f"Nesting is OFF for this user (max_spawn_depth={max_depth}); "
-            "'orchestrator' is silently forced to 'leaf'. Raise "
-            "delegation.max_spawn_depth in config.yaml to enable."
-        )
+        nesting_note = f"nesting off (max_spawn_depth={max_depth}); orchestrator is forced to leaf."
 
-    return (
-        "Role of the child agent. 'leaf' (default) = focused "
-        "worker, cannot delegate further. 'orchestrator' = can "
-        f"use delegate_task to spawn its own workers. {nesting_note}"
-    )
-
+    return f"Child role: leaf(default) or orchestrator; {nesting_note}"
 
 def _build_dynamic_schema_overrides() -> dict:
     """Return per-call schema overrides reflecting current config.
@@ -3085,29 +3011,20 @@ DELEGATE_TASK_SCHEMA = {
             "goal": {
                 "type": "string",
                 "description": (
-                    "What the subagent should accomplish. Be specific and "
-                    "self-contained -- the subagent knows nothing about your "
-                    "conversation history."
+                    "Task goal. Be specific/self-contained; child has no parent history."
                 ),
             },
             "context": {
                 "type": "string",
                 "description": (
-                    "Background information the subagent needs: file paths, "
-                    "error messages, project structure, constraints. The more "
-                    "specific you are, the better the subagent performs."
+                    "Needed context: paths, errors, constraints, language/tone, verification requirements."
                 ),
             },
             "toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Toolsets to enable for this subagent. "
-                    "Default: inherits your enabled toolsets. "
-                    f"Available toolsets: {_TOOLSET_LIST_STR}. "
-                    "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['browser'] for web interaction, "
-                    "['terminal', 'file', 'web'] for full-stack tasks."
+                    "Toolsets to enable. Default inherits parent. Common: ['terminal','file'] code, ['web'] research, ['browser'] interaction."
                 ),
             },
             "tasks": {
@@ -3123,14 +3040,12 @@ DELEGATE_TASK_SCHEMA = {
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                            "description": "Toolsets for this task. Common: web, terminal, file, browser.",
                         },
                         "acp_command": {
                             "type": "string",
                             "description": (
-                                "Per-task ACP command override (e.g. 'copilot'). "
-                                "Overrides the top-level acp_command for this task only. "
-                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
+                                "Per-task ACP command override. Do NOT set unless user explicitly told you an ACP CLI is installed."
                             ),
                         },
                         "acp_args": {
@@ -3159,35 +3074,20 @@ DELEGATE_TASK_SCHEMA = {
             "background": {
                 "type": "boolean",
                 "description": (
-                    "DEPRECATED / IGNORED. Single-task delegations always run "
-                    "in the background automatically — you do not need to (and "
-                    "cannot) opt in or out. The result re-enters the "
-                    "conversation as a new message when the subagent finishes; "
-                    "just continue working in the meantime. Setting this has no "
-                    "effect; the parameter remains only for backward "
-                    "compatibility."
+                    "Deprecated/ignored; delegations already run asynchronously."
                 ),
             },
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Requires an ACP-compatible CLI "
-                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
-                    "See agent/copilot_acp_client.py for the implementation. "
-                    "IMPORTANT: Do NOT set this unless the user has explicitly told you "
-                    "a specific ACP-compatible CLI is installed and configured. "
-                    "Leave empty to use the parent's default transport (Hermes subagents)."
+                    "ACP command override. Do NOT set unless user explicitly told you an ACP CLI is installed/configured."
                 ),
             },
             "acp_args": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. "
-                    "Leave empty unless acp_command is explicitly provided."
+                    "ACP args; only used with acp_command."
                 ),
             },
         },

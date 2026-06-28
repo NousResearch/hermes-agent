@@ -101,6 +101,7 @@ def _build_subprocess_env() -> dict[str, str]:
     env = hermes_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
     env["HOME"] = home
+    env["HERMES_REAL_HOME"] = home
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
     return env

@@ -205,7 +205,11 @@ class TestHandPlacedSkillsNoLimit:
         huge = huge.replace("name: test-skill", "name: manual-giant")
         (skill_dir / "SKILL.md").write_text(huge, encoding="utf-8")
 
-        result = json.loads(skill_view("manual-giant"))
+        default_result = json.loads(skill_view("manual-giant"))
+        assert default_result.get("truncated_by_budget") is True
+
+        result = json.loads(skill_view("manual-giant", max_chars=0))
         assert "content" in result
-        # The full content is returned — no truncation at the storage layer
+        # Explicit max_chars=0 bypasses the soft response budget, proving the
+        # storage layer still accepts hand-placed oversized skills.
         assert len(result["content"]) > MAX_SKILL_CONTENT_CHARS

@@ -225,9 +225,9 @@ _TOOL_STUBS = {
     ),
     "read_file": (
         "read_file",
-        "path: str, offset: int = 1, limit: int = 500",
+        "path: str, offset: int = 1, limit: int = 500, max_chars: int = None",
         '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
-        '{"path": path, "offset": offset, "limit": limit}',
+        '{"path": path, "offset": offset, "limit": limit, "max_chars": max_chars}',
     ),
     "write_file": (
         "write_file",
@@ -1717,27 +1717,13 @@ def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
 # Per-tool documentation lines for the execute_code description.
 # Ordered to match the canonical display order.
 _TOOL_DOC_LINES = [
-    ("web_search",
-     "  web_search(query: str, limit: int = 5) -> dict\n"
-     "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
-    ("web_extract",
-     "  web_extract(urls: list[str]) -> dict\n"
-     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
-    ("read_file",
-     "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
-     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
-    ("write_file",
-     "  write_file(path: str, content: str) -> dict\n"
-     "    Always overwrites the entire file."),
-    ("search_files",
-     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
-     "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
-    ("patch",
-     "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
-     "    Replaces old_string with new_string in the file."),
-    ("terminal",
-     "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+    ("web_search", "  web_search(query, limit=5) -> dict"),
+    ("web_extract", "  web_extract(urls) -> dict"),
+    ("read_file", "  read_file(path, offset=1, limit=500, max_chars=None) -> dict"),
+    ("write_file", "  write_file(path, content) -> dict"),
+    ("search_files", "  search_files(pattern, target='content', path='.', file_glob=None, limit=50) -> dict"),
+    ("patch", "  patch(path, old_string, new_string, replace_all=False) -> dict"),
+    ("terminal", "  terminal(command, timeout=None, workdir=None) -> dict"),
 ]
 
 
@@ -1789,25 +1775,14 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         )
 
     description = (
-        "Run a Python script that can call Hermes tools programmatically. "
-        "Use this when you need 3+ tool calls with processing logic between them, "
-        "need to filter/reduce large tool outputs before they enter your context, "
-        "need conditional branching (if X then Y else Z), or need to loop "
-        "(fetch N pages, process N files, retry on failure).\n\n"
-        "Use normal tool calls instead when: single tool call with no processing, "
-        "you need to see the full result and apply complex reasoning, "
-        "or the task requires interactive user input.\n\n"
-        f"Available via `from hermes_tools import ...`:\n\n"
-        f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty).\n\n"
+        "Run Python that can call Hermes tools programmatically. Use for 3+ tool calls "
+        "with branching/loops or to filter large tool outputs before they enter context; "
+        "use normal tool calls for one call, full-output reasoning, or user interaction.\n\n"
+        f"Import enabled tools from `hermes_tools`:\n{tool_lines}\n\n"
+        "Limits: 5-minute timeout, 50KB stdout, max 50 tool calls; terminal() is foreground-only.\n\n"
         f"{cwd_note}\n\n"
-        "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
-        "datetime, collections, etc.) for processing between tool calls.\n\n"
-        "Also available (no import needed — built into hermes_tools):\n"
-        "  json_parse(text: str) — json.loads with strict=False; use for terminal() output with control chars\n"
-        "  shell_quote(s: str) — shlex.quote(); use when interpolating dynamic strings into shell commands\n"
-        "  retry(fn, max_attempts=3, delay=2) — retry with exponential backoff for transient failures"
+        "Print final result to stdout. Use stdlib for processing. Helpers: "
+        "json_parse(text), shell_quote(s), retry(fn, max_attempts=3, delay=2)."
     )
 
     return {
@@ -1819,9 +1794,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                 "code": {
                     "type": "string",
                     "description": (
-                        "Python code to execute. Import tools with "
-                        f"`from hermes_tools import {import_str}` "
-                        "and print your final result to stdout."
+                        f"Python code. Import tools with `from hermes_tools import {import_str}`; "
+                        "print final result to stdout."
                     ),
                 },
             },

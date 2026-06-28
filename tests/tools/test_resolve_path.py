@@ -4,6 +4,18 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_file_tool_path_state(monkeypatch):
+    """Keep helper tests independent from preserved/live cwd process state."""
+    from tools import file_tools, terminal_tool
+
+    monkeypatch.setattr(file_tools, "_last_known_cwd", {})
+    monkeypatch.setattr(file_tools, "_file_ops_cache", {})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+
 
 
 class TestResolvePath:

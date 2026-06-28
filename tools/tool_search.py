@@ -1,17 +1,24 @@
 """Progressive tool disclosure ("tool search") for Hermes Agent.
 
-When enabled, MCP and non-core plugin tools are replaced in the model-visible
-tools array by three bridge tools — ``tool_search``, ``tool_describe``,
-``tool_call`` — and surfaced on demand. Core Hermes tools never defer.
+When enabled, large non-essential tool surfaces are replaced in the
+model-visible tools array by three bridge tools — ``tool_search``,
+``tool_describe``, ``tool_call`` — and surfaced on demand. The default
+"narrow waist" keeps common exploration and agent-runtime tools directly
+visible, while MCP, plugin, and peripheral built-in platform tools may defer.
 
 Design constraints this module is built around (see ``openclaw-tool-search-report``
 for the full rationale):
 
-* Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred.
-  Always-load means always-load. No exceptions.
+* Tools defined in ``toolsets._HERMES_TOOL_SEARCH_ALWAYS_VISIBLE_TOOLS`` are
+  never deferred. This is intentionally narrower than platform composition's
+  ``_HERMES_CORE_TOOLS``: terminal/file/web/skills/runtime tools stay direct,
+  while browser/media/cron/smart-home/etc. schemas can move behind search.
 * The threshold gate runs every assembly: when deferrable tools would consume
-  less than ``threshold_pct`` of the model's context window (default 10%),
-  tool search is a no-op and the tools array passes through unchanged.
+  less than the smaller of ``threshold_pct`` of the model's context window and
+  ``threshold_max_tokens`` (default 10K), tool search is a no-op and the tools
+  array passes through unchanged.  The fixed cap prevents huge-context models
+  from carrying 15K+ tokens of MCP schema every turn just because 10% of their
+  context window is enormous.
 * The catalog is stateless across turns and tools-array assemblies. It is
   rebuilt from the current tool-defs list every time. This is the lesson
   from OpenClaw's cron regression (openclaw/openclaw#84141): a session-keyed
@@ -66,6 +73,7 @@ class ToolSearchConfig:
 
     enabled: str  # "auto" | "on" | "off"
     threshold_pct: float  # 0..100 — only used when enabled == "auto"
+    threshold_max_tokens: int  # fixed auto-mode cap; 0 disables the cap
     search_default_limit: int
     max_search_limit: int
 
@@ -81,12 +89,15 @@ class ToolSearchConfig:
         """
         if raw is True:
             return cls(enabled="auto", threshold_pct=10.0,
+                       threshold_max_tokens=10_000,
                        search_default_limit=5, max_search_limit=20)
         if raw is False:
             return cls(enabled="off", threshold_pct=10.0,
+                       threshold_max_tokens=10_000,
                        search_default_limit=5, max_search_limit=20)
         if not isinstance(raw, dict):
             return cls(enabled="auto", threshold_pct=10.0,
+                       threshold_max_tokens=10_000,
                        search_default_limit=5, max_search_limit=20)
 
         enabled_raw = str(raw.get("enabled", "auto")).strip().lower()
@@ -102,6 +113,15 @@ class ToolSearchConfig:
         threshold_pct = _safe_float(raw.get("threshold_pct"), 10.0)
         threshold_pct = max(0.0, min(100.0, threshold_pct))
 
+        threshold_max_tokens = _safe_int(raw.get("threshold_max_tokens"), 10_000)
+        # 0 is an explicit escape hatch for legacy percentage-only behavior.
+        # Positive values are clamped so typos do not accidentally activate on
+        # every tiny plugin schema or defer only at unusably high budgets.
+        if threshold_max_tokens < 0:
+            threshold_max_tokens = 10_000
+        elif threshold_max_tokens > 0:
+            threshold_max_tokens = max(1_000, min(100_000, threshold_max_tokens))
+
         max_search_limit = max(1, min(50, _safe_int(raw.get("max_search_limit"), 20)))
         search_default_limit = max(1, min(max_search_limit,
                                           _safe_int(raw.get("search_default_limit"), 5)))
@@ -109,6 +129,7 @@ class ToolSearchConfig:
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
+            threshold_max_tokens=threshold_max_tokens,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
         )
@@ -147,40 +168,58 @@ def load_config() -> ToolSearchConfig:
 # ---------------------------------------------------------------------------
 
 
-def _core_tool_names() -> frozenset[str]:
-    """Return the set of tool names that must NEVER be deferred.
+def _always_visible_tool_names() -> frozenset[str]:
+    """Return tool names that must remain directly model-visible.
 
-    Imported lazily because ``toolsets`` imports from ``tools.registry``
-    and we don't want a hard cycle.
+    Imported lazily because ``toolsets`` imports from ``tools.registry`` and we
+    don't want a hard cycle. Falls back to the historical platform core if the
+    new narrow-waist constant is unavailable during upgrades/tests.
     """
     try:
-        from toolsets import _HERMES_CORE_TOOLS
-        return frozenset(_HERMES_CORE_TOOLS)
+        from toolsets import _HERMES_TOOL_SEARCH_ALWAYS_VISIBLE_TOOLS
+        return frozenset(_HERMES_TOOL_SEARCH_ALWAYS_VISIBLE_TOOLS)
     except Exception:
-        return frozenset()
+        try:
+            from toolsets import _HERMES_CORE_TOOLS
+            return frozenset(_HERMES_CORE_TOOLS)
+        except Exception:
+            return frozenset()
+
+
+def _always_visible_toolsets() -> frozenset[str]:
+    """Toolsets whose members need direct agent/runtime dispatch."""
+    return frozenset({
+        "todo",
+        "memory",
+        "session_search",
+        "clarify",
+        "delegation",
+        "context_engine",
+    })
 
 
 def is_deferrable_tool_name(name: str) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
-    A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
-    even when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    Tools in the narrow always-visible set stay direct. Everything else that
+    is registered and in-scope may be deferred: MCP servers, plugin tools, and
+    peripheral built-in platform tools such as browser automation, image/TTS,
+    cron, Home Assistant, computer-use, Discord, and similar large schemas.
+    Unknown names stay visible/unchanged so a catalog bug never silently drops
+    a tool.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
-    if name in _core_tool_names():
+    if name in _always_visible_tool_names():
         return False
-    # Check registry toolset for MCP prefix.
     try:
         from tools.registry import registry
         entry = registry.get_entry(name)
         if entry is None:
             return False
-        if entry.toolset.startswith("mcp-"):
-            return True
-        # Non-MCP, non-core → plugin tool, eligible.
+        toolset = str(getattr(entry, "toolset", "") or "")
+        if toolset in _always_visible_toolsets():
+            return False
         return True
     except Exception:
         return False
@@ -190,8 +229,8 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
-    every core tool, plus any tool we can't classify. ``deferrable`` is the
-    candidate set for catalog entry.
+    every narrow-waist always-visible tool, plus any tool we can't classify.
+    ``deferrable`` is the candidate set for catalog entry.
     """
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
@@ -241,7 +280,10 @@ def should_activate(
     ``"off"`` skips unconditionally. ``"on"`` activates unconditionally
     (as long as there is at least one deferrable tool — there's no point
     swapping a no-op). ``"auto"`` activates when the deferrable schemas
-    would consume ``threshold_pct`` of context or more.
+    would consume the configured percentage threshold or the fixed cap,
+    whichever is lower.  The cap is load-bearing for large-context models:
+    a 272K-token model with a 10% threshold would otherwise carry ~27K
+    schema tokens before progressive disclosure activates.
     """
     if config.enabled == "off":
         return False
@@ -250,12 +292,24 @@ def should_activate(
     if config.enabled == "on":
         return True
     # auto
-    if not context_length or context_length <= 0:
-        # Without a known context size, fall back to a fixed 20K-token cutoff
-        # — the cliff above which Anthropic and OpenAI both saw quality drops.
-        return deferrable_tokens >= 20_000
-    threshold_tokens = int(context_length * (config.threshold_pct / 100.0))
+    threshold_tokens = auto_threshold_tokens(config, context_length)
     return deferrable_tokens >= threshold_tokens
+
+
+def auto_threshold_tokens(config: ToolSearchConfig, context_length: Optional[int]) -> int:
+    """Return the token threshold used by auto-mode activation.
+
+    Uses the smaller of the percentage threshold and ``threshold_max_tokens``.
+    When context length is unknown, the fixed cap becomes the threshold; if the
+    cap is disabled, fall back to the historical 20K-token cutoff.
+    """
+    fixed_cap = int(config.threshold_max_tokens or 0)
+    if not context_length or context_length <= 0:
+        return fixed_cap or 20_000
+    pct_threshold = int(context_length * (config.threshold_pct / 100.0))
+    if fixed_cap > 0:
+        return min(pct_threshold, fixed_cap)
+    return pct_threshold
 
 
 # ---------------------------------------------------------------------------
@@ -311,9 +365,16 @@ def _classify_source(name: str) -> Tuple[str, str]:
         entry = registry.get_entry(name)
         if entry is None:
             return ("other", "")
-        if entry.toolset.startswith("mcp-"):
-            return ("mcp", entry.toolset)
-        return ("plugin", entry.toolset)
+        toolset = str(entry.toolset or "")
+        if toolset.startswith("mcp-"):
+            return ("mcp", toolset)
+        try:
+            from toolsets import TOOLSETS
+            if toolset in TOOLSETS:
+                return ("builtin", toolset)
+        except Exception:
+            pass
+        return ("plugin", toolset)
     except Exception:
         return ("other", "")
 
@@ -535,9 +596,9 @@ def assemble_tool_defs(
     """Return the tool-defs list the model should actually see.
 
     When tool search is inactive (off, no deferrable tools, or below
-    threshold), this is a passthrough. When active, MCP and plugin tools
-    are stripped from the visible list and replaced with the three bridge
-    tools. Core tools are *never* deferred regardless of config.
+    threshold), this is a passthrough. When active, MCP/plugin/peripheral
+    built-in tools are stripped from the visible list and replaced with the
+    three bridge tools. Narrow-waist always-visible tools are never deferred.
 
     Idempotent: calling with bridge tools already in the input is a no-op
     (they classify as non-core/non-deferrable but their names are reserved,
@@ -562,15 +623,15 @@ def assemble_tool_defs(
             activated=False,
             deferred_count=len(deferrable),
             deferred_tokens=deferrable_tokens,
-            threshold_tokens=int((context_length or 0) * (config.threshold_pct / 100.0)),
+            threshold_tokens=auto_threshold_tokens(config, context_length),
         )
 
     bridge = bridge_tool_schemas(len(deferrable))
     result = visible + bridge
-    threshold_tokens = int((context_length or 0) * (config.threshold_pct / 100.0))
+    threshold_tokens = auto_threshold_tokens(config, context_length)
 
     logger.info(
-        "tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
+        "tool_search activated: %d visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
         len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
     )
 
@@ -723,6 +784,7 @@ __all__ = [
     "classify_tools",
     "estimate_tokens_from_schemas",
     "should_activate",
+    "auto_threshold_tokens",
     "build_catalog",
     "search_catalog",
     "bridge_tool_schemas",

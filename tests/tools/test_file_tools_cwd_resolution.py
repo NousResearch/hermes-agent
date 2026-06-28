@@ -24,6 +24,15 @@ import tools.file_tools as ft
 import tools.terminal_tool as terminal_tool
 
 
+@pytest.fixture(autouse=True)
+def _isolate_last_known_cwd(monkeypatch):
+    """Keep cwd-resolution tests from leaking preserved cwd into later files."""
+    isolated = {}
+    monkeypatch.setattr(ft, "_last_known_cwd", isolated)
+    yield
+    isolated.clear()
+
+
 @pytest.fixture
 def _isolated_cwd(tmp_path, monkeypatch):
     """Two checkouts: workspace (intended) + decoy (process cwd)."""

@@ -301,6 +301,8 @@ export interface Translations {
       toolViewDesc: string
       translucencyTitle: string
       translucencyDesc: string
+      backdropOpacityTitle: string
+      backdropOpacityDesc: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string

@@ -316,6 +316,17 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+def get_bound_session_env(name: str, default: str = "") -> str:
+    """Read only the value bound in this context, ignoring ``os.environ``."""
+    var = _VAR_MAP.get(name)
+    if var is None:
+        return default
+    value = var.get()
+    if value is _UNSET:
+        return default
+    return value
+
+
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.
 

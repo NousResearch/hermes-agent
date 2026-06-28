@@ -4009,19 +4009,19 @@ class APIServerAdapter(BasePlatformAdapter):
         the turn — a session resumed later on a delivering interface, e.g. the
         CLI or a gateway platform, re-binds fresh and is NOT blocked).
         """
-        from gateway.session_context import get_session_env, set_session_vars
+        from gateway.session_context import get_bound_session_env, set_session_vars
 
         return set_session_vars(
             platform="api_server",
-            source=get_session_env("HERMES_SESSION_SOURCE", ""),
-            chat_id=get_session_env("HERMES_SESSION_CHAT_ID", "") or chat_id,
-            chat_name=get_session_env("HERMES_SESSION_CHAT_NAME", ""),
-            thread_id=get_session_env("HERMES_SESSION_THREAD_ID", ""),
-            user_id=get_session_env("HERMES_SESSION_USER_ID", ""),
-            user_name=get_session_env("HERMES_SESSION_USER_NAME", ""),
-            session_key=get_session_env("HERMES_SESSION_KEY", "") or session_key,
-            session_id=get_session_env("HERMES_SESSION_ID", "") or session_id,
-            message_id=get_session_env("HERMES_SESSION_MESSAGE_ID", ""),
+            source=get_bound_session_env("HERMES_SESSION_SOURCE", ""),
+            chat_id=get_bound_session_env("HERMES_SESSION_CHAT_ID", "") or chat_id,
+            chat_name=get_bound_session_env("HERMES_SESSION_CHAT_NAME", ""),
+            thread_id=get_bound_session_env("HERMES_SESSION_THREAD_ID", ""),
+            user_id=get_bound_session_env("HERMES_SESSION_USER_ID", ""),
+            user_name=get_bound_session_env("HERMES_SESSION_USER_NAME", ""),
+            session_key=get_bound_session_env("HERMES_SESSION_KEY", "") or session_key,
+            session_id=get_bound_session_env("HERMES_SESSION_ID", "") or session_id,
+            message_id=get_bound_session_env("HERMES_SESSION_MESSAGE_ID", ""),
             async_delivery=False,
         )
 

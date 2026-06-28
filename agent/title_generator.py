@@ -6,6 +6,7 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
+import time
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
@@ -48,6 +49,157 @@ def _title_language() -> str:
         return ""
 
 
+_INTENT_TITLE_PROMPT = (
+    "Generate a short, descriptive title (3-7 words) for the user's task. "
+    "Predict the user's intent instead of copying the raw text or URL. "
+    "Use the user's apparent preferred language: follow an explicit language request when present, "
+    "otherwise match the language of the user's message. Do not force English or translate unnecessarily. "
+    "If the user only pasted a link, infer a useful title from the URL, domain, path, or visible text. "
+    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+)
+
+
+def _clean_title(title: str, max_len: int = 80) -> Optional[str]:
+    cleaned = (title or "").strip().strip('"\'')
+    if cleaned.lower().startswith("title:"):
+        cleaned = cleaned[6:].strip()
+    cleaned = cleaned.rstrip(".。!！?？")
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 3].rstrip() + "..."
+    return cleaned or None
+
+
+def generate_intent_title(
+    user_message: str,
+    timeout: float = 10.0,
+    failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict = None,
+) -> Optional[str]:
+    """Generate a fast predicted title from the user's first task only.
+
+    Messaging gateways can call this before the agent turn finishes: Discord
+    creates an auto-thread with a stable processing placeholder, then renames
+    it as soon as this lightweight intent prediction returns.
+    """
+    user_snippet = user_message[:500] if user_message else ""
+    if not user_snippet.strip():
+        return None
+
+    messages = [
+        {"role": "system", "content": _INTENT_TITLE_PROMPT},
+        {"role": "user", "content": user_snippet},
+    ]
+
+    started = time.monotonic()
+    logger.info(
+        "Intent title generation started: user_chars=%s timeout=%ss",
+        len(user_snippet),
+        timeout,
+    )
+    try:
+        response = call_llm(
+            task="title_generation",
+            messages=messages,
+            max_tokens=120,
+            temperature=0.1,
+            timeout=timeout,
+            main_runtime=main_runtime,
+        )
+        title = _clean_title(response.choices[0].message.content or "")
+        if not title:
+            logger.warning(
+                "Intent title generation returned empty content: elapsed=%.2fs",
+                time.monotonic() - started,
+            )
+            return None
+        logger.info(
+            "Intent title generation completed: title=%r elapsed=%.2fs",
+            title,
+            time.monotonic() - started,
+        )
+        return title
+    except Exception as e:
+        logger.warning("Intent title generation failed: %s", e)
+        logger.debug("Intent title generation traceback", exc_info=True)
+        if failure_callback is not None:
+            try:
+                failure_callback("intent title generation", e)
+            except Exception:
+                logger.debug("Intent title failure_callback raised", exc_info=True)
+        return None
+
+
+def pre_title_session(
+    session_db,
+    session_id: str,
+    user_message: str,
+    failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict = None,
+    title_callback: Optional[TitleCallback] = None,
+) -> None:
+    """Generate and set an intent title before the first agent turn completes."""
+    if not session_db or not session_id or not user_message:
+        return
+    try:
+        existing = session_db.get_session_title(session_id)
+        if existing:
+            return
+    except Exception:
+        logger.debug("Pre-title skipped: failed to read existing title", exc_info=True)
+        return
+
+    title = generate_intent_title(
+        user_message,
+        failure_callback=failure_callback,
+        main_runtime=main_runtime,
+    )
+    if not title:
+        return
+    # Persisting the title to the session DB is best-effort: a uniqueness
+    # conflict (same title already used by another session — e.g. "Friendly
+    # Greeting" appearing in a 寒暄 thread a month apart) raises ValueError
+    # from SessionDB.set_session_title. We must not let that abort the
+    # side-effects that the caller (Discord thread rename) depends on —
+    # the rename does not need the DB write to succeed. Split the two
+    # concerns: log the DB failure, but always invoke the callback.
+    if session_db is not None:
+        try:
+            session_db.set_session_title(session_id, title)
+            logger.info("Pre-title session title set: session=%s title=%r", session_id, title)
+        except Exception as e:
+            logger.debug("Pre-title: set_session_title failed (%s: %s); continuing to invoke callback", type(e).__name__, e)
+    if title_callback is not None:
+        try:
+            title_callback(title)
+        except Exception:
+            logger.debug("Pre-title callback failed", exc_info=True)
+
+
+def maybe_pre_title(
+    session_db,
+    session_id: str,
+    user_message: str,
+    failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict = None,
+    title_callback: Optional[TitleCallback] = None,
+) -> None:
+    """Fire-and-forget intent title generation before the agent turn finishes."""
+    if not session_db or not session_id or not user_message:
+        return
+    thread = threading.Thread(
+        target=pre_title_session,
+        args=(session_db, session_id, user_message),
+        kwargs={
+            "failure_callback": failure_callback,
+            "main_runtime": main_runtime,
+            "title_callback": title_callback,
+        },
+        daemon=True,
+        name="pre-title",
+    )
+    thread.start()
+
+
 def generate_title(
     user_message: str,
     assistant_response: str,
@@ -87,14 +239,7 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        title = (response.choices[0].message.content or "").strip()
-        # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
-        title = title.strip('"\'')
-        if title.lower().startswith("title:"):
-            title = title[6:].strip()
-        # Enforce reasonable length
-        if len(title) > 80:
-            title = title[:77] + "..."
+        title = _clean_title(response.choices[0].message.content or "")
         return title if title else None
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.

@@ -1686,6 +1686,11 @@ class MessageEvent:
     # from ``text`` so the sender-prefix logic in run.py can operate on the
     # trigger message alone, then prepend this context afterward.
     channel_context: Optional[str] = None
+
+    # True when the platform adapter created a brand-new thread/topic for this
+    # incoming message before dispatching it to the gateway. Gateway code can
+    # use this for pre-turn thread title prediction and post-create rename.
+    auto_thread_created: bool = False
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.

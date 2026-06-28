@@ -4705,18 +4705,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Returns the created thread object, or ``None`` on failure.
         """
-        # Build a short thread name from the message. Strip Discord mention
-        # syntax (users / roles / channels) so thread titles don't end up
-        # showing raw <@id>, <@&id>, or <#id> markers — the ID isn't
-        # meaningful to humans glancing at the thread list (#6336).
-        content = (message.content or "").strip()
-        # <@123>, <@!123>, <@&123>, <#123> — collapse to empty; normalize spaces.
-        content = re.sub(r"<@[!&]?\d+>", "", content)
-        content = re.sub(r"<#\d+>", "", content)
-        content = re.sub(r"\s+", " ", content).strip()
-        thread_name = content[:80] if content else "Hermes"
-        if len(content) > 80:
-            thread_name = thread_name[:77] + "..."
+        # Use a stable placeholder instead of the raw user prompt or URL. The
+        # gateway starts a fast intent-title job for freshly created
+        # auto-threads and renames the thread when that prediction returns.
+        thread_name = "Hermes is processing"
 
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
@@ -4740,6 +4732,30 @@ class DiscordAdapter(BasePlatformAdapter):
                     fallback_error,
                 )
                 return None
+
+    async def rename_thread(self, thread_id: str, name: str) -> bool:
+        """Best-effort rename of a Discord thread by id."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+        thread_name = re.sub(r"\s+", " ", str(name or "")).strip()
+        if not thread_name:
+            return False
+        if len(thread_name) > 80:
+            thread_name = thread_name[:77].rstrip() + "..."
+
+        try:
+            channel = self._client.get_channel(int(thread_id))
+            if channel is None:
+                channel = await self._client.fetch_channel(int(thread_id))
+            edit = getattr(channel, "edit", None)
+            if edit is None:
+                return False
+            await edit(name=thread_name)
+            logger.info("[%s] Renamed Discord thread %s to %r", self.name, thread_id, thread_name)
+            return True
+        except Exception:
+            logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
+            return False
 
     async def create_handoff_thread(
         self,
@@ -5729,6 +5745,7 @@ class DiscordAdapter(BasePlatformAdapter):
             auto_skill=_skills,
             channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            auto_thread_created=auto_threaded_channel is not None,
         )
 
         # Track thread participation so the bot won't require @mention for

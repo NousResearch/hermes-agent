@@ -9683,6 +9683,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
+
+        # Discord auto-thread UX: create new auto-threads with a stable
+        # processing placeholder, then start a cheap intent-title job before
+        # the main agent turn finishes and rename the thread on completion.
+        if (
+            source.platform == Platform.DISCORD
+            and getattr(source, "thread_id", None)
+            and getattr(event, "auto_thread_created", False)
+            and self._session_db
+        ):
+            try:
+                from agent.title_generator import maybe_pre_title
+
+                def _pre_title_failure_cb(task: str, exc: BaseException) -> None:
+                    logger.debug(
+                        "Gateway pre-title failure suppressed: %s: %s",
+                        task,
+                        exc,
+                    )
+
+                maybe_pre_title(
+                    self._session_db,
+                    session_entry.session_id,
+                    event.text,
+                    failure_callback=_pre_title_failure_cb,
+                    title_callback=lambda title: self._schedule_discord_thread_title_rename(
+                        source,
+                        session_entry.session_id,
+                        title,
+                    ),
+                )
+            except Exception:
+                logger.warning("Gateway pre-title scheduling failed", exc_info=True)
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
@@ -12386,6 +12419,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 fut.result()
             except Exception:
                 logger.debug("Telegram topic title rename failed", exc_info=True)
+
+        future.add_done_callback(_log_rename_failure)
+
+    async def _rename_discord_thread_for_session_title(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Best-effort rename of a Discord auto-thread when Hermes titles a session."""
+        if source.platform != Platform.DISCORD or not source.thread_id:
+            return
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return
+        rename_thread = getattr(adapter, "rename_thread", None)
+        if rename_thread is None:
+            return
+        try:
+            renamed = await rename_thread(str(source.thread_id), title)
+            if renamed:
+                logger.info(
+                    "Renamed Discord auto-thread %s to %r from session title",
+                    source.thread_id,
+                    title,
+                )
+        except Exception:
+            logger.debug("Failed to rename Discord thread for session title", exc_info=True)
+
+    def _schedule_discord_thread_title_rename(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Schedule a Discord thread rename from a title-generation thread."""
+        if not title or source.platform != Platform.DISCORD or not source.thread_id:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return
+        try:
+            copied_source = dataclasses.replace(source)
+        except Exception:
+            copied_source = source
+        future = safe_schedule_threadsafe(
+            self._rename_discord_thread_for_session_title(copied_source, session_id, title),
+            loop,
+            logger=logger,
+            log_message="Discord thread title rename failed to schedule",
+        )
+        if future is None:
+            return
+
+        def _log_rename_failure(fut) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.debug("Discord thread title rename failed", exc_info=True)
 
         future.add_done_callback(_log_rename_failure)
 
@@ -17115,6 +17210,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     }
                     if self._is_telegram_topic_lane(source):
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
+                            source,
+                            effective_session_id,
+                            title,
+                        )
+                    elif source.platform == Platform.DISCORD and getattr(source, "thread_id", None):
+                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_discord_thread_title_rename(
                             source,
                             effective_session_id,
                             title,

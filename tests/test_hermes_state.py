@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import sqlite3
 import time
 import pytest
@@ -245,6 +246,57 @@ class TestSessionLifecycle:
 
         session = db.get_session("s1")
         assert session["model"] == "anthropic/claude-opus-4.6"
+
+    def test_update_token_counts_backfill_preserves_first_message_timestamp(self, db):
+        """Legacy orphan repair must not make the session look newer than its messages."""
+        first_ts = 1_709_500_000.0
+        with db._lock:
+            db._conn.execute("PRAGMA foreign_keys=OFF")
+            db._conn.execute(
+                """INSERT INTO messages (session_id, role, content, timestamp)
+                   VALUES (?, ?, ?, ?)""",
+                ("orphan-pong", "user", "legacy hello", first_ts),
+            )
+            db._conn.execute(
+                """INSERT INTO messages (session_id, role, content, timestamp)
+                   VALUES (?, ?, ?, ?)""",
+                ("orphan-pong", "assistant", "legacy reply", first_ts + 10),
+            )
+            db._conn.commit()
+            db._conn.execute("PRAGMA foreign_keys=ON")
+
+        db.update_token_counts("orphan-pong", input_tokens=10, output_tokens=5)
+
+        session = db.get_session("orphan-pong")
+        assert session["source"] == "unknown"
+        assert session["started_at"] == first_ts
+        assert json.loads(session["model_config"])["_repaired_missing_session_row"] == (
+            "update_token_counts"
+        )
+
+    def test_create_session_promotes_token_count_repair_row(self, db):
+        """A later real create must not leave a provisional repair row hidden."""
+        first_ts = 1_709_500_000.0
+        with db._lock:
+            db._conn.execute("PRAGMA foreign_keys=OFF")
+            db._conn.execute(
+                """INSERT INTO messages (session_id, role, content, timestamp)
+                   VALUES (?, ?, ?, ?)""",
+                ("orphan-pong", "user", "legacy hello", first_ts),
+            )
+            db._conn.commit()
+            db._conn.execute("PRAGMA foreign_keys=ON")
+
+        db.update_token_counts("orphan-pong", input_tokens=10, output_tokens=5)
+        db.create_session("orphan-pong", source="cli", cwd="/work/repo")
+
+        session = db.get_session("orphan-pong")
+        assert session["source"] == "cli"
+        assert session["cwd"] == "/work/repo"
+        assert session["started_at"] == first_ts
+        assert "_repaired_missing_session_row" not in json.loads(
+            session["model_config"] or "{}"
+        )
 
     def test_update_session_model_overwrites_existing(self, db):
         """A mid-session /model switch must overwrite the stored model.
@@ -646,6 +698,26 @@ class TestMessageStorage:
 
         session = db.get_session("s1")
         assert session["message_count"] == 2
+
+    def test_append_message_rolls_back_when_session_counter_update_misses(self, db):
+        """FK-off legacy states must not silently leave orphan messages behind."""
+        with db._lock:
+            db._conn.execute("PRAGMA foreign_keys=OFF")
+
+        try:
+            with pytest.raises(sqlite3.IntegrityError, match="missing session row"):
+                db.append_message("missing-session", role="user", content="orphan")
+        finally:
+            with db._lock:
+                db._conn.execute("PRAGMA foreign_keys=ON")
+
+        with db._lock:
+            count = db._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                ("missing-session",),
+            ).fetchone()[0]
+
+        assert count == 0
 
     def test_observed_flag_round_trips_for_gateway_replay(self, db):
         db.create_session(session_id="s1", source="telegram:-100")
@@ -3052,6 +3124,15 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         assert sessions[0]["preview"] == ""
 
+    def test_first_message_at_from_earliest_message(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "assistant", "later")
+        db.append_message("s1", "user", "earlier", timestamp=1_709_500_000.0)
+
+        session = db.list_sessions_rich()[0]
+
+        assert session["first_message_at"] == 1_709_500_000.0
+
     def test_last_active_from_latest_message(self, db):
         import time
         db.create_session("s1", "cli")
@@ -3067,6 +3148,7 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         # No messages, so last_active falls back to started_at
         assert sessions[0]["last_active"] == sessions[0]["started_at"]
+        assert sessions[0]["first_message_at"] is None
 
     def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
         t0 = 1709500000.0

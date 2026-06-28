@@ -5574,6 +5574,126 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     assert "state.db unavailable: locking protocol" in resp["error"]["message"]
 
 
+def _repaired_unknown_session_rows() -> list[dict]:
+    return [
+        {
+            "id": "orphan-pong",
+            "source": "unknown",
+            "title": None,
+            "started_at": 200.0,
+            "first_message_at": 100.0,
+            "message_count": 2,
+        },
+        {
+            "id": "repaired-current",
+            "source": "unknown",
+            "title": "marked repair",
+            "started_at": 400.0,
+            "first_message_at": 400.0,
+            "message_count": 2,
+            "model_config": json.dumps(
+                {"_repaired_missing_session_row": "update_token_counts"}
+            ),
+        },
+        {
+            "id": "legit-backdated-unknown",
+            "source": "unknown",
+            "title": "imported",
+            "started_at": 500.0,
+            "first_message_at": 100.0,
+            "message_count": 1,
+        },
+        {
+            "id": "legit-unknown",
+            "source": "unknown",
+            "title": "legit",
+            "started_at": 300.0,
+            "first_message_at": 300.0,
+            "message_count": 1,
+        },
+        {
+            "id": "tui-1",
+            "source": "tui",
+            "title": "real",
+            "started_at": 250.0,
+            "first_message_at": 251.0,
+            "message_count": 1,
+        },
+    ]
+
+
+def test_session_list_skips_only_smelly_repaired_unknown_rows(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
+            return _repaired_unknown_session_rows()
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request({"id": "1", "method": "session.list", "params": {}})
+
+    assert [s["id"] for s in resp["result"]["sessions"]] == [
+        "legit-backdated-unknown",
+        "legit-unknown",
+        "tui-1",
+    ]
+
+
+def test_session_list_scans_past_filtered_page(monkeypatch):
+    page_size = 200
+
+    class _DB:
+        def list_sessions_rich(
+            self, *, source=None, limit=200, offset=0, order_by_last_active=False
+        ):
+            if offset == 0:
+                return [
+                    {"id": f"tool-{i}", "source": "tool", "started_at": 500.0 - i}
+                    for i in range(page_size)
+                ]
+            return [
+                {
+                    "id": "tui-1",
+                    "source": "tui",
+                    "title": "real",
+                    "started_at": 250.0,
+                    "message_count": 1,
+                }
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.list", "params": {"limit": 1}}
+    )
+
+    assert [s["id"] for s in resp["result"]["sessions"]] == ["tui-1"]
+
+
+def test_session_list_stops_after_scan_budget(monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(server, "_HUMAN_SESSION_PAGE_SIZE", 2)
+    monkeypatch.setattr(server, "_HUMAN_SESSION_MAX_SCAN", 4)
+
+    class _DB:
+        def list_sessions_rich(
+            self, *, source=None, limit=200, offset=0, order_by_last_active=False
+        ):
+            calls.append(offset)
+            return [
+                {"id": f"tool-{offset + i}", "source": "tool", "started_at": 500.0 - i}
+                for i in range(limit)
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.list", "params": {"limit": 1}}
+    )
+
+    assert resp["result"]["sessions"] == []
+    assert calls == [0, 2]
+
+
 # --------------------------------------------------------------------------
 # session.delete — TUI resume picker `d` key
 # --------------------------------------------------------------------------
@@ -6268,6 +6388,21 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     assert resp["result"]["source"] == "tui"
 
 
+def test_session_most_recent_skips_only_smelly_repaired_unknown_rows(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
+            return _repaired_unknown_session_rows()
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "legit-backdated-unknown"
+    assert resp["result"]["source"] == "unknown"
+
+
 def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
         def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
@@ -6309,6 +6444,61 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
     )
 
     assert resp["result"]["session_id"] is None
+
+
+def test_session_most_recent_scans_past_filtered_page(monkeypatch):
+    page_size = 200
+
+    class _DB:
+        def list_sessions_rich(
+            self, *, source=None, limit=200, offset=0, order_by_last_active=False
+        ):
+            if offset == 0:
+                return [
+                    {"id": f"tool-{i}", "source": "tool", "started_at": 500.0 - i}
+                    for i in range(page_size)
+                ]
+            return [
+                {
+                    "id": "tui-1",
+                    "source": "tui",
+                    "title": "real",
+                    "started_at": 250.0,
+                }
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "tui-1"
+
+
+def test_session_most_recent_stops_after_scan_budget(monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(server, "_HUMAN_SESSION_PAGE_SIZE", 2)
+    monkeypatch.setattr(server, "_HUMAN_SESSION_MAX_SCAN", 4)
+
+    class _DB:
+        def list_sessions_rich(
+            self, *, source=None, limit=200, offset=0, order_by_last_active=False
+        ):
+            calls.append(offset)
+            return [
+                {"id": f"tool-{offset + i}", "source": "tool", "started_at": 500.0 - i}
+                for i in range(limit)
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] is None
+    assert calls == [0, 2]
 
 
 # ── verification.status ──────────────────────────────────────────────

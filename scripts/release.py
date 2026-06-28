@@ -50,6 +50,7 @@ AUTHOR_MAP = {
     "5261694+djstunami@users.noreply.github.com": "djstunami",  # PR #5316 salvage / co-author (suppress transient check_fn flakes so subagents keep file/terminal tools; #21658 / #5304)
     "jmmaloney4@gmail.com": "jmmaloney4",  # PR #25206 salvage (re-select credential pool on primary runtime restore; #25205)
     "dale@dalenguyen.me": "dalenguyen",  # PR #53678 salvage (strip VIRTUAL_ENV/CONDA_PREFIX from terminal subprocess env; #23473)
+    "liruixinch@outlook.com": "HexLab98",  # PR #53863 salvage (env-only proxy policy for auxiliary OpenAI clients on macOS; #53702)
     "blaryx@gmail.com": "Blaryxoff",  # PR #32602 salvage (deep-merge PUT /api/config to preserve unrelated sections; #13396)
     "diamondeyesfox@gmail.com": "DiamondEyesFox",  # PR #53351 salvage (rebaseline in-place compression flushes to prevent duplicate compacted rows; #9096)
     "piyrw9754@gmail.com": "rlaope",  # PR #35075 salvage (align cron invisible-unicode set with install-time scanner; #35075)

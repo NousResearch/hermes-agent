@@ -32,21 +32,52 @@ import pytest
 
 
 # How long to give a `docker run -d` container before declaring it not ready.
-_RUN_READY_TIMEOUT_S = 20
+# Generous because under arm64 QEMU emulation cont-init (a Python config
+# migration + chowns) runs several times slower than on native amd64.
+_RUN_READY_TIMEOUT_S = 60
 
 
-def _wait_for_init(container: str) -> None:
-    """Block until /init is up enough that `docker exec` is responsive."""
+def _wait_for_cont_init(container: str) -> None:
+    """Block until s6 cont-init has fully finished, not merely until
+    ``docker exec`` is responsive.
+
+    The earlier ``_wait_for_init`` only polled ``docker exec <c> true``,
+    which succeeds almost immediately on s6-overlay — long before the
+    ``01-hermes-setup`` cont-init hook (docker/stage2-hook.sh) has
+    finished seeding + ``chown hermes:hermes`` config.yaml and running the
+    Python config migration. A test that wipes config.yaml and then writes
+    it as root would then race that boot-time chown: on native amd64
+    stage2-hook wins in a blink and the test always passed, but under arm64
+    QEMU emulation the slow Python migration was still in flight and
+    clobbered the root-written file's ownership back to hermes:hermes,
+    failing ``test_shim_opt_out_keeps_root`` non-deterministically.
+
+    The reliable "cont-init is done" signal is
+    ``$HERMES_HOME/logs/container-boot.log``: it is written by
+    ``02-reconcile-profiles`` (hermes_cli.container_boot), which s6 runs
+    *strictly after* ``01-hermes-setup`` in lexicographic order. The
+    reconciler always logs at least one ``profile=default`` line even for a
+    bare ``sleep infinity`` container, so once that marker appears every
+    stage2-hook side effect (seed, chown, migrate) is guaranteed complete.
+    Mirrors the readiness pattern in test_container_restart.py.
+    """
     deadline = time.monotonic() + _RUN_READY_TIMEOUT_S
+    last = ""
     while time.monotonic() < deadline:
         r = subprocess.run(
-            ["docker", "exec", container, "true"],
-            capture_output=True, timeout=5,
+            ["docker", "exec", container,
+             "cat", "/opt/data/logs/container-boot.log"],
+            capture_output=True, text=True, timeout=5,
         )
         if r.returncode == 0:
-            return
+            last = r.stdout
+            if "profile=default" in last:
+                return
         time.sleep(0.2)
-    pytest.fail(f"container {container} not responsive to docker exec within {_RUN_READY_TIMEOUT_S}s")
+    pytest.fail(
+        f"container {container} did not finish cont-init within "
+        f"{_RUN_READY_TIMEOUT_S}s (container-boot.log so far: {last!r})"
+    )
 
 
 @pytest.fixture
@@ -63,7 +94,7 @@ def sleep_container(built_image: str, container_name: str) -> Iterator[str]:
     )
     assert r.returncode == 0, f"docker run failed: {r.stderr}"
     try:
-        _wait_for_init(container_name)
+        _wait_for_cont_init(container_name)
         yield container_name
     finally:
         subprocess.run(

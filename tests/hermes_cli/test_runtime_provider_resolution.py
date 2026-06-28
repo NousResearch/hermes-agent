@@ -2893,3 +2893,102 @@ def test_resolve_runtime_provider_bedrock_nonclaude_target_model_uses_converse(m
     assert resolved["provider"] == "bedrock"
     assert resolved["api_mode"] == "bedrock_converse"
     assert resolved.get("bedrock_anthropic") is not True
+
+
+def test_auto_provider_with_local_base_url_bypasses_anthropic_key(monkeypatch):
+    """provider:auto + base_url:localhost should NOT route to Anthropic even if
+    ANTHROPIC_API_KEY is set in the environment. Regression test for #3846.
+
+    Users running Ollama locally had requests silently sent to Anthropic's API
+    because resolve_provider("auto") picked up ANTHROPIC_API_KEY before the
+    config.yaml base_url was checked.
+    """
+    # ANTHROPIC_API_KEY is present in environment — should be ignored
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "default": "ollama/minimax-m2.7:cloud",
+            "provider": "auto",
+            "base_url": "http://localhost:11434",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    # Must NOT go to Anthropic's API
+    assert "anthropic.com" not in resolved.get("base_url", ""), (
+        f"Expected custom endpoint, got Anthropic: {resolved}"
+    )
+    assert resolved["base_url"] == "http://localhost:11434"
+    # provider should be custom/openrouter (OpenAI-compat), not anthropic
+    assert resolved["provider"] != "anthropic", (
+        f"Should have routed to custom endpoint, not anthropic: {resolved}"
+    )
+
+
+def test_auto_provider_with_known_cloud_base_url_still_uses_anthropic(monkeypatch):
+    """provider:auto + base_url pointing to Anthropic should still use Anthropic.
+
+    The local-endpoint bypass only applies to non-cloud endpoints; when the
+    configured base_url IS a cloud API root, resolve_provider() must run
+    normally and pick up ANTHROPIC_API_KEY.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "auto",
+            "base_url": "https://api.anthropic.com",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    # Cloud base_url → bypass does NOT fire → resolve_provider picks anthropic.
+    assert resolved["provider"] == "anthropic", (
+        f"Cloud base_url must not be diverted to the custom resolver: {resolved}"
+    )
+
+
+def test_auto_provider_lookalike_cloud_host_does_not_bypass_to_cloud(monkeypatch):
+    """A look-alike host (api.anthropic.com.attacker.test) must be treated as a
+    custom endpoint, NOT mistaken for the real Anthropic cloud.
+
+    Guards the host-match (vs naive substring) check in the local-endpoint
+    bypass: substring matching on "api.anthropic.com" would wrongly classify
+    this attacker-controlled host as cloud and hand it the ANTHROPIC_API_KEY.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    lookalike = "http://api.anthropic.com.attacker.test/v1"
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "auto", "base_url": lookalike},
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    # Host doesn't actually match anthropic.com → bypass fires → custom route,
+    # and the real Anthropic credential is NOT sent there.
+    assert resolved["provider"] != "anthropic", (
+        f"Look-alike host must not be classified as Anthropic cloud: {resolved}"
+    )
+    assert resolved["base_url"] == lookalike

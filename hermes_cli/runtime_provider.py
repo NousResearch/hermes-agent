@@ -1454,6 +1454,43 @@ def resolve_runtime_provider(
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
+    # If provider is "auto" (or unset) but config.yaml has an explicit base_url
+    # pointing at a custom/local endpoint (e.g. Ollama at localhost:11434),
+    # route through the OpenAI-compatible resolver instead of letting
+    # resolve_provider() pick up an ANTHROPIC_API_KEY or OPENAI_API_KEY from
+    # the environment and send the request to a cloud API. Fixes #3846.
+    if not explicit_base_url and not explicit_api_key:
+        model_cfg = _get_model_config()
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip()
+        if cfg_base_url and cfg_provider in ("auto", ""):
+            # Check that base_url isn't one of the well-known cloud API roots
+            # (OpenRouter, Anthropic, OpenAI). If it's something else (Ollama,
+            # LM Studio, vLLM, …) we honour it directly. The full detection
+            # logic lives in _resolve_openrouter_runtime; we just skip the
+            # resolve_provider() call so env-var credentials don't shadow it.
+            # Match on HOST, not substring, so a look-alike base_url
+            # (e.g. http://api.anthropic.com.attacker.test/v1, or one whose
+            # path merely contains "openai.com") cannot evade the bypass and
+            # leak a cloud credential. Mirrors the host-gating used for
+            # API-key selection in _resolve_openrouter_runtime.
+            _known_cloud_hosts = (
+                "openrouter.ai",
+                "anthropic.com",
+                "openai.com",
+            )
+            if not any(
+                base_url_host_matches(cfg_base_url, host)
+                for host in _known_cloud_hosts
+            ):
+                runtime = _resolve_openrouter_runtime(
+                    requested_provider=requested_provider,
+                    explicit_api_key=explicit_api_key,
+                    explicit_base_url=explicit_base_url,
+                )
+                runtime["requested_provider"] = requested_provider
+                return runtime
+
     provider = resolve_provider(
         requested_provider,
         explicit_api_key=explicit_api_key,

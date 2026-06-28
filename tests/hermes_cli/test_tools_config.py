@@ -545,6 +545,40 @@ def test_save_platform_tools_handles_invalid_existing_config():
     assert "web" in saved_toolsets
 
 
+def test_save_platform_tools_removes_enabled_entries_from_global_disabled_toolsets():
+    """Saving an enabled toolset must unmask blank-profile global disables."""
+    config = {
+        "agent": {"disabled_toolsets": ["web", "browser", "memory"]},
+        "platform_toolsets": {"cli": ["file", "terminal"]},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "web", "browser"})
+
+    assert set(config["platform_toolsets"]["cli"]) == {"browser", "file", "terminal", "web"}
+    assert config["agent"]["disabled_toolsets"] == ["memory"]
+
+
+def test_save_platform_tools_preserves_unrelated_global_disabled_toolsets_after_resolution():
+    """Re-enabled toolsets resolve after save while untouched disables remain off."""
+    config = {
+        "agent": {"disabled_toolsets": ["web", "browser", "memory"]},
+        "platform_toolsets": {"cli": ["file", "terminal"]},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "web", "browser"})
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "browser" in enabled
+    assert "file" in enabled
+    assert "terminal" in enabled
+    assert "memory" not in enabled
+    assert config["agent"]["disabled_toolsets"] == ["memory"]
+
+
 def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
     """Platform default toolsets (hermes-cli, hermes-telegram, etc.) must NOT
     be preserved across saves.

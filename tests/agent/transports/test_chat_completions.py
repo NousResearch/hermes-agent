@@ -1044,3 +1044,89 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         )
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
+
+
+class TestNvidiaChatTemplateKwargs:
+    """Tests for NVIDIA NIM chat_template_kwargs hoisting from extra_body
+    in the transport layer."""
+
+    @staticmethod
+    def _nvidia_profile():
+        from providers.base import ProviderProfile
+        return ProviderProfile(
+            name="nvidia",
+            aliases=("nvidia-nim",),
+            env_vars=("NVIDIA_API_KEY",),
+            display_name="NVIDIA NIM",
+            base_url="https://integrate.api.nvidia.com/v1",
+            default_max_tokens=16384,
+        )
+
+    def test_profile_path_hoists_chat_template_from_extra_body_additions(self):
+        """When the NVIDIA profile is used, chat_template_kwargs in
+        extra_body_additions should be hoisted to top-level api_kwargs."""
+        from agent.transports import get_transport
+
+        transport = get_transport("chat_completions")
+        kwargs = transport.build_kwargs(
+            model="nvidia/test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            provider_profile=self._nvidia_profile(),
+            extra_body_additions={
+                "chat_template_kwargs": {"thinking_mode": "enabled"},
+                "other_field": "value",
+            },
+            max_tokens=None,
+        )
+
+        assert "chat_template_kwargs" in kwargs
+        assert kwargs["chat_template_kwargs"] == {"thinking_mode": "enabled"}
+        assert "extra_body" in kwargs
+        assert kwargs["extra_body"] == {"other_field": "value"}
+
+    def test_legacy_path_hoists_chat_template_from_extra_body_additions(self):
+        """When is_nvidia_nim=True (legacy path), chat_template_kwargs in
+        extra_body_additions should be hoisted to top-level api_kwargs."""
+        from agent.transports import get_transport
+
+        transport = get_transport("chat_completions")
+        kwargs = transport.build_kwargs(
+            model="minimaxai/minimax-m3",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            is_nvidia_nim=True,
+            extra_body_additions={
+                "chat_template_kwargs": {"thinking_mode": "enabled"},
+            },
+            max_tokens=None,
+        )
+
+        assert "chat_template_kwargs" in kwargs
+        assert kwargs["chat_template_kwargs"] == {"thinking_mode": "enabled"}
+        # extra_body should be empty and omitted
+        assert "extra_body" not in kwargs
+
+    def test_non_nvidia_keeps_in_extra_body(self):
+        """Non-NVIDIA providers keep chat_template_kwargs inside extra_body.
+
+        Guards against over-eager top-level hoisting: only NVIDIA NIM should
+        get chat_template_kwargs promoted out of extra_body.
+        """
+        from agent.transports import get_transport
+
+        transport = get_transport("chat_completions")
+        kwargs = transport.build_kwargs(
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            is_nvidia_nim=False,
+            extra_body_additions={
+                "chat_template_kwargs": {"thinking_mode": "enabled"},
+            },
+            max_tokens=None,
+        )
+
+        # Must NOT be hoisted to top level; stays nested in extra_body
+        assert "chat_template_kwargs" not in kwargs
+        assert kwargs["extra_body"]["chat_template_kwargs"] == {"thinking_mode": "enabled"}

@@ -5498,6 +5498,14 @@ def _build_call_kwargs(
     merged_extra = dict(extra_body or {})
     if provider == "nous":
         merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
+
+    # NVIDIA NIM: hoist chat_template_kwargs from extra_body to top-level
+    # NVIDIA NIM expects chat_template_kwargs at the JSON top level, not
+    # nested inside the OpenAI SDK's extra_body field. (#50703)
+    _is_nvidia = "integrate.api.nvidia.com" in (base_url or "").lower()
+    if _is_nvidia and "chat_template_kwargs" in merged_extra:
+        kwargs["chat_template_kwargs"] = merged_extra.pop("chat_template_kwargs")
+
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 

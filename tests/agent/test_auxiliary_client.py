@@ -4621,3 +4621,66 @@ class TestCompressionFallbackContextFilter:
         # Empty / unknown tasks have no minimum
         assert _task_minimum_context_length("") is None
         assert _task_minimum_context_length(None) is None
+
+
+class TestNvidiaChatTemplateKwargs:
+    """Tests for NVIDIA NIM chat_template_kwargs hoisting from extra_body."""
+
+    def test_auxiliary_build_call_kwargs_nvidia_hoists_chat_template(self):
+        """When base_url is integrate.api.nvidia.com, chat_template_kwargs in
+        extra_body should be hoisted to top-level kwargs."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="nvidia",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body={
+                "chat_template_kwargs": {"thinking_mode": "enabled"},
+                "other_field": "value",
+            },
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+
+        # chat_template_kwargs must be at top level
+        assert "chat_template_kwargs" in kwargs
+        assert kwargs["chat_template_kwargs"] == {"thinking_mode": "enabled"}
+        # other_field stays in extra_body
+        assert "extra_body" in kwargs
+        assert kwargs["extra_body"] == {"other_field": "value"}
+
+    def test_auxiliary_build_call_kwargs_non_nvidia_keeps_in_extra_body(self):
+        """Non-NVIDIA providers keep chat_template_kwargs inside extra_body."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body={
+                "chat_template_kwargs": {"thinking_mode": "enabled"},
+            },
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        # chat_template_kwargs stays in extra_body for non-NVIDIA
+        assert "extra_body" in kwargs
+        assert "chat_template_kwargs" not in kwargs
+        assert kwargs["extra_body"] == {
+            "chat_template_kwargs": {"thinking_mode": "enabled"}
+        }
+
+    def test_auxiliary_build_call_kwargs_empty_extra_body(self):
+        """No crash when extra_body is None."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="nvidia",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=None,
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+
+        # No crash, no extra_body key
+        assert "extra_body" not in kwargs

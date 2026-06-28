@@ -446,6 +446,10 @@ class ChatCompletionsTransport(ProviderTransport):
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
+        # NVIDIA NIM (legacy path): hoist chat_template_kwargs to top-level. (#50703)
+        if params.get("is_nvidia_nim", False):
+            self._hoist_nvidia_chat_template_kwargs(api_kwargs)
+
         # Request overrides last (service_tier etc.)
         overrides = params.get("request_overrides")
         if overrides:
@@ -593,7 +597,27 @@ class ChatCompletionsTransport(ProviderTransport):
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
 
+        # NVIDIA NIM: hoist chat_template_kwargs to top-level. (#50703)
+        if (
+            getattr(profile, "name", "") == "nvidia"
+            or "integrate.api.nvidia.com" in (params.get("base_url") or "").lower()
+        ):
+            self._hoist_nvidia_chat_template_kwargs(api_kwargs)
+
         return api_kwargs
+
+    @staticmethod
+    def _hoist_nvidia_chat_template_kwargs(api_kwargs: dict) -> None:
+        """Hoist chat_template_kwargs from extra_body to top-level.
+
+        NVIDIA NIM expects chat_template_kwargs at the JSON top level, not
+        nested inside the OpenAI SDK's extra_body field. (#50703)
+        """
+        _nvidia_extra = api_kwargs.get("extra_body")
+        if _nvidia_extra and "chat_template_kwargs" in _nvidia_extra:
+            api_kwargs["chat_template_kwargs"] = _nvidia_extra.pop("chat_template_kwargs")
+            if not _nvidia_extra:
+                del api_kwargs["extra_body"]
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize OpenAI ChatCompletion to NormalizedResponse.

@@ -1883,6 +1883,22 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # --- Session contract for stateful multi-turn over HTTP ---
+        # Accept a conversation id under two alternate names:
+        #   X-Mesh-Session header, OR
+        #   "session" key in the JSON body (fallback for callers that
+        #   cannot easily set headers, e.g. some HTTP proxies).
+        # When either is present we RESUME that conversation with full
+        # context (prior turns + tool actions), persisted in SessionDB.
+        # When neither is present we start a fresh conversation.
+        # The resolved id is echoed back as the top-level JSON field
+        # "mesh_session" on non-stream responses, and inside the
+        # finish_reason="stop" chunk on streaming responses.
+        mesh_session_id = (
+            request.headers.get("X-Mesh-Session", "").strip()
+            or str((body or {}).get("session") or "").strip()
+        )
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -1890,7 +1906,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # only allowed when the API key is configured and the request is
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
-        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        provided_session_id = (
+            request.headers.get("X-Hermes-Session-Id", "").strip()
+            or mesh_session_id
+        )
         if provided_session_id:
             if not self._api_key:
                 logger.warning(
@@ -1931,6 +1950,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     break
             session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
+
+        # When the caller sent no session id, expose the server-side id we
+        # actually used so the caller can persist and resend it to RESUME
+        # context on the next call. Without this, every sessionless call
+        # starts cold. We do NOT mint a random uuid here: the derived id is
+        # stable across turns for OpenAI-style clients that resend full
+        # history, and once returned it is fixed for that conversation.
+        if not mesh_session_id:
+            mesh_session_id = session_id
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
@@ -2027,6 +2055,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                mesh_session_id=mesh_session_id,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -2109,6 +2138,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "chat.completion",
             "created": created,
             "model": model_name,
+            "mesh_session": mesh_session_id,
             "choices": [
                 {
                     "index": 0,
@@ -2143,7 +2173,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
-        gateway_session_key: str = None,
+        gateway_session_key: str = None, mesh_session_id: str = None,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -2277,6 +2307,10 @@ class APIServerAdapter(BasePlatformAdapter):
             finish_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
+                # Echo the mesh session id (server-minted when the caller
+                # sent none) so streaming clients can persist + resume, same
+                # as the non-stream mesh_session field.
+                "mesh_session": mesh_session_id or session_id,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                 "usage": {
                     "prompt_tokens": usage.get("input_tokens", 0),

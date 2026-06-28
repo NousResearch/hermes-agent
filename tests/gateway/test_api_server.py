@@ -1648,6 +1648,164 @@ class TestDeriveChatSessionId:
 
 
 # ---------------------------------------------------------------------------
+# mesh_session contract — X-Mesh-Session / "session" body key for stateful
+# multi-turn over the OpenAI-compatible HTTP endpoint.
+# ---------------------------------------------------------------------------
+
+
+class TestMeshSessionContract:
+    """Tests for the mesh_session field contract.
+
+    The OpenAI-compatible chat completions endpoint now supports an explicit
+    session id via X-Mesh-Session header (or "session" body key). When
+    provided, the server resumes that conversation. When omitted, a fresh
+    session is started and the server-minted id is echoed back as
+    "mesh_session" in the response so callers can persist and resend it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sessionless_response_includes_mesh_session(self, adapter):
+        """A call with no session id still gets a server-minted mesh_session back."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert "mesh_session" in data
+                assert data["mesh_session"], "mesh_session should be a non-empty server-minted id"
+                assert data["mesh_session"].startswith("api-")
+
+    @pytest.mark.asyncio
+    async def test_x_mesh_session_header_resumes_session(self, auth_adapter):
+        """Providing X-Mesh-Session header resumes that conversation id."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        session_id_sent = "resume-me-123"
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Mesh-Session": session_id_sent,
+                    },
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "continue"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                # The echoed mesh_session should be the id the caller sent.
+                assert data["mesh_session"] == session_id_sent
+                # And the agent should have been invoked with that session_id.
+                assert mock_run.call_args.kwargs["session_id"] == session_id_sent
+
+    @pytest.mark.asyncio
+    async def test_session_body_key_fallback(self, auth_adapter):
+        """The "session" body key works as a fallback when no header is set."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        session_id_sent = "from-body-456"
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "continue"}],
+                        "session": session_id_sent,
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["mesh_session"] == session_id_sent
+                assert mock_run.call_args.kwargs["session_id"] == session_id_sent
+
+    @pytest.mark.asyncio
+    async def test_header_takes_precedence_over_body_key(self, auth_adapter):
+        """When both header and body key are present, the header wins."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Mesh-Session": "from-header",
+                    },
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "session": "from-body",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["mesh_session"] == "from-header"
+
+    @pytest.mark.asyncio
+    async def test_streaming_finish_chunk_includes_mesh_session(self, adapter):
+        """The final SSE chunk includes mesh_session for streaming responses."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Hello!")
+                    cb(None)
+                return (
+                    {"final_response": "Hello!", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "[DONE]" in body
+                # The finish chunk should contain a mesh_session field.
+                assert '"mesh_session"' in body
+
+
+# ---------------------------------------------------------------------------
 # /v1/responses endpoint
 # ---------------------------------------------------------------------------
 

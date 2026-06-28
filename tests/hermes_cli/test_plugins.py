@@ -615,6 +615,74 @@ class TestPluginLoading:
 
         assert mgr._plugins["not_memory"].manifest.kind == "standalone"
 
+    def test_bundled_platform_plugin_loads_despite_disabled_list(
+        self, tmp_path, monkeypatch
+    ):
+        """A bundled platform plugin must load even when in plugins.disabled.
+
+        Regression for #54009: a stale ``plugins.disabled`` entry carried
+        forward from before the plugin was bundled would silently disable
+        a gateway platform adapter.
+        """
+        # Create a bundled platform plugin
+        bundled_dir = tmp_path / "bundled_plugins"
+        platforms_dir = bundled_dir / "platforms" / "test_platform"
+        platforms_dir.mkdir(parents=True)
+        (platforms_dir / "plugin.yaml").write_text(
+            yaml.dump({
+                "name": "test-platform",
+                "kind": "platform",
+                "version": "1.0.0",
+                "description": "Test platform plugin",
+            })
+        )
+        (platforms_dir / "__init__.py").write_text(
+            "def register(ctx):\n    pass\n"
+        )
+
+        # Configure it as disabled (stale config entry)
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"disabled": ["test-platform"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            lambda: bundled_dir,
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        # The plugin must be loaded (enabled=True) despite being in disabled list
+        assert "test-platform" in mgr._plugins
+        assert mgr._plugins["test-platform"].enabled
+        assert mgr._plugins["test-platform"].manifest.source == "bundled"
+        assert mgr._plugins["test-platform"].manifest.kind == "platform"
+
+    def test_non_bundled_disabled_plugin_still_skipped(
+        self, tmp_path, monkeypatch
+    ):
+        """Non-bundled disabled plugins are still skipped (no regression)."""
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "user_plugin",
+            manifest_extra={"kind": "standalone"},
+            auto_enable=False,
+        )
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"disabled": ["user_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "user_plugin" in mgr._plugins
+        assert not mgr._plugins["user_plugin"].enabled
+        assert "disabled" in mgr._plugins["user_plugin"].error
+
 
 # ── TestPluginHooks ────────────────────────────────────────────────────────
 

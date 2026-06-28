@@ -1275,14 +1275,31 @@ class PluginManager:
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
 
-            # Explicit disable always wins (matches on key or on legacy
+            # Explicit disable normally wins (matches on key or on legacy
             # bare name for back-compat with existing user configs).
             if lookup_key in disabled or manifest.name in disabled:
-                loaded = LoadedPlugin(manifest=manifest, enabled=False)
-                loaded.error = "disabled via config"
-                self._plugins[lookup_key] = loaded
-                logger.debug("Skipping disabled plugin '%s'", lookup_key)
-                continue
+                # Bundled platform/backend plugins must always load — they
+                # ship with Hermes and are required for gateway adapters to
+                # work.  A stale ``plugins.disabled`` entry from before the
+                # plugin was bundled (e.g. ``discord-platform`` carried over
+                # from an older config) would silently break the platform.
+                if manifest.source == "bundled" and manifest.kind in {
+                    "backend", "platform",
+                }:
+                    logger.warning(
+                        "Bundled plugin '%s' is listed in plugins.disabled "
+                        "but will be loaded anyway — remove it from "
+                        "plugins.disabled in config.yaml to silence "
+                        "this warning.",
+                        lookup_key,
+                    )
+                    # Fall through to normal loading below.
+                else:
+                    loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                    loaded.error = "disabled via config"
+                    self._plugins[lookup_key] = loaded
+                    logger.debug("Skipping disabled plugin '%s'", lookup_key)
+                    continue
 
             # Exclusive plugins (memory providers) have their own
             # discovery/activation path. The general loader records the

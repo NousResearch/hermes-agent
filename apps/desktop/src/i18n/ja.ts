@@ -2338,6 +2338,8 @@ export const ja = defineLocale({
     sessionUnavailable: 'セッションが利用できません',
     createSessionFailed: '新しいセッションを作成できませんでした',
     promptFailed: 'プロンプトに失敗しました',
+    promptSubmitTimedOut:
+      'Hermes はこのメッセージを時間内に確認できませんでした。バックエンドでまだ処理される可能性があるため、二重送信を避けるため少し待ってから再試行してください。',
     providerCredentialRequired: '最初のメッセージを送信する前にプロバイダー認証情報を追加してください。',
     emptySlashCommand: '空のスラッシュコマンド',
     desktopCommands: 'デスクトップコマンド',

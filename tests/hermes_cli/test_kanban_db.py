@@ -4843,3 +4843,95 @@ def test_save_recent_exits_ignores_empty(monkeypatch, tmp_path):
     _recent_worker_exits.clear()
     _save_recent_exits()
     assert not exits_file.exists()
+
+
+def test_save_recent_exits_thread_safe_snapshot(tmp_path, monkeypatch):
+    """_save_recent_exits() takes a dict.copy() snapshot before iterating.
+
+    Thread safety fix (Issue 3): if _record_worker_exit mutates
+    _recent_worker_exits during iteration, we must not raise
+    RuntimeError: dictionary changed size during iteration.
+    """
+    from hermes_cli.kanban_db import (
+        _recent_worker_exits, _save_recent_exits,
+    )
+    import json, time
+    from pathlib import Path
+
+    exits_file = tmp_path / "recent_worker_exits.json"
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db._recent_exits_path",
+        lambda: exits_file,
+    )
+
+    now = time.time()
+    _recent_worker_exits.clear()
+    _recent_worker_exits[100] = (0, now)
+    _recent_worker_exits[200] = (1, now)
+
+    # Mutate the dict DURING the save. Since _save_recent_exits
+    # takes a snapshot first, the new entry should NOT appear in
+    # the saved file.
+    original_rename = Path.rename
+
+    def mutating_rename(self, target):
+        _recent_worker_exits[300] = (2, now + 1)
+        return original_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", mutating_rename)
+    _save_recent_exits()
+
+    data = json.loads(exits_file.read_text())
+    # Only the two original entries should be saved (snapshot taken before mutation).
+    assert len(data) == 2
+    assert "100" in data
+    assert "200" in data
+    _recent_worker_exits.clear()
+
+
+def test_load_recent_exits_handles_corrupted_json(tmp_path, monkeypatch):
+    """_load_recent_exits() silently ignores corrupted JSON."""
+    from hermes_cli.kanban_db import (
+        _recent_worker_exits, _load_recent_exits,
+    )
+
+    exits_file = tmp_path / "recent_worker_exits.json"
+    exits_file.write_text("not valid json {{{")
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db._recent_exits_path",
+        lambda: exits_file,
+    )
+
+    _recent_worker_exits.clear()
+    _load_recent_exits()  # Should not raise
+    assert len(_recent_worker_exits) == 0
+
+
+def test_save_load_roundtrip(tmp_path, monkeypatch):
+    """Save then load produces identical registry state."""
+    from hermes_cli.kanban_db import (
+        _recent_worker_exits, _save_recent_exits, _load_recent_exits,
+    )
+    import time
+
+    exits_file = tmp_path / "recent_worker_exits.json"
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db._recent_exits_path",
+        lambda: exits_file,
+    )
+
+    now = time.time()
+    _recent_worker_exits.clear()
+    _recent_worker_exits[111] = (0, now)
+    _recent_worker_exits[222] = (137, now - 50)
+    _recent_worker_exits[333] = (255, now - 300)
+
+    _save_recent_exits()
+    saved = dict(_recent_worker_exits)
+
+    _recent_worker_exits.clear()
+    assert len(_recent_worker_exits) == 0
+
+    _load_recent_exits()
+    assert dict(_recent_worker_exits) == saved
+    _recent_worker_exits.clear()

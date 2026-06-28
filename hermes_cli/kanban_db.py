@@ -5702,12 +5702,6 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
-    memory_throttled: bool = False
-    """True when this tick skipped spawning because system available memory
-    fell below ``kanban.dispatch_memory_min_mb`` (#1001). When set, the
-    tick returns immediately without spawning any workers, regardless of
-    ready-task count. The dispatcher retries on its next scheduled tick,
-    so throttling is self-healing when memory pressure eases."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5736,15 +5730,23 @@ def _recent_exits_path() -> Optional[Path]:
 
 
 def _save_recent_exits() -> None:
-    """Persist _recent_worker_exits to disk (best-effort)."""
+    """Persist _recent_worker_exits to disk (best-effort).
+
+    Thread safety: takes a snapshot via ``dict.copy()`` under the GIL so
+    concurrent writes from ``_record_worker_exit`` (in the reap loop)
+    cannot cause ``RuntimeError: dictionary changed size during iteration``.
+    """
     path = _recent_exits_path()
-    if path is None or not _recent_worker_exits:
+    if path is None:
         return
     try:
+        snapshot = dict(_recent_worker_exits)  # safe snapshot under GIL
+        if not snapshot:
+            return
         # Convert to JSON-serializable format: {pid: [raw_status, timestamp]}
         data = {
             str(pid): list(entry)
-            for pid, entry in _recent_worker_exits.items()
+            for pid, entry in snapshot.items()
         }
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data))
@@ -5923,41 +5925,6 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
-
-
-def _system_available_memory_mb() -> Optional[int]:
-    """Return available system memory in MB, or None if undetectable.
-
-    Reads ``MemAvailable`` from ``/proc/meminfo`` (Linux).  Returns None
-    on non-Linux or if the file is unreadable so callers can treat the
-    check as "no limit" rather than blocking dispatch on exotic platforms.
-    """
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    # Format: "MemAvailable:   12345678 kB"
-                    return int(line.split()[1]) // 1024  # kB → MB
-    except (OSError, ValueError, IndexError):
-        pass
-    return None
-
-
-def _resolve_dispatch_memory_min_mb() -> Optional[int]:
-    """Return the minimum available memory (MB) required to spawn workers.
-
-    Reads ``kanban.dispatch_memory_min_mb`` from config.  Returns None
-    (no limit) when unset or set to 0.
-    """
-    try:
-        from hermes_cli.config import get_config_value
-        val = get_config_value("kanban.dispatch_memory_min_mb", default=None)
-        if val is not None:
-            val = int(val)
-            return val if val > 0 else None
-    except Exception:
-        pass
-    return None
 
 
 def _terminate_reclaimed_worker(
@@ -7153,20 +7120,6 @@ def _dispatch_once_locked(
         remaining = max_in_progress - in_progress
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
-    # Memory-aware dispatch gate (#1001): skip spawning when system
-    # memory is critically low.  Prevents OOM cascade where the Linux
-    # OOM killer kills the gateway, taking all workers with it.
-    _mem_min_mb = _resolve_dispatch_memory_min_mb()
-    if _mem_min_mb is not None and ready_rows:
-        avail_mb = _system_available_memory_mb()
-        if avail_mb is not None and avail_mb < _mem_min_mb:
-            _log.warning(
-                "kanban dispatch: available memory %dMB < threshold %dMB \u2014 "
-                "skipping spawn this tick to prevent OOM cascade",
-                avail_mb, _mem_min_mb,
-            )
-            result.memory_throttled = True
-            return result
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn

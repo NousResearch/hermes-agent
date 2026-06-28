@@ -417,6 +417,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
+        # Consecutive heartbeat probes that saw queued updates the running
+        # poller is not consuming. get_me() can't see this — the send path is
+        # healthy while the getUpdates consumer is wedged — so the heartbeat
+        # also probes get_webhook_info().pending_update_count and escalates to
+        # recovery after two consecutive stuck probes (#42909).
+        self._polling_pending_stuck_count: int = 0
         # After sustained reconnect storms the PTB httpx pool can return
         # SendResult(success=True) for sends that never actually transmit.
         # _handle_polling_network_error sets this; _verify_polling_after_reconnect
@@ -1689,6 +1695,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not callable(getattr(bot, "get_me", None)):
                     return
                 await asyncio.wait_for(bot.get_me(), PROBE_TIMEOUT)
+                # get_me() succeeded — the general/send request path is healthy.
+                # That does NOT prove the getUpdates consumer is alive: PTB can
+                # report updater.running=True while the long-poll task is wedged,
+                # so DMs queue in the Bot API and never reach handlers (#42909).
+                # get_me() is blind to this; get_webhook_info() exposes it via
+                # pending_update_count. Escalate only after two consecutive
+                # probes see a non-zero queue while we believe we're polling, so
+                # a single in-flight update (consumed before the next probe)
+                # never trips recovery.
+                await self._probe_pending_updates(bot, PROBE_TIMEOUT)
             except asyncio.CancelledError:
                 return
             except (asyncio.TimeoutError, OSError) as probe_err:
@@ -1706,6 +1722,67 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Non-connectivity errors (e.g. TelegramError 401) are not
                 # CLOSE-WAIT symptoms — let PTB's own handlers surface them.
                 pass
+
+    async def _probe_pending_updates(self, bot, probe_timeout: float) -> None:
+        """Detect a wedged getUpdates consumer via pending_update_count.
+
+        PTB can report ``updater.running == True`` while its long-poll task is
+        silently stuck (e.g. a socket that epoll keeps reporting readable on
+        WSL2). ``get_me()`` stays healthy because it uses the general request
+        path, so the CLOSE-WAIT heartbeat never fires — yet DMs queue in the
+        Bot API and never reach handlers (#42909).
+
+        ``get_webhook_info().pending_update_count`` is the one signal that
+        exposes this: a growing/stuck queue while we believe we're polling means
+        the consumer is dead. We only escalate after two consecutive stuck
+        probes so a single update that's simply in-flight between probes does
+        not trip a needless recovery. Recovery reuses
+        ``_handle_polling_network_error`` — the same ladder PTB's own
+        ``error_callback`` feeds — so no new restart machinery is introduced.
+        """
+        # Only meaningful in polling mode with a running updater; in webhook
+        # mode Telegram pushes updates and holds no server-side queue.
+        if self._webhook_mode:
+            return
+        updater = getattr(self._app, "updater", None) if self._app else None
+        if updater is None or not getattr(updater, "running", False):
+            self._polling_pending_stuck_count = 0
+            return
+        get_webhook_info = getattr(bot, "get_webhook_info", None)
+        if not callable(get_webhook_info):
+            return
+        # A reconnect already in flight owns recovery — don't double-trigger.
+        if self._polling_error_task and not self._polling_error_task.done():
+            return
+        try:
+            info = await asyncio.wait_for(get_webhook_info(), probe_timeout)  # type: ignore[arg-type]
+        except (asyncio.TimeoutError, OSError):
+            # A failed probe is a connectivity symptom the get_me() path or the
+            # outer handler will catch; don't treat it as a stuck-queue signal.
+            return
+        pending = int(getattr(info, "pending_update_count", 0) or 0)
+        if pending <= 0:
+            self._polling_pending_stuck_count = 0
+            return
+        self._polling_pending_stuck_count += 1
+        logger.warning(
+            "[%s] Telegram polling heartbeat: %d update(s) queued but not "
+            "consumed (stuck probe %d/2)",
+            self.name, pending, self._polling_pending_stuck_count,
+        )
+        if self._polling_pending_stuck_count >= 2:
+            self._polling_pending_stuck_count = 0
+            logger.warning(
+                "[%s] getUpdates consumer appears wedged (queue not draining); "
+                "triggering polling restart",
+                self.name,
+            )
+            loop = asyncio.get_running_loop()
+            self._polling_error_task = loop.create_task(
+                self._handle_polling_network_error(
+                    RuntimeError("getUpdates consumer wedged: pending updates not draining")
+                )
+            )
 
     async def _verify_polling_after_reconnect(self) -> None:
         """Heartbeat probe scheduled after a successful reconnect.

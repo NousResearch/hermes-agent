@@ -731,6 +731,84 @@ class TestRootLevelProviderOverride:
         assert result["model"]["context_length"] == 128000
         assert "context_length" not in result
 
+    # --- model-id alias canonicalization (issue #34500) -------------------
+    # ``model.name`` / ``model.model`` must canonicalize to ``model.default``
+    # so the runtime resolver (and ~14 other readers) never sends an empty
+    # ``model=`` to the backend. Precedence: default > model > name.
+
+    def test_normalize_model_name_aliases_to_default(self):
+        """model.name (custom-provider repro) becomes model.default (#34500)."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "model": {"name": "claude-sonnet-4-20250514", "provider": "my-litellm"},
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["default"] == "claude-sonnet-4-20250514"
+        assert "name" not in result["model"]  # stale alias dropped
+
+    def test_normalize_model_alias_to_default(self):
+        """model.model becomes model.default."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        result = _normalize_root_model_keys({"model": {"model": "via-model-key"}})
+        assert result["model"]["default"] == "via-model-key"
+        assert "model" not in result["model"]
+
+    def test_normalize_explicit_default_wins_over_name(self):
+        """An explicit model.default is never overridden, and a stale alias is dropped."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        result = _normalize_root_model_keys(
+            {"model": {"default": "real-model", "name": "ignored"}}
+        )
+        assert result["model"]["default"] == "real-model"
+        assert "name" not in result["model"]
+
+    def test_normalize_explicit_default_wins_over_model(self):
+        from hermes_cli.config import _normalize_root_model_keys
+
+        result = _normalize_root_model_keys(
+            {"model": {"default": "real-model", "model": "ignored"}}
+        )
+        assert result["model"]["default"] == "real-model"
+        assert "model" not in result["model"]
+
+    def test_normalize_model_wins_over_name(self):
+        """Precedence: model > name when both are aliases and default is empty."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        result = _normalize_root_model_keys({"model": {"model": "m-key", "name": "n-key"}})
+        assert result["model"]["default"] == "m-key"
+        assert "model" not in result["model"] and "name" not in result["model"]
+
+    def test_normalize_empty_model_dict_stays_empty(self):
+        """No id key anywhere → default stays empty (no fabricated value)."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        result = _normalize_root_model_keys({"model": {"provider": "my-litellm"}})
+        assert (result["model"].get("default") or "") == ""
+
+    def test_normalize_model_name_save_roundtrip_migrates_key(self, tmp_path, monkeypatch):
+        """A model.name config is permanently migrated to model.default on save."""
+        import hermes_cli.config as cfgmod
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        cfg_path = home / "config.yaml"
+        cfg_path.write_text("model:\n  name: claude-sonnet-4\n  provider: my-litellm\n")
+        # bust the mtime cache
+        cfgmod._RAW_CONFIG_CACHE.clear()
+
+        loaded = cfgmod.load_config()
+        assert loaded["model"]["default"] == "claude-sonnet-4"
+        cfgmod.save_config(loaded)
+
+        raw = cfg_path.read_text()
+        assert "name:" not in raw  # stale alias gone from the file
+        assert "default: claude-sonnet-4" in raw
+
 
 class TestProviderResolution:
     def test_api_key_is_string_or_none(self):

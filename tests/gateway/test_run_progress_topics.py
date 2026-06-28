@@ -186,6 +186,31 @@ class LongPreviewAgent:
         }
 
 
+class SubagentProgressAgent:
+    """Agent that emits delegated subagent progress events."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "delegate_task", "2 agents", {})
+            time.sleep(0.35)
+            cb("subagent.start", preview="inspect gateway routing", task_index=0, goal="inspect gateway routing")
+            cb("subagent.tool", "read_file", "gateway/run.py", {}, task_index=0, goal="inspect gateway routing")
+            cb("subagent.progress", preview="🔀 read_file", task_index=0, goal="inspect gateway routing")
+            cb("subagent.thinking", preview="hidden internal reasoning", task_index=0, goal="inspect gateway routing")
+            cb("subagent.complete", preview="done", status="completed", task_index=0, goal="inspect gateway routing")
+            time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class DelayedProgressAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -314,6 +339,55 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     ]
     assert adapter.edits
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_includes_delegated_subagent_events(monkeypatch, tmp_path):
+    """Gateway progress should surface delegated child-agent events compactly."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = SubagentProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.delegate_tool  # noqa: F401 - register delegate_task emoji
+    import tools.file_tools  # noqa: F401 - register read_file emoji
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-subagent-progress",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+    rendered = "\n".join(
+        [entry["content"] for entry in adapter.sent]
+        + [entry["content"] for entry in adapter.edits]
+    )
+    assert "delegate_task" in rendered
+    assert "🤖 agent 1 started" in rendered
+    assert "inspect gateway routing" in rendered
+    assert "read_file" in rendered
+    assert "✅ agent 1 completed" in rendered
+    assert "hidden internal reasoning" not in rendered
 
 
 @pytest.mark.asyncio

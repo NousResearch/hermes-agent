@@ -15506,6 +15506,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not tool_progress_enabled:
                 return
 
+            if str(event_type or "").startswith("subagent."):
+                if event_type == "subagent.thinking":
+                    return
+
+                def _short_subagent_text(value: Any, limit: int = 90) -> str:
+                    text = str(value or "").strip().replace("\n", " ")
+                    return text[: limit - 1] + "…" if len(text) > limit else text
+
+                task_index = kwargs.get("task_index")
+                try:
+                    agent_number = int(task_index) + 1
+                except Exception:
+                    agent_number = None
+                label = f"agent {agent_number}" if agent_number is not None else "agent"
+                goal = _short_subagent_text(kwargs.get("goal") or preview, 70)
+                if event_type == "subagent.start":
+                    msg = f"🤖 {label} started"
+                    if goal:
+                        msg += f': "{goal}"'
+                    progress_queue.put(msg)
+                    return
+                if event_type == "subagent.tool":
+                    from agent.display import get_tool_emoji
+
+                    child_tool = str(tool_name or "tool")
+                    child_preview = _short_subagent_text(preview, 70)
+                    emoji = get_tool_emoji(child_tool, default="⚙️")
+                    msg = f"  ↳ {emoji} {child_tool}"
+                    if child_preview:
+                        msg += f': "{child_preview}"'
+                    progress_queue.put(msg)
+                    return
+                if event_type == "subagent.progress":
+                    child_progress = _short_subagent_text(preview or tool_name, 100)
+                    if child_progress:
+                        progress_queue.put(f"  ↳ {child_progress}")
+                    return
+                if event_type == "subagent.complete":
+                    status = _short_subagent_text(kwargs.get("status") or "completed", 40)
+                    if status in {"completed", "success", "done"}:
+                        prefix = "✅"
+                    elif status in {"failed", "error", "timeout"}:
+                        prefix = "⚠️"
+                    else:
+                        prefix = "🏁"
+                    progress_queue.put(f"{prefix} {label} {status}")
+                    return
+                return
+
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in {"tool.started",}:
                 return

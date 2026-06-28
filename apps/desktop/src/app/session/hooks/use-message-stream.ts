@@ -6,6 +6,7 @@ import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
+  assistantCompletionLooksEquivalent,
   assistantTextPart,
   type ChatMessage,
   type ChatMessagePart,
@@ -620,7 +621,11 @@ export function useMessageStream({
             const existing = prev[index]
             const existingText = chatMessageText(existing).trim()
 
-            if (existing.pending || (finalText && existingText === finalText)) {
+            const sameAssistantTurn =
+              Boolean(state.sawAssistantPayload) &&
+              assistantCompletionLooksEquivalent(existingText, finalText)
+
+            if (existing.pending || (finalText && existingText === finalText) || sameAssistantTurn) {
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )

@@ -2188,13 +2188,7 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
 
 
 def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
-    """Stage a model-switch note to prepend to the next user message.
-
-    Mirrors the gateway's pending-note approach. Appending a ``role:"system"``
-    message mid-conversation is rejected by strict OpenAI-compatible backends
-    (vLLM/Qwen: "System message must be at the beginning"), so instead we stage
-    a one-shot note consumed by ``_run_prompt_submit``; it is not persisted.
-    """
+    """Record a real system-history pivot after a live model switch."""
     if not session:
         return
     session_key = str(session.get("session_key") or "").strip()
@@ -2216,7 +2210,8 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     lock = session.get("history_lock")
     if lock is not None:
         with lock:
-            session["pending_model_note"] = marker
+            session.setdefault("history", []).append(entry)
+            session["history_version"] = int(session.get("history_version", 0)) + 1
     else:
         session.setdefault("history", []).append(entry)
         session["history_version"] = int(session.get("history_version", 0)) + 1
@@ -8415,9 +8410,6 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # parts (adapters translate for Anthropic/Gemini/Bedrock/etc.).
             # "text"   → pre-analyze with vision_analyze and prepend the text.
             # See agent/image_routing.py for the full decision table.
-            _pending_model_note = session.pop("pending_model_note", None)
-            if _pending_model_note and isinstance(prompt, str):
-                prompt = _pending_model_note + "\n\n" + prompt
             run_message: Any = prompt
             if images:
                 try:

@@ -168,40 +168,6 @@ def sanitize_context(text: str) -> str:
     return text
 
 
-# Signature-anchored matchers for the *injected* recall block: the open tag is
-# always immediately followed by the system-note line. Anchoring on that phrase
-# scrubs the real block while leaving a stray ``<memory-context>`` a user might
-# type in normal conversation untouched.
-_INJECTED_NOTE_SIGNATURE = "[system note: the following is recalled memory context"
-_INJECTED_CONTEXT_RE = re.compile(
-    r'<\s*memory-context\s*>\s*\[System note:\s*The following is recalled memory context,'
-    r'[\s\S]*?</\s*memory-context\s*>',
-    re.IGNORECASE,
-)
-_INJECTED_NOTE_RE = re.compile(
-    r'\[System note:\s*The following is recalled memory context[\s\S]*?\]\s*',
-    re.IGNORECASE,
-)
-
-
-def strip_injected_recall_blocks(text: str) -> str:
-    """Remove the signed injected recall block from persisted/synced text.
-
-    Keys on the system-note signature so a bare ``<memory-context>`` a user
-    types is preserved. Used at the turn-finalize boundary to keep an echoed
-    block out of stored turns, trajectory, and provider sync.
-    """
-    if not isinstance(text, str) or not text:
-        return text or ""
-    original = text
-    text = _INJECTED_CONTEXT_RE.sub('', text)
-    if _INJECTED_NOTE_SIGNATURE in text.lower():
-        text = _INJECTED_NOTE_RE.sub('', text)
-    if text != original:
-        text = re.sub(r'(?:\r?\n){3,}', '\n\n', text)
-    return text
-
-
 class StreamingContextScrubber:
     """Stateful scrubber for streaming text that may contain split memory-context spans.
 
@@ -230,19 +196,8 @@ class StreamingContextScrubber:
 
     _OPEN_TAG = "<memory-context>"
     _CLOSE_TAG = "</memory-context>"
-    # Unique signature of the *injected* recall block: the open tag is always
-    # immediately followed by the system-note line. No legitimate prose
-    # contains this exact phrase, so when it is present we scrub the block
-    # regardless of block-boundary state — closing the inline-echo leak
-    # (#40170) without over-scrubbing a stray ``<memory-context>`` that a user
-    # might type in normal conversation.
-    _SIGNATURE = "[system note: the following is recalled memory context"
 
-    def __init__(self, enabled: bool = True) -> None:
-        # When disabled (single-user/local surfaces) feed() passes text through
-        # untouched: recalled memory in a reply is the operator's own data, so
-        # collapsing the block there is a false positive (#40170).
-        self._enabled: bool = enabled
+    def __init__(self) -> None:
         self._in_span: bool = False
         self._buf: str = ""
         self._at_block_boundary: bool = True
@@ -259,8 +214,6 @@ class StreamingContextScrubber:
         is held back in the internal buffer and surfaced on the next
         ``feed()`` call or discarded/emitted by ``flush()``.
         """
-        if not self._enabled:
-            return text or ""
         if not text:
             return ""
         buf = self._buf + text
@@ -281,13 +234,9 @@ class StreamingContextScrubber:
             else:
                 idx = self._find_boundary_open_tag(buf)
                 if idx == -1:
-                    # No confirmed open tag — hold back a potential partial
-                    # open tag, OR a complete tag whose injected-block
-                    # signature hasn't fully streamed yet (so we can confirm
-                    # or deny it on the next delta instead of leaking it).
+                    # No open tag — hold back a potential partial open tag
                     held = (
-                        self._max_pending_signature_suffix(buf)
-                        or self._max_pending_open_suffix(buf)
+                        self._max_pending_open_suffix(buf)
                         or self._max_partial_suffix(buf, self._OPEN_TAG)
                     )
                     if held:
@@ -312,8 +261,6 @@ class StreamingContextScrubber:
         truncated answer).  Otherwise the held-back partial-tag tail is
         emitted verbatim (it turned out not to be a real tag).
         """
-        if not self._enabled:
-            return ""
         if self._in_span:
             self._buf = ""
             self._in_span = False
@@ -337,9 +284,7 @@ class StreamingContextScrubber:
         return 0
 
     def _find_boundary_open_tag(self, buf: str) -> int:
-        """Find an opening fence that starts a block-like span OR carries the
-        injected-block signature (the latter wins regardless of boundary, so an
-        inline-echoed recall block is still scrubbed — #40170)."""
+        """Find an opening fence only when it starts a block-like span."""
         buf_lower = buf.lower()
         search_start = 0
         while True:
@@ -348,51 +293,7 @@ class StreamingContextScrubber:
                 return -1
             if self._is_block_boundary(buf, idx) and self._has_block_opener_suffix(buf, idx):
                 return idx
-            if self._has_injected_signature(buf_lower, idx):
-                return idx
             search_start = idx + 1
-
-    def _has_injected_signature(self, buf_lower: str, idx: int) -> bool:
-        """True only when the open tag at ``idx`` is CONFIRMED to be the
-        injected recall block: the system-note signature is fully present
-        after the tag (across leading whitespace/newlines).
-
-        Ambiguous tails (whitespace-only, or a partial signature at the end of
-        the buffer) return False here and are instead HELD by
-        ``_max_pending_signature_suffix`` so the decision waits for more stream
-        deltas — preventing both a leak (committing too late) and over-scrub
-        (capturing a stray ``<memory-context>`` whose disambiguating prose
-        hasn't streamed yet).
-        """
-        after = buf_lower[idx + len(self._OPEN_TAG):]
-        stripped = after.lstrip()
-        return stripped.startswith(self._SIGNATURE)
-
-    def _max_pending_signature_suffix(self, buf: str) -> int:
-        """If ``buf`` ends with ``<memory-context>`` + an ambiguous tail that
-        could still become the injected-block signature, return the length of
-        the suffix to hold (from the open tag onward).  Returns 0 otherwise.
-
-        This holds back a tag whose signature is split across stream deltas, so
-        we never emit the tag before we can confirm/deny it is the real block.
-        """
-        buf_lower = buf.lower()
-        # Find the LAST open tag in the buffer (the only one that could have an
-        # incomplete tail).
-        idx = buf_lower.rfind(self._OPEN_TAG)
-        if idx == -1:
-            return 0
-        after = buf_lower[idx + len(self._OPEN_TAG):]
-        stripped = after.lstrip()
-        if stripped == "":
-            # Tag with only whitespace after it so far — could be the block.
-            return len(buf) - idx
-        # Partial signature prefix at the tail — could still complete.
-        if self._SIGNATURE.startswith(stripped):
-            return len(buf) - idx
-        return 0
-
-
 
     def _max_pending_open_suffix(self, buf: str) -> int:
         """Hold a complete boundary tag until the following char confirms it."""

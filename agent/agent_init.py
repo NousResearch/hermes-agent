@@ -219,56 +219,6 @@ def _resolve_memory_auto_inject_recall(cfg: Dict[str, Any], platform: Any) -> bo
     return enabled
 
 
-# Local, single-user surfaces where the operator is the only participant, so a
-# recalled <memory-context> block in a reply is their own data, not a leak.
-_LOCAL_PLATFORMS = frozenset({"cli", "desktop", "tui"})
-
-
-def _resolve_memory_scrub_recall_output(cfg: Dict[str, Any], platform: Any) -> bool:
-    """Whether to scrub the <memory-context> block from streamed output.
-
-    Default by platform: off for local single-user surfaces (cli/desktop/tui),
-    on for gateway/customer-facing platforms where one instance may serve
-    multiple users and a recalled block must not reach the wrong person.
-    Overridable globally via ``memory.scrub_recall_output`` and per platform via
-    ``platforms.<p>.memory.scrub_recall_output`` (or the nested gateway form).
-    """
-    platform_key = _platform_config_key(platform)
-    default = bool(platform_key) and platform_key not in _LOCAL_PLATFORMS
-
-    enabled = _config_bool(
-        cfg_get(cfg, "memory", "scrub_recall_output", default=default),
-        default,
-    )
-    if not platform_key:
-        return enabled
-
-    missing = object()
-    flattened_override = cfg_get(
-        cfg,
-        "platforms",
-        platform_key,
-        "memory",
-        "scrub_recall_output",
-        default=missing,
-    )
-    if flattened_override is not missing:
-        return _config_bool(flattened_override, enabled)
-
-    gateway_override = cfg_get(
-        cfg,
-        "gateway",
-        "platforms",
-        platform_key,
-        "memory",
-        "scrub_recall_output",
-        default=missing,
-    )
-    if gateway_override is not missing:
-        return _config_bool(gateway_override, enabled)
-    return enabled
-
-
 def init_agent(
     agent,
     base_url: str = None,
@@ -1269,16 +1219,6 @@ def init_agent(
     agent._memory_auto_inject_recall = _resolve_memory_auto_inject_recall(
         _agent_cfg,
         platform,
-    )
-    # Gate the outbound recall scrubber: on for customer-facing/gateway
-    # platforms, off for local single-user surfaces (now that platform + config
-    # are known; the scrubber was created fail-closed above).
-    agent._scrub_recall_output = _resolve_memory_scrub_recall_output(
-        _agent_cfg,
-        platform,
-    )
-    agent._stream_context_scrubber = StreamingContextScrubber(
-        enabled=agent._scrub_recall_output
     )
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0

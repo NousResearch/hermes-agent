@@ -10,7 +10,6 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
-from agent.memory_manager import StreamingContextScrubber
 
 
 @pytest.fixture(autouse=True)
@@ -1653,11 +1652,6 @@ def test_interim_commentary_preserves_assistant_content(monkeypatch):
 
 def test_stream_delta_strips_leaked_memory_context(monkeypatch):
     agent = _build_agent(monkeypatch)
-    # Outbound scrubbing is gated to customer-facing surfaces (#40170); a
-    # platformless _build_agent() resolves local (scrubber off). Enable it to
-    # exercise the split-chunk scrubbing under test. Gating itself is covered
-    # by tests/agent/test_scrubber_platform_gate_40170.py.
-    agent._stream_context_scrubber = StreamingContextScrubber(enabled=True)
     observed = []
     agent.stream_delta_callback = observed.append
 
@@ -1685,9 +1679,6 @@ def test_stream_delta_strips_leaked_memory_context_across_chunks(monkeypatch):
     text, or "## Honcho Context" header may reach the delta callback.
     """
     agent = _build_agent(monkeypatch)
-    # Customer-facing surface: outbound scrubbing is gated on (#40170); see the
-    # companion test above and test_scrubber_platform_gate_40170.py.
-    agent._stream_context_scrubber = StreamingContextScrubber(enabled=True)
     observed = []
     agent.stream_delta_callback = observed.append
 

@@ -143,6 +143,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Accept all prompts (currently used by --setup-browser to skip the "
              "~400 MB Chromium download confirmation).",
     )
+    parser.add_argument(
+        "--toolsets",
+        default=None,
+        help="Comma-separated toolsets enabled for every ACP session "
+             "(default: hermes-acp). Sessions may override per-session via "
+             "session/new.",
+    )
     return parser.parse_args(argv)
 
 
@@ -257,7 +264,7 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
-    agent = HermesACPAgent()
+    agent = HermesACPAgent(default_toolsets=getattr(args, "toolsets", None))
     try:
         asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
     except KeyboardInterrupt:

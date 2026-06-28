@@ -13,6 +13,7 @@ type ElementProps = {
   children?: React.ReactNode
   onClick?: unknown
 }
+type AnyElementProps = ElementProps & Record<string, unknown>
 type StatusRulePropsForTest = Parameters<typeof StatusRule>[0]
 
 type ReactNodeLike = React.ReactNode
@@ -101,6 +102,37 @@ const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactEl
   }
 
   return textContent(node).includes(needle) ? node : null
+}
+
+const findElementByTypeName = (node: ReactNodeLike, typeName: string): React.ReactElement<AnyElementProps> | null => {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return null
+  }
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findElementByTypeName(child, typeName)
+
+      if (found) {
+        return found
+      }
+    }
+
+    return null
+  }
+
+  if (!React.isValidElement(node)) {
+    return null
+  }
+
+  const element = node as React.ReactElement<AnyElementProps>
+  const elementType = element.type as { name?: string } | string
+
+  if (typeof elementType !== 'string' && elementType.name === typeName) {
+    return element
+  }
+
+  return findElementByTypeName(element.props.children, typeName)
 }
 
 const baseProps: StatusRulePropsForTest = {
@@ -246,6 +278,35 @@ describe('StatusRule busy indicator', () => {
     expect(text).toMatch(/ · \d+s/)
     expect(text).toContain('opus 4.8')
     expect(text).toContain('50k')
+  })
+
+  it('renders plain style as just the working label without a leading indicator glyph', () => {
+    const text = renderStatusRuleText({
+      busy: true,
+      indicatorStyle: 'plain',
+      turnStartedAt: Date.now() - 2500
+    })
+
+    expect(text).toMatch(/─ working · \d+s/)
+    expect(text).toContain('opus 4.8')
+    expect(text).toContain('50k')
+  })
+
+  it('renders the working word red while preserving the current shimmer glow colours', () => {
+    const element = StatusRule({
+      ...baseProps,
+      busy: true,
+      indicatorStyle: 'plain',
+      statusColor: DEFAULT_THEME.color.ok,
+      turnStartedAt: Date.now() - 2500
+    })
+
+    const ticker = findElementByTypeName(element, 'FaceTicker')
+
+    expect(ticker?.props.color).toBe(DEFAULT_THEME.color.ok)
+    expect(ticker?.props.busyTextColor).toBe(DEFAULT_THEME.color.error)
+    expect(ticker?.props.highlightColor).toBe(DEFAULT_THEME.color.accent)
+    expect(ticker?.props.softHighlightColor).toBe(DEFAULT_THEME.color.label)
   })
 })
 

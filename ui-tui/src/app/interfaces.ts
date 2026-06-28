@@ -65,9 +65,9 @@ export interface Notice {
 // derived from this tuple so adding/removing a style only touches one
 // line — `useConfigSync` (validation) and `session.ts` (slash arg
 // validation + usage hint) both import it.
-export const INDICATOR_STYLES = ['ascii', 'emoji', 'kaomoji', 'unicode'] as const
+export const INDICATOR_STYLES = ['plain', 'kaomoji', 'emoji', 'unicode', 'ascii'] as const
 export type IndicatorStyle = (typeof INDICATOR_STYLES)[number]
-export const DEFAULT_INDICATOR_STYLE: IndicatorStyle = 'kaomoji'
+export const DEFAULT_INDICATOR_STYLE: IndicatorStyle = 'plain'
 
 export interface SelectionApi {
   captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void

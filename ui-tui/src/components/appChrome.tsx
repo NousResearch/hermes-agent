@@ -68,6 +68,7 @@ const SPINNER_TICK_MS = 100
 interface IndicatorRender {
   frame: string
   intervalMs: number
+  padBusyText: boolean
   // When false, FaceTicker hides the busy text and just shows the glyph +
   // duration.  Lets `unicode` stay minimal while the other styles keep the
   // visible working indicator.
@@ -76,13 +77,14 @@ interface IndicatorRender {
 
 const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
   if (style === 'kaomoji') {
-    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showBusyText: true }
+    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, padBusyText: true, showBusyText: true }
   }
 
   if (style === 'emoji') {
     return {
       frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ',
       intervalMs: SPINNER_TICK_MS * 6,
+      padBusyText: true,
       showBusyText: true
     }
   }
@@ -91,6 +93,16 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
     return {
       frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
       intervalMs: SPINNER_TICK_MS,
+      padBusyText: true,
+      showBusyText: true
+    }
+  }
+
+  if (style === 'plain') {
+    return {
+      frame: '',
+      intervalMs: BUSY_STATUS_SHIMMER_MS,
+      padBusyText: false,
       showBusyText: true
     }
   }
@@ -102,7 +114,7 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   const spinner = unicodeSpinners.braille
   const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
 
-  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showBusyText: false }
+  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), padBusyText: false, showBusyText: false }
 }
 
 // `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
@@ -117,6 +129,10 @@ const indicatorFrameWidth = (style: IndicatorStyle): number => {
 
   if (style === 'emoji') {
     return EMOJI_FRAME_WIDTH
+  }
+
+  if (style === 'plain') {
+    return 0
   }
 
   // 'ascii' and 'unicode' are single-column glyphs.
@@ -134,31 +150,36 @@ export const MAX_DURATION_WIDTH = Math.max(
 
 // Display width to reserve for the busy indicator so its text + elapsed-time
 // tail can't shove the model off-screen on narrow terminals. Style-aware:
-// `unicode` is a bare 1-col braille spinner with no busy text, while
-// kaomoji/emoji/ascii add a fixed-width `working` slot; any style adds a
-// bounded elapsed-time tail.  Mirrors FaceTicker's
-// `frame + busyStatusSegment + durationSegment` layout.
+// `unicode` is a bare 1-col braille spinner with no busy text, `plain` is a
+// bare `working` label, while kaomoji/emoji/ascii add a fixed-width glyph +
+// `working` slot; any style adds a bounded elapsed-time tail. Mirrors
+// FaceTicker's `frame + busyStatusSegment + durationSegment` layout.
 export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
-  const { showBusyText } = renderIndicator(style, 0)
-  const busyText = showBusyText ? 1 + BUSY_STATUS_PAD_LEN : 0
+  const { padBusyText, showBusyText } = renderIndicator(style, 0)
+  const frameWidth = indicatorFrameWidth(style)
+  const busyText = showBusyText
+    ? (frameWidth > 0 ? 1 : 0) + (padBusyText ? BUSY_STATUS_PAD_LEN : BUSY_STATUS_TEXT.length)
+    : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
-  return indicatorFrameWidth(style) + busyText + duration
+  return frameWidth + busyText + duration
 }
 
 function BusyStatusWord({
   baseColor,
   frame,
   highlightColor,
+  padded = true,
   softHighlightColor
 }: {
   baseColor: string
   frame: number
   highlightColor: string
+  padded?: boolean
   softHighlightColor: string
 }) {
-  const padding = padBusyStatusText().slice(BUSY_STATUS_TEXT.length)
+  const padding = padded ? padBusyStatusText().slice(BUSY_STATUS_TEXT.length) : ''
 
   return (
     <>
@@ -177,12 +198,14 @@ function BusyStatusWord({
 }
 
 function FaceTicker({
+  busyTextColor,
   color,
   highlightColor,
   softHighlightColor,
   startedAt,
   style
 }: {
+  busyTextColor?: string
   color: string
   highlightColor: string
   softHighlightColor: string
@@ -197,7 +220,7 @@ function FaceTicker({
   // `/indicator` switch re-arms the interval (and skips the shimmer timer for
   // text-less styles like `unicode`) without leaving the previous timer
   // dangling.
-  const { intervalMs, showBusyText } = renderIndicator(style, 0)
+  const { intervalMs, padBusyText, showBusyText } = renderIndicator(style, 0)
 
   useEffect(() => {
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
@@ -223,19 +246,18 @@ function FaceTicker({
 
   const busyStatusSegment = showBusyText ? (
     <>
-      {' '}
+      {frame ? ' ' : ''}
       <BusyStatusWord
-        baseColor={color}
+        baseColor={busyTextColor ?? color}
         frame={shimmerTick}
         highlightColor={highlightColor}
+        padded={padBusyText}
         softHighlightColor={softHighlightColor}
       />
     </>
   ) : null
-  // Leading space keeps a gap between the frame and the duration when the
-  // busy text is hidden (e.g. `unicode` spinner style).  When the busy text
-  // IS shown, its trailing padding already provides the gap, so the extra
-  // space is harmless.
+  // Styles with a glyph get one gap before the working label; `plain` keeps
+  // the label bare. The elapsed tail carries its own ` · ` separator.
 
   const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
 
@@ -612,6 +634,7 @@ export function StatusRule({
           {hasField('status') ? (
             busy ? (
               <FaceTicker
+                busyTextColor={t.color.error}
                 color={statusColor}
                 highlightColor={t.color.accent}
                 softHighlightColor={t.color.label}

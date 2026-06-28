@@ -33,6 +33,7 @@ from typing import Sequence
 
 __all__ = [
     "IS_WINDOWS",
+    "install_windows_no_console_patch",
     "resolve_node_command",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
@@ -232,3 +233,93 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+# -----------------------------------------------------------------------------
+# Global monkeypatch: auto-inject CREATE_NO_WINDOW on Windows
+# -----------------------------------------------------------------------------
+
+_PATCH_INSTALLED = False
+
+
+def install_windows_no_console_patch() -> None:
+    """Install a global monkeypatch that auto-injects ``CREATE_NO_WINDOW``
+    into every ``subprocess.Popen`` / ``run`` / ``call`` / ``check_output`` /
+    ``check_call`` call on Windows.
+
+    On Windows, every ``subprocess.Popen`` of a ``.exe`` spawns a visible
+    console window briefly unless ``CREATE_NO_WINDOW`` (``0x08000000``) is
+    passed in ``creationflags``.  The codebase has ~300 subprocess call
+    sites; only a handful use :func:`windows_hide_flags`.  Rather than
+    touching every call site (a large, fragile mechanical diff), this
+    patch wraps the ``subprocess`` module at import time so every call
+    that does NOT set its own ``creationflags`` gets ``CREATE_NO_WINDOW``
+    automatically.
+
+    Design:
+    - ``Popen`` is replaced with a proper **subclass** (not a plain
+      function), preserving ``isinstance`` checks and subclassability.
+      Several tests and the process registry subclass ``Popen``; a plain
+      function wrapper would break them.
+    - Explicit ``creationflags`` from callers that set their own (e.g.
+      ``DETACHED_PROCESS`` for daemons) are **preserved** — the patch
+      only injects ``CREATE_NO_WINDOW`` when ``creationflags`` is not
+      in kwargs.
+    - ``subprocess.run``, ``subprocess.call``, ``subprocess.check_output``,
+      and ``subprocess.check_call`` are wrapped to inject
+      ``creationflags=CREATE_NO_WINDOW`` when not already provided.
+    - Idempotent — safe to call multiple times (second call is a no-op).
+    - No-op on non-Windows — the function returns immediately.
+
+    Called from ``hermes_cli/__init__.py`` at import time so the patch is
+    active before any tool or gateway code runs.
+    """
+    global _PATCH_INSTALLED
+    if _PATCH_INSTALLED or not IS_WINDOWS:
+        return
+
+    import subprocess
+
+    _RealPopen = subprocess.Popen
+
+    class _NoConsolePopen(_RealPopen):
+        """Popen subclass that auto-injects CREATE_NO_WINDOW on Windows."""
+
+        def __init__(self, args, **kwargs):
+            if "creationflags" not in kwargs:
+                kwargs["creationflags"] = _CREATE_NO_WINDOW
+            super().__init__(args, **kwargs)
+
+    # Wrap the convenience functions to inject creationflags.
+    _RealRun = subprocess.run
+    _RealCall = subprocess.call
+    _RealCheckOutput = subprocess.check_output
+    _RealCheckCall = subprocess.check_call
+
+    def _patched_run(*args, **kwargs):
+        if "creationflags" not in kwargs:
+            kwargs["creationflags"] = _CREATE_NO_WINDOW
+        return _RealRun(*args, **kwargs)
+
+    def _patched_call(*args, **kwargs):
+        if "creationflags" not in kwargs:
+            kwargs["creationflags"] = _CREATE_NO_WINDOW
+        return _RealCall(*args, **kwargs)
+
+    def _patched_check_output(*args, **kwargs):
+        if "creationflags" not in kwargs:
+            kwargs["creationflags"] = _CREATE_NO_WINDOW
+        return _RealCheckOutput(*args, **kwargs)
+
+    def _patched_check_call(*args, **kwargs):
+        if "creationflags" not in kwargs:
+            kwargs["creationflags"] = _CREATE_NO_WINDOW
+        return _RealCheckCall(*args, **kwargs)
+
+    subprocess.Popen = _NoConsolePopen
+    subprocess.run = _patched_run
+    subprocess.call = _patched_call
+    subprocess.check_output = _patched_check_output
+    subprocess.check_call = _patched_check_call
+
+    _PATCH_INSTALLED = True

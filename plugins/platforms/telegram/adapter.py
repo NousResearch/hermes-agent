@@ -6101,6 +6101,47 @@ class TelegramAdapter(BasePlatformAdapter):
             return note
         return f"{existing}\n\n{note}"
 
+    async def _surface_media_cache_failure(
+        self,
+        msg: Message,
+        event: MessageEvent,
+        kind: str,
+        exc: Exception,
+        display_name: Optional[str] = None,
+    ) -> None:
+        """Surface a failed media download/cache on BOTH ends instead of swallowing it.
+
+        When download_as_bytearray()/cache_*_from_bytes() raises (typically a
+        transient httpx.ConnectError to Telegram's CDN), the attachment never
+        made it into event.media_urls. Without this, the handler falls through
+        and dispatches an empty turn: the user thinks the file was delivered,
+        the agent sees nothing, and the only record is a buried log warning.
+
+        This (1) replies to the user in Telegram so they know to retry, and
+        (2) appends an agent-visible notice to event.text via the existing
+        observed-note channel so the agent knows an attachment was attempted
+        and failed — never a silent empty turn. No new event fields (the
+        structured-event refactor is out of scope per #23045).
+        """
+        named = f" ({display_name})" if display_name else ""
+        try:
+            await msg.reply_text(
+                f"\u26a0\ufe0f Couldn't download your {kind}{named} "
+                f"({exc.__class__.__name__}). Please try sending it again."
+            )
+        except Exception as reply_err:
+            logger.warning(
+                "[Telegram] Failed to notify user about %s cache failure: %s",
+                kind,
+                reply_err,
+                exc_info=True,
+            )
+        agent_note = (
+            f"[The user attempted to send a {kind}{named} but it could not be "
+            f"downloaded ({exc.__class__.__name__}); they have been asked to retry.]"
+        )
+        event.text = self._append_observed_note(event.text, agent_note)
+
     def _observe_unmentioned_group_message(
         self,
         message: Message,
@@ -6562,6 +6603,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "photo", e)
 
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
@@ -6580,6 +6622,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "voice message", e)
         elif msg.audio:
             try:
                 allowed, note = self._telegram_media_size_allowed(msg.audio, "audio file")
@@ -6596,6 +6639,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "audio file", e)
 
         elif msg.video:
             try:
@@ -6619,6 +6663,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user video at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "video file", e)
 
         # Download document files to cache for agent processing
         elif msg.document:
@@ -6751,6 +6796,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
+                await self._surface_media_cache_failure(
+                    msg, event, "attachment", e,
+                    display_name=getattr(doc, "file_name", None) or None,
+                )
 
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:

@@ -686,7 +686,13 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
     # OAuth flow.
     try:
         from tools.mcp_oauth_manager import get_manager
-        get_manager().remove(name)
+        mgr = get_manager()
+        mgr.remove(name)
+        # Force the OAuth flow even if the server returns 200 for
+        # ``initialize`` without auth (e.g. Blynk).  Without this flag,
+        # the MCP SDK's reactive 401 branch never fires and the login
+        # reports "no token obtained" despite the server supporting DCR.
+        mgr.set_force_oauth(name)
     except Exception as exc:
         _warning(f"Could not clear existing OAuth state: {exc}")
 

@@ -357,3 +357,185 @@ def test_bridge_forwards_requests_and_poisons_on_token_endpoint_400(
     assert not (d / "srv.client.json").exists()
     assert provider._initialized is False
     assert provider.context.client_info is None
+
+
+
+# ---------------------------------------------------------------------------
+# Force-OAuth tests (#53870)
+# ---------------------------------------------------------------------------
+
+
+def test_set_force_oauth_adds_name_to_set():
+    """set_force_oauth() adds the server name to _force_oauth_names."""
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    mgr = MCPOAuthManager()
+    assert "blynk" not in mgr._force_oauth_names
+    mgr.set_force_oauth("blynk")
+    assert "blynk" in mgr._force_oauth_names
+
+
+def test_build_provider_sets_force_oauth_flag(tmp_path, monkeypatch):
+    """_build_provider sets force_oauth=True when name is in _force_oauth_names."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    mgr = MCPOAuthManager()
+    mgr.set_force_oauth("srv")
+    provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
+    assert provider is not None
+    assert provider._force_oauth is True
+    # Name should be consumed (one-shot)
+    assert "srv" not in mgr._force_oauth_names
+
+
+def test_build_provider_without_force_oauth_flag(tmp_path, monkeypatch):
+    """_build_provider sets force_oauth=False when name is NOT in _force_oauth_names."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
+    assert provider is not None
+    assert provider._force_oauth is False
+
+
+@pytest.mark.asyncio
+async def test_force_oauth_converts_200_to_401(tmp_path, monkeypatch):
+    """When _force_oauth is set and no tokens exist, a 200 response is
+    replaced with a synthetic 401 to trigger the SDK's OAuth flow.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    token_ep = "https://idp.example.com/oauth/token"
+    d = tmp_path / "mcp-tokens"
+    d.mkdir(parents=True)
+    (d / "srv.client.json").write_text('{"client_id": "dead"}')
+
+    forwarded = []
+    oAuth_triggered = []
+
+    async def fake_base_flow(self, request):
+        # Mimic the SDK: yield request, receive response.
+        # If response is 401, record that OAuth was triggered.
+        forwarded.append(("out", request))
+        response = yield request
+        forwarded.append(("in", response))
+        if response.status_code == 401:
+            oAuth_triggered.append(True)
+
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_base_flow)
+
+    provider = _provider_with_token_endpoint(tmp_path, {}, token_ep, monkeypatch)
+    provider._force_oauth = True
+    provider.context.oauth_metadata = None  # avoid model_dump on SimpleNamespace
+    # Ensure no valid tokens
+    provider.context.current_tokens = None
+
+    sentinel_request = object()
+    ok_resp = _fake_response(200, "https://mcp.example.com", b'{"result":{}}')
+
+    gen = provider.async_auth_flow(sentinel_request)
+    out0 = await gen.__anext__()
+    assert out0 is sentinel_request
+    try:
+        await gen.asend(ok_resp)
+    except StopAsyncIteration:
+        pass
+
+    # The bridge should have converted the 200 to a 401
+    assert len(forwarded) == 2
+    assert forwarded[1][1].status_code == 401  # synthetic 401 reached inner
+    assert oAuth_triggered  # OAuth flow was triggered
+    # _force_oauth should be cleared (one-shot)
+    assert provider._force_oauth is False
+
+
+@pytest.mark.asyncio
+async def test_force_oauth_does_not_override_real_401(tmp_path, monkeypatch):
+    """When the server returns a real 401, _force_oauth does not interfere."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    token_ep = "https://idp.example.com/oauth/token"
+    d = tmp_path / "mcp-tokens"
+    d.mkdir(parents=True)
+    (d / "srv.client.json").write_text('{"client_id": "dead"}')
+
+    forwarded = []
+
+    async def fake_base_flow(self, request):
+        forwarded.append(("out", request))
+        response = yield request
+        forwarded.append(("in", response))
+
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_base_flow)
+
+    provider = _provider_with_token_endpoint(tmp_path, {}, token_ep, monkeypatch)
+    provider._force_oauth = True
+    provider.context.oauth_metadata = None  # avoid model_dump on SimpleNamespace
+    provider.context.current_tokens = None
+
+    sentinel_request = object()
+    real_401 = _fake_response(401, "https://mcp.example.com", b'{"error":"unauthorized"}')
+
+    gen = provider.async_auth_flow(sentinel_request)
+    out0 = await gen.__anext__()
+    assert out0 is sentinel_request
+    try:
+        await gen.asend(real_401)
+    except StopAsyncIteration:
+        pass
+
+    # The real 401 should pass through unchanged
+    assert forwarded[1][1].status_code == 401
+    assert forwarded[1][1] is real_401  # same object, not synthetic
+    # _force_oauth should still be cleared (one-shot)
+    assert provider._force_oauth is False
+
+
+@pytest.mark.asyncio
+async def test_force_oauth_not_applied_when_tokens_valid(tmp_path, monkeypatch):
+    """When valid tokens exist, _force_oauth does not convert 200 to 401."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    token_ep = "https://idp.example.com/oauth/token"
+    d = tmp_path / "mcp-tokens"
+    d.mkdir(parents=True)
+    (d / "srv.client.json").write_text('{"client_id": "dead"}')
+
+    forwarded = []
+
+    async def fake_base_flow(self, request):
+        forwarded.append(("out", request))
+        response = yield request
+        forwarded.append(("in", response))
+
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_base_flow)
+
+    provider = _provider_with_token_endpoint(tmp_path, {}, token_ep, monkeypatch)
+    provider._force_oauth = True
+    provider.context.oauth_metadata = None  # avoid model_dump on SimpleNamespace
+    # Simulate valid tokens by making is_token_valid() return True
+    from mcp.shared.auth import OAuthToken
+    provider.context.current_tokens = OAuthToken(
+        access_token="valid", token_type="Bearer", expires_in=3600
+    )
+    provider.context.update_token_expiry(provider.context.current_tokens)
+
+    sentinel_request = object()
+    ok_resp = _fake_response(200, "https://mcp.example.com", b'{"result":{}}')
+
+    gen = provider.async_auth_flow(sentinel_request)
+    out0 = await gen.__anext__()
+    assert out0 is sentinel_request
+    try:
+        await gen.asend(ok_resp)
+    except StopAsyncIteration:
+        pass
+
+    # 200 should pass through unchanged (tokens are valid)
+    assert forwarded[1][1].status_code == 200
+    assert forwarded[1][1] is ok_resp
+

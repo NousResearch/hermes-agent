@@ -384,6 +384,12 @@ def _scan_gateway_pids(
             # removed as part of the WMIC deprecation — fall back to
             # PowerShell's Get-CimInstance.  Any OSError here (FileNotFoundError
             # on missing wmic) trips the fallback.
+            # Hide the console window: this scan runs inside the windowless
+            # pythonw.exe gateway/desktop backend, so a bare wmic/powershell
+            # spawn would flash a conhost window on every watchdog probe.
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
+            _no_window = {"creationflags": windows_hide_flags()}
             wmic_path = shutil.which("wmic")
             used_fallback = False
             result = None
@@ -402,6 +408,7 @@ def _scan_gateway_pids(
                         encoding="utf-8",
                         errors="ignore",
                         timeout=10,
+                        **_no_window,
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     result = None
@@ -427,6 +434,7 @@ def _scan_gateway_pids(
                         encoding="utf-8",
                         errors="ignore",
                         timeout=15,
+                        **_no_window,
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     return []
@@ -2265,11 +2273,33 @@ def _default_system_service_user() -> str | None:
 
 
 def prompt_linux_gateway_install_scope() -> str | None:
+    # A boot-time system service has to be created by root (writing the unit to
+    # /etc/systemd/system). We only offer that scope when the session is already
+    # root — a non-root user is never handed a "re-run yourself under sudo"
+    # recipe, since that just funnels them into a system install they can't
+    # actually perform from here. Non-root sessions get the user service.
+    is_root = os.geteuid() == 0  # windows-footgun: ok — Linux systemd install wizard, never invoked on Windows
+    if not is_root:
+        choice = prompt_choice(
+            "  Choose how the gateway should run in the background:",
+            [
+                "User service (no sudo; best for laptops/dev boxes; may need linger after logout)",
+                "Skip service install for now",
+            ],
+            default=0,
+        )
+        if choice == 0:
+            print_info(
+                "  Tip: for a boot-time system service, re-run setup as root "
+                "(e.g. from a root shell or `sudo -i`)."
+            )
+        return {0: "user", 1: None}[choice]
+
     choice = prompt_choice(
         "  Choose how the gateway should run in the background:",
         [
             "User service (no sudo; best for laptops/dev boxes; may need linger after logout)",
-            "System service (starts on boot; requires sudo; still runs as your user)",
+            "System service (starts on boot; runs as your chosen user)",
             "Skip service install for now",
         ],
         default=0,
@@ -2285,18 +2315,13 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
     if scope == "system":
         run_as_user = _default_system_service_user()
         if os.geteuid() != 0:  # windows-footgun: ok — Linux systemd install wizard, never invoked on Windows
+            # Unreachable from the wizard: prompt_linux_gateway_install_scope()
+            # only offers "system" to root sessions. Defensive guard for any
+            # direct caller — we do NOT print a self-elevation recipe.
             print_warning(
-                "  System service install requires sudo, so Hermes can't create it from this user session."
+                "  System service install requires root. Re-run setup from a "
+                "root shell, or install a user service instead: hermes gateway install"
             )
-            if run_as_user:
-                print_info(
-                    f"  After setup, run: sudo hermes gateway install --system --run-as-user {run_as_user}"
-                )
-            else:
-                print_info(
-                    "  After setup, run: sudo hermes gateway install --system --run-as-user <your-user>"
-                )
-            print_info("  Then start it with: sudo hermes gateway start --system")
             return scope, False
 
         if not run_as_user:
@@ -2689,6 +2714,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
+ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
@@ -2722,6 +2748,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
+ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
@@ -3025,6 +3052,7 @@ def systemd_install(
     system: bool = False,
     run_as_user: str | None = None,
     enable_on_startup: bool = True,
+    non_interactive: bool = False,
 ):
     if system:
         _require_root_for_system_service("install")
@@ -3038,7 +3066,7 @@ def systemd_install(
         print()
         print_legacy_unit_warning()
         print()
-        if prompt_yes_no("Remove the legacy unit(s) before installing?", True):
+        if non_interactive or prompt_yes_no("Remove the legacy unit(s) before installing?", True):
             remove_legacy_hermes_units(interactive=False)
             print()
 
@@ -4062,6 +4090,11 @@ def launchd_restart():
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         try:
+            subprocess.run(
+                ["launchctl", "bootout", target],
+                check=False,
+                timeout=90,
+            )
             subprocess.run(
                 ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
                 check=True,
@@ -6249,13 +6282,31 @@ def _gateway_command_inner(args):
                     "  Or use tmux/screen for persistence: tmux new -s hermes 'hermes gateway run'"
                 )
                 print()
-            start_now = prompt_yes_no("Start the gateway now after installing the service?", True)
-            start_on_login = prompt_yes_no("Start the gateway automatically on login/boot with systemd?", True)
+            # Honor CLI flags (--start-now / --no-start-now, --start-on-login /
+            # --no-start-on-login).  When not provided, prompt interactively or
+            # fall back to True for non-TTY / headless contexts (SSH, CI, pipes).
+            non_interactive = not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty())
+            _sn = getattr(args, "start_now", None)
+            if _sn is not None:
+                start_now = _sn
+            elif not non_interactive:
+                start_now = prompt_yes_no("Start the gateway now after installing the service?", True)
+            else:
+                start_now = True
+
+            _sol = getattr(args, "start_on_login", None)
+            if _sol is not None:
+                start_on_login = _sol
+            elif not non_interactive:
+                start_on_login = prompt_yes_no("Start the gateway automatically on login/boot with systemd?", True)
+            else:
+                start_on_login = True
             systemd_install(
                 force=force,
                 system=system,
                 run_as_user=run_as_user,
                 enable_on_startup=start_on_login,
+                non_interactive=non_interactive,
             )
             if start_now:
                 systemd_start(system=system)

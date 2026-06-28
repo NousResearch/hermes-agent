@@ -180,6 +180,7 @@ def test_load_restart_drain_timeout_prefers_env_then_config_then_default(
 async def test_request_restart_is_idempotent():
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
+    runner._launch_detached_restart_command = AsyncMock()
 
     # _run_restart is held on self._restart_task and is intentionally NOT in
     # _background_tasks, so _stop_impl's cancel loop can't abort it mid-await
@@ -191,6 +192,7 @@ async def test_request_restart_is_idempotent():
 
     await runner._restart_task
 
+    runner._launch_detached_restart_command.assert_awaited_once_with()
     runner.stop.assert_awaited_once_with(
         restart=True, detached_restart=True, service_restart=False
     )
@@ -263,12 +265,29 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert cmd[:2] == ["/usr/bin/setsid", "bash"]
     assert "gateway restart" in cmd[-1]
     assert "kill -0 321" in cmd[-1]
+    assert "deadline=$(( $(date +%s) +" in cmd[-1]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
     # The watcher must NOT inherit the gateway marker, or the CLI's
     # self-restart loop guard refuses to run `hermes gateway restart`.
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
+
+
+@pytest.mark.asyncio
+async def test_detached_restart_helper_is_idempotent(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popen_calls.append((a, k)))
+
+    await runner._launch_detached_restart_command()
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
 
 
 def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):

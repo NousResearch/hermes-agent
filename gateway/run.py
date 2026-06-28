@@ -5259,6 +5259,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if agent is None:
             return
+        if context.startswith("shutdown"):
+            try:
+                agent._end_session_on_close = False
+            except Exception:
+                pass
         try:
             await asyncio.wait_for(
                 self._run_in_executor_with_context(

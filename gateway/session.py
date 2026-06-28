@@ -965,6 +965,93 @@ class SessionStore:
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
             profile=self._resolve_profile_for_key(source),
         )
+
+    def _create_entry_from_recovered_row(
+        self,
+        *,
+        row: Dict[str, Any],
+        session_key: str,
+        source: SessionSource,
+        now: datetime,
+    ) -> SessionEntry:
+        started_at = row.get("started_at")
+        try:
+            created_at = datetime.fromtimestamp(float(started_at)) if started_at else now
+        except (TypeError, ValueError, OSError):
+            created_at = now
+        return SessionEntry(
+            session_key=session_key,
+            session_id=str(row["id"]),
+            created_at=created_at,
+            updated_at=now,
+            origin=source,
+            display_name=source.chat_name,
+            platform=source.platform,
+            chat_type=source.chat_type,
+        )
+
+    def _recover_session_from_db(
+        self,
+        *,
+        session_key: str,
+        source: SessionSource,
+        now: datetime,
+    ) -> Optional[SessionEntry]:
+        """Rebuild a missing session-key mapping from durable state.db data."""
+        if not self._db:
+            return None
+        finder = getattr(self._db, "find_latest_gateway_session_for_peer", None)
+        if not callable(finder):
+            return None
+        try:
+            recovered = finder(
+                source=source.platform.value,
+                user_id=source.user_id,
+                session_key=session_key,
+                chat_id=source.chat_id,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+            )
+        except Exception as exc:
+            logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
+            return None
+        if not recovered:
+            return None
+        try:
+            self._db.reopen_session(str(recovered["id"]))
+        except Exception as exc:
+            logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
+        return self._create_entry_from_recovered_row(
+            row=recovered,
+            session_key=session_key,
+            source=source,
+            now=now,
+        )
+
+    def _record_gateway_session_peer(
+        self,
+        session_id: str,
+        session_key: str,
+        source: Optional[SessionSource],
+    ) -> None:
+        """Persist the routing peer for an existing gateway session row."""
+        if not self._db or not source:
+            return
+        recorder = getattr(self._db, "record_gateway_session_peer", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(
+                session_id,
+                source=source.platform.value,
+                user_id=source.user_id,
+                session_key=session_key,
+                chat_id=source.chat_id,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+            )
+        except Exception as exc:
+            logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -1113,14 +1200,13 @@ class SessionStore:
                     reset_reason = "suspended"
                 elif entry.resume_pending:
                     # Restart-interrupted session: preserve the session_id
-                    # and return the existing entry so the transcript
-                    # reloads intact.  ``resume_pending`` is cleared after
-                    # the NEXT successful turn completes (not here), which
-                    # means a re-interrupted retry keeps trying — the
-                    # stuck-loop counter handles terminal escalation.
-                    entry.updated_at = now
-                    self._save()
-                    return entry
+                    # and return the existing entry so the transcript reloads
+                    # intact, but still honour normal daily/idle reset policy.
+                    reset_reason = self._should_reset(entry, source)
+                    if not reset_reason:
+                        entry.updated_at = now
+                        self._save()
+                        return entry
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
@@ -1138,6 +1224,17 @@ class SessionStore:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
+
+            if not force_new and not db_end_session_id:
+                recovered_entry = self._recover_session_from_db(
+                    session_key=session_key,
+                    source=source,
+                    now=now,
+                )
+                if recovered_entry is not None:
+                    self._entries[session_key] = recovered_entry
+                    self._save()
+                    return recovered_entry
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -1162,6 +1259,10 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "session_key": session_key,
+                "chat_id": source.chat_id,
+                "chat_type": source.chat_type,
+                "thread_id": source.thread_id,
             }
 
         # SQLite operations outside the lock
@@ -1174,6 +1275,11 @@ class SessionStore:
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
+                self._record_gateway_session_peer(
+                    session_id,
+                    session_key,
+                    source,
+                )
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
@@ -1194,6 +1300,11 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+                self._record_gateway_session_peer(
+                    entry.session_id,
+                    session_key,
+                    entry.origin,
+                )
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
@@ -1388,6 +1499,10 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "session_key": session_key,
+                "chat_id": old_entry.origin.chat_id if old_entry.origin else None,
+                "chat_type": old_entry.origin.chat_type if old_entry.origin else None,
+                "thread_id": old_entry.origin.thread_id if old_entry.origin else None,
             }
 
         if self._db and db_end_session_id:
@@ -1399,6 +1514,11 @@ class SessionStore:
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
+                self._record_gateway_session_peer(
+                    session_id,
+                    session_key,
+                    old_entry.origin,
+                )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -1456,6 +1576,11 @@ class SessionStore:
                 self._db.reopen_session(target_session_id)
             except Exception as e:
                 logger.debug("Session DB reopen_session failed: %s", e)
+            self._record_gateway_session_peer(
+                target_session_id,
+                session_key,
+                new_entry.origin if new_entry else None,
+            )
 
         return new_entry
 

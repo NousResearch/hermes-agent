@@ -223,3 +223,24 @@ class TestCleanShutdownMarker:
             asyncio.get_event_loop().run_until_complete(runner.stop(restart=True))
 
         assert marker.exists(), ".clean_shutdown marker should exist after restart-stop too"
+
+
+    def test_shutdown_cleanup_does_not_end_gateway_session_rows(self, tmp_path, monkeypatch):
+        """Gateway process restart/stop must not mark live chats ended in state.db."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        agent = MagicMock()
+        agent._end_session_on_close = True
+
+        async def _run():
+            await GatewayRunner._cleanup_agent_resources_off_loop(
+                runner, agent, context="shutdown idle-cache"
+            )
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(_run())
+
+        assert agent._end_session_on_close is False
+        agent.close.assert_called_once()

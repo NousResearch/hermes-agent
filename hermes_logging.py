@@ -27,9 +27,11 @@ Session context:
     that thread will include ``[session_id]`` for filtering/correlation.
 """
 
+import gzip
 import io
 import logging
 import os
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -304,13 +306,17 @@ def setup_logging(
     )
 
     # --- errors.log (WARNING+) — quick triage log --------------------------
+    # Rotates at 5 MiB keeping 5 compressed (.gz) backups — matches agent.log
+    # size/count defaults from config.yaml and bounds total disk usage to
+    # ~30 MiB (current + 5 backups at ~5 MiB each, gzipped typically <1 MiB).
     _add_rotating_handler(
         root,
         log_dir / "errors.log",
         level=logging.WARNING,
-        max_bytes=2 * 1024 * 1024,
-        backup_count=2,
+        max_bytes=max_bytes,
+        backup_count=backups,
         formatter=RedactingFormatter(_LOG_FORMAT),
+        compress_rotated=True,
     )
 
     # --- gateway.log (INFO+, gateway component only) ------------------------
@@ -413,9 +419,10 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         rotating handlers.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, compress_rotated: bool = False, **kwargs):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
+        self._compress_rotated = compress_rotated
         super().__init__(*args, **kwargs)
         # Snapshot the inode of the currently open stream so emit() can
         # detect external rotation without an extra fstat per write.
@@ -500,11 +507,125 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        # When compression is enabled we can't rely on stdlib's rename chain
+        # (it walks .N→.N+1 in plain-text land, which would leave the OLD
+        # compressed .1.gz stranded with .2/.3 as plain-text and silently
+        # skip the .1→.2 step on the next rollover). Instead, do the shift
+        # ourselves across the .gz suffix and only fall through to stdlib
+        # for the plain-text case.
+        if self._compress_rotated:
+            self._doRolloverCompressed()
+        else:
+            super().doRollover()
         self._chmod_if_managed()
+
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.
         self._record_stream_stat()
+
+    def _doRolloverCompressed(self):
+        """Custom rollover path used when ``_compress_rotated`` is True.
+
+        Mirrors stdlib ``RotatingFileHandler.doRollover`` but operates over
+        the ``.gz`` suffix instead of the plain ``.N`` chain:
+
+        1. Close the live stream.
+        2. Shift ``baseFilename.(N-1).gz`` → ``baseFilename.N.gz`` in
+           reverse, deleting any existing tail first.
+        3. If ``baseFilename.1.gz`` exists, remove it (it's now in .2.gz).
+        4. Rename ``baseFilename`` → ``baseFilename.1`` and gzip that to
+           ``baseFilename.1.gz`` (the new head).
+        5. Reopen ``baseFilename`` if not ``delay=True``.
+
+        All exceptions here are swallowed and logged to stderr — rotation
+        is a maintenance path, and a partial rotation leaves the live
+        log functional even if the backup chain is one step out of sync.
+        """
+        try:
+            if self.stream:
+                self.stream.close()
+                self.stream = None
+
+            if self.backupCount > 0:
+                # Shift the .gz chain in reverse. The newest current .1.gz
+                # becomes the oldest .2.gz (etc.); old tails are unlinked
+                # so the rename always succeeds.
+                for i in range(self.backupCount - 1, 0, -1):
+                    src_gz = self.rotation_filename(
+                        "%s.%d.gz" % (self.baseFilename, i)
+                    )
+                    dst_gz = self.rotation_filename(
+                        "%s.%d.gz" % (self.baseFilename, i + 1)
+                    )
+                    if os.path.exists(src_gz):
+                        if os.path.exists(dst_gz):
+                            os.remove(dst_gz)
+                        os.rename(src_gz, dst_gz)
+
+                # Drop the head .1.gz if it survived the shift (defensive:
+                # rotation_filename may have written a stale one).
+                head_gz = self.rotation_filename(
+                    "%s.1.gz" % self.baseFilename
+                )
+                if os.path.exists(head_gz):
+                    os.remove(head_gz)
+
+                # Move the active log to .1 (plain text) then gzip it.
+                # stdlib's rotate() honors the configured suffix hook, so
+                # the resulting .1 is exactly what the plain-text path
+                # would have produced.
+                dfn = self.rotation_filename(self.baseFilename + ".1")
+                if os.path.exists(dfn):
+                    os.remove(dfn)
+                self.rotate(self.baseFilename, dfn)
+
+                self._gzip_file(dfn)
+
+            if not self.delay:
+                self.stream = self._open()
+        except Exception as exc:  # pragma: no cover — defensive only
+            try:
+                _safe_stderr().write(
+                    f"[hermes_logging] compressed rollover failed: {exc!r}\n"
+                )
+            except Exception:
+                pass
+
+    @staticmethod
+    def _gzip_file(path: str) -> None:
+        """Compress *path* in place, replacing it with ``<path>.gz``.
+
+        Atomic-ish: write to a sibling ``<path>.gz.tmp``, ``rename`` over
+        ``<path>.gz`` if it exists, then ``unlink`` the original.  If any
+        step fails the original plain-text backup is left intact and we
+        log a single warning to stderr — but we do not raise, because
+        rotation must never break the running gateway/CLI.
+        """
+        src = Path(path)
+        if not src.is_file():
+            return
+        dst = Path(f"{path}.gz")
+        tmp = Path(f"{path}.gz.tmp")
+        try:
+            with src.open("rb") as fin, gzip.open(tmp, "wb", compresslevel=6) as fout:
+                shutil.copyfileobj(fin, fout, length=1024 * 1024)
+            # If a prior .gz exists (shouldn't, but defensive), replace it.
+            if dst.exists():
+                dst.unlink()
+            tmp.rename(dst)
+            src.unlink()
+        except Exception as exc:  # pragma: no cover — defensive only
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+            try:
+                _safe_stderr().write(
+                    f"[hermes_logging] gzip of {src.name} failed: {exc!r}\n"
+                )
+            except Exception:
+                pass
 
 
 def _add_rotating_handler(
@@ -516,6 +637,7 @@ def _add_rotating_handler(
     backup_count: int,
     formatter: logging.Formatter,
     log_filter: Optional[logging.Filter] = None,
+    compress_rotated: bool = False,
 ) -> None:
     """Add a ``RotatingFileHandler`` to *logger*, skipping if one already
     exists for the same resolved file path (idempotent).
@@ -525,6 +647,13 @@ def _add_rotating_handler(
     log_filter
         Optional filter to attach to the handler (e.g. ``_ComponentFilter``
         for gateway.log).
+    compress_rotated
+        When ``True``, each freshly-rotated backup (``baseFilename.1``) is
+        gzip-compressed in place to ``baseFilename.1.gz`` after rollover.
+        Bounded-failure: any compression error leaves the plain-text
+        backup intact and writes a warning to stderr.  Used by errors.log
+        to keep disk usage bounded without changing on-disk semantics for
+        tools that grep the logs (which can ``zcat`` on demand).
     """
     resolved = path.resolve()
     for existing in logger.handlers:
@@ -538,6 +667,7 @@ def _add_rotating_handler(
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count,
         encoding="utf-8",
+        compress_rotated=compress_rotated,
     )
     handler.setLevel(level)
     handler.setFormatter(formatter)

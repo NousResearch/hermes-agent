@@ -263,6 +263,45 @@ hermes-agent/
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
+### Log rotation
+
+All three files use Python `RotatingFileHandler` (see `hermes_logging.py`),
+governed by `logging.max_size_mb` (default 5 MiB) and `logging.backup_count`
+(default 3) in `config.yaml`. Per-file:
+
+| File         | Rotation policy                                            |
+| ------------ | ---------------------------------------------------------- |
+| `agent.log`  | 5 MiB × 3 plain-text backups (`agent.log.1` … `.3`)        |
+| `errors.log` | 5 MiB × 3 gzip-compressed backups (`errors.log.1.gz` … `.3.gz`) |
+| `gateway.log`| 5 MiB × 3 plain-text backups                               |
+
+`errors.log` is the only one with gzip compression — the WARNING/ERROR volume
+tends to be lower but spikier, so compressing gives a much better disk-usage
+profile without losing triage value. The compression happens inside
+`_ManagedRotatingFileHandler._doRolloverCompressed()` which does its OWN
+rename chain over the `.gz` suffix (stdlib's `doRollover` walks `.N` plain-text
+and would strand `.2`/`.3` as plain text while `.1.gz` was freshly written).
+Read backups with `zcat ~/.hermes/logs/errors.log.1.gz`.
+
+**To force a rotation manually** (e.g. before sending logs to support, or to
+free disk without waiting for the threshold):
+
+```bash
+# Truncate the active log in place; the next emit will reopen it and
+# the existing contents remain readable from .1 (or .1.gz).
+: > ~/.hermes/logs/errors.log
+
+# To force an immediate rollover of the current contents into .1.gz,
+# pre-fill past max_size_mb and emit one warning:
+truncate -s 6M ~/.hermes/logs/errors.log
+python3 -c "import logging; logging.getLogger('manual').warning('rotate-now')"
+```
+
+To **disable compression**, pass `compress_rotated=False` to `_add_rotating_handler`
+in `hermes_logging.py:setup_logging()`. To **change thresholds at runtime**, set
+`logging.max_size_mb` / `logging.backup_count` under `config.yaml`; the next
+gateway restart (or `setup_logging(force=True)` call) picks them up.
+
 ## TypeScript Style
 
 Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packages.

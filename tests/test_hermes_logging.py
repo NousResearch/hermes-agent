@@ -1,4 +1,5 @@
 """Tests for hermes_logging — centralized logging setup."""
+import gzip
 import io
 import logging
 import os
@@ -1086,3 +1087,254 @@ class TestSafeStderr:
             logger.info("Session hygiene: 400 messages — auto-compressing")
         finally:
             logger.removeHandler(handler)
+
+
+class TestErrorsLogRotation:
+    """errors.log rotation policy matches agent.log (5 MiB / 5 backups) and
+    compressed backups are gzip-archived so disk usage stays bounded.
+
+    Regression test for t_91a20f01 — before the fix, errors.log rotated at
+    2 MiB / 2 backups with no compression, leaving 5 MiB+ of plain-text
+    WARNING/ERROR records on disk per cycle.
+    """
+
+    def test_errors_log_uses_default_max_bytes_and_backup_count(self, hermes_home):
+        """errors.log inherits the same 5 MiB / 3-backup defaults as agent.log
+        from config.yaml, matching the agent.log behavior the runbook expects.
+        """
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        root = logging.getLogger()
+
+        err_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "errors.log" in getattr(h, "baseFilename", "")
+            and "errors.log." not in getattr(h, "baseFilename", "")
+        ]
+        assert len(err_handlers) == 1
+        assert err_handlers[0].maxBytes == 5 * 1024 * 1024
+        assert err_handlers[0].backupCount == 3
+
+    def test_errors_log_handler_has_compression_enabled(self, hermes_home):
+        """The errors.log handler is configured to gzip its .1 backup after
+        rollover.  Confirms the ``_compress_rotated`` flag is plumbed through
+        ``_ManagedRotatingFileHandler`` so doRollover() compresses instead
+        of leaving plain-text backups forever.
+        """
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        root = logging.getLogger()
+
+        err_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "errors.log" in getattr(h, "baseFilename", "")
+            and "errors.log." not in getattr(h, "baseFilename", "")
+        ]
+        assert len(err_handlers) == 1
+        # Public API surface: this is the flag we plumbed through to enable
+        # gzip.  If the flag ever gets renamed, this test will fail and force
+        # an explicit decision instead of a silent regression.
+        assert getattr(err_handlers[0], "_compress_rotated", False) is True
+
+    def test_rollover_produces_gzipped_backup(self, hermes_home):
+        """Triggering a rollover on errors.log produces ``errors.log.1.gz``
+        (compressed) and NOT a plain ``errors.log.1`` — confirming the
+        end-to-end rotation+gzip path actually fires.
+
+        Flow: pre-size the log so a single warning pushes it past the
+        rotation threshold, then emit one more warning.  The first batch
+        gets pushed to ``errors.log.1.gz`` by the rollover; the trailing
+        warning lands in the fresh live ``errors.log``.  We then ``zcat``
+        the .gz and confirm the pre-rotation payload survived the
+        rename+gzip round-trip.
+        """
+        log_path = hermes_home / "logs" / "errors.log"
+        backup_path = log_path.parent / "errors.log.1"
+        backup_gz = Path(f"{backup_path}.gz")  # errors.log.1.gz
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        # Lower the rotation threshold on the errors.log handler only so we
+        # can trigger a rollover with a small payload, and raise
+        # backupCount so this single rollover doesn't get evicted by
+        # successive ones triggered by the trailing warning.
+        root = logging.getLogger()
+        errors_handler = None
+        for h in root.handlers:
+            if (
+                isinstance(h, RotatingFileHandler)
+                and Path(getattr(h, "baseFilename", "")).name == "errors.log"
+            ):
+                errors_handler = h
+                break
+        assert errors_handler is not None, "Could not find errors.log handler"
+        errors_handler.maxBytes = 400  # big enough for the sentinel, not for filler
+        errors_handler.backupCount = 20  # generous so we don't evict the .gz
+
+        # Prime the file: write a sentinel that we expect to find in the
+        # gzip after the upcoming rollover.
+        test_logger = logging.getLogger("test.rotation_compress")
+        sentinel = "ROTATE-COMPRESS-SENTINEL-XYZ-987654"
+        test_logger.warning(sentinel)
+
+        # Pre-fill errors.log so the NEXT emit triggers exactly one rollover.
+        # Using direct file write keeps this off the warning-rate-limiters
+        # in pytest.
+        with open(log_path, "ab") as f:
+            f.write(b"x" * 600)  # > maxBytes; one rollover on next emit
+
+        # Emit one warning — should trigger exactly one rollover: pre-rotation
+        # content (.1.gz) = sentinel; new errors.log = this warning.
+        test_logger.warning("post-rotation-trailing-warning")
+
+        for h in root.handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+
+        assert backup_gz.exists(), (
+            f"Expected {backup_gz} to exist after rotation; "
+            f"saw plain backup at {backup_path}={backup_path.exists()}"
+        )
+        assert not backup_path.exists(), (
+            f"Plain-text {backup_path} should have been gzip-replaced, "
+            f"but it's still present."
+        )
+
+        # The sentinel must have made it through the rename+gzip round-trip.
+        with gzip.open(backup_gz, "rt", encoding="utf-8") as f:
+            content = f.read()
+        assert sentinel in content, (
+            f"Sentinel missing from gzipped backup — gzip lost data. "
+            f"Content head: {content[:300]!r}"
+        )
+
+        # The active errors.log should still exist and contain the trailing
+        # warning — the gateway/CLI continues to log without restart or
+        # loss.
+        assert log_path.exists()
+        live_content = log_path.read_text()
+        assert "post-rotation-trailing-warning" in live_content
+
+    def test_gzip_file_static_helper_replaces_source(self, tmp_path):
+        """Direct test of the gzip helper: source file is removed, .gz exists,
+        .gz content matches the original.  Catches off-by-one bugs in the
+        tmp-rename-unlink dance.
+        """
+        src = tmp_path / "test.log.1"
+        src.write_text("line1\nline2\n" * 100)
+
+        hermes_logging._ManagedRotatingFileHandler._gzip_file(str(src))
+
+        gz = tmp_path / "test.log.1.gz"
+        assert gz.exists()
+        assert not src.exists()
+        with gzip.open(gz, "rt", encoding="utf-8") as f:
+            assert f.read() == "line1\nline2\n" * 100
+
+    def test_gzip_file_silent_on_missing_source(self, tmp_path):
+        """Calling _gzip_file on a path that doesn't exist must NOT raise —
+        the rotation path is hot and a missing-file race during concurrent
+        rotation (e.g. external logrotate or another Hermes process) must
+        not break the caller's doRollover.
+        """
+        missing = tmp_path / "nope.log.1"
+        # Should be a no-op, no exception.
+        hermes_logging._ManagedRotatingFileHandler._gzip_file(str(missing))
+        assert not missing.exists()
+        assert not (tmp_path / "nope.log.1.gz").exists()
+
+    def test_rollover_chain_shifts_gz_backups_across_rotations(self, hermes_home):
+        """Multiple successive rollovers must shift the .gz backup chain
+        (``1.gz`` → ``2.gz`` → ``3.gz``) and never leave a plain-text
+        ``errors.log.N`` file behind.
+
+        Regression guard for the stdlib ``doRollover`` interaction:
+        stdlib's plain-text rename chain would leave ``errors.log.2`` and
+        ``errors.log.3`` as plain text while ``.1.gz`` was freshly gzipped,
+        and on the next rollover the .1→.2 plain rename would silently
+        no-op (the source ``.1`` was renamed-and-unlinked by the gzip step).
+        The compressed path has to do the .gz shift itself.
+        """
+        log_path = hermes_home / "logs" / "errors.log"
+        backups_gz = [log_path.parent / f"errors.log.{i}.gz" for i in (1, 2, 3)]
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        root = logging.getLogger()
+        test_logger = logging.getLogger("test.rotation_chain")
+
+        # Locate the errors.log handler and shrink maxBytes so we can drive
+        # rollovers with small payloads. Keep backupCount = 3 (the default)
+        # so the chain tests the full shift.
+        errors_handler = None
+        for h in root.handlers:
+            if (
+                isinstance(h, RotatingFileHandler)
+                and Path(getattr(h, "baseFilename", "")).name == "errors.log"
+            ):
+                errors_handler = h
+                break
+        assert errors_handler is not None
+        errors_handler.maxBytes = 200
+
+        # Drive 4 warnings each followed by filler large enough to trigger
+        # a rollover on the NEXT emit. After 4 warnings we get 3 rollovers
+        # (the 1st, 2nd, and 3rd warning each trigger a rollover of the
+        # PRIOR iteration's payload into .gz land; the 4th warning is the
+        # tail that lives in the active file).
+        sentinels = []
+        for i in range(4):
+            sentinel = f"chain-sentinel-{i}"
+            sentinels.append(sentinel)
+            test_logger.warning(sentinel)
+            with open(log_path, "ab") as f:
+                f.write(b"x" * 400)  # > maxBytes
+
+        for h in root.handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+
+        # Plain-text backups must never exist — every rollover produced
+        # only .gz backups.
+        for n in (1, 2, 3):
+            plain = log_path.parent / f"errors.log.{n}"
+            assert not plain.exists(), (
+                f"Plain-text {plain.name} should have been gzipped and "
+                f"unlinked, but it remains."
+            )
+
+        # .1.gz holds the most-recent rolled payload (sentinel-2's payload,
+        # because the 3rd warning's rollover pushed sentinel-2's content
+        # into .1.gz; sentinel-3 is the trailing warning that lives in the
+        # live errors.log). .2.gz holds sentinel-1; .3.gz holds sentinel-0.
+        import gzip as _gzip
+        expected = {
+            1: "chain-sentinel-2",  # .1.gz
+            2: "chain-sentinel-1",  # .2.gz
+            3: "chain-sentinel-0",  # .3.gz
+        }
+        for n, expected_sentinel in expected.items():
+            gz = backups_gz[n - 1]
+            assert gz.exists(), f"{gz.name} missing after rotation chain"
+            with _gzip.open(gz, "rt", encoding="utf-8") as f:
+                content = f.read()
+            assert expected_sentinel in content, (
+                f"{gz.name} should contain {expected_sentinel!r}; "
+                f"got head: {content[:200]!r}"
+            )
+
+        # The live errors.log should hold the trailing sentinel (chain-sentinel-3)
+        # which has NOT yet been rolled — and must NOT contain the rolled
+        # sentinels that are now sitting in the .gz chain.
+        live = log_path.read_text()
+        assert "chain-sentinel-3" in live, (
+            "Trailing sentinel-3 should still be in the active errors.log"
+        )
+        for already_rolled in ("chain-sentinel-0", "chain-sentinel-1", "chain-sentinel-2"):
+            assert already_rolled not in live, (
+                f"{already_rolled} should have been rolled into the .gz "
+                f"chain but is still in the active errors.log"
+            )

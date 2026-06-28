@@ -347,7 +347,7 @@ async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
             chat_id="chat1",
             notifier_profile="default",
         )
-        kb.complete_task(conn, tid, result="done")
+        kb.block_task(conn, tid, reason="owner mismatch")
     finally:
         conn.close()
 
@@ -384,6 +384,124 @@ async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
         conn.close()
     assert len(subs) == 1
     assert int(subs[0]["last_event_id"]) == 0, "wrong profile must not claim the event"
+
+
+@pytest.mark.asyncio
+async def test_notifier_removes_stale_final_subscription_owned_by_other_profile(kanban_home):
+    """Final tasks owned by an old profile should not keep dead subscriptions."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="old final task", assignee="backend-engineer")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            notifier_profile="rino",
+        )
+        kb.complete_task(conn, tid, result="done")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_notifier_profile = "default"
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_not_called()
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert subs == []
+
+
+@pytest.mark.asyncio
+async def test_notifier_removes_final_subscription_with_no_unseen_events(kanban_home):
+    """A final task with an already-advanced cursor should be cleaned up."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="already delivered", assignee="backend-engineer")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            notifier_profile="default",
+        )
+        kb.complete_task(conn, tid, result="done")
+        max_event = max(event.id for event in kb.list_events(conn, tid))
+        kb.advance_notify_cursor(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            new_cursor=max_event,
+        )
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_notifier_profile = "default"
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_not_called()
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert subs == []
 
 
 @pytest.mark.asyncio

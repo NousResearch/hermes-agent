@@ -4700,8 +4700,25 @@ class GatewayRunner:
                             if not subs:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
+                                task = _kb.get_task(conn, sub["task_id"])
+                                task_terminal = bool(
+                                    task and task.status in {"done", "archived"}
+                                )
                                 owner_profile = sub.get("notifier_profile") or None
                                 if owner_profile and owner_profile != notifier_profile:
+                                    if task_terminal:
+                                        _kb.remove_notify_sub(
+                                            conn,
+                                            task_id=sub["task_id"],
+                                            platform=sub["platform"],
+                                            chat_id=sub["chat_id"],
+                                            thread_id=sub.get("thread_id") or "",
+                                        )
+                                        logger.debug(
+                                            "kanban notifier: removed stale final subscription for %s owned by profile %s; current profile %s",
+                                            sub.get("task_id"), owner_profile, notifier_profile,
+                                        )
+                                        continue
                                     logger.debug(
                                         "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
                                         sub.get("task_id"), owner_profile, notifier_profile,
@@ -4723,8 +4740,19 @@ class GatewayRunner:
                                     kinds=TERMINAL_KINDS,
                                 )
                                 if not events:
+                                    if task_terminal:
+                                        _kb.remove_notify_sub(
+                                            conn,
+                                            task_id=sub["task_id"],
+                                            platform=sub["platform"],
+                                            chat_id=sub["chat_id"],
+                                            thread_id=sub.get("thread_id") or "",
+                                        )
+                                        logger.debug(
+                                            "kanban notifier: removed stale final subscription for %s on board %s",
+                                            sub.get("task_id"), slug,
+                                        )
                                     continue
-                                task = _kb.get_task(conn, sub["task_id"])
                                 logger.debug(
                                     "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                                     len(events), sub["task_id"], slug, old_cursor, cursor,

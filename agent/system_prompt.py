@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
+    FIX_FIDELITY_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
@@ -41,6 +42,7 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    VERIFICATION_ENFORCEMENT_GUIDANCE,
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
@@ -172,6 +174,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # Verification-enforcement guidance — requires the model to include
+    # actual evidence (command output, tool result, screenshot) when
+    # claiming something is verified.  Gated by config.yaml
+    # ``agent.verification_enforcement`` (default True).
+    if getattr(agent, "_verification_enforcement", True) and agent.valid_tool_names:
+        stable_parts.append(VERIFICATION_ENFORCEMENT_GUIDANCE)
+
+    # Fix-fidelity guidance — prevents the model from substituting a
+    # cheaper lookalike for a prescribed change.  Gated by config.yaml
+    # ``agent.fix_fidelity`` (default True).
+    if getattr(agent, "_fix_fidelity", True) and agent.valid_tool_names:
+        stable_parts.append(FIX_FIDELITY_GUIDANCE)
 
     # Universal parallel-tool-call guidance.  Tells the model to batch
     # independent tool calls into one assistant turn rather than emitting one

@@ -328,6 +328,29 @@ TASK_COMPLETION_GUIDANCE = (
     "is always better than inventing a result."
 )
 
+# Verification-enforcement guidance — requires the model to back up
+# verification claims with actual evidence in the same response.
+# Gated by config.yaml agent.verification_enforcement (default True).
+VERIFICATION_ENFORCEMENT_GUIDANCE = (
+    "# Verification evidence requirement\n"
+    "When you state something is verified, tested, or observed (e.g. 'it turns red', "
+    "'tests pass', 'renders correctly'), your reply MUST contain the actual evidence: "
+    "the command and its output, a tool result, or a screenshot. If you did not run "
+    "it, say 'not yet verified'. A claim of observation you did not make is a defect."
+)
+
+# Fix-fidelity guidance — prevents the model from substituting a cheaper
+# lookalike for the prescribed change.  Gated by config.yaml
+# agent.fix_fidelity (default True).
+FIX_FIDELITY_GUIDANCE = (
+    "# Fix fidelity\n"
+    "Before implementing a fix that you or a review prescribed, emit a line "
+    "`Prescription: <the exact intended change>`. Then confirm your implementation "
+    "does THAT specific thing, not a cheaper lookalike (e.g. if the prescription "
+    "says 'measure the rendered area', do not substitute the formula). State the "
+    "prescription→implementation match explicitly."
+)
+
 # Universal parallel-tool-call guidance — applied to ALL models.
 #
 # Why this matters for cost: every assistant turn resends the entire

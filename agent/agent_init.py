@@ -1345,6 +1345,16 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Verification-enforcement guidance toggle.  Default True.  Requires
+    # the model to include actual evidence (command output, tool result,
+    # screenshot) when claiming something is verified.  Separate flag so
+    # users who want a leaner prompt can turn it off.
+    agent._verification_enforcement = bool(_agent_section.get("verification_enforcement", True))
+
+    # Fix-fidelity guidance toggle.  Default True.  Prevents the model
+    # from substituting a cheaper lookalike for a prescribed change.
+    agent._fix_fidelity = bool(_agent_section.get("fix_fidelity", True))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

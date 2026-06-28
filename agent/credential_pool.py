@@ -288,26 +288,63 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
 
 
 def _extract_retry_delay_seconds(message: str) -> Optional[float]:
+
     if not message:
+
         return None
+
     delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
+
     if delay_match:
+
         value = float(delay_match.group(1))
+
         return value / 1000.0 if delay_match.group(2).lower() == "ms" else value
+
+    # "Resets in Xh Ym Zs" — unified pattern matching the same formats
+
+    # as extract_api_error_context in agent_runtime_helpers.py.  Supports
+
+    # h/hr/hrs/hour/hours, m/min/mins/minute/minutes, s/sec/secs/second/seconds
+
+    # in any combination (hours-only, minutes-only, seconds-only, or mixed).
+
+    resets_in_match = re.search(
+
+        r"resets?\s+in\s+"
+
+        r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
+
+        r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
+
+        r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?",
+
+        message,
+
+        re.IGNORECASE,
+
+    )
+
+    if resets_in_match and any(resets_in_match.groups()):
+
+        hours = float(resets_in_match.group(1) or 0)
+
+        minutes = float(resets_in_match.group(2) or 0)
+
+        seconds = float(resets_in_match.group(3) or 0)
+
+        return (hours * 3600) + (minutes * 60) + seconds
+
     sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
+
     if sec_match:
+
         return float(sec_match.group(1))
-    # "Resets in 4hr 5min" format used by OpenCode Go weekly usage limits
-    hr_min_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\s+(\d+)\s*min", message, re.IGNORECASE)
-    if hr_min_match:
-        return int(hr_min_match.group(1)) * 3600 + int(hr_min_match.group(2)) * 60
-    hr_only_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\b", message, re.IGNORECASE)
-    if hr_only_match:
-        return int(hr_only_match.group(1)) * 3600
-    min_only_match = re.search(r"resets?\s+in\s+(\d+)\s*min\b", message, re.IGNORECASE)
-    if min_only_match:
-        return int(min_only_match.group(1)) * 60
+
     return None
+
+
+
 
 
 def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:

@@ -499,6 +499,90 @@ def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
     )
 
 
+# ── _ws_relevant_packages + workspace-scoped _tui_need_npm_install ──
+
+
+def test_ws_relevant_packages_returns_none_for_standalone(
+    tmp_path: Path, main_mod
+) -> None:
+    """Standalone project (ws_root == root) returns None -- compare everything."""
+    wanted = {"node_modules/foo": {"version": "1.0.0"}}
+    assert main_mod._ws_relevant_packages(wanted, tmp_path, tmp_path) is None
+
+
+def test_ws_relevant_packages_collects_transitive_closure(
+    tmp_path: Path, main_mod
+) -> None:
+    """Walks direct + transitive deps of the target workspace."""
+    ws_root = tmp_path
+    root = tmp_path / "ui-tui"
+    root.mkdir()
+    wanted = {
+        "ui-tui": {"dependencies": {"react": "^18"}},
+        "ui-tui/packages/hermes-ink": {"dependencies": {"chalk": "^5"}},
+        "apps/desktop": {"dependencies": {"electron": "^30", "@codemirror/state": "^6"}},
+        "node_modules/react": {"version": "18.3.0", "dependencies": {"scheduler": "^0.24"}},
+        "node_modules/scheduler": {"version": "0.24.0"},
+        "node_modules/chalk": {"version": "5.4.0"},
+        "node_modules/electron": {"version": "30.0.0"},
+        "node_modules/@codemirror/state": {"version": "6.5.0"},
+    }
+    result = main_mod._ws_relevant_packages(wanted, ws_root, root)
+    assert result is not None
+    assert "node_modules/react" in result
+    assert "node_modules/scheduler" in result  # transitive via react
+    assert "node_modules/chalk" in result  # via hermes-ink child workspace
+    assert "node_modules/electron" not in result  # apps/desktop only
+    assert "node_modules/@codemirror/state" not in result  # apps/desktop only
+
+
+def test_no_install_when_missing_package_belongs_to_other_workspace(
+    tmp_path: Path, main_mod
+) -> None:
+    """Packages from other workspaces must not trigger reinstall."""
+    ws_root = tmp_path
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (ws_root / "package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"ink":"^5"}},'
+        '"apps/desktop":{"dependencies":{"electron":"^30"}},'
+        '"node_modules/ink":{"version":"5.0.0"},'
+        '"node_modules/electron":{"version":"30.0.0"}'
+        "}}"
+    )
+    _touch_ink(ws_root)
+    (ws_root / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{"node_modules/ink":{"version":"5.0.0"}}}'
+    )
+    # electron is MISSING from hidden lock but belongs to apps/desktop, not ui-tui.
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
+def test_install_when_missing_package_belongs_to_target_workspace(
+    tmp_path: Path, main_mod
+) -> None:
+    """Packages in the target workspace's dep tree DO trigger reinstall."""
+    ws_root = tmp_path
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (ws_root / "package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"ink":"^5","new-dep":"^1"}},'
+        '"node_modules/ink":{"version":"5.0.0"},'
+        '"node_modules/new-dep":{"version":"1.0.0"}'
+        "}}"
+    )
+    _touch_ink(ws_root)
+    (ws_root / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{"node_modules/ink":{"version":"5.0.0"}}}'
+    )
+    # new-dep is MISSING and is a direct dep of ui-tui -- must trigger install.
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
 def test_tui_launch_install_uses_workspace_scope(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:

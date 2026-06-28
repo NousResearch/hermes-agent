@@ -1447,6 +1447,69 @@ def _termux_workspace_install_context(
     return ws_root, tuple(workspace_args)
 
 
+def _ws_relevant_packages(
+    wanted: dict[str, object], ws_root: Path, root: Path
+) -> set[str] | None:
+    """Return the set of ``node_modules/…`` keys reachable from *root*'s workspace.
+
+    When *root* lives inside a workspace checkout (``ws_root != root``),
+    walks the transitive dependency closure starting from the workspace
+    entries for *root* (e.g. ``ui-tui``, ``ui-tui/packages/hermes-ink``).
+    Only ``node_modules/…`` keys in the returned set should be compared
+    by :func:`_tui_need_npm_install` -- packages that belong to other
+    workspaces (``apps/desktop``, ``web``, etc.) are intentionally not
+    installed by ``npm install --workspace ui-tui`` and must be ignored.
+
+    Returns ``None`` when *root* is standalone (no workspace scoping
+    needed), signalling the caller to compare all entries.
+    """
+    if ws_root == root:
+        return None  # standalone project -- compare everything
+
+    try:
+        ws_name = root.relative_to(ws_root).as_posix()
+    except ValueError:
+        return None
+
+    # Collect workspace entries: the target workspace + any child workspaces
+    # (e.g. ui-tui/packages/hermes-ink).  Ignore nested node_modules entries
+    # like apps/desktop/node_modules/electron -- those are workspace-local
+    # overrides, not workspace roots.
+    ws_entries: list[str] = []
+    for key in wanted:
+        if key == ws_name or (
+            key.startswith(ws_name + "/") and "/node_modules/" not in key
+        ):
+            ws_entries.append(key)
+
+    # BFS: collect all transitive dependencies reachable from the workspace.
+    closure: set[str] = set()
+    frontier: list[str] = []
+    for ws_key in ws_entries:
+        ws_pkg = wanted.get(ws_key)
+        if not isinstance(ws_pkg, dict):
+            continue
+        for grp in ("dependencies", "devDependencies"):
+            for dep_name in ws_pkg.get(grp, {}):  # type: ignore[union-attr]
+                nm_key = f"node_modules/{dep_name}"
+                if nm_key not in closure:
+                    closure.add(nm_key)
+                    frontier.append(nm_key)
+
+    while frontier:
+        nm_key = frontier.pop()
+        pkg = wanted.get(nm_key)
+        if not isinstance(pkg, dict):
+            continue
+        for dep_name in pkg.get("dependencies", {}):  # type: ignore[union-attr]
+            child_key = f"node_modules/{dep_name}"
+            if child_key not in closure:
+                closure.add(child_key)
+                frontier.append(child_key)
+
+    return closure
+
+
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
@@ -1461,13 +1524,20 @@ def _tui_need_npm_install(root: Path) -> bool:
     workspace root; only the prebuilt-bundle sentinel stays relative to
     *root* (``ui-tui/dist/entry.js``).
 
+    **Workspace scoping:** in a workspace checkout the root lockfile
+    contains entries for every workspace (``apps/desktop``, ``web``, etc.),
+    but ``npm install --workspace ui-tui`` only installs the TUI's own
+    dependency tree.  The content comparison is scoped to the transitive
+    closure of the target workspace's dependencies so that packages
+    belonging to other workspaces do not trigger a spurious reinstall.
+
     Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
     (npm's hidden lockfile) by **content**, not mtime: git checkouts and npm
     rewrites can bump the root lockfile's timestamp even when installed deps
     already match, which used to trigger a spurious "Installing TUI
     dependencies" on every launch.
 
-    For each entry in the root lock's ``packages`` map:
+    For each entry in the (scoped) root lock's ``packages`` map:
       - missing from hidden lock → reinstall (unless the entry is marked
         ``optional`` or ``peer``, which npm may intentionally skip per platform)
       - present but with differing fields (excluding npm-written runtime
@@ -1505,6 +1575,11 @@ def _tui_need_npm_install(root: Path) -> bool:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return lock.stat().st_mtime > marker.stat().st_mtime
 
+    # Workspace scoping: only compare packages in the target workspace's
+    # transitive dependency tree.  Packages from other workspaces are
+    # intentionally not installed by --workspace ui-tui.
+    relevant = _ws_relevant_packages(wanted, ws_root, root)
+
     def comparable(pkg: dict) -> dict:
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
 
@@ -1513,6 +1588,10 @@ def _tui_need_npm_install(root: Path) -> bool:
             continue
 
         if not isinstance(pkg, dict):
+            continue
+
+        # Skip packages outside the target workspace's dependency tree.
+        if relevant is not None and name not in relevant:
             continue
 
         if name not in installed:

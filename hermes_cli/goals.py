@@ -129,6 +129,9 @@ JUDGE_SYSTEM_PROMPT = (
     "watch_patterns trigger fires (use this for a long-lived watcher that "
     "signals mid-run and may never exit). Otherwise return its pid in "
     "``wait_on_pid`` (releases on exit only).\n"
+    "Never put delegate_task ids like ``deleg_abc123`` in ``wait_on_session``; "
+    "those are async delegation ids, not process sessions. If there is no listed "
+    "background process or fixed backoff to wait on, return CONTINUE.\n"
     "- The agent says it is rate-limited / backing off / must wait a fixed "
     "period — return seconds in ``wait_for_seconds``.\n"
     "Picking WAIT parks the loop without burning a turn; it resumes "
@@ -663,6 +666,18 @@ def _session_waiting(session_id: str) -> bool:
         return False
 
 
+def _looks_like_async_delegation_id(value: str) -> bool:
+    """Return True for delegate_task async ids (``deleg_...``).
+
+    ``wait_on_session`` is scoped to process_registry sessions. Async
+    delegation ids are not process sessions; parking a goal on one can strand
+    the loop when completion re-entry has already been missed. Treat them as
+    invalid wait-session targets so the goal continues instead of persisting a
+    stale barrier.
+    """
+    return str(value or "").strip().startswith("deleg_")
+
+
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
@@ -776,7 +791,18 @@ def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, 
     # exit OR watch-pattern match), then pid (exit only), then seconds.
     sess = data.get("wait_on_session") or data.get("session_id") or data.get("wait_session")
     if isinstance(sess, str) and sess.strip():
-        return "wait", reason, False, {"session_id": sess.strip()}
+        sess = sess.strip()
+        if _looks_like_async_delegation_id(sess):
+            return (
+                "continue",
+                (
+                    f"{reason} (wait target {sess!r} is an async delegation id, "
+                    "not a process session — continuing)"
+                ),
+                False,
+                None,
+            )
+        return "wait", reason, False, {"session_id": sess}
     pid = _first_int("wait_on_pid", "pid", "wait_pid")
     if pid is not None:
         return "wait", reason, False, {"pid": pid}
@@ -1300,6 +1326,10 @@ class GoalManager:
         session_id = str(session_id or "").strip()
         if not session_id:
             raise ValueError("session_id must be a non-empty string")
+        if _looks_like_async_delegation_id(session_id):
+            raise ValueError(
+                "session_id must be a process_registry session id, not an async delegation id"
+            )
         self._state.waiting_on_session = session_id
         self._state.waiting_on_pid = None
         self._state.waiting_until = 0.0
@@ -1467,22 +1497,48 @@ class GoalManager:
         # the is_waiting() short-circuit once the barrier clears).
         if verdict == "wait" and wait_directive:
             if wait_directive.get("session_id"):
-                self.wait_on_session(str(wait_directive["session_id"]), reason=reason)
-                tgt = f"session {wait_directive['session_id']}"
+                session_target = str(wait_directive["session_id"])
+                if _looks_like_async_delegation_id(session_target):
+                    verdict = "continue"
+                    reason = (
+                        f"{reason} (wait target {session_target!r} is an async "
+                        "delegation id, not a process session — continuing)"
+                    )
+                    state.last_verdict = verdict
+                    state.last_reason = reason
+                else:
+                    self.wait_on_session(session_target, reason=reason)
+                    tgt = f"session {wait_directive['session_id']}"
+                    return {
+                        "status": "active",
+                        "should_continue": False,
+                        "continuation_prompt": None,
+                        "verdict": "wait",
+                        "reason": reason,
+                        "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
+                    }
             elif wait_directive.get("pid"):
                 self.wait_on(int(wait_directive["pid"]), reason=reason)
                 tgt = f"pid {wait_directive['pid']}"
+                return {
+                    "status": "active",
+                    "should_continue": False,
+                    "continuation_prompt": None,
+                    "verdict": "wait",
+                    "reason": reason,
+                    "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
+                }
             else:
                 self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason)
                 tgt = f"{wait_directive['seconds']}s"
-            return {
-                "status": "active",
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "wait",
-                "reason": reason,
-                "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
-            }
+                return {
+                    "status": "active",
+                    "should_continue": False,
+                    "continuation_prompt": None,
+                    "verdict": "wait",
+                    "reason": reason,
+                    "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
+                }
 
         if verdict == "done":
             state.status = "done"

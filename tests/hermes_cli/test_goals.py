@@ -119,6 +119,21 @@ class TestParseJudgeResponse:
         assert wait is None
         assert pf is False
 
+    def test_wait_verdict_with_delegation_id_downgrades_to_continue(self):
+        """delegate_task ids are not process sessions; never park /goal on them."""
+        from hermes_cli.goals import _parse_judge_response
+
+        raw = json.dumps({
+            "verdict": "wait",
+            "wait_on_session": "deleg_215a49d1",
+            "reason": "waiting for review",
+        })
+        v, reason, pf, wait = _parse_judge_response(raw)
+        assert v == "continue"
+        assert wait is None
+        assert pf is False
+        assert "async delegation id" in reason
+
     def test_unknown_verdict_falls_back_to_continue(self):
         from hermes_cli.goals import _parse_judge_response
 
@@ -334,6 +349,35 @@ class TestGoalManager:
         assert "a long goal" in decision["continuation_prompt"]
         assert mgr.state.status == "active"
         assert mgr.state.turns_used == 1
+
+    def test_evaluate_after_turn_does_not_wait_on_delegation_id(self, hermes_home):
+        """A bad judge/directive must not persist deleg_* as waiting_on_session."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-deleg-wait", default_max_turns=5)
+        mgr.set("wait for subagent review")
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=(
+                "wait",
+                "waiting for review",
+                False,
+                {"session_id": "deleg_215a49d1"},
+            ),
+        ):
+            decision = mgr.evaluate_after_turn("review pending")
+
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        state = mgr.state
+        assert state is not None
+        assert state.waiting_on_session is None
+        assert state.last_verdict == "continue"
+        assert state.last_reason is not None
+        assert "async delegation id" in state.last_reason
 
     def test_evaluate_after_turn_budget_exhausted(self, hermes_home):
         """When turn budget hits ceiling, auto-pause instead of continuing."""
@@ -1203,6 +1247,11 @@ class TestSessionTriggerBarrier:
             assert False, "expected ValueError"
         except ValueError:
             pass
+        try:
+            mgr.wait_on_session("deleg_215a49d1")
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "async delegation id" in str(exc)
 
     def test_session_directive_parsed_from_judge(self, hermes_home):
         from hermes_cli.goals import _parse_judge_response

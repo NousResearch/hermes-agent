@@ -25,7 +25,7 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.env_settings import cron_env_setting
@@ -931,6 +931,33 @@ def _job_is_stale_error_recurring(
 
 # Per-expr cache for _schedule_cadence_seconds' croniter measurements.
 _cron_cadence_cache: Dict[str, Optional[float]] = {}
+
+
+def _log_missed_job(job: dict, scheduled_at: str, grace: int, new_next: str) -> None:
+    """Append a missed-job event to the audit log for trend analysis.
+
+    Writes one JSON line to ``missed_jobs.jsonl`` in the active store's cron
+    directory (resolved via ``_current_cron_store()``).
+    Used by the daily health report to surface patterns of scheduler gaps.
+    """
+    try:
+        log_dir = _current_cron_store().cron_dir
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "missed_jobs.jsonl"
+
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "job_id": job.get("id"),
+            "name": job.get("name", ""),
+            "scheduled_at": scheduled_at,
+            "grace_seconds": grace,
+            "fast_forwarded_to": new_next,
+            "schedule": job.get("schedule", {}).get("display") or job.get("schedule", {}).get("expr", "?"),
+        }
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # Audit log failure must never block cron execution
 
 
 def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
@@ -2795,6 +2822,12 @@ class _DueScan:
             self.removed.add(str(job_id))
             self.needs_save = True
 
+    def audit_missed_job(self, job: Dict[str, Any], scheduled_at: str, grace: int, new_next: str) -> None:
+        """Record a fast-forwarded miss in the audit log after its repair was persisted
+        (#54349); flags a save like persist()/retire() so the audit trails the store write."""
+        _log_missed_job(job, scheduled_at, grace, new_next)
+        self.needs_save = True
+
 
 def _normalize_due_scan_records(raw_jobs: List[Dict[str, Any]]) -> bool:
     """Repair malformed store records in place BEFORE the due scan keys off them: a missing ``id``
@@ -3004,6 +3037,7 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
     record_catch_up_occurrence()
+    d.scan.audit_missed_job(d.job, d.next_run, grace, new_next)
     return False
 
 

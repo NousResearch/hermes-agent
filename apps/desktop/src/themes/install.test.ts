@@ -182,4 +182,32 @@ describe('installHermesThemeFromText', () => {
   it('rejects JSON without a theme or theme pack', () => {
     expect(() => installHermesThemeFromText(JSON.stringify({ nope: true }))).toThrow(/theme/i)
   })
+
+  it('rejects malformed Hermes theme objects with a specific shape error', () => {
+    expect(() =>
+      installHermesThemeFromText(
+        JSON.stringify({
+          name: 'missing-label',
+          description: 'No label',
+          colors: { background: '#101010', foreground: '#f0f0f0', primary: '#d0d0d0' }
+        })
+      )
+    ).toThrow(/label/i)
+  })
+
+  it('validates a theme pack before installing any entries', () => {
+    expect(() =>
+      installHermesThemeFromText(
+        JSON.stringify({
+          themes: [
+            hermesTheme('quiet'),
+            { name: 'broken', label: 'Broken', description: 'Broken', colors: { background: '#101010' } }
+          ]
+        })
+      )
+    ).toThrow(/foreground/i)
+
+    expect($userThemes.get()).toEqual({})
+    expect(window.localStorage.getItem('hermes-desktop-user-themes-v1')).toBeNull()
+  })
 })

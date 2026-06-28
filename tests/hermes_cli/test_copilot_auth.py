@@ -106,6 +106,23 @@ class TestResolveToken:
         assert token == ""
         assert source == ""
 
+    def test_gh_cli_fallback_hides_windows_console(self, monkeypatch):
+        from hermes_cli import copilot_auth
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return type("Result", (), {"returncode": 0, "stdout": "gho_from_cli\n"})()
+
+        monkeypatch.setattr(copilot_auth, "_gh_cli_candidates", lambda: ["gh"])
+        monkeypatch.setattr(copilot_auth, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(copilot_auth.subprocess, "run", fake_run)
+
+        assert copilot_auth._try_gh_cli_token() == "gho_from_cli"
+        assert calls[0][0] == ["gh", "auth", "token"]
+        assert calls[0][1]["creationflags"] == 0x08000000
+
 
 class TestRequestHeaders:
     """Copilot API header generation."""

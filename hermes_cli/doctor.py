@@ -25,6 +25,7 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -2193,9 +2194,14 @@ def run_doctor(args):
     def _gh_authenticated() -> bool:
         """Check if gh CLI is authenticated via token file or device flow."""
         try:
+            run_kwargs = {"capture_output": True}
+            hide_flags = windows_hide_flags()
+            if hide_flags:
+                run_kwargs["creationflags"] = hide_flags
             result = subprocess.run(
                 ["gh", "auth", "status", "--json", "authenticated"],
-                capture_output=True, timeout=10,
+                timeout=10,
+                **run_kwargs,
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):

@@ -906,6 +906,40 @@ class TestGitHubTokenCheck:
         assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
+    def test_gh_authenticated_hides_windows_console(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setattr(doctor_mod, "windows_hide_flags", lambda: 0x08000000)
+
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            if cmd[:3] == ["gh", "auth", "status"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        monkeypatch.setattr(doctor_mod.subprocess, "run", mock_run)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+
+        gh_calls = [
+            kwargs
+            for cmd, kwargs in calls
+            if cmd[:3] == ["gh", "auth", "status"]
+        ]
+        assert gh_calls
+        assert gh_calls[0]["creationflags"] == 0x08000000
+
 
 def _run_doctor_with_healthy_oauth_fallback(
     monkeypatch,
